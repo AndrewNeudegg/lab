@@ -1,2 +1,9 @@
 /.artifacts/
 /.bin/
+/.env
+/data/events/*.jsonl
+/data/tasks/*.json
+/data/approvals/*.json
+/data/runs/*.json
+/workspaces/
+data/

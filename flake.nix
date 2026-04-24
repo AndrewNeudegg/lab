@@ -1,22 +1,28 @@
 {
   description = "Homelab agent dev shell";
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
-  outputs = { self, nixpkgs }:
+
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    llm-agents.url = "github:numtide/llm-agents.nix";
+  };
+
+  outputs = { self, nixpkgs, llm-agents }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
         inherit system;
         config.allowUnfree = true;
       };
+      agents = llm-agents.packages.${system};
     in {
       devShells.${system}.default = pkgs.mkShell {
-        packages = with pkgs; [
-          go
-          gopls
-          git
-          claude-code
-          codex
-          gemini-cli
+        packages = [
+          pkgs.go
+          pkgs.gopls
+          pkgs.git
+          agents.claude-code
+          agents.codex
+          agents.gemini-cli
         ];
       };
     };

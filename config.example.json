@@ -1,0 +1,47 @@
+{
+  "agent_name": "homelab-lead",
+  "default_provider": "gemini",
+  "providers": {
+    "gemini": {
+      "type": "gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "model": "gemini-flash-latest",
+      "api_key_env": "GEMINI_API_KEY"
+    },
+    "openai": {
+      "type": "openai-compatible",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.1",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "ollama": {
+      "type": "openai-compatible",
+      "base_url": "http://localhost:11434/v1",
+      "model": "qwen3-coder"
+    }
+  },
+  "repo": {
+    "root": "/srv/homelab/mono",
+    "workspace_root": "/srv/homelab/workspaces"
+  },
+  "policy": {
+    "require_approval_for": [
+      "shell.run_approved",
+      "service.restart",
+      "llm.switch_provider",
+      "git.commit",
+      "repo.apply_patch_to_main",
+      "git.merge_approved"
+    ]
+  },
+  "limits": {
+    "max_concurrent_tasks": 4,
+    "max_tool_calls_per_turn": 12,
+    "max_shell_seconds": 60,
+    "max_file_bytes": 1048576
+  },
+  "data_dir": "data",
+  "http": {
+    "addr": "127.0.0.1:8080"
+  }
+}

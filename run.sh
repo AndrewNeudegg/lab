@@ -79,6 +79,9 @@ case "$cmd" in
   clean-cache)
     clean_go_cache
     ;;
+  shell)
+    exec nix develop "$@"
+    ;;
 
   # ── Run ───────────────────────────────────────────────────────────
   serve)
@@ -107,6 +110,7 @@ Usage:
   ./run.sh serve [args...]     # go run ./cmd/homelabd
   ./run.sh verify              # fmt-check + vet + test
   ./run.sh clean-cache         # clear the Go build cache
+  ./run.sh shell               # enter the nix dev shell
 EOF
     ;;
   *)

@@ -1,13 +1,54 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { ChatTranscriptMessage } from './types';
 
   export let messages: ChatTranscriptMessage[] = [];
   export let loading = false;
   export let disabled = false;
   export let onAction: (command: string) => void = () => {};
+
+  let messagesEl: HTMLElement | undefined;
+  let shouldStickToBottom = true;
+  let lastMessageCount = messages.length;
+  let lastLoading = loading;
+
+  const isScrolledToBottom = () => {
+    if (!messagesEl) {
+      return true;
+    }
+
+    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= 8;
+  };
+
+  const rememberScrollPosition = () => {
+    shouldStickToBottom = isScrolledToBottom();
+  };
+
+  const scrollToBottom = () => {
+    if (messagesEl) {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  };
+
+  $: {
+    const messageCount = messages.length;
+    if (messageCount !== lastMessageCount || loading !== lastLoading) {
+      const stickToBottom = shouldStickToBottom;
+      lastMessageCount = messageCount;
+      lastLoading = loading;
+
+      void tick().then(() => {
+        if (stickToBottom) {
+          scrollToBottom();
+        }
+
+        rememberScrollPosition();
+      });
+    }
+  }
 </script>
 
-<section class="messages" aria-live="polite">
+<section class="messages" bind:this={messagesEl} on:scroll={rememberScrollPosition} aria-live="polite">
   {#each messages as message (message.id)}
     <article class="message" class:user={message.role === 'user'}>
       <div class="meta">

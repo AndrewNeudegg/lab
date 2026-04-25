@@ -4,7 +4,7 @@
   export let disabled = false;
   export let onSelect: (action: QuickAction) => void = () => {};
 
-  const actions: QuickAction[] = ['help', 'status', 'agents'];
+  const actions: QuickAction[] = ['status', 'tasks', 'approvals', 'agents', 'help'];
 </script>
 
 <div class="quick-actions" aria-label="Quick actions">

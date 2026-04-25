@@ -3,6 +3,8 @@
 
   export let messages: ChatTranscriptMessage[] = [];
   export let loading = false;
+  export let disabled = false;
+  export let onAction: (command: string) => void = () => {};
 </script>
 
 <section class="messages" aria-live="polite">
@@ -13,6 +15,15 @@
         <time>{message.time}</time>
       </div>
       <p>{message.content}</p>
+      {#if message.role === 'assistant' && message.actions?.length}
+        <div class="actions" aria-label="Suggested commands">
+          {#each message.actions as action}
+            <button type="button" disabled={disabled} on:click={() => onAction(action)}>
+              {action}
+            </button>
+          {/each}
+        </div>
+      {/if}
     </article>
   {/each}
 
@@ -79,6 +90,38 @@
     line-height: 1.45;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    padding-top: 0.2rem;
+  }
+
+  button {
+    min-height: 2rem;
+    max-width: 100%;
+    padding: 0 0.65rem;
+    border: 1px solid #c5cfdb;
+    border-radius: 0.4rem;
+    color: #1f2937;
+    background: #f8fafc;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+
+  button:hover:not(:disabled) {
+    border-color: #637083;
+    background: #eef4fb;
+  }
+
+  button:disabled {
+    color: #9ca3af;
+    cursor: not-allowed;
   }
 
   @media (max-width: 640px) {

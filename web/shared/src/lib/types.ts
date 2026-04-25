@@ -20,9 +20,10 @@ export interface ChatTranscriptMessage {
   role: ChatRole;
   content: string;
   time: string;
+  actions?: string[];
 }
 
-export type QuickAction = 'help' | 'status' | 'agents';
+export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
 
 export interface HomelabdMessageRequest {
   from?: string;

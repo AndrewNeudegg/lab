@@ -67,6 +67,9 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 	if isCasualMessage(message) {
 		return "I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil
 	}
+	if isActiveTaskStatusRequest(message) {
+		return o.listActiveTasks()
+	}
 	switch cmd {
 	case "help":
 		return help(), nil
@@ -74,6 +77,8 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 		return o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])))
 	case "tasks":
 		return o.listTasks()
+	case "status":
+		return o.listActiveTasks()
 	case "agents":
 		return o.listAgents(ctx)
 	case "cancel", "stop":
@@ -151,6 +156,9 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 		}
 		return o.resolveApproval(ctx, fields[1], false)
 	default:
+		if isPlainWorkRequest(message) {
+			return o.startOneShotWork(ctx, message)
+		}
 		return o.handleWithLLM(ctx, message)
 	}
 }
@@ -163,6 +171,61 @@ func isCasualMessage(message string) bool {
 	default:
 		return false
 	}
+}
+
+func isActiveTaskStatusRequest(message string) bool {
+	normalized := normalizeIntentText(message)
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "status", "task status", "tasks status", "active tasks", "active task", "list active tasks", "list all active tasks", "what tasks are active", "what task are active", "what work is in progress", "work in progress", "in progress", "whats in progress", "what is in progress":
+		return true
+	}
+	if strings.Contains(normalized, "active") && strings.Contains(normalized, "task") {
+		return true
+	}
+	if strings.Contains(normalized, "work") && strings.Contains(normalized, "in progress") {
+		return true
+	}
+	if strings.Contains(normalized, "task") && strings.Contains(normalized, "in progress") {
+		return true
+	}
+	return false
+}
+
+func isPlainWorkRequest(message string) bool {
+	if strings.Contains(message, "?") {
+		return false
+	}
+	normalized := normalizeIntentText(message)
+	if normalized == "" || isActiveTaskStatusRequest(message) || isCasualMessage(message) {
+		return false
+	}
+	first := ""
+	fields := strings.Fields(normalized)
+	for _, field := range fields {
+		switch field {
+		case "please", "can", "could", "you", "would", "we", "need", "to":
+			continue
+		default:
+			first = field
+		}
+		break
+	}
+	switch first {
+	case "add", "build", "change", "create", "debug", "fix", "implement", "improve", "make", "patch", "refactor", "remove", "repair", "replace", "update", "upgrade", "write":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeIntentText(message string) string {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	normalized = strings.Trim(normalized, " \t\r\n.,!?")
+	normalized = strings.ReplaceAll(normalized, "'", "")
+	return strings.Join(strings.Fields(normalized), " ")
 }
 
 func (o *Orchestrator) CreateTask(ctx context.Context, goal string) (string, error) {
@@ -218,6 +281,7 @@ func help() string {
 		"commands:",
 		"  new <goal>                 create task and isolated worktree",
 		"  tasks                      list tasks",
+		"  status                     list active tasks",
 		"  show <task_id>             show task",
 		"  cancel <task_id>           mark task cancelled, keep workspace",
 		"  delete <task_id>           remove task record and worktree",
@@ -241,7 +305,7 @@ func help() string {
 
 func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (string, error) {
 	if o.provider == nil || o.model == "" {
-		return o.createTask(ctx, message)
+		return "I do not have an LLM provider configured for open-ended chat. Use `help`, `status`, or `new <goal>`.", nil
 	}
 	maxToolCalls := o.cfg.Limits.MaxToolCallsPerTurn
 	if maxToolCalls <= 0 {
@@ -263,7 +327,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 		resp, err := o.provider.Complete(ctx, req)
 		if err != nil {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "error": err.Error()})})
-			return o.createTask(ctx, message)
+			return "", err
 		}
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "message": resp.Message.Content, "usage": resp.Usage})})
 		parsed, err := parseAgentResponse(resp.Message.Content)
@@ -271,7 +335,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			if strings.TrimSpace(resp.Message.Content) != "" {
 				return strings.TrimSpace(resp.Message.Content), nil
 			}
-			return o.createTask(ctx, message)
+			return "I could not parse the model response. Use `help`, `status`, or `new <goal>`.", nil
 		}
 		if parsed.Message != "" {
 			lastMessage = parsed.Message
@@ -434,8 +498,25 @@ func firstJSONObject(s string) string {
 }
 
 func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, error) {
-	if goal == "" {
+	created, err := o.createTaskRecord(ctx, goal)
+	if err != nil || created.Task.ID == "" {
+		if err != nil {
+			return "", err
+		}
 		return "usage: new <goal>", nil
+	}
+	t := created.Task
+	return fmt.Sprintf("Created task %s.\nWorkspace: %s\nBranch: %s\nNext: `run %s`, `delegate %s <agent> <instruction>`, or `review %s`.", t.ID, t.Workspace, created.Branch, t.ID, t.ID, t.ID), nil
+}
+
+type createdTask struct {
+	Task   taskstore.Task
+	Branch string
+}
+
+func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (createdTask, error) {
+	if goal == "" {
+		return createdTask{}, nil
 	}
 	now := time.Now().UTC()
 	t := taskstore.Task{ID: id.New("task"), Title: firstLine(goal), Goal: goal, Status: taskstore.StatusRunning, AssignedTo: "CoderAgent", Priority: 5, CreatedAt: now, UpdatedAt: now}
@@ -444,7 +525,7 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 		t.Status = taskstore.StatusFailed
 		t.Result = err.Error()
 		_ = o.tasks.Save(t)
-		return "", err
+		return createdTask{}, err
 	}
 	var out struct {
 		Workspace string `json:"workspace"`
@@ -453,11 +534,11 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 	_ = json.Unmarshal(raw, &out)
 	t.Workspace = out.Workspace
 	if err := o.tasks.Save(t); err != nil {
-		return "", err
+		return createdTask{}, err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(t)})
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"agent": "CoderAgent"})})
-	return fmt.Sprintf("Created task %s.\nWorkspace: %s\nBranch: %s\nNext: `run %s`, `delegate %s <agent> <instruction>`, or `review %s`.", t.ID, t.Workspace, out.Branch, t.ID, t.ID, t.ID), nil
+	return createdTask{Task: t, Branch: out.Branch}, nil
 }
 
 func (o *Orchestrator) listTasks() (string, error) {
@@ -474,6 +555,35 @@ func (o *Orchestrator) listTasks() (string, error) {
 		fmt.Fprintf(&b, "%s [%s] %s workspace=%s\n", t.ID, t.Status, t.Title, t.Workspace)
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func (o *Orchestrator) listActiveTasks() (string, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return "", err
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
+	var b strings.Builder
+	for _, t := range tasks {
+		if !isInFlightStatus(t.Status) {
+			continue
+		}
+		fmt.Fprintf(&b, "%s [%s] %s workspace=%s\n", t.ID, t.Status, t.Title, t.Workspace)
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return "no active tasks", nil
+	}
+	return out, nil
+}
+
+func isInFlightStatus(status string) bool {
+	switch status {
+	case taskstore.StatusQueued, taskstore.StatusRunning, taskstore.StatusBlocked, taskstore.StatusAwaitingApproval:
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) showTask(taskID string) (string, error) {
@@ -621,26 +731,38 @@ func (o *Orchestrator) listAgents(ctx context.Context) (string, error) {
 }
 
 func (o *Orchestrator) delegateTask(ctx context.Context, taskID, backend, instruction string) (string, error) {
-	t, err := o.tasks.Load(taskID)
-	if err != nil {
-		return "", err
-	}
-	if t.Workspace == "" {
-		return "", fmt.Errorf("task %s has no workspace", taskID)
-	}
 	if strings.TrimSpace(instruction) == "" {
 		return "usage: delegate <task_id> <backend> <instruction>", nil
+	}
+	if err := o.startExternalDelegation(context.WithoutCancel(ctx), taskID, backend, instruction); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Started %s for %s. It is cooking in the background.\nCheck `show %s`, `diff %s`, `test %s`, or `review %s`.", backend, taskID, taskID, taskID, taskID, taskID), nil
+}
+
+func (o *Orchestrator) startExternalDelegation(ctx context.Context, taskID, backend, instruction string) error {
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return err
+	}
+	if t.Workspace == "" {
+		return fmt.Errorf("task %s has no workspace", taskID)
 	}
 	t.Status = taskstore.StatusRunning
 	t.AssignedTo = backend
 	if err := o.tasks.Save(t); err != nil {
-		return "", err
+		return err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent": backend})})
+	go o.runExternalDelegation(ctx, taskID, backend, t.Workspace, instruction)
+	return nil
+}
+
+func (o *Orchestrator) runExternalDelegation(ctx context.Context, taskID, backend, workspace, instruction string) {
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.delegate", map[string]any{
 		"backend":     backend,
 		"task_id":     taskID,
-		"workspace":   t.Workspace,
+		"workspace":   workspace,
 		"instruction": instruction,
 	}, taskID)
 	var out struct {
@@ -652,6 +774,11 @@ func (o *Orchestrator) delegateTask(ctx context.Context, taskID, backend, instru
 		Duration int64    `json:"duration"`
 	}
 	_ = json.Unmarshal(raw, &out)
+	t, loadErr := o.tasks.Load(taskID)
+	if loadErr != nil {
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.failed", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"error": loadErr.Error()})})
+		return
+	}
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = strings.TrimSpace(out.Output)
 	if err != nil {
@@ -662,21 +789,71 @@ func (o *Orchestrator) delegateTask(ctx context.Context, taskID, backend, instru
 			t.Result = err.Error()
 		}
 		_ = o.tasks.Save(t)
-		if strings.TrimSpace(out.Output) != "" {
-			return strings.TrimSpace(out.Output), err
-		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"error": t.Result})})
+		return
+	}
+	t.Status = taskstore.StatusReadyForReview
+	_ = o.tasks.Save(t)
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.external_agent.finished", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"backend": out.Backend, "run_id": out.ID})})
+}
+
+func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (string, error) {
+	created, err := o.createTaskRecord(ctx, goal)
+	if err != nil {
 		return "", err
 	}
-	t.Status = taskstore.StatusRunning
-	_ = o.tasks.Save(t)
-	output := strings.TrimSpace(out.Output)
-	if output == "" {
-		output = "external agent returned no output"
+	if created.Task.ID == "" {
+		return "usage: new <goal>", nil
 	}
-	if len(output) > 6000 {
-		output = output[:6000] + "\n...[truncated]"
+	taskID := created.Task.ID
+	short := shortTaskID(taskID)
+	if !o.externalAgentAvailable(ctx, "codex") {
+		t := created.Task
+		t.Status = taskstore.StatusQueued
+		t.AssignedTo = "OrchestratorAgent"
+		t.Result = "codex is not available"
+		_ = o.tasks.Save(t)
+		return fmt.Sprintf("Created task %s (%s), but codex is not available. Start it with `run %s` or `delegate %s codex <instruction>`.", short, taskID, taskID, taskID), nil
 	}
-	return fmt.Sprintf("%s finished for %s.\nNext: `diff %s`, `test %s`, or `review %s`.\n\n%s", out.Backend, taskID, taskID, taskID, taskID, output), nil
+	instruction := strings.Join([]string{
+		goal,
+		"",
+		"Work only in this task worktree. Inspect first, make the smallest practical patch, run relevant formatting and tests, and leave a concise summary of what changed.",
+	}, "\n")
+	if err := o.startExternalDelegation(context.WithoutCancel(ctx), taskID, "codex", instruction); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Created task %s (%s) and started codex. It is cooking in the background.\nCheck `show %s`, `diff %s`, `test %s`, or `review %s`.", short, taskID, taskID, taskID, taskID, taskID), nil
+}
+
+func (o *Orchestrator) externalAgentAvailable(ctx context.Context, backend string) bool {
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.list", map[string]any{}, "")
+	if err != nil {
+		return false
+	}
+	var out struct {
+		Agents []struct {
+			Name      string `json:"name"`
+			Enabled   bool   `json:"enabled"`
+			Available bool   `json:"available"`
+		} `json:"agents"`
+	}
+	if json.Unmarshal(raw, &out) != nil {
+		return false
+	}
+	for _, agent := range out.Agents {
+		if agent.Name == backend && agent.Enabled && agent.Available {
+			return true
+		}
+	}
+	return false
+}
+
+func shortTaskID(taskID string) string {
+	if len(taskID) <= 13 {
+		return taskID
+	}
+	return taskID[len(taskID)-8:]
 }
 
 func (o *Orchestrator) readRepo(ctx context.Context, path string) (string, error) {

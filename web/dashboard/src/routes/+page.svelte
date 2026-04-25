@@ -1,6 +1,5 @@
 <script lang="ts">
   import {
-    DEFAULT_HOMELABD_API_BASE,
     Header,
     MessageList,
     QuickActions,
@@ -10,18 +9,20 @@
     type QuickAction
   } from '@homelab/shared';
 
-  const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || DEFAULT_HOMELABD_API_BASE;
+  const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
 
   let draft = '';
   let loading = false;
   let error = '';
   let messageId = 0;
+  let inputEl: HTMLInputElement | undefined;
   let messages: ChatTranscriptMessage[] = [
     {
       id: 'welcome',
       role: 'assistant',
       content: 'Ready for homelabd.',
+      actions: ['status', 'tasks', 'help'],
       time: 'Now'
     }
   ];
@@ -32,6 +33,38 @@
       minute: '2-digit'
     });
 
+  const safeCommandPattern =
+    /^(help|tasks|status|agents|approvals|show\s+\S+|run\s+\S+|work\s+\S+|review\s+\S+|diff\s+\S+|test\s+\S+|approve\s+\S+|deny\s+\S+|cancel\s+\S+|stop\s+\S+|delete\s+\S+|remove\s+\S+|rm\s+\S+)$/i;
+
+  const extractCommands = (content: string): string[] => {
+    const commands = new Set<string>();
+    const backticked = content.matchAll(/`([^`\n]+)`/g);
+
+    for (const match of backticked) {
+      const command = match[1].trim().replace(/\s+/g, ' ');
+      if (safeCommandPattern.test(command) && !command.includes('<')) {
+        commands.add(command);
+      }
+    }
+
+    for (const line of content.split('\n')) {
+      const command = line
+        .trim()
+        .replace(/^[>-]\s*/, '')
+        .replace(/[.。]$/, '')
+        .replace(/\s+/g, ' ');
+      if (safeCommandPattern.test(command) && !command.includes('<')) {
+        commands.add(command);
+      }
+    }
+
+    return [...commands].slice(0, 6);
+  };
+
+  const focusInput = () => {
+    requestAnimationFrame(() => inputEl?.focus());
+  };
+
   const addMessage = (role: ChatRole, content: string) => {
     messageId += 1;
     messages = [
@@ -40,6 +73,7 @@
         id: `${role}-${messageId}`,
         role,
         content,
+        actions: role === 'assistant' ? extractCommands(content) : undefined,
         time: timeLabel()
       }
     ];
@@ -68,11 +102,16 @@
       error = err instanceof Error ? err.message : 'Unable to reach homelabd.';
     } finally {
       loading = false;
+      focusInput();
     }
   };
 
   const sendQuickAction = (action: QuickAction) => {
     void sendMessage(action);
+  };
+
+  const sendCommandAction = (command: string) => {
+    void sendMessage(command);
   };
 </script>
 
@@ -84,39 +123,49 @@
   />
 </svelte:head>
 
-<Header title="homelabd" subtitle="Dashboard" {apiBase} />
+<div class="app-shell">
+  <Header title="homelabd" subtitle="Dashboard" {apiBase} />
 
-<main>
-  <section class="chat-shell">
-    <MessageList {messages} {loading} />
+  <main>
+    <section class="chat-shell">
+      <MessageList {messages} {loading} disabled={loading} onAction={sendCommandAction} />
 
-    {#if error}
-      <p class="error" role="alert">{error}</p>
-    {/if}
+      {#if error}
+        <p class="error" role="alert">{error}</p>
+      {/if}
 
-    <div class="composer">
-      <QuickActions disabled={loading} onSelect={sendQuickAction} />
+      <div class="composer">
+        <QuickActions disabled={loading} onSelect={sendQuickAction} />
 
-      <form on:submit|preventDefault={() => void sendMessage()}>
-        <label for="message">Message</label>
-        <input
-          id="message"
-          bind:value={draft}
-          autocomplete="off"
-          placeholder="Ask homelabd..."
-          disabled={loading}
-        />
-        <button type="submit" disabled={loading || !draft.trim()}>
-          {loading ? 'Sending' : 'Send'}
-        </button>
-      </form>
-    </div>
-  </section>
-</main>
+        <form on:submit|preventDefault={() => void sendMessage()}>
+          <label for="message">Message</label>
+          <input
+            id="message"
+            bind:this={inputEl}
+            bind:value={draft}
+            autocomplete="off"
+            placeholder="Ask homelabd..."
+            disabled={loading}
+          />
+          <button type="submit" disabled={loading || !draft.trim()}>
+            {loading ? 'Sending' : 'Send'}
+          </button>
+        </form>
+      </div>
+    </section>
+  </main>
+</div>
 
 <style>
+  :global(html) {
+    height: 100%;
+    overflow: hidden;
+  }
+
   :global(body) {
     margin: 0;
+    height: 100%;
+    overflow: hidden;
     font-family:
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
@@ -124,18 +173,32 @@
     background: #eef2f7;
   }
 
+  :global(body > div) {
+    height: 100%;
+  }
+
+  .app-shell {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100dvh;
+    overflow: hidden;
+  }
+
   main {
     display: grid;
-    min-height: calc(100vh - 82px);
+    min-height: 0;
     max-width: 980px;
+    width: 100%;
+    box-sizing: border-box;
     margin: 0 auto;
     padding: 1.25rem;
+    overflow: hidden;
   }
 
   .chat-shell {
     display: flex;
     flex-direction: column;
-    min-height: min(720px, calc(100vh - 122px));
+    min-height: 0;
     overflow: hidden;
     border: 1px solid #d5dde8;
     border-radius: 0.5rem;
@@ -144,6 +207,7 @@
 
   .composer {
     display: grid;
+    flex: 0 0 auto;
     gap: 0.75rem;
     padding: 1rem;
     border-top: 1px solid #d5dde8;
@@ -169,6 +233,7 @@
   input {
     min-width: 0;
     min-height: 2.75rem;
+    box-sizing: border-box;
     padding: 0 0.9rem;
     border: 1px solid #b9c4d2;
     border-radius: 0.5rem;
@@ -185,6 +250,7 @@
   button {
     min-width: 5.5rem;
     min-height: 2.75rem;
+    box-sizing: border-box;
     padding: 0 1rem;
     border: 1px solid #1d4ed8;
     border-radius: 0.5rem;
@@ -216,12 +282,11 @@
 
   @media (max-width: 640px) {
     main {
-      min-height: calc(100vh - 110px);
       padding: 0.75rem;
     }
 
-    .chat-shell {
-      min-height: calc(100vh - 126px);
+    .composer {
+      padding: 0.75rem;
     }
 
     form {

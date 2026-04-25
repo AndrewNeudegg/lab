@@ -149,6 +149,17 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 			return programResult("usage: review <task_id>", nil)
 		}
 		return programResult(o.reviewTask(ctx, strings.Join(fields[1:], " ")))
+	case "accept", "verify":
+		if len(fields) < 2 {
+			return programResult("usage: accept <task_id>", nil)
+		}
+		return programResult(o.acceptTask(ctx, strings.Join(fields[1:], " ")))
+	case "reopen":
+		if len(fields) < 2 {
+			return programResult("usage: reopen <task_id> [reason]", nil)
+		}
+		selector, reason := splitSelectorAndInstruction(fields[1:])
+		return programResult(o.reopenTask(ctx, selector, reason))
 	case "run", "work", "start":
 		if len(fields) < 2 {
 			return programResult("usage: run <task_id|task title>", nil)
@@ -274,6 +285,9 @@ func isPlainWorkRequest(message string) bool {
 	if normalized == "" || isActiveTaskStatusRequest(message) || isCasualMessage(message) {
 		return false
 	}
+	if isDesiredBehaviorStatement(normalized) {
+		return true
+	}
 	first := ""
 	for _, field := range strings.Fields(normalized) {
 		switch field {
@@ -286,6 +300,29 @@ func isPlainWorkRequest(message string) bool {
 	}
 	switch first {
 	case "add", "build", "change", "create", "debug", "fix", "implement", "improve", "make", "patch", "refactor", "remove", "repair", "replace", "update", "upgrade", "write":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDesiredBehaviorStatement(normalized string) bool {
+	if startsWithQuestionWord(normalized) {
+		return false
+	}
+	return strings.Contains(normalized, " should ") ||
+		strings.HasPrefix(normalized, "should ") ||
+		strings.Contains(normalized, " needs to ") ||
+		strings.Contains(normalized, " need to ")
+}
+
+func startsWithQuestionWord(normalized string) bool {
+	fields := strings.Fields(normalized)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "what", "why", "how", "when", "where", "who", "which":
 		return true
 	default:
 		return false
@@ -331,7 +368,7 @@ func splitSelectorAndInstruction(args []string) (string, string) {
 		return "", ""
 	}
 	for i, arg := range args {
-		if strings.EqualFold(arg, "with") || strings.EqualFold(arg, "and") {
+		if strings.EqualFold(arg, "with") || strings.EqualFold(arg, "and") || strings.EqualFold(arg, "because") {
 			return strings.Join(args[:i], " "), strings.Join(args[i+1:], " ")
 		}
 	}
@@ -375,6 +412,14 @@ func (o *Orchestrator) ReviewTask(ctx context.Context, taskID string) (string, e
 	return o.reviewTask(ctx, taskID)
 }
 
+func (o *Orchestrator) AcceptTask(ctx context.Context, taskID string) (string, error) {
+	return o.acceptTask(ctx, taskID)
+}
+
+func (o *Orchestrator) ReopenTask(ctx context.Context, taskID, reason string) (string, error) {
+	return o.reopenTask(ctx, taskID, reason)
+}
+
 func (o *Orchestrator) ListApprovals() ([]approvalstore.Request, error) {
 	requests, err := o.approvals.List()
 	if err != nil {
@@ -412,6 +457,8 @@ func help() string {
 		"  test <task_id>             run project checks in worktree",
 		"  diff <task_id>             show worktree diff",
 		"  review <task_id>           run tests, show diff, request merge approval",
+		"  accept <task_id>           mark merged task verified and done",
+		"  reopen <task_id> [reason]  mark task not done and continue work",
 		"  run <task_id>              let CoderAgent work in the task worktree",
 		"  agents                     list external worker backends",
 		"  delegate <task_id> <agent> <instruction>",
@@ -759,7 +806,7 @@ func (o *Orchestrator) listTasks() (string, error) {
 	for _, t := range tasks {
 		fmt.Fprintf(&b, "%s [%s] %s\n  id: %s\n  workspace: %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), t.ID, t.Workspace)
 		if !taskTerminal(t.Status) {
-			fmt.Fprintf(&b, "  next: `%s`, `delegate %s to codex`, or `delete %s`\n", nextActionForTask(t), taskShortID(t.ID), taskShortID(t.ID))
+			fmt.Fprintf(&b, "  next: %s\n", nextActionsForTask(t))
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
@@ -777,7 +824,7 @@ func (o *Orchestrator) listInFlight() (string, error) {
 			continue
 		}
 		next := nextActionForTask(t)
-		fmt.Fprintf(&b, "- %s [%s] %s\n  next: `%s`, `delegate %s to codex`, or `delete %s`\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), next, taskShortID(t.ID), taskShortID(t.ID))
+		fmt.Fprintf(&b, "- %s [%s] %s\n  next: %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), nextActionsForTaskWithPrimary(t, next))
 	}
 	if b.Len() == 0 {
 		return "Nothing active. Use `new <goal>` to create a task.", nil
@@ -790,6 +837,8 @@ func nextActionForTask(t taskstore.Task) string {
 	switch t.Status {
 	case taskstore.StatusAwaitingApproval:
 		return "approvals"
+	case taskstore.StatusAwaitingVerification:
+		return fmt.Sprintf("accept %s", shortID)
 	case taskstore.StatusReadyForReview:
 		return fmt.Sprintf("review %s", shortID)
 	case taskstore.StatusBlocked:
@@ -806,6 +855,18 @@ func nextActionForTask(t taskstore.Task) string {
 		}
 		return fmt.Sprintf("run %s", shortID)
 	}
+}
+
+func nextActionsForTask(t taskstore.Task) string {
+	return nextActionsForTaskWithPrimary(t, nextActionForTask(t))
+}
+
+func nextActionsForTaskWithPrimary(t taskstore.Task, primary string) string {
+	shortID := taskShortID(t.ID)
+	if t.Status == taskstore.StatusAwaitingVerification {
+		return fmt.Sprintf("`%s`, `reopen %s needs rework`, or `delete %s`", primary, shortID, shortID)
+	}
+	return fmt.Sprintf("`%s`, `delegate %s to codex`, or `delete %s`", primary, shortID, shortID)
 }
 
 func (o *Orchestrator) showTask(taskID string) (string, error) {
@@ -830,7 +891,7 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 		fmt.Fprintf(&b, "result: %s\n", strings.TrimSpace(t.Result))
 	}
 	if !taskTerminal(t.Status) {
-		fmt.Fprintf(&b, "next: `%s`, `delegate %s to codex`, or `delete %s`", nextActionForTask(t), taskShortID(t.ID), taskShortID(t.ID))
+		fmt.Fprintf(&b, "next: %s", nextActionsForTask(t))
 	}
 	return strings.TrimSpace(b.String()), nil
 }
@@ -855,6 +916,71 @@ func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string,
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.cancelled", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"workspace": t.Workspace})})
 	return fmt.Sprintf("Cancelled %s. Workspace kept at %s.", taskID, t.Workspace), nil
+}
+
+func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if t.Status == taskstore.StatusDone {
+		return fmt.Sprintf("Task %s is already done.", taskID), nil
+	}
+	if t.Status == taskstore.StatusCancelled {
+		return fmt.Sprintf("Task %s is cancelled; reopen it before accepting.", taskID), nil
+	}
+	t.Status = taskstore.StatusDone
+	t.AssignedTo = "OrchestratorAgent"
+	if strings.TrimSpace(t.Result) == "" {
+		t.Result = "accepted by human"
+	} else {
+		t.Result = strings.TrimSpace(t.Result) + "\naccepted by human"
+	}
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.completed", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"result": t.Result})})
+	return fmt.Sprintf("Accepted %s. Task is now done.", taskShortID(taskID)), nil
+}
+
+func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "reopened by human"
+	} else {
+		reason = "reopened by human: " + reason
+	}
+	t.Status = taskstore.StatusRunning
+	t.AssignedTo = "CoderAgent"
+	if strings.TrimSpace(t.Result) == "" {
+		t.Result = reason
+	} else {
+		t.Result = strings.TrimSpace(t.Result) + "\n" + reason
+	}
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.reopened", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": reason})})
+	shortID := taskShortID(taskID)
+	instruction := strings.TrimPrefix(reason, "reopened by human: ")
+	instruction = strings.TrimPrefix(instruction, "reopened by human")
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		instruction = "continue the reopened task"
+	}
+	return fmt.Sprintf("Reopened %s.\nNext: `delegate %s to codex %s`, `run %s`, or `review %s`.", shortID, shortID, instruction, shortID, shortID), nil
 }
 
 func (o *Orchestrator) deleteTask(ctx context.Context, selector string) (string, error) {
@@ -1248,6 +1374,7 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	if err != nil {
 		return "", err
 	}
+	shortID := taskShortID(taskID)
 	if diffOut == "no diff" {
 		return "ReviewerAgent: no diff to approve.", nil
 	}
@@ -1260,7 +1387,6 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		t.Result = "ReviewerAgent checks failed: " + testErr.Error()
 		_ = o.tasks.Save(t)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
-		shortID := taskShortID(taskID)
 		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nNo approval created because checks failed.\nNext: `delegate %s to codex fix the failing tests`, `diff %s`, or `delete %s`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), shortID, shortID, shortID), nil
 	}
 	approvalID := id.New("approval")
@@ -1273,7 +1399,7 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	t.Result = "ReviewerAgent test status: " + status
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(req)})
-	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nApproval requested: %s\nApprove merge with `approve %s`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), approvalID, approvalID), nil
+	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\nAfter merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), approvalID, approvalID, shortID, shortID), nil
 }
 
 func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string) (string, error) {
@@ -1604,8 +1730,9 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 	if req.TaskID != "" {
 		if t, err := o.tasks.Load(req.TaskID); err == nil {
 			if req.Tool == "git.merge_approved" {
-				t.Status = taskstore.StatusDone
-				t.Result = "merged after approval " + approvalID
+				t.Status = taskstore.StatusAwaitingVerification
+				t.AssignedTo = "OrchestratorAgent"
+				t.Result = "merged after approval " + approvalID + "; awaiting human verification"
 			} else {
 				t.Status = taskstore.StatusRunning
 				t.Result = "approved " + req.Tool + " via " + approvalID
@@ -1614,7 +1741,12 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 		}
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.granted", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(req)})
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.completed", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID})})
+	if req.Tool == "git.merge_approved" {
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID})})
+		if req.TaskID != "" {
+			return fmt.Sprintf("Approved and merged %s.\nTask %s is awaiting verification.\nNext: check the running app, then `accept %s` or `reopen %s <reason>`.", approvalID, taskShortID(req.TaskID), taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
+		}
+	}
 	return "Approved and executed " + approvalID, nil
 }
 

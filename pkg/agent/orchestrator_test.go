@@ -63,6 +63,8 @@ func TestPlainWorkRequestIntent(t *testing.T) {
 		"implement the dashboard fix",
 		"please fix the failing test",
 		"we need to refactor the task parser",
+		"The chat window should scroll to the bottom when a new message is received",
+		"the task list needs to show the next action",
 	} {
 		if !isPlainWorkRequest(input) {
 			t.Fatalf("isPlainWorkRequest(%q) = false, want true", input)
@@ -71,6 +73,7 @@ func TestPlainWorkRequestIntent(t *testing.T) {
 	for _, input := range []string{
 		"what tasks are active?",
 		"how does the dashboard work?",
+		"how should I use the dashboard?",
 		"help",
 		"hello",
 	} {
@@ -173,6 +176,37 @@ func TestTaskViewsIncludeClickableNextActions(t *testing.T) {
 	}
 }
 
+func TestAwaitingVerificationTaskShowsAcceptAction(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_20260425_212733_4f4b79fd",
+		Title:      "fix chat scroll",
+		Goal:       "fix chat scroll",
+		Status:     taskstore.StatusAwaitingVerification,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.showTask("4f4b79fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "`accept 4f4b79fd`") {
+		t.Fatalf("reply = %q, want accept action", reply)
+	}
+	if !strings.Contains(reply, "`reopen 4f4b79fd needs rework`") {
+		t.Fatalf("reply = %q, want reopen action", reply)
+	}
+	if !strings.Contains(reply, "`delete 4f4b79fd`") {
+		t.Fatalf("reply = %q, want delete action", reply)
+	}
+}
+
 func TestBadTaskSelectorReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	reply, err := orch.Handle(context.Background(), "test", "Diff summary:")
@@ -263,6 +297,104 @@ func TestReviewDoesNotRequestApprovalWhenChecksFail(t *testing.T) {
 	}
 	if updated.Status != taskstore.StatusBlocked {
 		t.Fatalf("status = %q, want blocked", updated.Status)
+	}
+}
+
+func TestApprovedMergeAwaitsVerificationUntilAccepted(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260425_212733_4f4b79fd",
+		Title:      "fix chat scroll",
+		Goal:       "fix chat scroll",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260425_213114_4eb24ba1",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260425_212733_4f4b79fd"}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "awaiting verification") || !strings.Contains(reply, "`accept 4f4b79fd`") {
+		t.Fatalf("reply = %q, want verification guidance", reply)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusAwaitingVerification {
+		t.Fatalf("status = %q, want awaiting_verification", updated.Status)
+	}
+
+	reply, err = orch.acceptTask(context.Background(), "4f4b79fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "now done") {
+		t.Fatalf("reply = %q, want done confirmation", reply)
+	}
+	updated, err = orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusDone {
+		t.Fatalf("status = %q, want done", updated.Status)
+	}
+}
+
+func TestReopenTaskMovesBackToRunning(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_20260425_212733_4f4b79fd",
+		Title:      "fix chat scroll",
+		Goal:       "fix chat scroll",
+		Status:     taskstore.StatusAwaitingVerification,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "reopen 4f4b79fd because scroll still jumps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Reopened 4f4b79fd") {
+		t.Fatalf("reply = %q, want reopened confirmation", reply)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning {
+		t.Fatalf("status = %q, want running", updated.Status)
+	}
+	if updated.AssignedTo != "CoderAgent" {
+		t.Fatalf("AssignedTo = %q, want CoderAgent", updated.AssignedTo)
+	}
+	if !strings.Contains(updated.Result, "scroll still jumps") {
+		t.Fatalf("Result = %q, want reopen reason", updated.Result)
 	}
 }
 
@@ -528,4 +660,16 @@ func (goTestFailStub) Run(context.Context, json.RawMessage) (json.RawMessage, er
 		return nil, err
 	}
 	return raw, fmt.Errorf("go test failed")
+}
+
+type mergeApprovedStub struct{}
+
+func (mergeApprovedStub) Name() string        { return "git.merge_approved" }
+func (mergeApprovedStub) Description() string { return "" }
+func (mergeApprovedStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (mergeApprovedStub) Risk() tool.RiskLevel { return tool.RiskHigh }
+func (mergeApprovedStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]any{"merged": true})
 }

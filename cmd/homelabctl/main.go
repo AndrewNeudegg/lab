@@ -47,7 +47,7 @@ type client struct {
 
 func (c client) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|run|review>")
+		return fmt.Errorf("usage: homelabctl task <new|list|show|run|review|accept|reopen>")
 	}
 	switch args[0] {
 	case "new":
@@ -73,6 +73,16 @@ func (c client) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task review <task_id>")
 		}
 		return c.do(http.MethodPost, "/tasks/"+args[1]+"/review", nil)
+	case "accept":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl task accept <task_id>")
+		}
+		return c.do(http.MethodPost, "/tasks/"+args[1]+"/accept", nil)
+	case "reopen":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: homelabctl task reopen <task_id> [reason]")
+		}
+		return c.do(http.MethodPost, "/tasks/"+args[1]+"/reopen", map[string]any{"reason": strings.Join(args[2:], " ")})
 	default:
 		return fmt.Errorf("unknown task command %q", args[0])
 	}
@@ -171,6 +181,8 @@ func usage() {
   homelabctl [-addr http://127.0.0.1:8080] task show <task_id>
   homelabctl [-addr http://127.0.0.1:8080] task run <task_id>
   homelabctl [-addr http://127.0.0.1:8080] task review <task_id>
+  homelabctl [-addr http://127.0.0.1:8080] task accept <task_id>
+  homelabctl [-addr http://127.0.0.1:8080] task reopen <task_id> [reason]
   homelabctl [-addr http://127.0.0.1:8080] approval list
   homelabctl [-addr http://127.0.0.1:8080] approval approve <approval_id>
   homelabctl [-addr http://127.0.0.1:8080] approval deny <approval_id>

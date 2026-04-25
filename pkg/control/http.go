@@ -184,6 +184,16 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 			reply, err = s.Orchestrator.RunTask(req.Context(), taskID)
 		case "review":
 			reply, err = s.Orchestrator.ReviewTask(req.Context(), taskID)
+		case "accept":
+			reply, err = s.Orchestrator.AcceptTask(req.Context(), taskID)
+		case "reopen":
+			var in struct {
+				Reason string `json:"reason"`
+			}
+			if req.Body != nil {
+				_ = json.NewDecoder(req.Body).Decode(&in)
+			}
+			reply, err = s.Orchestrator.ReopenTask(req.Context(), taskID, in.Reason)
 		default:
 			writeError(rw, http.StatusNotFound, "unknown task action")
 			return

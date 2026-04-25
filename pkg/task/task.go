@@ -3,14 +3,15 @@ package task
 import "time"
 
 const (
-	StatusQueued           = "queued"
-	StatusRunning          = "running"
-	StatusBlocked          = "blocked"
-	StatusReadyForReview   = "ready_for_review"
-	StatusAwaitingApproval = "awaiting_approval"
-	StatusDone             = "done"
-	StatusFailed           = "failed"
-	StatusCancelled        = "cancelled"
+	StatusQueued               = "queued"
+	StatusRunning              = "running"
+	StatusBlocked              = "blocked"
+	StatusReadyForReview       = "ready_for_review"
+	StatusAwaitingApproval     = "awaiting_approval"
+	StatusAwaitingVerification = "awaiting_verification"
+	StatusDone                 = "done"
+	StatusFailed               = "failed"
+	StatusCancelled            = "cancelled"
 )
 
 type Task struct {

@@ -28,6 +28,7 @@
   let messageId = 0;
   let inputEl: HTMLTextAreaElement | undefined;
   let messages: ChatTranscriptMessage[] = [welcomeMessage];
+  const links = [{ href: '/healthd', label: 'Healthd' }];
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -238,7 +239,7 @@
 </svelte:head>
 
 <div class="app-shell">
-  <Header title="homelabd" subtitle="Dashboard" {apiBase} />
+  <Header title="homelabd" subtitle="Dashboard" {apiBase} {links} />
 
   <main>
     <section class="chat-shell">

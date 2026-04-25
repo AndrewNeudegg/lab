@@ -44,6 +44,37 @@
   "http": {
     "addr": "127.0.0.1:18080"
   },
+  "healthd": {
+    "enabled": true,
+    "sample_interval_seconds": 5,
+    "retention_seconds": 300,
+    "request_timeout_seconds": 2,
+    "checks": [
+      {
+        "name": "homelabd-api",
+        "type": "http",
+        "url": "http://127.0.0.1:18080/events",
+        "method": "GET"
+      }
+    ],
+    "slos": [
+      {
+        "name": "availability",
+        "target_percent": 99.9,
+        "window_seconds": 300,
+        "warning_burn_rate": 2,
+        "page_burn_rate": 10
+      }
+    ],
+    "notifications": [
+      {
+        "name": "oncall-webhook",
+        "type": "webhook",
+        "url": "http://127.0.0.1:19090/healthd",
+        "min_severity": "warn"
+      }
+    ]
+  },
   "matrix": {
     "homeserver": "http://lab:8008",
     "user": "${ELEMENT_BOT_USERNAME}",

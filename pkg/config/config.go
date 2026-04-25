@@ -17,6 +17,7 @@ type Config struct {
 	Limits          LimitsConfig                   `json:"limits"`
 	DataDir         string                         `json:"data_dir"`
 	HTTP            HTTPConfig                     `json:"http"`
+	Healthd         HealthdConfig                  `json:"healthd"`
 	Matrix          MatrixConfig                   `json:"matrix"`
 	ExternalAgents  map[string]ExternalAgentConfig `json:"external_agents"`
 }
@@ -47,6 +48,40 @@ type LimitsConfig struct {
 
 type HTTPConfig struct {
 	Addr string `json:"addr"`
+}
+
+type HealthdConfig struct {
+	Enabled               *bool                      `json:"enabled"`
+	SampleIntervalSeconds int                        `json:"sample_interval_seconds"`
+	RetentionSeconds      int                        `json:"retention_seconds"`
+	RequestTimeoutSeconds int                        `json:"request_timeout_seconds"`
+	Checks                []HealthCheckConfig        `json:"checks,omitempty"`
+	SLOs                  []HealthSLOConfig          `json:"slos,omitempty"`
+	Notifications         []HealthNotificationConfig `json:"notifications,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	URL            string `json:"url,omitempty"`
+	Method         string `json:"method,omitempty"`
+	ExpectStatus   int    `json:"expect_status,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+type HealthSLOConfig struct {
+	Name            string  `json:"name"`
+	TargetPercent   float64 `json:"target_percent"`
+	WindowSeconds   int     `json:"window_seconds"`
+	WarningBurnRate float64 `json:"warning_burn_rate"`
+	PageBurnRate    float64 `json:"page_burn_rate"`
+}
+
+type HealthNotificationConfig struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	URL         string `json:"url,omitempty"`
+	MinSeverity string `json:"min_severity,omitempty"`
 }
 
 type MatrixConfig struct {
@@ -149,6 +184,21 @@ func Default() Config {
 		},
 		DataDir: "data",
 		HTTP:    HTTPConfig{Addr: "127.0.0.1:18080"},
+		Healthd: HealthdConfig{
+			Enabled:               boolPtr(true),
+			SampleIntervalSeconds: 5,
+			RetentionSeconds:      300,
+			RequestTimeoutSeconds: 2,
+			SLOs: []HealthSLOConfig{
+				{
+					Name:            "availability",
+					TargetPercent:   99.9,
+					WindowSeconds:   300,
+					WarningBurnRate: 2,
+					PageBurnRate:    10,
+				},
+			},
+		},
 		Matrix: MatrixConfig{
 			Homeserver:    getenvAny("MATRIX_HOMESERVER", "ELEMENT_HOMESERVER"),
 			User:          getenvAny("MATRIX_USER", "ELEMENT_BOT_USERNAME"),
@@ -250,6 +300,37 @@ func (c Config) WithDefaults() Config {
 	if c.HTTP.Addr == "" {
 		c.HTTP.Addr = d.HTTP.Addr
 	}
+	if c.Healthd.Enabled == nil {
+		c.Healthd.Enabled = d.Healthd.Enabled
+	}
+	if c.Healthd.SampleIntervalSeconds == 0 {
+		c.Healthd.SampleIntervalSeconds = d.Healthd.SampleIntervalSeconds
+	}
+	if c.Healthd.RetentionSeconds == 0 {
+		c.Healthd.RetentionSeconds = d.Healthd.RetentionSeconds
+	}
+	if c.Healthd.RequestTimeoutSeconds == 0 {
+		c.Healthd.RequestTimeoutSeconds = d.Healthd.RequestTimeoutSeconds
+	}
+	if c.Healthd.SLOs == nil {
+		c.Healthd.SLOs = d.Healthd.SLOs
+	} else {
+		for i, slo := range c.Healthd.SLOs {
+			if slo.TargetPercent == 0 {
+				slo.TargetPercent = 99.9
+			}
+			if slo.WindowSeconds == 0 {
+				slo.WindowSeconds = c.Healthd.RetentionSeconds
+			}
+			if slo.WarningBurnRate == 0 {
+				slo.WarningBurnRate = 2
+			}
+			if slo.PageBurnRate == 0 {
+				slo.PageBurnRate = 10
+			}
+			c.Healthd.SLOs[i] = slo
+		}
+	}
 	if c.Matrix.Homeserver == "" {
 		c.Matrix.Homeserver = "http://lab:8008"
 	}
@@ -318,4 +399,8 @@ func getenvAnyDefault(defaultValue string, keys ...string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

@@ -4,7 +4,8 @@ import type {
   HomelabdClient,
   HomelabdClientOptions,
   HomelabdMessageRequest,
-  HomelabdMessageResponse
+  HomelabdMessageResponse,
+  HealthdSnapshot
 } from './types';
 
 export const DEFAULT_HOMELABD_API_BASE = 'http://127.0.0.1:18080';
@@ -47,6 +48,19 @@ export const createHomelabdClient = (
         fetcher,
         method: 'POST',
         body: JSON.stringify(request)
+      });
+    },
+    getHealthdSnapshot(window = '5m') {
+      return apiFetch<HealthdSnapshot>(`/healthd?window=${encodeURIComponent(window)}`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    runHealthdChecks() {
+      return apiFetch<HealthdSnapshot>('/healthd/checks/run', {
+        baseUrl,
+        fetcher,
+        method: 'POST'
       });
     }
   };

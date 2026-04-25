@@ -2,6 +2,7 @@
   export let title = 'Homelab';
   export let subtitle = 'homelabd chat';
   export let apiBase = '';
+  export let links: { href: string; label: string }[] = [];
 </script>
 
 <header>
@@ -10,9 +11,15 @@
     <h1>{title}</h1>
   </div>
 
-  {#if apiBase}
-    <span>{apiBase}</span>
-  {/if}
+  <nav aria-label="Primary">
+    {#each links as link}
+      <a href={link.href}>{link.label}</a>
+    {/each}
+
+    {#if apiBase}
+      <span>{apiBase}</span>
+    {/if}
+  </nav>
 </header>
 
 <style>
@@ -29,6 +36,25 @@
   div {
     display: grid;
     gap: 0.2rem;
+  }
+
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 0;
+    gap: 0.65rem;
+  }
+
+  a {
+    color: #1f2937;
+    font-size: 0.88rem;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: #0f766e;
   }
 
   p,
@@ -68,6 +94,11 @@
       align-items: flex-start;
       flex-direction: column;
       padding: 1rem;
+    }
+
+    nav {
+      justify-content: flex-start;
+      flex-wrap: wrap;
     }
 
     span {

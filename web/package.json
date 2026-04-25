@@ -1,0 +1,17 @@
+{
+  "name": "homelab-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "dashboard"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd dashboard dev",
+    "build": "bun run --cwd dashboard build",
+    "check": "bun run --cwd shared check && bun run --cwd dashboard check"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

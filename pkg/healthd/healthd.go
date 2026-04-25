@@ -167,6 +167,18 @@ func (m *Monitor) Snapshot(window time.Duration) Snapshot {
 	checks := append([]CheckResult(nil), m.checks...)
 	slos := evaluateSLOs(m.cfg.SLOs, m.samples, time.Now().UTC())
 	notifications := append([]Notification(nil), m.notifications...)
+	if samples == nil {
+		samples = []Sample{}
+	}
+	if checks == nil {
+		checks = []CheckResult{}
+	}
+	if slos == nil {
+		slos = []SLOReport{}
+	}
+	if notifications == nil {
+		notifications = []Notification{}
+	}
 	status := overallStatus(checks, slos)
 	return Snapshot{
 		Status:        status,

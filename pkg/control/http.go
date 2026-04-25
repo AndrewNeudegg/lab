@@ -15,7 +15,6 @@ import (
 	"github.com/andrewneudegg/lab/pkg/agent"
 	"github.com/andrewneudegg/lab/pkg/chat"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
-	"github.com/andrewneudegg/lab/pkg/healthd"
 	"github.com/andrewneudegg/lab/pkg/id"
 )
 
@@ -23,7 +22,6 @@ type Server struct {
 	Addr         string
 	Orchestrator *agent.Orchestrator
 	ChatLogDir   string
-	Healthd      *healthd.Monitor
 
 	logMu sync.Mutex
 }
@@ -52,10 +50,6 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/approvals", s.withCORS(s.handleApprovals))
 	mux.HandleFunc("/approvals/", s.withCORS(s.handleApproval))
 	mux.HandleFunc("/events", s.withCORS(s.handleEvents))
-	mux.HandleFunc("/healthd", s.withCORS(s.handleHealthd))
-	mux.HandleFunc("/healthd/samples", s.withCORS(s.handleHealthdSamples))
-	mux.HandleFunc("/healthd/notifications", s.withCORS(s.handleHealthdNotifications))
-	mux.HandleFunc("/healthd/checks/run", s.withCORS(s.handleHealthdRunChecks))
 }
 
 func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {
@@ -290,71 +284,6 @@ func (s *Server) handleEvents(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 	writeJSON(rw, http.StatusOK, map[string]any{"events": events})
-}
-
-func (s *Server) handleHealthd(rw http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet {
-		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if s.Healthd == nil {
-		writeError(rw, http.StatusServiceUnavailable, "healthd is not enabled")
-		return
-	}
-	writeJSON(rw, http.StatusOK, s.Healthd.Snapshot(parseWindow(req, 5*time.Minute)))
-}
-
-func (s *Server) handleHealthdSamples(rw http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet {
-		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if s.Healthd == nil {
-		writeError(rw, http.StatusServiceUnavailable, "healthd is not enabled")
-		return
-	}
-	snapshot := s.Healthd.Snapshot(parseWindow(req, 5*time.Minute))
-	writeJSON(rw, http.StatusOK, map[string]any{
-		"window_seconds": snapshot.WindowSeconds,
-		"samples":        snapshot.Samples,
-	})
-}
-
-func (s *Server) handleHealthdNotifications(rw http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet {
-		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if s.Healthd == nil {
-		writeError(rw, http.StatusServiceUnavailable, "healthd is not enabled")
-		return
-	}
-	snapshot := s.Healthd.Snapshot(parseWindow(req, 5*time.Minute))
-	writeJSON(rw, http.StatusOK, map[string]any{"notifications": snapshot.Notifications})
-}
-
-func (s *Server) handleHealthdRunChecks(rw http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if s.Healthd == nil {
-		writeError(rw, http.StatusServiceUnavailable, "healthd is not enabled")
-		return
-	}
-	writeJSON(rw, http.StatusOK, s.Healthd.RunChecks(req.Context()))
-}
-
-func parseWindow(req *http.Request, fallback time.Duration) time.Duration {
-	value := req.URL.Query().Get("window")
-	if value == "" {
-		return fallback
-	}
-	window, err := time.ParseDuration(value)
-	if err != nil || window <= 0 {
-		return fallback
-	}
-	return window
 }
 
 func writeJSON(rw http.ResponseWriter, status int, v any) {

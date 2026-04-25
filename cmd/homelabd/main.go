@@ -20,7 +20,6 @@ import (
 	"github.com/andrewneudegg/lab/pkg/control"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	agentrunner "github.com/andrewneudegg/lab/pkg/externalagent"
-	"github.com/andrewneudegg/lab/pkg/healthd"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
@@ -67,12 +66,6 @@ func main() {
 	if _, err := orch.RecoverRunningTasks(ctx); err != nil {
 		fatal(err)
 	}
-	var healthMonitor *healthd.Monitor
-	if cfg.Healthd.Enabled != nil && *cfg.Healthd.Enabled {
-		healthMonitor = healthd.New(cfg.Healthd)
-		healthMonitor.Start(ctx)
-	}
-
 	switch *mode {
 	case "stdio":
 		runStdio(ctx, cfg, orch)
@@ -83,13 +76,13 @@ func main() {
 			fatal(err)
 		}
 	case "http":
-		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat"), Healthd: healthMonitor}
+		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat")}
 		fmt.Fprintf(os.Stdout, "homelabd http listening on %s\n", cfg.HTTP.Addr)
 		if err := server.Listen(ctx); err != nil {
 			fatal(err)
 		}
 	case "matrix":
-		runMatrix(ctx, cfg, orch, healthMonitor)
+		runMatrix(ctx, cfg, orch)
 	default:
 		fatal(fmt.Errorf("unknown mode %q", *mode))
 	}
@@ -207,11 +200,11 @@ func runStdio(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) 
 	}
 }
 
-func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator, healthMonitor *healthd.Monitor) {
+func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) {
 	transcript := newChatTranscript(cfg)
 	errCh := make(chan error, 1)
 	go func() {
-		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat"), Healthd: healthMonitor}
+		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat")}
 		logLine("http listening on %s", cfg.HTTP.Addr)
 		errCh <- server.Listen(ctx)
 	}()

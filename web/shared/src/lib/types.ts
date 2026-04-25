@@ -162,8 +162,6 @@ export interface HomelabdClient {
   listTasks(): Promise<HomelabdTasksResponse>;
   listApprovals(): Promise<HomelabdApprovalsResponse>;
   listEvents(options?: { date?: string; limit?: number }): Promise<HomelabdEventsResponse>;
-  getHealthdSnapshot(window?: string): Promise<HealthdSnapshot>;
-  runHealthdChecks(): Promise<HealthdSnapshot>;
 }
 
 export interface HomelabdClientOptions {

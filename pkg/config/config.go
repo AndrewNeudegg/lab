@@ -51,6 +51,7 @@ type HTTPConfig struct {
 }
 
 type HealthdConfig struct {
+	Addr                  string                     `json:"addr"`
 	Enabled               *bool                      `json:"enabled"`
 	SampleIntervalSeconds int                        `json:"sample_interval_seconds"`
 	RetentionSeconds      int                        `json:"retention_seconds"`
@@ -185,6 +186,7 @@ func Default() Config {
 		DataDir: "data",
 		HTTP:    HTTPConfig{Addr: "127.0.0.1:18080"},
 		Healthd: HealthdConfig{
+			Addr:                  "127.0.0.1:18081",
 			Enabled:               boolPtr(true),
 			SampleIntervalSeconds: 5,
 			RetentionSeconds:      300,
@@ -302,6 +304,9 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Healthd.Enabled == nil {
 		c.Healthd.Enabled = d.Healthd.Enabled
+	}
+	if c.Healthd.Addr == "" {
+		c.Healthd.Addr = d.Healthd.Addr
 	}
 	if c.Healthd.SampleIntervalSeconds == 0 {
 		c.Healthd.SampleIntervalSeconds = d.Healthd.SampleIntervalSeconds

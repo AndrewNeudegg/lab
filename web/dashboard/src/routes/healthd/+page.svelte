@@ -1,16 +1,15 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import {
-    Header,
-    createHomelabdClient,
+    DEFAULT_HEALTHD_API_BASE,
+    Navbar,
+    apiFetch,
     type HealthdSample,
     type HealthdSnapshot,
     type HealthdSLOReport
   } from '@homelab/shared';
 
-  const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
-  const client = createHomelabdClient({ baseUrl: apiBase });
-  const links = [{ href: '/chat', label: 'Chat' }];
+  const apiBase = '/healthd-api';
   const chartWidth = 420;
   const chartHeight = 130;
   const pad = 14;
@@ -21,12 +20,41 @@
   let error = '';
   let timer: ReturnType<typeof setInterval> | undefined;
 
+  const fetchHealthd = async (requestPath: string, init: RequestInit = {}) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 4000);
+    try {
+      return await apiFetch<HealthdSnapshot>(requestPath, {
+        ...init,
+        baseUrl: apiBase,
+        signal: controller.signal
+      });
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const healthdError = (err: unknown) => {
+    const message = err instanceof Error ? err.message : 'Unable to load healthd.';
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return `Timed out waiting for ${apiBase}/healthd. Confirm healthd is running on ${DEFAULT_HEALTHD_API_BASE} and restart the dashboard dev server.`;
+    }
+    if (
+      message.includes('500 Internal Server Error') ||
+      message.includes('Failed to fetch') ||
+      message.includes('NetworkError')
+    ) {
+      return `healthd API is not reachable through ${apiBase}. Start it with ./run.sh serve-healthd or ./.bin/healthd, then restart the dashboard dev server if the proxy config changed.`;
+    }
+    return message;
+  };
+
   const refresh = async () => {
     try {
       error = '';
-      snapshot = await client.getHealthdSnapshot('5m');
+      snapshot = await fetchHealthd('/healthd?window=5m');
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to load healthd.';
+      error = healthdError(err);
     } finally {
       loading = false;
     }
@@ -36,9 +64,11 @@
     checking = true;
     try {
       error = '';
-      snapshot = await client.runHealthdChecks();
+      snapshot = await fetchHealthd('/healthd/checks/run', {
+        method: 'POST'
+      });
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to run health checks.';
+      error = healthdError(err);
     } finally {
       checking = false;
     }
@@ -125,7 +155,7 @@
 </svelte:head>
 
 <div class="app-shell">
-  <Header title="healthd" subtitle="Reliability" {apiBase} {links} />
+  <Navbar title="Health" subtitle="Reliability" current="/healthd" />
 
   <main>
     {#if error}
@@ -271,6 +301,8 @@
           {/if}
         </div>
       </section>
+    {:else}
+      <section class="empty">No healthd snapshot loaded.</section>
     {/if}
   </main>
 </div>

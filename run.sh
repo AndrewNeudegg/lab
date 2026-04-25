@@ -76,6 +76,11 @@ case "$cmd" in
     mkdir -p "$(dirname "$out")"
     run_go env CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -buildid=' -o "$out" ./cmd/homelabd
     ;;
+  build-healthd)
+    out="${1:-./.bin/healthd}"
+    mkdir -p "$(dirname "$out")"
+    run_go env CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -buildid=' -o "$out" ./cmd/healthd
+    ;;
   clean-cache)
     clean_go_cache
     ;;
@@ -86,6 +91,9 @@ case "$cmd" in
   # ── Run ───────────────────────────────────────────────────────────
   serve)
     exec go run ./cmd/homelabd "$@"
+    ;;
+  serve-healthd)
+    exec go run ./cmd/healthd "$@"
     ;;
 
   # ── Aggregate ─────────────────────────────────────────────────────
@@ -107,7 +115,9 @@ Usage:
   ./run.sh test                # go test ./...
   ./run.sh test-race           # go test -race ./...
   ./run.sh build [out]         # build homelabd (CGO disabled)
+  ./run.sh build-healthd [out] # build healthd (CGO disabled)
   ./run.sh serve [args...]     # go run ./cmd/homelabd
+  ./run.sh serve-healthd       # go run ./cmd/healthd
   ./run.sh verify              # fmt-check + vet + test
   ./run.sh clean-cache         # clear the Go build cache
   ./run.sh shell               # enter the nix dev shell

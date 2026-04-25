@@ -45,6 +45,7 @@
     "addr": "127.0.0.1:18080"
   },
   "healthd": {
+    "addr": "127.0.0.1:18081",
     "enabled": true,
     "sample_interval_seconds": 5,
     "retention_seconds": 300,

@@ -1,4 +1,4 @@
-package control
+package healthd
 
 import (
 	"net/http"
@@ -7,18 +7,17 @@ import (
 	"time"
 
 	"github.com/andrewneudegg/lab/pkg/config"
-	"github.com/andrewneudegg/lab/pkg/healthd"
 )
 
-func TestHealthdEndpointReturnsSnapshot(t *testing.T) {
-	monitor := healthd.New(config.HealthdConfig{
+func TestEndpointReturnsSnapshot(t *testing.T) {
+	monitor := New(config.HealthdConfig{
 		SampleIntervalSeconds: 5,
 		RetentionSeconds:      300,
 		RequestTimeoutSeconds: 1,
 	})
-	server := Server{Healthd: monitor}
+	server := Server{Monitor: monitor}
 	mux := http.NewServeMux()
-	server.register(mux)
+	server.Register(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthd?window=5m", nil)
 	rw := httptest.NewRecorder()

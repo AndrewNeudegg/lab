@@ -9,14 +9,16 @@ import (
 )
 
 type Config struct {
-	AgentName       string                    `json:"agent_name"`
-	DefaultProvider string                    `json:"default_provider"`
-	Providers       map[string]ProviderConfig `json:"providers"`
-	Repo            RepoConfig                `json:"repo"`
-	Policy          PolicyConfig              `json:"policy"`
-	Limits          LimitsConfig              `json:"limits"`
-	DataDir         string                    `json:"data_dir"`
-	HTTP            HTTPConfig                `json:"http"`
+	AgentName       string                         `json:"agent_name"`
+	DefaultProvider string                         `json:"default_provider"`
+	Providers       map[string]ProviderConfig      `json:"providers"`
+	Repo            RepoConfig                     `json:"repo"`
+	Policy          PolicyConfig                   `json:"policy"`
+	Limits          LimitsConfig                   `json:"limits"`
+	DataDir         string                         `json:"data_dir"`
+	HTTP            HTTPConfig                     `json:"http"`
+	Matrix          MatrixConfig                   `json:"matrix"`
+	ExternalAgents  map[string]ExternalAgentConfig `json:"external_agents"`
 }
 
 type ProviderConfig struct {
@@ -45,6 +47,27 @@ type LimitsConfig struct {
 
 type HTTPConfig struct {
 	Addr string `json:"addr"`
+}
+
+type MatrixConfig struct {
+	Homeserver    string `json:"homeserver"`
+	User          string `json:"user"`
+	Password      string `json:"password,omitempty"`
+	AccessToken   string `json:"access_token,omitempty"`
+	RoomID        string `json:"room_id,omitempty"`
+	RoomAlias     string `json:"room_alias,omitempty"`
+	RoomName      string `json:"room_name,omitempty"`
+	RequirePrefix bool   `json:"require_prefix"`
+	Prefix        string `json:"prefix,omitempty"`
+	SyncTimeoutMS int    `json:"sync_timeout_ms"`
+}
+
+type ExternalAgentConfig struct {
+	Enabled        bool     `json:"enabled"`
+	Command        string   `json:"command"`
+	Args           []string `json:"args,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+	Description    string   `json:"description,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -125,7 +148,42 @@ func Default() Config {
 			MaxFileBytes:        1 << 20,
 		},
 		DataDir: "data",
-		HTTP:    HTTPConfig{Addr: "127.0.0.1:8080"},
+		HTTP:    HTTPConfig{Addr: "127.0.0.1:18080"},
+		Matrix: MatrixConfig{
+			Homeserver:    getenvAny("MATRIX_HOMESERVER", "ELEMENT_HOMESERVER"),
+			User:          getenvAny("MATRIX_USER", "ELEMENT_BOT_USERNAME"),
+			Password:      getenvAny("MATRIX_PASSWORD", "ELEMENT_BOT_PASSWORD"),
+			AccessToken:   getenvAny("MATRIX_ACCESS_TOKEN", "ELEMENT_BOT_ACCESS_TOKEN"),
+			RoomID:        getenvAny("MATRIX_ROOM_ID", "ELEMENT_ROOM_ID"),
+			RoomAlias:     getenvAny("MATRIX_ROOM_ALIAS", "ELEMENT_ROOM_ALIAS"),
+			RoomName:      getenvAny("MATRIX_ROOM_NAME", "ELEMENT_ROOM_NAME"),
+			RequirePrefix: true,
+			Prefix:        getenvAny("MATRIX_PREFIX", "ELEMENT_BOT_PREFIX"),
+			SyncTimeoutMS: 30000,
+		},
+		ExternalAgents: map[string]ExternalAgentConfig{
+			"codex": {
+				Enabled:        true,
+				Command:        getenvAny("CODEX_CLI", "CODEX_CMD"),
+				Args:           []string{"exec", "--skip-git-repo-check"},
+				TimeoutSeconds: 900,
+				Description:    "OpenAI Codex CLI worker for coding tasks.",
+			},
+			"claude": {
+				Enabled:        true,
+				Command:        getenvAny("CLAUDE_CLI", "CLAUDE_CMD"),
+				Args:           []string{},
+				TimeoutSeconds: 900,
+				Description:    "Claude CLI worker for analysis or coding tasks.",
+			},
+			"gemini": {
+				Enabled:        true,
+				Command:        getenvAny("GEMINI_CLI", "GEMINI_CMD"),
+				Args:           []string{},
+				TimeoutSeconds: 900,
+				Description:    "Gemini CLI worker for analysis or coding tasks.",
+			},
+		},
 	}
 }
 
@@ -192,5 +250,65 @@ func (c Config) WithDefaults() Config {
 	if c.HTTP.Addr == "" {
 		c.HTTP.Addr = d.HTTP.Addr
 	}
+	if c.Matrix.Homeserver == "" {
+		c.Matrix.Homeserver = "http://lab:8008"
+	}
+	if c.Matrix.User == "" {
+		c.Matrix.User = d.Matrix.User
+	}
+	if c.Matrix.Password == "" {
+		c.Matrix.Password = d.Matrix.Password
+	}
+	if c.Matrix.AccessToken == "" {
+		c.Matrix.AccessToken = d.Matrix.AccessToken
+	}
+	if c.Matrix.RoomID == "" {
+		c.Matrix.RoomID = d.Matrix.RoomID
+	}
+	if c.Matrix.RoomAlias == "" {
+		c.Matrix.RoomAlias = d.Matrix.RoomAlias
+	}
+	if c.Matrix.RoomName == "" {
+		c.Matrix.RoomName = "first"
+	}
+	if c.Matrix.Prefix == "" {
+		c.Matrix.Prefix = "!agent"
+	}
+	if c.Matrix.SyncTimeoutMS == 0 {
+		c.Matrix.SyncTimeoutMS = d.Matrix.SyncTimeoutMS
+	}
+	if c.ExternalAgents == nil {
+		c.ExternalAgents = d.ExternalAgents
+	} else {
+		for name, agent := range d.ExternalAgents {
+			if _, ok := c.ExternalAgents[name]; !ok {
+				c.ExternalAgents[name] = agent
+			}
+		}
+		for name, agent := range c.ExternalAgents {
+			if agent.Command == "" {
+				agent.Command = d.ExternalAgents[name].Command
+			}
+			if agent.Args == nil {
+				agent.Args = d.ExternalAgents[name].Args
+			}
+			if agent.TimeoutSeconds == 0 {
+				agent.TimeoutSeconds = d.ExternalAgents[name].TimeoutSeconds
+			}
+			if agent.Description == "" {
+				agent.Description = d.ExternalAgents[name].Description
+			}
+			c.ExternalAgents[name] = agent
+		}
+	}
 	return c
+}
+
+func getenvAny(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return ""
 }

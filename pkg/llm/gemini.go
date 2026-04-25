@@ -39,18 +39,22 @@ func (p *Gemini) Complete(ctx context.Context, req CompletionRequest) (Completio
 	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return CompletionResponse{}, err
+		return CompletionResponse{}, Retryable(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return CompletionResponse{}, fmt.Errorf("gemini provider returned %s", resp.Status)
+		err := fmt.Errorf("gemini provider returned %s", resp.Status)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return CompletionResponse{}, Retryable(err)
+		}
+		return CompletionResponse{}, err
 	}
 	var wire geminiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
 		return CompletionResponse{}, err
 	}
 	if len(wire.Candidates) == 0 || len(wire.Candidates[0].Content.Parts) == 0 {
-		return CompletionResponse{}, fmt.Errorf("gemini provider returned no content")
+		return CompletionResponse{}, Retryable(fmt.Errorf("gemini provider returned no content"))
 	}
 	return CompletionResponse{
 		Message: Message{Role: "assistant", Content: wire.Candidates[0].Content.Parts[0].Text},

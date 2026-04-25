@@ -64,6 +64,9 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "user.message", Actor: from, Payload: eventlog.Payload(map[string]any{"message": message})})
 	fields := strings.Fields(message)
 	cmd := strings.ToLower(fields[0])
+	if isCasualMessage(message) {
+		return "I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil
+	}
 	switch cmd {
 	case "help":
 		return help(), nil
@@ -71,6 +74,18 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 		return o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])))
 	case "tasks":
 		return o.listTasks()
+	case "agents":
+		return o.listAgents(ctx)
+	case "cancel", "stop":
+		if len(fields) < 2 {
+			return "usage: cancel <task_id>", nil
+		}
+		return o.cancelTask(ctx, strings.Join(fields[1:], " "))
+	case "delete", "remove", "rm":
+		if len(fields) < 2 {
+			return "usage: delete <task_id>", nil
+		}
+		return o.deleteTask(ctx, strings.Join(fields[1:], " "))
 	case "show":
 		if len(fields) < 2 {
 			return "usage: show <task_id>", nil
@@ -111,6 +126,18 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 			return "usage: run <task_id>", nil
 		}
 		return o.runCoderTask(ctx, fields[1])
+	case "delegate", "escalate":
+		if len(fields) < 4 {
+			return "usage: delegate <task_id> <backend> <instruction>", nil
+		}
+		instruction := strings.TrimSpace(strings.Join(fields[3:], " "))
+		return o.delegateTask(ctx, fields[1], fields[2], instruction)
+	case "codex", "claude", "gemini":
+		if len(fields) < 3 {
+			return fmt.Sprintf("usage: %s <task_id> <instruction>", cmd), nil
+		}
+		instruction := strings.TrimSpace(strings.Join(fields[2:], " "))
+		return o.delegateTask(ctx, fields[1], cmd, instruction)
 	case "approvals":
 		return o.listApprovals()
 	case "approve":
@@ -128,12 +155,72 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 	}
 }
 
+func isCasualMessage(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.Trim(message, ".,!?")))
+	switch normalized {
+	case "hi", "hello", "hey", "yo", "andrew", "element-bot", "eelement-bot", "ping":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) CreateTask(ctx context.Context, goal string) (string, error) {
+	return o.createTask(ctx, goal)
+}
+
+func (o *Orchestrator) ListTasks() ([]taskstore.Task, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	if tasks == nil {
+		tasks = []taskstore.Task{}
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
+	return tasks, nil
+}
+
+func (o *Orchestrator) LoadTask(taskID string) (taskstore.Task, error) {
+	return o.tasks.Load(taskID)
+}
+
+func (o *Orchestrator) RunTask(ctx context.Context, taskID string) (string, error) {
+	return o.runCoderTask(ctx, taskID)
+}
+
+func (o *Orchestrator) ReviewTask(ctx context.Context, taskID string) (string, error) {
+	return o.reviewTask(ctx, taskID)
+}
+
+func (o *Orchestrator) ListApprovals() ([]approvalstore.Request, error) {
+	requests, err := o.approvals.List()
+	if err != nil {
+		return nil, err
+	}
+	if requests == nil {
+		requests = []approvalstore.Request{}
+	}
+	sort.Slice(requests, func(i, j int) bool { return requests[i].CreatedAt.After(requests[j].CreatedAt) })
+	return requests, nil
+}
+
+func (o *Orchestrator) ResolveApproval(ctx context.Context, approvalID string, grant bool) (string, error) {
+	return o.resolveApproval(ctx, approvalID, grant)
+}
+
+func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
+	return o.events.ReadDay(day)
+}
+
 func help() string {
 	return strings.Join([]string{
 		"commands:",
 		"  new <goal>                 create task and isolated worktree",
 		"  tasks                      list tasks",
 		"  show <task_id>             show task",
+		"  cancel <task_id>           mark task cancelled, keep workspace",
+		"  delete <task_id>           remove task record and worktree",
 		"  read <repo_path>           inspect repo file",
 		"  search <text>              search repo text",
 		"  patch <task_id> <file>     apply unified diff to task worktree",
@@ -141,6 +228,11 @@ func help() string {
 		"  diff <task_id>             show worktree diff",
 		"  review <task_id>           run tests, show diff, request merge approval",
 		"  run <task_id>              let CoderAgent work in the task worktree",
+		"  agents                     list external worker backends",
+		"  delegate <task_id> <agent> <instruction>",
+		"                             run codex/claude/gemini in the task worktree",
+		"  codex|claude|gemini <task_id> <instruction>",
+		"                             shortcut for delegate <task_id> <agent> ...",
 		"  approvals                  list approval requests",
 		"  approve <approval_id>      execute approved action",
 		"  deny <approval_id>         deny approved action",
@@ -297,12 +389,48 @@ func extractJSON(s string) string {
 		s = strings.TrimSuffix(s, "```")
 		s = strings.TrimSpace(s)
 	}
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start >= 0 && end >= start {
-		return s[start : end+1]
+	if object := firstJSONObject(s); object != "" {
+		return object
 	}
 	return s
+}
+
+func firstJSONObject(s string) string {
+	start := strings.Index(s, "{")
+	if start < 0 {
+		return ""
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return ""
 }
 
 func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, error) {
@@ -329,7 +457,7 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(t)})
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"agent": "CoderAgent"})})
-	return fmt.Sprintf("Created task %s.\nAssigned to CoderAgent.\nCreated workspace %s.\nBranch %s.\nNext: apply a patch with `patch %s <patch_file>`, then `review %s`.", t.ID, t.Workspace, out.Branch, t.ID, t.ID), nil
+	return fmt.Sprintf("Created task %s.\nWorkspace: %s\nBranch: %s\nNext: `run %s`, `delegate %s <agent> <instruction>`, or `review %s`.", t.ID, t.Workspace, out.Branch, t.ID, t.ID, t.ID), nil
 }
 
 func (o *Orchestrator) listTasks() (string, error) {
@@ -355,6 +483,200 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 	}
 	b, _ := json.MarshalIndent(t, "", "  ")
 	return string(b), nil
+}
+
+func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if t.Status == taskstore.StatusDone || t.Status == taskstore.StatusCancelled {
+		return fmt.Sprintf("Task %s is already %s.", taskID, t.Status), nil
+	}
+	t.Status = taskstore.StatusCancelled
+	t.AssignedTo = "OrchestratorAgent"
+	t.Result = "cancelled by human"
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.cancelled", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"workspace": t.Workspace})})
+	return fmt.Sprintf("Cancelled %s. Workspace kept at %s.", taskID, t.Workspace), nil
+}
+
+func (o *Orchestrator) deleteTask(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	removedWorkspace := false
+	if t.Workspace != "" {
+		if _, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_remove", map[string]any{"workspace": t.Workspace, "force": true}, taskID); err != nil {
+			return "", err
+		}
+		removedWorkspace = true
+	}
+	if err := o.tasks.Delete(taskID); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.deleted", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"workspace": t.Workspace, "removed_workspace": removedWorkspace})})
+	if removedWorkspace {
+		return fmt.Sprintf("Deleted %s and removed workspace %s.", taskID, t.Workspace), nil
+	}
+	return "Deleted " + taskID + ".", nil
+}
+
+func (o *Orchestrator) resolveTaskID(selector string) (string, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return "", fmt.Errorf("task id or title is required")
+	}
+	if _, err := o.tasks.Load(selector); err == nil {
+		return selector, nil
+	}
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return "", err
+	}
+	needle := normalizeTaskSelector(selector)
+	var matches []taskstore.Task
+	for _, t := range tasks {
+		if normalizeTaskSelector(t.ID) == needle || normalizeTaskSelector(t.Title) == needle {
+			matches = append(matches, t)
+			continue
+		}
+		if needle != "" && strings.Contains(normalizeTaskSelector(t.Title), needle) {
+			matches = append(matches, t)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].ID, nil
+	}
+	if len(matches) > 1 {
+		var ids []string
+		for _, t := range matches {
+			ids = append(ids, t.ID)
+		}
+		sort.Strings(ids)
+		return "", fmt.Errorf("task selector %q is ambiguous: %s", selector, strings.Join(ids, ", "))
+	}
+	return "", fmt.Errorf("no task matches %q", selector)
+}
+
+func normalizeTaskSelector(s string) string {
+	words := strings.Fields(strings.ToLower(strings.TrimSpace(strings.Trim(s, ".,!?"))))
+	filtered := words[:0]
+	for _, word := range words {
+		switch word {
+		case "the", "a", "an", "task":
+			continue
+		default:
+			filtered = append(filtered, word)
+		}
+	}
+	return strings.Join(filtered, " ")
+}
+
+func (o *Orchestrator) listAgents(ctx context.Context) (string, error) {
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.list", map[string]any{}, "")
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Agents []struct {
+			Name        string   `json:"name"`
+			Enabled     bool     `json:"enabled"`
+			Available   bool     `json:"available"`
+			Command     string   `json:"command"`
+			Args        []string `json:"args"`
+			Description string   `json:"description"`
+		} `json:"agents"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	if len(out.Agents) == 0 {
+		return "no external agents configured", nil
+	}
+	var b strings.Builder
+	for _, a := range out.Agents {
+		status := "unavailable"
+		if a.Available {
+			status = "available"
+		} else if !a.Enabled {
+			status = "disabled"
+		}
+		command := strings.TrimSpace(strings.Join(append([]string{a.Command}, a.Args...), " "))
+		if command == "" {
+			command = "not configured"
+		}
+		fmt.Fprintf(&b, "%s [%s] %s\n  command: %s\n", a.Name, status, a.Description, command)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func (o *Orchestrator) delegateTask(ctx context.Context, taskID, backend, instruction string) (string, error) {
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if t.Workspace == "" {
+		return "", fmt.Errorf("task %s has no workspace", taskID)
+	}
+	if strings.TrimSpace(instruction) == "" {
+		return "usage: delegate <task_id> <backend> <instruction>", nil
+	}
+	t.Status = taskstore.StatusRunning
+	t.AssignedTo = backend
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent": backend})})
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.delegate", map[string]any{
+		"backend":     backend,
+		"task_id":     taskID,
+		"workspace":   t.Workspace,
+		"instruction": instruction,
+	}, taskID)
+	var out struct {
+		ID       string   `json:"id"`
+		Backend  string   `json:"backend"`
+		Command  []string `json:"command"`
+		Output   string   `json:"output"`
+		Error    string   `json:"error"`
+		Duration int64    `json:"duration"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	t.AssignedTo = "OrchestratorAgent"
+	t.Result = strings.TrimSpace(out.Output)
+	if err != nil {
+		t.Status = taskstore.StatusBlocked
+		if out.Error != "" {
+			t.Result = out.Error
+		} else {
+			t.Result = err.Error()
+		}
+		_ = o.tasks.Save(t)
+		if strings.TrimSpace(out.Output) != "" {
+			return strings.TrimSpace(out.Output), err
+		}
+		return "", err
+	}
+	t.Status = taskstore.StatusRunning
+	_ = o.tasks.Save(t)
+	output := strings.TrimSpace(out.Output)
+	if output == "" {
+		output = "external agent returned no output"
+	}
+	if len(output) > 6000 {
+		output = output[:6000] + "\n...[truncated]"
+	}
+	return fmt.Sprintf("%s finished for %s.\nNext: `diff %s`, `test %s`, or `review %s`.\n\n%s", out.Backend, taskID, taskID, taskID, taskID, output), nil
 }
 
 func (o *Orchestrator) readRepo(ctx context.Context, path string) (string, error) {
@@ -457,7 +779,7 @@ func (o *Orchestrator) reviewTask(ctx context.Context, taskID string) (string, e
 		status = "fail"
 	}
 	approvalID := id.New("approval")
-	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root})
+	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
 	if err := o.approvals.Save(req); err != nil {
 		return "", err
@@ -703,9 +1025,17 @@ func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, ca
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.requested", Actor: actor, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"tool": name, "args": json.RawMessage(raw)})})
 	if name == "task.create" {
+		decision := o.policy.DecideNamed(actor, name, raw)
+		if !decision.Allowed || decision.NeedsApproval {
+			return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
+		}
 		return o.executeTaskCreate(ctx, actor, raw)
 	}
 	if name == "task.run" {
+		decision := o.policy.DecideNamed(actor, name, raw)
+		if !decision.Allowed || decision.NeedsApproval {
+			return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
+		}
 		return o.executeTaskRun(ctx, actor, raw)
 	}
 	t, ok := o.registry.Get(name)
@@ -716,18 +1046,10 @@ func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, ca
 	}
 	decision := o.policy.Decide(actor, t, raw)
 	if !decision.Allowed {
-		result := toolExecution{Tool: name, Allowed: false, Error: "policy denied", Reason: decision.Reason}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.denied", Actor: "policy", TaskID: taskID, Payload: eventlog.Payload(result)})
-		return result
+		return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
 	}
 	if decision.NeedsApproval {
-		approvalID := id.New("approval")
-		req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: name, Args: raw, Reason: decision.Reason, Status: approvalstore.StatusPending}
-		if err := o.approvals.Save(req); err != nil {
-			return toolExecution{Tool: name, Allowed: true, NeedsApproval: true, Error: err.Error(), Reason: decision.Reason}
-		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "policy", TaskID: taskID, Payload: eventlog.Payload(req)})
-		return toolExecution{Tool: name, Allowed: true, NeedsApproval: true, ApprovalID: approvalID, Reason: decision.Reason}
+		return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.allowed", Actor: "policy", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"tool": name, "decision": decision})})
 	rawResult, err := t.Run(ctx, raw)
@@ -739,6 +1061,24 @@ func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, ca
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: actor, TaskID: taskID, Payload: eventlog.Payload(payload)})
 	return result
+}
+
+func (o *Orchestrator) handlePolicyDecision(ctx context.Context, actor, taskID, name string, raw json.RawMessage, decision tool.PolicyDecision) toolExecution {
+	if !decision.Allowed {
+		result := toolExecution{Tool: name, Allowed: false, Error: "policy denied", Reason: decision.Reason}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.denied", Actor: "policy", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"actor": actor, "result": result})})
+		return result
+	}
+	if decision.NeedsApproval {
+		approvalID := id.New("approval")
+		req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: name, Args: raw, Reason: decision.Reason, Status: approvalstore.StatusPending}
+		if err := o.approvals.Save(req); err != nil {
+			return toolExecution{Tool: name, Allowed: true, NeedsApproval: true, Error: err.Error(), Reason: decision.Reason}
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "policy", TaskID: taskID, Payload: eventlog.Payload(req)})
+		return toolExecution{Tool: name, Allowed: true, NeedsApproval: true, ApprovalID: approvalID, Reason: decision.Reason}
+	}
+	return toolExecution{Tool: name, Allowed: true, Reason: decision.Reason}
 }
 
 func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw json.RawMessage) toolExecution {
@@ -802,7 +1142,7 @@ func (o *Orchestrator) runTool(ctx context.Context, actor, name string, args any
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.requested", Actor: actor, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"tool": name, "args": args})})
 	decision := o.policy.Decide(actor, t, raw)
 	if !decision.Allowed {
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.denied", Actor: "policy", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"tool": name, "decision": decision})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.denied", Actor: "policy", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"actor": actor, "tool": name, "decision": decision})})
 		return nil, fmt.Errorf("policy denied %s: %s", name, decision.Reason)
 	}
 	if decision.NeedsApproval {

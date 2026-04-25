@@ -50,6 +50,12 @@ func (s *Store) Load(id string) (Task, error) {
 	return t, nil
 }
 
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return os.Remove(filepath.Join(s.dir, id+".json"))
+}
+
 func (s *Store) List() ([]Task, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {

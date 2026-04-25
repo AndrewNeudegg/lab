@@ -13,6 +13,7 @@ type PolicyDecision struct {
 
 type Policy struct {
 	requireApproval map[string]bool
+	agentTools      map[string]map[string]bool
 }
 
 func NewPolicy(requireApprovalFor []string) Policy {
@@ -20,12 +21,15 @@ func NewPolicy(requireApprovalFor []string) Policy {
 	for _, name := range requireApprovalFor {
 		m[name] = true
 	}
-	return Policy{requireApproval: m}
+	return Policy{requireApproval: m, agentTools: defaultAgentTools()}
 }
 
 func (p Policy) Decide(agent string, t Tool, input json.RawMessage) PolicyDecision {
 	if t == nil {
 		return PolicyDecision{Allowed: false, Reason: "tool not registered"}
+	}
+	if !p.agentAllowed(agent, t.Name()) {
+		return PolicyDecision{Allowed: false, Reason: "tool not allowed for agent"}
 	}
 	if p.requireApproval[t.Name()] {
 		return PolicyDecision{Allowed: true, NeedsApproval: true, Reason: "configured approval gate"}
@@ -53,6 +57,60 @@ func (p Policy) Decide(agent string, t Tool, input json.RawMessage) PolicyDecisi
 	default:
 		return PolicyDecision{Allowed: false, Reason: "unknown risk level"}
 	}
+}
+
+func (p Policy) DecideNamed(agent, name string, input json.RawMessage) PolicyDecision {
+	if name == "" {
+		return PolicyDecision{Allowed: false, Reason: "tool name is empty"}
+	}
+	if !p.agentAllowed(agent, name) {
+		return PolicyDecision{Allowed: false, Reason: "tool not allowed for agent"}
+	}
+	if p.requireApproval[name] {
+		return PolicyDecision{Allowed: true, NeedsApproval: true, Reason: "configured approval gate"}
+	}
+	return PolicyDecision{Allowed: true, Reason: "agent pseudo-tool allowed"}
+}
+
+func (p Policy) agentAllowed(agent, name string) bool {
+	allowed, ok := p.agentTools[agent]
+	if !ok {
+		return false
+	}
+	return allowed["*"] || allowed[name]
+}
+
+func defaultAgentTools() map[string]map[string]bool {
+	return map[string]map[string]bool{
+		"OrchestratorAgent": allow(
+			"task.create", "task.run", "task.list",
+			"agent.list", "agent.delegate",
+			"memory.read", "memory.propose_write",
+			"repo.list", "repo.search", "repo.read", "repo.current_diff",
+			"git.status", "git.diff", "git.branch", "git.worktree_create", "git.worktree_remove",
+			"go.test", "go.build",
+		),
+		"CoderAgent": allow(
+			"repo.list", "repo.search", "repo.read", "repo.write_patch", "repo.current_diff",
+			"git.status", "git.diff",
+			"go.fmt", "go.test", "go.build", "test.run",
+			"shell.run_limited",
+		),
+		"ResearchAgent": allow("memory.propose_write"),
+		"ReviewerAgent": allow("repo.read", "repo.search", "repo.current_diff", "git.diff", "git.status", "go.test", "go.build", "test.run"),
+		"OpsAgent":      allow("service.status"),
+		"homelabd":      allow("*"),
+		"human":         allow("*"),
+		"policy":        allow("*"),
+	}
+}
+
+func allow(names ...string) map[string]bool {
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	return allowed
 }
 
 func trustedAgent(agent string) bool {

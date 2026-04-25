@@ -1,6 +1,7 @@
 /.artifacts/
 /.bin/
 /.env
+services/*/.env
 /data/events/*.jsonl
 /data/tasks/*.json
 /data/approvals/*.json

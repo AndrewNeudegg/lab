@@ -1,0 +1,61 @@
+# External Agent Backends
+
+`homelabd` can delegate a task to a headless CLI worker such as Codex, Claude, or Gemini.
+The CLI runs inside the task worktree, so any file edits stay isolated until the normal
+`review` and `approve` merge flow.
+
+## Commands
+
+```text
+agents
+delegate <task_id> <backend> <instruction>
+codex <task_id> <instruction>
+claude <task_id> <instruction>
+gemini <task_id> <instruction>
+diff <task_id>
+review <task_id>
+```
+
+Example:
+
+```text
+new add structured logging to backup service
+codex task_20260424_001 inspect the backup service, make a minimal patch, and run relevant tests
+diff task_20260424_001
+review task_20260424_001
+approve approval_...
+```
+
+## Configuration
+
+The default config reads CLI commands from environment variables:
+
+```text
+CODEX_CMD=codex
+CLAUDE_CMD=claude
+GEMINI_CMD=gemini
+```
+
+`CODEX_CLI`, `CLAUDE_CLI`, and `GEMINI_CLI` are also accepted. `config.json` can override
+the command, args, timeout, and description:
+
+```json
+{
+  "external_agents": {
+    "codex": {
+      "enabled": true,
+      "command": "codex",
+      "args": ["exec", "--skip-git-repo-check"],
+      "timeout_seconds": 900
+    }
+  }
+}
+```
+
+## Safety Model
+
+- `agent.list` is read-only.
+- `agent.delegate` is medium risk and must be scoped to a task workspace.
+- External CLIs may modify the task worktree, but they do not get approval to merge.
+- The human approval gate still controls merges through `review` and `approve`.
+- Configure exact CLI args per backend; provider-specific headless flags can differ.

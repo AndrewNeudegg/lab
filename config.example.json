@@ -42,6 +42,38 @@
   },
   "data_dir": "data",
   "http": {
-    "addr": "127.0.0.1:8080"
+    "addr": "127.0.0.1:18080"
+  },
+  "matrix": {
+    "homeserver": "http://lab:8008",
+    "user": "${ELEMENT_BOT_USERNAME}",
+    "password": "${ELEMENT_BOT_PASSWORD}",
+    "room_name": "first",
+    "require_prefix": true,
+    "prefix": "!agent",
+    "sync_timeout_ms": 30000
+  },
+  "external_agents": {
+    "codex": {
+      "enabled": true,
+      "command": "codex",
+      "args": ["exec", "--skip-git-repo-check"],
+      "timeout_seconds": 900,
+      "description": "OpenAI Codex CLI worker for coding tasks."
+    },
+    "claude": {
+      "enabled": true,
+      "command": "claude",
+      "args": [],
+      "timeout_seconds": 900,
+      "description": "Claude CLI worker for analysis or coding tasks."
+    },
+    "gemini": {
+      "enabled": true,
+      "command": "gemini",
+      "args": [],
+      "timeout_seconds": 900,
+      "description": "Gemini CLI worker for analysis or coding tasks."
+    }
   }
 }

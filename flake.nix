@@ -20,6 +20,8 @@
           pkgs.go
           pkgs.gopls
           pkgs.git
+          pkgs.podman
+          pkgs.podman-compose
           agents.claude-code
           agents.codex
           agents.gemini-cli

@@ -44,11 +44,15 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return CompletionResponse{}, err
+		return CompletionResponse{}, Retryable(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return CompletionResponse{}, fmt.Errorf("llm provider returned %s", resp.Status)
+		err := fmt.Errorf("llm provider returned %s", resp.Status)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return CompletionResponse{}, Retryable(err)
+		}
+		return CompletionResponse{}, err
 	}
 	var wire struct {
 		Choices []struct {
@@ -60,7 +64,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 		return CompletionResponse{}, err
 	}
 	if len(wire.Choices) == 0 {
-		return CompletionResponse{}, fmt.Errorf("llm provider returned no choices")
+		return CompletionResponse{}, Retryable(fmt.Errorf("llm provider returned no choices"))
 	}
 	return CompletionResponse{Message: wire.Choices[0].Message, Usage: wire.Usage}, nil
 }

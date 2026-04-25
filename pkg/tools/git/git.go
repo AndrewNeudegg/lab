@@ -120,17 +120,18 @@ type WorktreeRemoveTool struct{ manager workspace.Manager }
 func (WorktreeRemoveTool) Name() string        { return "git.worktree_remove" }
 func (WorktreeRemoveTool) Description() string { return "Remove an isolated git worktree." }
 func (WorktreeRemoveTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["workspace"],"properties":{"workspace":{"type":"string"}}}`)
+	return schema(`{"type":"object","required":["workspace"],"properties":{"workspace":{"type":"string"},"force":{"type":"boolean"}}}`)
 }
 func (WorktreeRemoveTool) Risk() tool.RiskLevel { return tool.RiskMedium }
 func (t WorktreeRemoveTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 	var req struct {
 		Workspace string `json:"workspace"`
+		Force     bool   `json:"force"`
 	}
 	if err := json.Unmarshal(input, &req); err != nil {
 		return nil, err
 	}
-	if err := t.manager.Remove(ctx, req.Workspace); err != nil {
+	if err := t.manager.Remove(ctx, req.Workspace, req.Force); err != nil {
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"removed": filepath.Clean(req.Workspace)})
@@ -143,13 +144,15 @@ func (MergeApprovedTool) Description() string {
 	return "Merge an approved task branch into the configured repository."
 }
 func (MergeApprovedTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["branch","target"],"properties":{"branch":{"type":"string"},"target":{"type":"string"}}}`)
+	return schema(`{"type":"object","required":["branch","target"],"properties":{"branch":{"type":"string"},"target":{"type":"string"},"workspace":{"type":"string"},"message":{"type":"string"}}}`)
 }
 func (MergeApprovedTool) Risk() tool.RiskLevel { return tool.RiskHigh }
 func (t MergeApprovedTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 	var req struct {
-		Branch string `json:"branch"`
-		Target string `json:"target"`
+		Branch    string `json:"branch"`
+		Target    string `json:"target"`
+		Workspace string `json:"workspace"`
+		Message   string `json:"message"`
 	}
 	if err := json.Unmarshal(input, &req); err != nil {
 		return nil, err
@@ -157,9 +160,42 @@ func (t MergeApprovedTool) Run(ctx context.Context, input json.RawMessage) (json
 	if req.Target == "" || req.Branch == "" {
 		return nil, fmt.Errorf("branch and target are required")
 	}
+	if filepath.Clean(req.Target) != filepath.Clean(t.repoRoot) {
+		return nil, fmt.Errorf("merge target does not match configured repo root")
+	}
+	commitOutput := ""
+	if req.Workspace != "" {
+		out, err := commitWorkspaceChanges(ctx, req.Workspace, req.Message)
+		commitOutput = out
+		if err != nil {
+			return nil, err
+		}
+	}
 	out, err := exec.CommandContext(ctx, "git", "-C", t.repoRoot, "merge", "--no-ff", req.Branch).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git merge: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return json.Marshal(map[string]any{"merged": req.Branch, "output": string(out)})
+	return json.Marshal(map[string]any{"merged": req.Branch, "commit_output": commitOutput, "output": string(out)})
+}
+
+func commitWorkspaceChanges(ctx context.Context, workspacePath, message string) (string, error) {
+	statusOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git status workspace: %w: %s", err, strings.TrimSpace(string(statusOut)))
+	}
+	if strings.TrimSpace(string(statusOut)) == "" {
+		return "workspace has no changes to commit", nil
+	}
+	if message == "" {
+		message = "Apply approved task changes"
+	}
+	addOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "add", "-A").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git add workspace: %w: %s", err, strings.TrimSpace(string(addOut)))
+	}
+	commitOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "commit", "-m", message).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git commit workspace: %w: %s", err, strings.TrimSpace(string(commitOut)))
+	}
+	return string(commitOut), nil
 }

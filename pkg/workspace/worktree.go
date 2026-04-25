@@ -34,11 +34,16 @@ func (m Manager) Create(ctx context.Context, taskID string) (string, string, err
 	return path, branch, nil
 }
 
-func (m Manager) Remove(ctx context.Context, path string) error {
+func (m Manager) Remove(ctx context.Context, path string, force bool) error {
 	if path == "" || !strings.HasPrefix(filepath.Clean(path), filepath.Clean(m.WorkspaceRoot)) {
 		return fmt.Errorf("workspace path escapes workspace root")
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", m.RepoRoot, "worktree", "remove", path)
+	args := []string{"-C", m.RepoRoot, "worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, path)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))

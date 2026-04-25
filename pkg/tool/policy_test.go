@@ -1,0 +1,80 @@
+package tool
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+)
+
+type stubTool struct {
+	name string
+	risk RiskLevel
+}
+
+func (s stubTool) Name() string        { return s.name }
+func (s stubTool) Description() string { return "" }
+func (s stubTool) Schema() json.RawMessage {
+	return json.RawMessage(`{}`)
+}
+func (s stubTool) Risk() RiskLevel { return s.risk }
+func (s stubTool) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
+
+func TestCoderAgentCannotUseMergeTool(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.Decide("CoderAgent", stubTool{name: "git.merge_approved", risk: RiskHigh}, json.RawMessage(`{"target":"main"}`))
+	if decision.Allowed {
+		t.Fatalf("expected CoderAgent merge to be denied")
+	}
+	if decision.Reason != "tool not allowed for agent" {
+		t.Fatalf("unexpected denial reason: %s", decision.Reason)
+	}
+}
+
+func TestCoderAgentCanPatchWorkspace(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.Decide("CoderAgent", stubTool{name: "repo.write_patch", risk: RiskMedium}, json.RawMessage(`{"workspace":"/tmp/workspaces/task_123","patch":"diff"}`))
+	if !decision.Allowed {
+		t.Fatalf("expected CoderAgent workspace patch to be allowed: %s", decision.Reason)
+	}
+	if decision.NeedsApproval {
+		t.Fatalf("workspace patch should not require approval by default")
+	}
+}
+
+func TestOrchestratorCannotUseServiceRestart(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.Decide("OrchestratorAgent", stubTool{name: "service.restart", risk: RiskHigh}, json.RawMessage(`{"target":"svc"}`))
+	if decision.Allowed {
+		t.Fatalf("expected OrchestratorAgent service restart to be denied by allowlist")
+	}
+}
+
+func TestOrchestratorCanRemoveTaskWorkspace(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.Decide("OrchestratorAgent", stubTool{name: "git.worktree_remove", risk: RiskMedium}, json.RawMessage(`{"workspace":"/tmp/workspaces/task_123","force":true}`))
+	if !decision.Allowed || decision.NeedsApproval {
+		t.Fatalf("expected OrchestratorAgent workspace removal to be allowed without approval: %+v", decision)
+	}
+}
+
+func TestConfiguredApprovalStillAppliesToAllowedTool(t *testing.T) {
+	policy := NewPolicy([]string{"git.merge_approved"})
+	decision := policy.Decide("human", stubTool{name: "git.merge_approved", risk: RiskHigh}, json.RawMessage(`{"target":"main"}`))
+	if !decision.Allowed || !decision.NeedsApproval {
+		t.Fatalf("expected allowed human merge to require approval: %+v", decision)
+	}
+}
+
+func TestPseudoToolAllowlist(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.DecideNamed("CoderAgent", "task.run", json.RawMessage(`{"task_id":"task_123"}`))
+	if decision.Allowed {
+		t.Fatalf("expected CoderAgent task.run pseudo-tool to be denied")
+	}
+	decision = policy.DecideNamed("OrchestratorAgent", "task.run", json.RawMessage(`{"task_id":"task_123"}`))
+	if !decision.Allowed {
+		t.Fatalf("expected OrchestratorAgent task.run pseudo-tool to be allowed: %s", decision.Reason)
+	}
+}

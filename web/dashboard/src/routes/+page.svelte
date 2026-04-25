@@ -25,7 +25,7 @@
   let loading = false;
   let error = '';
   let messageId = 0;
-  let inputEl: HTMLInputElement | undefined;
+  let inputEl: HTMLTextAreaElement | undefined;
   let messages: ChatTranscriptMessage[] = [welcomeMessage];
 
   const timeLabel = () =>
@@ -168,6 +168,13 @@
   const sendCommandAction = (command: string) => {
     void sendMessage(command);
   };
+
+  const handleComposerKeydown = (event: KeyboardEvent) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void sendMessage();
+    }
+  };
 </script>
 
 <svelte:head>
@@ -194,14 +201,16 @@
 
         <form on:submit|preventDefault={() => void sendMessage()}>
           <label for="message">Message</label>
-          <input
+          <textarea
             id="message"
             bind:this={inputEl}
             bind:value={draft}
             autocomplete="off"
             placeholder="Ask homelabd..."
             disabled={loading}
-          />
+            rows="3"
+            on:keydown={handleComposerKeydown}
+          ></textarea>
           <button type="submit" disabled={loading || !draft.trim()}>
             {loading ? 'Sending' : 'Send'}
           </button>
@@ -285,19 +294,23 @@
     white-space: nowrap;
   }
 
-  input {
+  textarea {
     min-width: 0;
     min-height: 2.75rem;
+    max-height: 10rem;
     box-sizing: border-box;
-    padding: 0 0.9rem;
+    padding: 0.75rem 0.9rem;
     border: 1px solid #b9c4d2;
     border-radius: 0.5rem;
     color: #111827;
     background: #ffffff;
     font: inherit;
+    line-height: 1.4;
+    resize: vertical;
+    overflow-y: auto;
   }
 
-  input:focus {
+  textarea:focus {
     border-color: #2563eb;
     outline: 3px solid rgb(37 99 235 / 0.14);
   }

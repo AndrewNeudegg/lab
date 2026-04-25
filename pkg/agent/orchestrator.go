@@ -1027,7 +1027,15 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 		return "usage: new <goal>", nil
 	}
 	t := created.Task
-	return fmt.Sprintf("Created task %s.\nWorkspace: %s\nBranch: %s\nNext: `run %s`, `delegate %s <agent> <instruction>`, or `review %s`.", t.ID, t.Workspace, created.Branch, t.ID, t.ID, t.ID), nil
+	return fmt.Sprintf("Created task %s.\nWorkspace: %s\nBranch: %s\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
+		"run "+t.ID,
+		"delegate "+t.ID+" <agent> <instruction>",
+		"review "+t.ID,
+	)), nil
+}
+
+func commandBlock(commands ...string) string {
+	return "```\n" + strings.Join(commands, "\n") + "\n```"
 }
 
 type createdTask struct {
@@ -1473,7 +1481,12 @@ func (o *Orchestrator) delegateTask(ctx context.Context, selector, backend, inst
 	if err := o.startDelegationForTask(context.Background(), taskID, backend, instruction); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Started %s on %s.\nThis is running in the background; chat is not blocked.\nNext: `status`, `show %s`, or `review %s` after it finishes.", backend, taskShortID(taskID), taskShortID(taskID), taskShortID(taskID)), nil
+	shortID := taskShortID(taskID)
+	return fmt.Sprintf("Started %s on %s.\nThis is running in the background; chat is not blocked.\nNext after it finishes:\n%s", backend, shortID, commandBlock(
+		"status",
+		"show "+shortID,
+		"review "+shortID,
+	)), nil
 }
 
 type delegationRun struct {
@@ -1543,9 +1556,18 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 		"",
 		"Work only in this task worktree. Inspect first, make the smallest practical patch, update relevant docs/help text when behavior or commands change, run relevant formatting and tests, and leave a concise summary with how to use the change.",
 	}, "\n")); err != nil {
-		return fmt.Sprintf("Created task %s, but could not start codex: %v\nNext: `run %s` or `delegate %s to codex`.", taskShortID(taskID), err, taskShortID(taskID), taskShortID(taskID)), nil
+		shortID := taskShortID(taskID)
+		return fmt.Sprintf("Created task %s, but could not start codex: %v\nNext:\n%s", shortID, err, commandBlock(
+			"run "+shortID,
+			"delegate "+shortID+" to codex",
+		)), nil
 	}
-	return fmt.Sprintf("Created task %s and started codex. It is cooking in the background.\nNext: `status`, `show %s`, or `review %s` when ready.", taskShortID(taskID), taskShortID(taskID), taskShortID(taskID)), nil
+	shortID := taskShortID(taskID)
+	return fmt.Sprintf("Created task %s and started codex. It is cooking in the background.\nNext:\n%s", shortID, commandBlock(
+		"status",
+		"show "+shortID,
+		"review "+shortID,
+	)), nil
 }
 
 func (o *Orchestrator) startDelegationForTask(ctx context.Context, taskID, backend, instruction string) error {

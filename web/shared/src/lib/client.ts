@@ -1,10 +1,13 @@
 import type {
   FetchClient,
   FetchClientOptions,
+  HomelabdApprovalsResponse,
   HomelabdClient,
   HomelabdClientOptions,
+  HomelabdEventsResponse,
   HomelabdMessageRequest,
-  HomelabdMessageResponse
+  HomelabdMessageResponse,
+  HomelabdTasksResponse
 } from './types';
 
 export const DEFAULT_HOMELABD_API_BASE = 'http://127.0.0.1:18080';
@@ -47,6 +50,33 @@ export const createHomelabdClient = (
         fetcher,
         method: 'POST',
         body: JSON.stringify(request)
+      });
+    },
+    listTasks() {
+      return apiFetch<HomelabdTasksResponse>('/tasks', {
+        baseUrl,
+        fetcher
+      });
+    },
+    listApprovals() {
+      return apiFetch<HomelabdApprovalsResponse>('/approvals', {
+        baseUrl,
+        fetcher
+      });
+    },
+    listEvents(options: { date?: string; limit?: number } = {}) {
+      const { date, limit } = options;
+      const params = new URLSearchParams();
+      if (date) {
+        params.set('date', date);
+      }
+      if (limit) {
+        params.set('limit', String(limit));
+      }
+      const query = params.toString() ? `?${params.toString()}` : '';
+      return apiFetch<HomelabdEventsResponse>(`/events${query}`, {
+        baseUrl,
+        fetcher
       });
     }
   };

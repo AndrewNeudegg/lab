@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -271,6 +272,16 @@ func (s *Server) handleEvents(rw http.ResponseWriter, req *http.Request) {
 	}
 	if events == nil {
 		events = []eventlog.Event{}
+	}
+	if value := req.URL.Query().Get("limit"); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit < 1 {
+			writeError(rw, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		if len(events) > limit {
+			events = events[len(events)-limit:]
+		}
 	}
 	writeJSON(rw, http.StatusOK, map[string]any{"events": events})
 }

@@ -58,6 +58,7 @@ func (s *Store) ReadDay(day time.Time) ([]Event, error) {
 	defer f.Close()
 	var events []Event
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
 		var event Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {

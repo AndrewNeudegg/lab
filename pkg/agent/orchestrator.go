@@ -462,6 +462,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		`{"message":"short user-facing status","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"TODO"}}]}`,
 		`{"message":"final answer","done":true,"tool_calls":[]}`,
 		"Use tools for inspection before answering repo-specific questions.",
+		"Use internet.search when current external documentation or public web context is required.",
 		"Create development work with task.create instead of pretending to edit files directly.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
 		"Available tools:",
@@ -1166,6 +1167,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		mustJSON(t),
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
+		"- Use internet.search when current external documentation or public web context is required.",
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
@@ -1173,7 +1175,8 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
-			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
+			"internet.search": true,
+			"repo.list":       true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "go.fmt": true, "go.test": true, "go.build": true,
 		}),
 	}, "\n")

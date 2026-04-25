@@ -24,6 +24,7 @@ import (
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
 	externalagenttools "github.com/andrewneudegg/lab/pkg/tools/externalagent"
 	gittools "github.com/andrewneudegg/lab/pkg/tools/git"
+	internettools "github.com/andrewneudegg/lab/pkg/tools/internet"
 	memtools "github.com/andrewneudegg/lab/pkg/tools/memory"
 	repotools "github.com/andrewneudegg/lab/pkg/tools/repo"
 	shelltools "github.com/andrewneudegg/lab/pkg/tools/shell"
@@ -93,6 +94,9 @@ func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
 		return nil, err
 	}
 	if err := shelltools.Register(registry, shelltools.Base{Timeout: timeout}); err != nil {
+		return nil, err
+	}
+	if err := internettools.Register(registry, internettools.Base{}); err != nil {
 		return nil, err
 	}
 	if err := memtools.Register(registry, memstore.NewStore("memory")); err != nil {

@@ -59,6 +59,16 @@ func TestOrchestratorCanRemoveTaskWorkspace(t *testing.T) {
 	}
 }
 
+func TestAgentsCanSearchInternet(t *testing.T) {
+	policy := NewPolicy(nil)
+	for _, agent := range []string{"OrchestratorAgent", "CoderAgent", "ResearchAgent", "ReviewerAgent"} {
+		decision := policy.Decide(agent, stubTool{name: "internet.search", risk: RiskReadOnly}, json.RawMessage(`{"query":"golang"}`))
+		if !decision.Allowed || decision.NeedsApproval {
+			t.Fatalf("expected %s internet search to be allowed without approval: %+v", agent, decision)
+		}
+	}
+}
+
 func TestConfiguredApprovalStillAppliesToAllowedTool(t *testing.T) {
 	policy := NewPolicy([]string{"git.merge_approved"})
 	decision := policy.Decide("human", stubTool{name: "git.merge_approved", risk: RiskHigh}, json.RawMessage(`{"target":"main"}`))

@@ -209,6 +209,29 @@ func TestApprovalsIncludeClickableActions(t *testing.T) {
 	}
 }
 
+func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	reply, err := orch.Handle(context.Background(), "test", "new add fenced commands")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	want := "Next:\n```\nrun " + tasks[0].ID + "\ndelegate " + tasks[0].ID + " <agent> <instruction>\nreview " + tasks[0].ID + "\n```"
+	if !strings.Contains(reply, want) {
+		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
+	}
+	if strings.Contains(reply, "`run ") {
+		t.Fatalf("reply = %q, should not inline command suggestions", reply)
+	}
+}
+
 func TestReviewDoesNotRequestApprovalWhenChecksFail(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(currentDiffStub{}); err != nil {
@@ -339,6 +362,14 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	shortID := taskShortID(tasks[0].ID)
+	want := "Next:\n```\nstatus\nshow " + shortID + "\nreview " + shortID + "\n```"
+	if !strings.Contains(reply, want) {
+		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
+	}
+	if strings.Contains(reply, "`status`") {
+		t.Fatalf("reply = %q, should not inline command suggestions", reply)
 	}
 	if tasks[0].AssignedTo != "codex" {
 		t.Fatalf("AssignedTo = %q, want codex", tasks[0].AssignedTo)

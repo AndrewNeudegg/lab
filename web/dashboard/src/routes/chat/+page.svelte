@@ -528,9 +528,12 @@
         <h1>Task queue</h1>
         <span>Synced {lastRefresh || 'never'}</span>
       </div>
-      <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
-        {refreshing ? 'Syncing' : 'Sync'}
-      </button>
+      <nav aria-label="Dashboard views">
+        <a href="/healthd">Healthd</a>
+        <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
+          {refreshing ? 'Syncing' : 'Sync'}
+        </button>
+      </nav>
     </header>
 
     <section class="triage" aria-label="Task filters">
@@ -860,6 +863,12 @@
     gap: 0.75rem;
   }
 
+  .task-header nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
   .task-header p,
   .task-header h1,
   .task-header span,
@@ -898,6 +907,7 @@
   }
 
   .task-header button,
+  .task-header a,
   .triage button,
   .mini-actions button,
   .record-actions button,
@@ -912,9 +922,11 @@
     background: #ffffff;
     font-size: 0.82rem;
     font-weight: 750;
+    text-decoration: none;
   }
 
   .task-header button:hover:not(:disabled),
+  .task-header a:hover,
   .triage button:hover,
   .mini-actions button:hover:not(:disabled),
   .record-actions button:hover:not(:disabled),

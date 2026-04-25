@@ -7,7 +7,8 @@ import type {
   HomelabdEventsResponse,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
-  HomelabdTasksResponse
+  HomelabdTasksResponse,
+  HealthdSnapshot
 } from './types';
 
 export const DEFAULT_HOMELABD_API_BASE = 'http://127.0.0.1:18080';
@@ -58,6 +59,12 @@ export const createHomelabdClient = (
         fetcher
       });
     },
+    getHealthdSnapshot(window = '5m') {
+      return apiFetch<HealthdSnapshot>(`/healthd?window=${encodeURIComponent(window)}`, {
+        baseUrl,
+        fetcher
+      });
+    },
     listApprovals() {
       return apiFetch<HomelabdApprovalsResponse>('/approvals', {
         baseUrl,
@@ -77,6 +84,13 @@ export const createHomelabdClient = (
       return apiFetch<HomelabdEventsResponse>(`/events${query}`, {
         baseUrl,
         fetcher
+      });
+    },
+    runHealthdChecks() {
+      return apiFetch<HealthdSnapshot>('/healthd/checks/run', {
+        baseUrl,
+        fetcher,
+        method: 'POST'
       });
     }
   };

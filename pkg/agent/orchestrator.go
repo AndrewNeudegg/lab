@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,6 +29,7 @@ type Orchestrator struct {
 	policy    tool.Policy
 	provider  llm.Provider
 	model     string
+	logger    *slog.Logger
 }
 
 type agentResponse struct {
@@ -58,7 +60,21 @@ type HandleResult struct {
 }
 
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
-	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model}
+	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model, logger: slog.Default()}
+}
+
+func (o *Orchestrator) WithLogger(logger *slog.Logger) *Orchestrator {
+	if logger != nil {
+		o.logger = logger
+	}
+	return o
+}
+
+func (o *Orchestrator) log() *slog.Logger {
+	if o.logger != nil {
+		return o.logger
+	}
+	return slog.Default()
 }
 
 func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string, error) {
@@ -129,9 +145,22 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 			return programResult("usage: read <repo_path>", nil)
 		}
 		return programResult(o.readRepo(ctx, strings.Join(fields[1:], " ")))
+	case "web", "internet":
+		query := webSearchQueryFromCommand(fields[1:])
+		if query == "" {
+			return programResult("usage: web <query>", nil)
+		}
+		return programResult(o.searchInternet(ctx, query, internetSearchSource(message)))
 	case "search":
 		if len(fields) < 2 {
 			return programResult("usage: search <text>", nil)
+		}
+		if isWebSearchRequest(message) {
+			query := webSearchQueryFromCommand(fields[1:])
+			if query == "" {
+				return programResult("usage: search the web for <query>", nil)
+			}
+			return programResult(o.searchInternet(ctx, query, internetSearchSource(message)))
 		}
 		return programResult(o.searchRepo(ctx, strings.Join(fields[1:], " ")))
 	case "patch":
@@ -163,7 +192,7 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		if len(fields) < 2 {
 			return programResult("usage: reopen <task_id> [reason]", nil)
 		}
-		selector, reason := splitSelectorAndInstruction(fields[1:])
+		selector, reason := parseReopenCommand(fields[1:])
 		return programResult(o.reopenTask(ctx, selector, reason))
 	case "run", "work", "start":
 		if len(fields) < 2 {
@@ -270,6 +299,59 @@ func isInFlightQuery(message string) bool {
 		strings.Contains(normalized, "what is running") ||
 		strings.Contains(normalized, "what's running") ||
 		strings.Contains(normalized, "whats running")
+}
+
+func isWebSearchRequest(message string) bool {
+	normalized := " " + strings.ToLower(strings.Join(strings.Fields(message), " ")) + " "
+	return strings.Contains(normalized, " web ") ||
+		strings.Contains(normalized, " internet ") ||
+		strings.Contains(normalized, " online ") ||
+		strings.Contains(normalized, " current ") ||
+		strings.Contains(normalized, " latest ") ||
+		strings.Contains(normalized, " docs ") ||
+		strings.Contains(normalized, " documentation ")
+}
+
+func webSearchQueryFromCommand(args []string) string {
+	var kept []string
+	skipNext := false
+	for i, arg := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		normalized := strings.ToLower(strings.Trim(arg, ".,!?"))
+		switch normalized {
+		case "web", "internet", "online":
+			continue
+		case "the":
+			if i+1 < len(args) {
+				next := strings.ToLower(strings.Trim(args[i+1], ".,!?"))
+				if next == "web" || next == "internet" {
+					skipNext = true
+					continue
+				}
+			}
+		case "for", "about":
+			if len(kept) == 0 {
+				continue
+			}
+		}
+		kept = append(kept, arg)
+	}
+	return strings.TrimSpace(strings.Join(kept, " "))
+}
+
+func internetSearchSource(message string) string {
+	normalized := strings.ToLower(message)
+	if strings.Contains(normalized, "academic") ||
+		strings.Contains(normalized, "scholarly") ||
+		strings.Contains(normalized, "paper") ||
+		strings.Contains(normalized, "papers") ||
+		strings.Contains(normalized, "research literature") {
+		return "academic"
+	}
+	return "web"
 }
 
 func isActiveTaskStatusRequest(message string) bool {
@@ -391,6 +473,37 @@ func splitSelectorAndInstruction(args []string) (string, string) {
 	return strings.Join(args, " "), ""
 }
 
+func parseReopenCommand(args []string) (string, string) {
+	if len(args) == 0 {
+		return "", ""
+	}
+	if isTaskPronoun(args[0]) || isLikelyTaskID(args[0]) {
+		return args[0], strings.Join(args[1:], " ")
+	}
+	for i, arg := range args {
+		if strings.EqualFold(arg, "because") || strings.EqualFold(arg, "needs") || strings.EqualFold(arg, "with") {
+			return strings.Join(args[:i], " "), strings.Join(args[i+1:], " ")
+		}
+	}
+	return strings.Join(args, " "), ""
+}
+
+func isLikelyTaskID(value string) bool {
+	value = strings.TrimSpace(strings.Trim(value, ".,!?"))
+	if strings.HasPrefix(value, "task_") {
+		return true
+	}
+	if len(value) < 6 || len(value) > 12 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 func isExternalBackend(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "codex", "claude", "gemini":
@@ -456,6 +569,143 @@ func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
 	return o.events.ReadDay(day)
 }
 
+type recoveryStrategy string
+
+const (
+	recoveryCoder    recoveryStrategy = "coder"
+	recoveryDelegate recoveryStrategy = "delegate"
+)
+
+func (o *Orchestrator) RecoverRunningTasks(ctx context.Context) (int, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		o.log().Error("task recovery list failed", "error", err)
+		return 0, err
+	}
+	maxConcurrent := o.cfg.Limits.MaxConcurrentTasks
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	sem := make(chan struct{}, maxConcurrent)
+	recovered := 0
+	for _, t := range tasks {
+		if t.Status != taskstore.StatusRunning {
+			continue
+		}
+		recovered++
+		strategy, backend := o.recoveryPlan(t)
+		o.log().Warn("recovering persisted running task",
+			"task_id", t.ID,
+			"task_short_id", taskShortID(t.ID),
+			"title", friendlyTaskTitle(t),
+			"assigned_to", t.AssignedTo,
+			"workspace", t.Workspace,
+			"strategy", string(strategy),
+			"backend", backend,
+			"updated_at", t.UpdatedAt,
+		)
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.queued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"assigned_to": t.AssignedTo,
+			"strategy":    string(strategy),
+			"backend":     backend,
+			"reason":      "homelabd started with task persisted as running",
+		})})
+		go o.resumeRecoveredTask(ctx, sem, t, strategy, backend)
+	}
+	if recovered == 0 {
+		o.log().Info("task recovery found no persisted running tasks")
+	} else {
+		o.log().Info("task recovery queued persisted running tasks", "count", recovered, "max_concurrent", maxConcurrent)
+	}
+	return recovered, nil
+}
+
+func (o *Orchestrator) recoveryPlan(t taskstore.Task) (recoveryStrategy, string) {
+	assigned := strings.ToLower(strings.TrimSpace(t.AssignedTo))
+	if isExternalBackend(assigned) {
+		return recoveryDelegate, assigned
+	}
+	if assigned == "" || assigned == "orchestratoragent" {
+		if cfg, ok := o.cfg.ExternalAgents["codex"]; ok && cfg.Enabled && strings.TrimSpace(cfg.Command) != "" {
+			return recoveryDelegate, "codex"
+		}
+	}
+	return recoveryCoder, ""
+}
+
+func (o *Orchestrator) resumeRecoveredTask(ctx context.Context, sem chan struct{}, t taskstore.Task, strategy recoveryStrategy, backend string) {
+	select {
+	case <-ctx.Done():
+		o.log().Info("task recovery skipped because context ended", "task_id", t.ID, "error", ctx.Err())
+		return
+	case sem <- struct{}{}:
+	}
+	defer func() { <-sem }()
+
+	o.log().Info("task recovery started",
+		"task_id", t.ID,
+		"task_short_id", taskShortID(t.ID),
+		"strategy", string(strategy),
+		"backend", backend,
+	)
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.started", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"strategy": string(strategy),
+		"backend":  backend,
+	})})
+
+	switch strategy {
+	case recoveryDelegate:
+		run, err := o.prepareDelegationForTask(ctx, t.ID, backend, recoveredDelegationInstruction(t))
+		if err != nil {
+			o.markRecoveryBlocked(ctx, t.ID, err)
+			return
+		}
+		o.runDelegation(ctx, run.ID, run.TaskID, run.Backend, run.Workspace, run.Instruction)
+	case recoveryCoder:
+		_, err := o.runCoderTask(ctx, t.ID)
+		if err != nil {
+			o.log().Error("task recovery coder run failed", "task_id", t.ID, "error", err)
+			if ctx.Err() == nil {
+				o.markRecoveryBlocked(ctx, t.ID, err)
+				return
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.failed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+				"strategy": string(strategy),
+				"error":    err.Error(),
+			})})
+			return
+		}
+	default:
+		o.markRecoveryBlocked(ctx, t.ID, fmt.Errorf("unknown recovery strategy %q", strategy))
+		return
+	}
+	o.log().Info("task recovery finished", "task_id", t.ID, "strategy", string(strategy), "backend", backend)
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.finished", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"strategy": string(strategy),
+		"backend":  backend,
+	})})
+}
+
+func recoveredDelegationInstruction(t taskstore.Task) string {
+	return strings.Join([]string{
+		"Resume this task after homelabd restarted while it was marked running.",
+		"Do not assume prior in-memory worker state survived the restart.",
+		defaultDelegationInstruction(t),
+	}, " ")
+}
+
+func (o *Orchestrator) markRecoveryBlocked(ctx context.Context, taskID string, err error) {
+	o.log().Error("task recovery failed", "task_id", taskID, "error", err)
+	t, loadErr := o.tasks.Load(taskID)
+	if loadErr == nil {
+		t.Status = taskstore.StatusBlocked
+		t.AssignedTo = "OrchestratorAgent"
+		t.Result = "automatic recovery failed: " + err.Error()
+		_ = o.tasks.Save(t)
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.failed", Actor: "homelabd", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"error": err.Error()})})
+}
+
 func help() string {
 	return strings.Join([]string{
 		"commands:",
@@ -469,6 +719,8 @@ func help() string {
 		"  start <task_id|title>      run a task by id, short id, or title",
 		"  read <repo_path>           inspect repo file",
 		"  search <text>              search repo text",
+		"  web <query>                search the public web",
+		"  search web for <query>     search the public web",
 		"  patch <task_id> <file>     apply unified diff to task worktree",
 		"  test <task_id>             run project checks in worktree",
 		"  diff <task_id>             show worktree diff",
@@ -961,7 +1213,7 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 		return "", err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.completed", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"result": t.Result})})
-	return fmt.Sprintf("Accepted %s. Task is now done.", taskShortID(taskID)), nil
+	return fmt.Sprintf("Accepted %s. Task is now done.\nUsage/docs notes:\n%s", taskShortID(taskID), usageNotesFromResult(t.Result)), nil
 }
 
 func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) (string, error) {
@@ -998,6 +1250,33 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 		instruction = "continue the reopened task"
 	}
 	return fmt.Sprintf("Reopened %s.\nNext: `delegate %s to codex %s`, `run %s`, or `review %s`.", shortID, shortID, instruction, shortID, shortID), nil
+}
+
+func usageNotesFromResult(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return "No usage notes were recorded. Reopen the task if this needs follow-up."
+	}
+	lines := strings.Split(result, "\n")
+	var selected []string
+	for i, line := range lines {
+		normalized := strings.ToLower(strings.TrimSpace(line))
+		if strings.Contains(normalized, "how to use") ||
+			strings.Contains(normalized, "usage") ||
+			strings.Contains(normalized, "docs") ||
+			strings.Contains(normalized, "documentation") {
+			start := i
+			end := i + 4
+			if end > len(lines) {
+				end = len(lines)
+			}
+			selected = append(selected, strings.Join(lines[start:end], "\n"))
+		}
+	}
+	if len(selected) == 0 {
+		return "No explicit usage/docs notes were recorded. Reopen the task if this needs follow-up."
+	}
+	return strings.TrimSpace(strings.Join(selected, "\n"))
 }
 
 func (o *Orchestrator) deleteTask(ctx context.Context, selector string) (string, error) {
@@ -1197,6 +1476,14 @@ func (o *Orchestrator) delegateTask(ctx context.Context, selector, backend, inst
 	return fmt.Sprintf("Started %s on %s.\nThis is running in the background; chat is not blocked.\nNext: `status`, `show %s`, or `review %s` after it finishes.", backend, taskShortID(taskID), taskShortID(taskID), taskShortID(taskID)), nil
 }
 
+type delegationRun struct {
+	ID          string
+	TaskID      string
+	Backend     string
+	Workspace   string
+	Instruction string
+}
+
 func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend, workspace, instruction string) {
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.delegate", map[string]any{
 		"backend":     backend,
@@ -1254,7 +1541,7 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 	if err := o.startDelegationForTask(context.Background(), taskID, "codex", strings.Join([]string{
 		goal,
 		"",
-		"Work only in this task worktree. Inspect first, make the smallest practical patch, run relevant formatting and tests, and leave a concise summary of what changed.",
+		"Work only in this task worktree. Inspect first, make the smallest practical patch, update relevant docs/help text when behavior or commands change, run relevant formatting and tests, and leave a concise summary with how to use the change.",
 	}, "\n")); err != nil {
 		return fmt.Sprintf("Created task %s, but could not start codex: %v\nNext: `run %s` or `delegate %s to codex`.", taskShortID(taskID), err, taskShortID(taskID), taskShortID(taskID)), nil
 	}
@@ -1262,12 +1549,21 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 }
 
 func (o *Orchestrator) startDelegationForTask(ctx context.Context, taskID, backend, instruction string) error {
-	t, err := o.tasks.Load(taskID)
+	run, err := o.prepareDelegationForTask(ctx, taskID, backend, instruction)
 	if err != nil {
 		return err
 	}
+	go o.runDelegation(ctx, run.ID, run.TaskID, run.Backend, run.Workspace, run.Instruction)
+	return nil
+}
+
+func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, backend, instruction string) (delegationRun, error) {
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return delegationRun{}, err
+	}
 	if t.Workspace == "" {
-		return fmt.Errorf("task %s has no workspace", taskID)
+		return delegationRun{}, fmt.Errorf("task %s has no workspace", taskID)
 	}
 	if strings.TrimSpace(instruction) == "" {
 		instruction = defaultDelegationInstruction(t)
@@ -1276,13 +1572,12 @@ func (o *Orchestrator) startDelegationForTask(ctx context.Context, taskID, backe
 	t.AssignedTo = backend
 	t.Result = fmt.Sprintf("delegated to %s; external worker is running", backend)
 	if err := o.tasks.Save(t); err != nil {
-		return err
+		return delegationRun{}, err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent": backend})})
 	runID := id.New("delegate")
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.started", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "workspace": t.Workspace})})
-	go o.runDelegation(ctx, runID, taskID, backend, t.Workspace, instruction)
-	return nil
+	return delegationRun{ID: runID, TaskID: taskID, Backend: backend, Workspace: t.Workspace, Instruction: instruction}, nil
 }
 
 func defaultDelegationInstruction(t taskstore.Task) string {
@@ -1290,8 +1585,9 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Work this task to completion if possible.",
 		"Inspect the task workspace before editing.",
 		"Make a minimal patch that satisfies the task goal.",
+		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"Run relevant formatting and tests when available.",
-		"Summarize changed files, test results, and any follow-up needed.",
+		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"Task goal: " + t.Goal,
 	}, " ")
 }
@@ -1325,6 +1621,117 @@ func (o *Orchestrator) searchRepo(ctx context.Context, query string) (string, er
 		fmt.Fprintf(&b, "%s:%v: %s\n", m["path"], m["line"], m["text"])
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func (o *Orchestrator) searchInternet(ctx context.Context, query, source string) (string, error) {
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.search", map[string]any{"query": query, "source": source, "max_results": 5}, "")
+	if err != nil {
+		return "", err
+	}
+	return formatInternetSearchResult(raw), nil
+}
+
+func formatInternetSearchResult(raw json.RawMessage) string {
+	var out struct {
+		Query       string           `json:"query"`
+		Source      string           `json:"source"`
+		Answer      string           `json:"answer"`
+		Abstract    string           `json:"abstract"`
+		AbstractURL string           `json:"abstract_url"`
+		Results     []map[string]any `json:"results"`
+		Web         *json.RawMessage `json:"web"`
+		Academic    []map[string]any `json:"academic"`
+		WebError    string           `json:"web_error"`
+		AcademicErr string           `json:"academic_error"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return string(raw)
+	}
+	var b strings.Builder
+	query := strings.TrimSpace(out.Query)
+	if query == "" {
+		query = "query"
+	}
+	source := strings.TrimSpace(out.Source)
+	if source == "" {
+		source = "internet"
+	}
+	fmt.Fprintf(&b, "Internet search (%s): %s\n", source, query)
+	if out.Answer != "" {
+		fmt.Fprintf(&b, "Answer: %s\n", out.Answer)
+	}
+	if out.Abstract != "" {
+		fmt.Fprintf(&b, "Abstract: %s\n", out.Abstract)
+		if out.AbstractURL != "" {
+			fmt.Fprintf(&b, "Source: %s\n", out.AbstractURL)
+		}
+	}
+	appendSearchResults(&b, out.Results)
+	if out.Web != nil {
+		var web struct {
+			Results []map[string]any `json:"results"`
+		}
+		if json.Unmarshal(*out.Web, &web) == nil {
+			appendSearchResults(&b, web.Results)
+		}
+	}
+	appendSearchResults(&b, out.Academic)
+	if out.WebError != "" {
+		fmt.Fprintf(&b, "Web error: %s\n", out.WebError)
+	}
+	if out.AcademicErr != "" {
+		fmt.Fprintf(&b, "Academic error: %s\n", out.AcademicErr)
+	}
+	result := strings.TrimSpace(b.String())
+	if result == fmt.Sprintf("Internet search (%s): %s", source, query) {
+		return result + "\nNo results returned."
+	}
+	return result
+}
+
+func appendSearchResults(b *strings.Builder, results []map[string]any) {
+	if len(results) == 0 {
+		return
+	}
+	for i, result := range results {
+		title := stringFromAny(result["title"])
+		url := stringFromAny(result["url"])
+		snippet := stringFromAny(result["snippet"])
+		if title == "" {
+			title = stringFromAny(result["text"])
+		}
+		if title == "" && url == "" && snippet == "" {
+			continue
+		}
+		fmt.Fprintf(b, "%d. %s", i+1, firstNonEmptyString(title, url, snippet))
+		if url != "" && url != title {
+			fmt.Fprintf(b, " — %s", url)
+		}
+		if snippet != "" && snippet != title {
+			fmt.Fprintf(b, "\n   %s", snippet)
+		}
+		fmt.Fprintln(b)
+	}
+}
+
+func stringFromAny(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		return ""
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (o *Orchestrator) patchTask(ctx context.Context, taskID, patchFile string) (string, error) {
@@ -1393,7 +1800,12 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	}
 	shortID := taskShortID(taskID)
 	if diffOut == "no diff" {
-		return "ReviewerAgent: no diff to approve.", nil
+		t.Status = taskstore.StatusBlocked
+		t.AssignedTo = "OrchestratorAgent"
+		t.Result = "ReviewerAgent found no diff to approve."
+		_ = o.tasks.Save(t)
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
 	}
 	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent")
 	status := "pass"
@@ -1656,7 +2068,9 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
+		"- If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"- After editing Go code, run go.fmt, go.test, and repo.current_diff.",
+		"- Final done=true message must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
 		o.filteredToolCatalog(map[string]bool{

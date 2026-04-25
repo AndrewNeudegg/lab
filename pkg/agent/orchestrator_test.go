@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +60,47 @@ func TestActiveTaskStatusIntent(t *testing.T) {
 	}
 }
 
+func TestSearchTheWebUsesInternetTool(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	search := &internetSearchStub{}
+	if err := orch.registry.Register(search); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "search the web for current SvelteKit adapter-auto production deployment guidance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if search.query != "current SvelteKit adapter-auto production deployment guidance" {
+		t.Fatalf("query = %q, want cleaned web query", search.query)
+	}
+	if search.source != "web" {
+		t.Fatalf("source = %q, want web", search.source)
+	}
+	if !strings.Contains(reply, "Internet search") || !strings.Contains(reply, "SvelteKit docs") {
+		t.Fatalf("reply = %q, want formatted internet result", reply)
+	}
+}
+
+func TestPlainSearchStillUsesRepoSearch(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	search := &repoSearchStub{}
+	if err := orch.registry.Register(search); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "search orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if search.query != "orchestrator" {
+		t.Fatalf("query = %q, want repo query", search.query)
+	}
+	if !strings.Contains(reply, "pkg/agent/orchestrator.go") {
+		t.Fatalf("reply = %q, want repo match", reply)
+	}
+}
+
 func TestPlainWorkRequestIntent(t *testing.T) {
 	for _, input := range []string{
 		"implement the dashboard fix",
@@ -100,6 +143,20 @@ func TestParseDelegateCommandStrictForm(t *testing.T) {
 	}
 	if selector != "c26f013d" || backend != "codex" || instruction != "finish it" {
 		t.Fatalf("unexpected parse: selector=%q backend=%q instruction=%q", selector, backend, instruction)
+	}
+}
+
+func TestParseReopenCommandWithBareReason(t *testing.T) {
+	selector, reason := parseReopenCommand([]string{"28493611", "needs", "rework"})
+	if selector != "28493611" || reason != "needs rework" {
+		t.Fatalf("unexpected parse: selector=%q reason=%q", selector, reason)
+	}
+}
+
+func TestParseReopenCommandWithNaturalTitle(t *testing.T) {
+	selector, reason := parseReopenCommand([]string{"the", "bun", "task", "needs", "rework"})
+	if selector != "the bun task" || reason != "rework" {
+		t.Fatalf("unexpected parse: selector=%q reason=%q", selector, reason)
 	}
 }
 
@@ -443,6 +500,40 @@ func TestReopenTaskMovesBackToRunning(t *testing.T) {
 	}
 }
 
+func TestReopenTaskAcceptsBareReasonAfterID(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_20260425_213021_28493611",
+		Title:      "add internet search",
+		Goal:       "add internet search",
+		Status:     taskstore.StatusAwaitingVerification,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "reopen 28493611 needs rework")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Reopened 28493611") {
+		t.Fatalf("reply = %q, want reopened confirmation", reply)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning {
+		t.Fatalf("status = %q, want running", updated.Status)
+	}
+	if !strings.Contains(updated.Result, "needs rework") {
+		t.Fatalf("Result = %q, want reopen reason", updated.Result)
+	}
+}
+
 func TestOpenEndedChatRetainsHistory(t *testing.T) {
 	provider := &recordingProvider{}
 	orch := newTestOrchestrator(t, nil)
@@ -533,6 +624,134 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("delegate did not finish cleanly")
+}
+
+func TestRecoverRunningTasksRestartsExternalWorker(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	var logs bytes.Buffer
+	orch.WithLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	now := time.Now().UTC()
+	taskID := "task_20260425_213611_73d51bee"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "move chat to /chat",
+		Goal:       "move chat to /chat",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "codex",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	count, err := orch.RecoverRunningTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered count = %d, want 1", count)
+	}
+	if !strings.Contains(logs.String(), "recovering persisted running task") {
+		t.Fatalf("logs = %q, want recovery log", logs.String())
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovered delegate did not start")
+	}
+	close(releaseDelegate)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		updated, err := orch.tasks.Load(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Status == taskstore.StatusReadyForReview && strings.Contains(updated.Result, "done") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("recovered delegate did not finish cleanly")
+}
+
+func TestRecoverRunningTasksSkipsNonRunningTasks(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: make(chan struct{}),
+	})
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         "task_done",
+		Title:      "done work",
+		Goal:       "done work",
+		Status:     taskstore.StatusAwaitingVerification,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.RecoverRunningTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("recovered count = %d, want 0", count)
+	}
+	select {
+	case <-delegateStarted:
+		t.Fatal("delegate started for non-running task")
+	default:
+	}
+}
+
+func TestReviewNoDiffBlocksTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(noDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_20260425_213611_73d51bee"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "move chat to /chat",
+		Goal:       "move chat to /chat",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "CoderAgent",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "no diff to approve") {
+		t.Fatalf("reply = %q, want no diff message", reply)
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", updated.Status)
+	}
+	if !strings.Contains(updated.Result, "no diff") {
+		t.Fatalf("result = %q, want no diff reason", updated.Result)
+	}
 }
 
 type recordingProvider struct {
@@ -672,6 +891,71 @@ func (s agentDelegateStub) Run(ctx context.Context, raw json.RawMessage) (json.R
 		"workspace": req.Workspace,
 		"output":    "done",
 	})
+}
+
+type repoSearchStub struct {
+	query string
+}
+
+func (repoSearchStub) Name() string        { return "repo.search" }
+func (repoSearchStub) Description() string { return "" }
+func (repoSearchStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (repoSearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *repoSearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	s.query = req.Query
+	return json.Marshal(map[string]any{"matches": []map[string]any{{
+		"path": "pkg/agent/orchestrator.go",
+		"line": 148,
+		"text": "case search",
+	}}})
+}
+
+type internetSearchStub struct {
+	query  string
+	source string
+}
+
+func (internetSearchStub) Name() string        { return "internet.search" }
+func (internetSearchStub) Description() string { return "" }
+func (internetSearchStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (internetSearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *internetSearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Query  string `json:"query"`
+		Source string `json:"source"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	s.query = req.Query
+	s.source = req.Source
+	return json.Marshal(map[string]any{
+		"query":  req.Query,
+		"source": "duckduckgo",
+		"results": []map[string]any{{
+			"title":   "SvelteKit docs",
+			"url":     "https://svelte.dev/docs/kit/adapter-auto",
+			"snippet": "Adapter-auto detects supported production environments.",
+		}},
+	})
+}
+
+type noDiffStub struct{}
+
+func (noDiffStub) Name() string        { return "repo.current_diff" }
+func (noDiffStub) Description() string { return "" }
+func (noDiffStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (noDiffStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (noDiffStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]any{"diff": ""})
 }
 
 type currentDiffStub struct{}

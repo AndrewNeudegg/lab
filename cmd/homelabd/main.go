@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,6 +41,9 @@ func main() {
 	mode := flag.String("mode", "stdio", "adapter mode: stdio, webhook, http, or matrix")
 	flag.Parse()
 
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -57,6 +61,9 @@ func main() {
 	}
 	orch, err := buildRuntime(cfg)
 	if err != nil {
+		fatal(err)
+	}
+	if _, err := orch.RecoverRunningTasks(ctx); err != nil {
 		fatal(err)
 	}
 
@@ -119,7 +126,7 @@ func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return agent.NewOrchestrator(cfg, events, tasks, approvals, registry, tool.NewPolicy(cfg.Policy.RequireApprovalFor), provider, model), nil
+	return agent.NewOrchestrator(cfg, events, tasks, approvals, registry, tool.NewPolicy(cfg.Policy.RequireApprovalFor), provider, model).WithLogger(slog.Default()), nil
 }
 
 func buildProvider(cfg config.Config) (llm.Provider, string, error) {
@@ -328,7 +335,7 @@ func (t *chatTranscript) Append(adapter, direction, from, to, content string, ad
 }
 
 func logLine(format string, args ...any) {
-	fmt.Fprintf(os.Stdout, "%s homelabd %s\n", time.Now().UTC().Format(time.RFC3339), fmt.Sprintf(format, args...))
+	slog.Info(fmt.Sprintf(format, args...))
 }
 
 func oneLine(s string) string {
@@ -366,6 +373,7 @@ func strconvQuote(s string) string {
 }
 
 func fatal(err error) {
+	slog.Error("homelabd fatal", "error", err)
 	fmt.Fprintln(os.Stderr, "homelabd:", err)
 	os.Exit(1)
 }

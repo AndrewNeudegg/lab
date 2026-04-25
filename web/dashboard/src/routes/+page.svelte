@@ -100,8 +100,29 @@
       return ['help', 'tasks', 'status', 'agents', 'approvals'].includes(verb);
     }
 
-    if (['show', 'run', 'work', 'start', 'review', 'diff', 'test', 'cancel', 'stop', 'delete', 'remove', 'rm'].includes(verb)) {
+    if (
+      [
+        'show',
+        'run',
+        'work',
+        'start',
+        'review',
+        'diff',
+        'test',
+        'cancel',
+        'stop',
+        'delete',
+        'remove',
+        'rm',
+        'accept',
+        'verify'
+      ].includes(verb)
+    ) {
       return parts.length === 2 && taskRefPattern.test(parts[1]);
+    }
+
+    if (verb === 'reopen') {
+      return parts.length >= 2 && taskRefPattern.test(parts[1]);
     }
 
     if (['approve', 'deny'].includes(verb)) {

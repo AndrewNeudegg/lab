@@ -78,6 +78,11 @@ func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string)
 		source = "program"
 		err = nil
 	}
+	if err != nil && isOperationalCommandError(err) {
+		reply = "error: " + err.Error()
+		source = "program"
+		err = nil
+	}
 	if err == nil {
 		o.appendChatReply(ctx, from, reply)
 	}
@@ -239,6 +244,17 @@ func isUserFacingCommandError(err error) bool {
 	return strings.HasPrefix(message, "no task matches ") ||
 		strings.HasPrefix(message, "task selector ") ||
 		strings.Contains(message, "task id or title is required")
+}
+
+func isOperationalCommandError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.HasPrefix(message, "git merge:") ||
+		strings.HasPrefix(message, "git commit:") ||
+		strings.HasPrefix(message, "policy denied ") ||
+		strings.HasPrefix(message, "approval required:")
 }
 
 func isInFlightQuery(message string) bool {

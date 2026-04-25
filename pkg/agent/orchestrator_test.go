@@ -361,6 +361,51 @@ func TestApprovedMergeAwaitsVerificationUntilAccepted(t *testing.T) {
 	}
 }
 
+func TestApprovalMergeFailureReturnsChatErrorNotHTTPFailure(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(mergeFailStub{}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260425_213021_28493611",
+		Title:      "add internet search",
+		Goal:       "add internet search",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260425_214114_a300d8be",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260425_213021_28493611"}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "approve approval_20260425_214114_a300d8be")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "error: git merge:") {
+		t.Fatalf("reply = %q, want git merge error", reply)
+	}
+	updatedApproval, err := orch.approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusPending {
+		t.Fatalf("approval status = %q, want pending", updatedApproval.Status)
+	}
+}
+
 func TestReopenTaskMovesBackToRunning(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	task := taskstore.Task{
@@ -672,4 +717,16 @@ func (mergeApprovedStub) Schema() json.RawMessage {
 func (mergeApprovedStub) Risk() tool.RiskLevel { return tool.RiskHigh }
 func (mergeApprovedStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(map[string]any{"merged": true})
+}
+
+type mergeFailStub struct{}
+
+func (mergeFailStub) Name() string        { return "git.merge_approved" }
+func (mergeFailStub) Description() string { return "" }
+func (mergeFailStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (mergeFailStub) Risk() tool.RiskLevel { return tool.RiskHigh }
+func (mergeFailStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return nil, fmt.Errorf("git merge: exit status 2: local changes would be overwritten")
 }

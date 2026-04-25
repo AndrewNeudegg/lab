@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import {
     Header,
     MessageList,
@@ -11,21 +12,21 @@
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
+  const transcriptStorageKey = 'homelabd.dashboard.chatTranscript';
+  const welcomeMessage: ChatTranscriptMessage = {
+    id: 'welcome',
+    role: 'assistant',
+    content: 'Ready for homelabd.',
+    actions: ['status', 'tasks', 'help'],
+    time: 'Now'
+  };
 
   let draft = '';
   let loading = false;
   let error = '';
   let messageId = 0;
   let inputEl: HTMLInputElement | undefined;
-  let messages: ChatTranscriptMessage[] = [
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content: 'Ready for homelabd.',
-      actions: ['status', 'tasks', 'help'],
-      time: 'Now'
-    }
-  ];
+  let messages: ChatTranscriptMessage[] = [welcomeMessage];
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -35,6 +36,54 @@
 
   const safeCommandPattern =
     /^(help|tasks|status|agents|approvals|show\s+\S+|run\s+\S+|work\s+\S+|review\s+\S+|diff\s+\S+|test\s+\S+|approve\s+\S+|deny\s+\S+|cancel\s+\S+|stop\s+\S+|delete\s+\S+|remove\s+\S+|rm\s+\S+)$/i;
+
+  const isTranscriptMessage = (value: unknown): value is ChatTranscriptMessage => {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    const candidate = value as Record<string, unknown>;
+    const validRole = candidate.role === 'user' || candidate.role === 'assistant';
+    const validActions =
+      candidate.actions === undefined ||
+      (Array.isArray(candidate.actions) &&
+        candidate.actions.every((action) => typeof action === 'string'));
+
+    return (
+      typeof candidate.id === 'string' &&
+      validRole &&
+      typeof candidate.content === 'string' &&
+      typeof candidate.time === 'string' &&
+      validActions
+    );
+  };
+
+  const loadStoredMessages = () => {
+    try {
+      const stored = localStorage.getItem(transcriptStorageKey);
+      if (!stored) {
+        return [welcomeMessage];
+      }
+
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) {
+        return [welcomeMessage];
+      }
+
+      const restored = parsed.filter(isTranscriptMessage);
+      return restored.length > 0 ? restored : [welcomeMessage];
+    } catch {
+      return [welcomeMessage];
+    }
+  };
+
+  const persistMessages = () => {
+    try {
+      localStorage.setItem(transcriptStorageKey, JSON.stringify(messages));
+    } catch {
+      // Storage may be unavailable or full; chat still works without persistence.
+    }
+  };
 
   const extractCommands = (content: string): string[] => {
     const commands = new Set<string>();
@@ -77,7 +126,13 @@
         time: timeLabel()
       }
     ];
+    persistMessages();
   };
+
+  onMount(() => {
+    messages = loadStoredMessages();
+    messageId = messages.length;
+  });
 
   const sendMessage = async (content = draft) => {
     const trimmed = content.trim();

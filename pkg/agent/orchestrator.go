@@ -62,6 +62,14 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 		return "empty message", nil
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "user.message", Actor: from, Payload: eventlog.Payload(map[string]any{"message": message})})
+	reply, err := o.handleMessage(ctx, message)
+	if err == nil {
+		o.appendChatReply(ctx, from, reply)
+	}
+	return reply, err
+}
+
+func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, error) {
 	fields := strings.Fields(message)
 	cmd := strings.ToLower(fields[0])
 	if isCasualMessage(message) {
@@ -161,6 +169,18 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 		}
 		return o.handleWithLLM(ctx, message)
 	}
+}
+
+func (o *Orchestrator) appendChatReply(ctx context.Context, to, message string) {
+	if o.events == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	_ = o.events.Append(ctx, eventlog.Event{
+		ID:      id.New("evt"),
+		Type:    "chat.reply",
+		Actor:   "OrchestratorAgent",
+		Payload: eventlog.Payload(map[string]any{"message": message, "to": to}),
+	})
 }
 
 func isCasualMessage(message string) bool {
@@ -313,7 +333,11 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 	}
 	messages := []llm.Message{
 		{Role: "system", Content: o.llmToolPrompt()},
-		{Role: "user", Content: message},
+	}
+	history := o.recentChatHistory(time.Now().UTC(), 24)
+	messages = append(messages, history...)
+	if !chatHistoryEndsWith(history, "user", message) {
+		messages = append(messages, llm.Message{Role: "user", Content: message})
 	}
 	toolCallsUsed := 0
 	lastMessage := ""
@@ -366,6 +390,67 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 		lastMessage = "Stopped after reaching the turn limit."
 	}
 	return lastMessage, nil
+}
+
+func (o *Orchestrator) recentChatHistory(day time.Time, limit int) []llm.Message {
+	if o.events == nil || limit <= 0 {
+		return nil
+	}
+	events, err := o.events.ReadDay(day)
+	if err != nil {
+		return nil
+	}
+	history := make([]llm.Message, 0, limit)
+	for _, event := range events {
+		msg, ok := chatHistoryMessage(event)
+		if !ok {
+			continue
+		}
+		history = append(history, msg)
+	}
+	if len(history) > limit {
+		history = history[len(history)-limit:]
+	}
+	return history
+}
+
+func chatHistoryMessage(event eventlog.Event) (llm.Message, bool) {
+	var role string
+	switch event.Type {
+	case "user.message":
+		role = "user"
+	case "chat.reply":
+		role = "assistant"
+	default:
+		return llm.Message{}, false
+	}
+	var payload struct {
+		Message string `json:"message"`
+		Content string `json:"content"`
+		Reply   string `json:"reply"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return llm.Message{}, false
+	}
+	content := strings.TrimSpace(payload.Message)
+	if content == "" {
+		content = strings.TrimSpace(payload.Content)
+	}
+	if content == "" {
+		content = strings.TrimSpace(payload.Reply)
+	}
+	if content == "" {
+		return llm.Message{}, false
+	}
+	return llm.Message{Role: role, Content: content}, true
+}
+
+func chatHistoryEndsWith(history []llm.Message, role, content string) bool {
+	if len(history) == 0 {
+		return false
+	}
+	last := history[len(history)-1]
+	return last.Role == role && strings.TrimSpace(last.Content) == strings.TrimSpace(content)
 }
 
 func (o *Orchestrator) llmToolPrompt() string {

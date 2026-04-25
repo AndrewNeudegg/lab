@@ -10,6 +10,7 @@ import (
 
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
+	"github.com/andrewneudegg/lab/pkg/llm"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
@@ -117,6 +118,36 @@ func TestNaturalActiveTasksDoesNotCreateTask(t *testing.T) {
 	}
 }
 
+func TestOpenEndedChatRetainsHistory(t *testing.T) {
+	provider := &recordingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "what is this project?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "reply 1" {
+		t.Fatalf("first reply = %q, want reply 1", reply)
+	}
+	reply, err = orch.Handle(context.Background(), "test", "what did I ask first?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "reply 2" {
+		t.Fatalf("second reply = %q, want reply 2", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(provider.requests))
+	}
+
+	got := provider.requests[1].Messages
+	assertContainsLLMMessage(t, got, llm.Message{Role: "user", Content: "what is this project?"})
+	assertContainsLLMMessage(t, got, llm.Message{Role: "assistant", Content: "reply 1"})
+	assertContainsLLMMessage(t, got, llm.Message{Role: "user", Content: "what did I ask first?"})
+}
+
 func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
@@ -162,6 +193,33 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("delegate did not finish cleanly")
+}
+
+type recordingProvider struct {
+	requests []llm.CompletionRequest
+}
+
+func (p *recordingProvider) Name() string { return "recording" }
+
+func (p *recordingProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.requests = append(p.requests, req)
+	reply := "reply " + string(rune('0'+len(p.requests)))
+	return llm.CompletionResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: `{"message":"` + reply + `","done":true,"tool_calls":[]}`,
+		},
+	}, nil
+}
+
+func assertContainsLLMMessage(t *testing.T, messages []llm.Message, want llm.Message) {
+	t.Helper()
+	for _, msg := range messages {
+		if msg == want {
+			return
+		}
+	}
+	t.Fatalf("messages = %#v, want to contain %#v", messages, want)
 }
 
 type delegateStub struct {

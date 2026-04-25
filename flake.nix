@@ -21,12 +21,17 @@
           pkgs.gopls
           pkgs.git
           pkgs.bun
+          pkgs.chromium
           pkgs.podman
           pkgs.podman-compose
           agents.claude-code
           agents.codex
           agents.gemini-cli
         ];
+        shellHook = ''
+          export CHROME_BIN="${pkgs.chromium}/bin/chromium"
+          export BROWSER="$CHROME_BIN"
+        '';
       };
     };
 }

@@ -164,21 +164,21 @@ func Default() Config {
 		ExternalAgents: map[string]ExternalAgentConfig{
 			"codex": {
 				Enabled:        true,
-				Command:        getenvAny("CODEX_CLI", "CODEX_CMD"),
+				Command:        getenvAnyDefault("codex", "CODEX_CLI", "CODEX_CMD"),
 				Args:           []string{"exec", "--skip-git-repo-check"},
 				TimeoutSeconds: 900,
 				Description:    "OpenAI Codex CLI worker for coding tasks.",
 			},
 			"claude": {
 				Enabled:        true,
-				Command:        getenvAny("CLAUDE_CLI", "CLAUDE_CMD"),
+				Command:        getenvAnyDefault("claude", "CLAUDE_CLI", "CLAUDE_CMD"),
 				Args:           []string{},
 				TimeoutSeconds: 900,
 				Description:    "Claude CLI worker for analysis or coding tasks.",
 			},
 			"gemini": {
 				Enabled:        true,
-				Command:        getenvAny("GEMINI_CLI", "GEMINI_CMD"),
+				Command:        getenvAnyDefault("gemini", "GEMINI_CLI", "GEMINI_CMD"),
 				Args:           []string{},
 				TimeoutSeconds: 900,
 				Description:    "Gemini CLI worker for analysis or coding tasks.",
@@ -311,4 +311,11 @@ func getenvAny(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func getenvAnyDefault(defaultValue string, keys ...string) string {
+	if value := getenvAny(keys...); value != "" {
+		return value
+	}
+	return defaultValue
 }

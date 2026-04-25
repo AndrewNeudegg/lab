@@ -20,6 +20,7 @@
           pkgs.go
           pkgs.gopls
           pkgs.git
+          pkgs.bun
           pkgs.podman
           pkgs.podman-compose
           agents.claude-code

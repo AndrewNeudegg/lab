@@ -12,16 +12,69 @@ import (
 )
 
 type Base struct {
-	Timeout time.Duration
+	Timeout  time.Duration
+	RepoRoot string
 }
 
 func Register(reg *tool.Registry, base Base) error {
-	for _, t := range []tool.Tool{RunTool{timeout: base.Timeout}, GoTestTool{timeout: base.Timeout}, GoBuildTool{timeout: base.Timeout}, GoFmtTool{timeout: base.Timeout}} {
+	for _, t := range []tool.Tool{RunTool{timeout: base.Timeout}, GoTestTool{timeout: base.Timeout}, GoBuildTool{timeout: base.Timeout}, GoFmtTool{timeout: base.Timeout}, BunCheckTool{timeout: base.Timeout, repoRoot: base.RepoRoot}, BunBuildTool{timeout: base.Timeout, repoRoot: base.RepoRoot}} {
 		if err := reg.Register(t); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func runBunScript(ctx context.Context, timeout time.Duration, repoRoot, dir, script string) (json.RawMessage, error) {
+	if _, err := exec.LookPath("bun"); err == nil {
+		if raw, err := run(ctx, timeout, dir, "bun", "install"); err != nil {
+			return raw, err
+		}
+		return run(ctx, timeout, dir, "bun", "run", script)
+	}
+	if repoRoot == "" {
+		repoRoot = dir
+	}
+	command := fmt.Sprintf("cd \"$1\" && bun install && bun run %s", script)
+	return run(ctx, timeout, repoRoot, "nix", "develop", repoRoot, "-c", "bash", "-lc", command, "bun-tool", dir)
+}
+
+type BunCheckTool struct {
+	timeout  time.Duration
+	repoRoot string
+}
+
+func (BunCheckTool) Name() string        { return "bun.check" }
+func (BunCheckTool) Description() string { return "Run bun install and bun run check in a workspace." }
+func (BunCheckTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["dir"],"properties":{"dir":{"type":"string"}}}`)
+}
+func (BunCheckTool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (t BunCheckTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Dir string `json:"dir"`
+	}
+	_ = json.Unmarshal(input, &req)
+	return runBunScript(ctx, t.timeout, t.repoRoot, req.Dir, "check")
+}
+
+type BunBuildTool struct {
+	timeout  time.Duration
+	repoRoot string
+}
+
+func (BunBuildTool) Name() string        { return "bun.build" }
+func (BunBuildTool) Description() string { return "Run bun install and bun run build in a workspace." }
+func (BunBuildTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["dir"],"properties":{"dir":{"type":"string"}}}`)
+}
+func (BunBuildTool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (t BunBuildTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Dir string `json:"dir"`
+	}
+	_ = json.Unmarshal(input, &req)
+	return runBunScript(ctx, t.timeout, t.repoRoot, req.Dir, "build")
 }
 
 func schema(v string) json.RawMessage { return json.RawMessage(v) }

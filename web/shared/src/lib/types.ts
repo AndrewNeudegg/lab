@@ -20,6 +20,7 @@ export interface ChatTranscriptMessage {
   role: ChatRole;
   content: string;
   time: string;
+  source?: string;
   actions?: string[];
 }
 
@@ -32,6 +33,7 @@ export interface HomelabdMessageRequest {
 
 export interface HomelabdMessageResponse {
   reply: string;
+  source?: string;
 }
 
 export interface HomelabdClient {

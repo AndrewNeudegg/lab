@@ -46,4 +46,6 @@ type CompletionResponse struct {
 	Message   Message    `json:"message"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	Usage     Usage      `json:"usage,omitempty"`
+	Provider  string     `json:"provider,omitempty"`
+	Model     string     `json:"model,omitempty"`
 }

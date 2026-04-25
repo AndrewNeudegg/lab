@@ -12,6 +12,17 @@
   let lastMessageCount = messages.length;
   let lastLoading = loading;
 
+  const sourceLabel = (source = 'program') => {
+    switch (source.toLowerCase()) {
+      case 'gemini':
+        return 'Gemini';
+      case 'openai':
+        return 'OpenAI';
+      default:
+        return source;
+    }
+  };
+
   const isScrolledToBottom = () => {
     if (!messagesEl) {
       return true;
@@ -52,7 +63,7 @@
   {#each messages as message (message.id)}
     <article class="message" class:user={message.role === 'user'}>
       <div class="meta">
-        <span>{message.role === 'user' ? 'You' : 'homelabd'}</span>
+        <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
         <time>{message.time}</time>
       </div>
       <p>{message.content}</p>
@@ -71,7 +82,7 @@
   {#if loading}
     <article class="message pending">
       <div class="meta">
-        <span>homelabd</span>
+        <span>homelabd - working</span>
         <time>Now</time>
       </div>
       <p>Thinking...</p>

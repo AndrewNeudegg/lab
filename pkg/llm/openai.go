@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -25,12 +26,19 @@ func (p *OpenAICompatible) Name() string {
 }
 
 func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":       req.Model,
 		"messages":    req.Messages,
 		"temperature": req.Temperature,
-		"max_tokens":  req.MaxTokens,
-	})
+	}
+	if req.MaxTokens > 0 {
+		if strings.Contains(p.base, "api.openai.com") {
+			payload["max_completion_tokens"] = req.MaxTokens
+		} else {
+			payload["max_tokens"] = req.MaxTokens
+		}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return CompletionResponse{}, err
 	}
@@ -48,7 +56,8 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("llm provider returned %s", resp.Status)
+		details, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		err := fmt.Errorf("llm provider returned %s: %s", resp.Status, strings.TrimSpace(string(details)))
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			return CompletionResponse{}, Retryable(err)
 		}
@@ -58,7 +67,13 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 		Choices []struct {
 			Message Message `json:"message"`
 		} `json:"choices"`
-		Usage Usage `json:"usage"`
+		Usage struct {
+			InputTokens      int `json:"input_tokens"`
+			OutputTokens     int `json:"output_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
 		return CompletionResponse{}, err
@@ -66,5 +81,19 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 	if len(wire.Choices) == 0 {
 		return CompletionResponse{}, Retryable(fmt.Errorf("llm provider returned no choices"))
 	}
-	return CompletionResponse{Message: wire.Choices[0].Message, Usage: wire.Usage}, nil
+	usage := Usage{
+		InputTokens:  wire.Usage.InputTokens,
+		OutputTokens: wire.Usage.OutputTokens,
+		TotalTokens:  wire.Usage.TotalTokens,
+	}
+	if usage.InputTokens == 0 {
+		usage.InputTokens = wire.Usage.PromptTokens
+	}
+	if usage.OutputTokens == 0 {
+		usage.OutputTokens = wire.Usage.CompletionTokens
+	}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	return CompletionResponse{Message: wire.Choices[0].Message, Usage: usage}, nil
 }

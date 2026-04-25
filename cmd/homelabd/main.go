@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -60,7 +62,7 @@ func main() {
 
 	switch *mode {
 	case "stdio":
-		runStdio(ctx, orch)
+		runStdio(ctx, cfg, orch)
 	case "webhook":
 		adapter := chat.Webhook{Addr: cfg.HTTP.Addr, Handle: control.ChatHandler(orch)}
 		fmt.Fprintf(os.Stdout, "homelabd webhook listening on %s\n", cfg.HTTP.Addr)
@@ -68,7 +70,7 @@ func main() {
 			fatal(err)
 		}
 	case "http":
-		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch}
+		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat")}
 		fmt.Fprintf(os.Stdout, "homelabd http listening on %s\n", cfg.HTTP.Addr)
 		if err := server.Listen(ctx); err != nil {
 			fatal(err)
@@ -90,7 +92,7 @@ func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
 	if err := gittools.Register(registry, gittools.Base{RepoRoot: cfg.Repo.Root, WorkspaceRoot: cfg.Repo.WorkspaceRoot}); err != nil {
 		return nil, err
 	}
-	if err := testtools.Register(registry, testtools.Base{Timeout: timeout}); err != nil {
+	if err := testtools.Register(registry, testtools.Base{Timeout: timeout, RepoRoot: cfg.Repo.Root}); err != nil {
 		return nil, err
 	}
 	if err := shelltools.Register(registry, shelltools.Base{Timeout: timeout}); err != nil {
@@ -121,41 +123,83 @@ func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
 }
 
 func buildProvider(cfg config.Config) (llm.Provider, string, error) {
-	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]
-	if !ok {
-		return nil, "", fmt.Errorf("default provider %q not configured", cfg.DefaultProvider)
+	var candidates []llm.ProviderCandidate
+	addCandidate := func(name string) error {
+		providerCfg, ok := cfg.Providers[name]
+		if !ok {
+			return fmt.Errorf("provider %q not configured", name)
+		}
+		provider, model, err := buildSingleProvider(name, providerCfg)
+		if err != nil {
+			return err
+		}
+		candidates = append(candidates, llm.ProviderCandidate{Name: name, Model: model, Provider: provider})
+		return nil
 	}
+	if err := addCandidate(cfg.DefaultProvider); err != nil {
+		return nil, "", err
+	}
+	if cfg.DefaultProvider != "openai" {
+		if providerCfg, ok := cfg.Providers["openai"]; ok && providerUsable(providerCfg) {
+			provider, model, err := buildSingleProvider("openai", providerCfg)
+			if err != nil {
+				return nil, "", err
+			}
+			candidates = append(candidates, llm.ProviderCandidate{Name: "openai", Model: model, Provider: provider})
+		}
+	}
+	return llm.NewFallbackProvider(candidates), candidates[0].Model, nil
+}
+
+func buildSingleProvider(name string, providerCfg config.ProviderConfig) (llm.Provider, string, error) {
 	switch providerCfg.Type {
 	case "gemini":
 		return llm.WithRetry(llm.NewGemini(providerCfg.BaseURL, providerCfg.APIKey), llm.RetryConfig{}), providerCfg.Model, nil
 	case "openai-compatible", "":
-		return llm.WithRetry(llm.NewOpenAICompatible(cfg.DefaultProvider, providerCfg.BaseURL, providerCfg.APIKey), llm.RetryConfig{}), providerCfg.Model, nil
+		return llm.WithRetry(llm.NewOpenAICompatible(name, providerCfg.BaseURL, providerCfg.APIKey), llm.RetryConfig{}), providerCfg.Model, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported provider type %q", providerCfg.Type)
 	}
 }
 
-func runStdio(ctx context.Context, orch *agent.Orchestrator) {
+func providerUsable(providerCfg config.ProviderConfig) bool {
+	switch providerCfg.Type {
+	case "gemini", "openai-compatible", "":
+		return providerCfg.APIKey != "" || strings.Contains(providerCfg.BaseURL, "localhost") || strings.Contains(providerCfg.BaseURL, "127.0.0.1")
+	default:
+		return false
+	}
+}
+
+func runStdio(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) {
 	adapter := chat.Stdio{In: os.Stdin, Out: os.Stdout}
+	transcript := newChatTranscript(cfg)
 	msgs, err := adapter.Receive(ctx)
 	if err != nil {
 		fatal(err)
 	}
-	_ = adapter.Send(ctx, chat.OutboundMessage{Content: "homelabd ready. Type `help`."})
+	ready := "homelabd ready. Type `help`."
+	_ = transcript.Append("stdio", "out", "homelabd", "stdio", ready, false)
+	_ = adapter.Send(ctx, chat.OutboundMessage{Content: ready})
 	for msg := range msgs {
+		logLine("stdio received from %s: %s", msg.From, msg.Content)
+		_ = transcript.Append("stdio", "in", msg.From, "homelabd", msg.Content, true)
 		reply, err := orch.Handle(ctx, msg.From, msg.Content)
 		if err != nil {
 			reply = "error: " + err.Error()
 		}
+		logLine("stdio reply to %s: %s", msg.From, oneLine(reply))
+		_ = transcript.Append("stdio", "out", "homelabd", msg.From, reply, true)
 		_ = adapter.Send(ctx, chat.OutboundMessage{Content: reply})
 	}
 }
 
 func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) {
+	transcript := newChatTranscript(cfg)
 	errCh := make(chan error, 1)
 	go func() {
-		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch}
-		fmt.Fprintf(os.Stdout, "homelabd http listening on %s\n", cfg.HTTP.Addr)
+		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat")}
+		logLine("http listening on %s", cfg.HTTP.Addr)
 		errCh <- server.Listen(ctx)
 	}()
 	adapter := chat.NewMatrix(chat.MatrixConfig{
@@ -172,7 +216,7 @@ func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator)
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Fprintf(os.Stdout, "homelabd matrix listening for room %q (%s)\n", cfg.Matrix.RoomName, adapter.RoomID())
+	logLine("matrix listening for room %q (%s)", cfg.Matrix.RoomName, adapter.RoomID())
 	for {
 		select {
 		case err := <-errCh:
@@ -183,15 +227,26 @@ func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator)
 			if !ok {
 				return
 			}
-			fmt.Fprintf(os.Stdout, "homelabd matrix received from %s: %s\n", msg.From, msg.Content)
+			logLine("matrix received from %s: %s", msg.From, msg.Content)
+			_ = transcript.Append("matrix", "in", msg.From, "homelabd", msg.Content, false)
 			content, addressed := matrixAddressedContent(cfg, msg.Content)
+			logLine("matrix addressed=%t content=%q", addressed, content)
 			if !addressed {
 				continue
+			}
+			if shouldAck(content) {
+				ack := "ack: working on " + quoteForAck(content)
+				_ = transcript.Append("matrix", "out", "homelabd", msg.From, ack, true)
+				if err := adapter.Send(ctx, chat.OutboundMessage{Content: ack}); err != nil {
+					fmt.Fprintln(os.Stderr, "homelabd matrix ack send:", err)
+				}
 			}
 			reply, err := orch.Handle(ctx, msg.From, content)
 			if err != nil {
 				reply = "error: " + err.Error()
 			}
+			logLine("matrix reply to %s: %s", msg.From, oneLine(reply))
+			_ = transcript.Append("matrix", "out", "homelabd", msg.From, reply, true)
 			if err := adapter.Send(ctx, chat.OutboundMessage{Content: reply}); err != nil {
 				fmt.Fprintln(os.Stderr, "homelabd matrix send:", err)
 			}
@@ -232,6 +287,82 @@ func matrixAddressedContent(cfg config.Config, content string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+type chatTranscript struct {
+	dir string
+	mu  sync.Mutex
+}
+
+func newChatTranscript(cfg config.Config) *chatTranscript {
+	return &chatTranscript{dir: filepath.Join(cfg.DataDir, "chat")}
+}
+
+func (t *chatTranscript) Append(adapter, direction, from, to, content string, addressed bool) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := os.MkdirAll(t.dir, 0o755); err != nil {
+		return err
+	}
+	record := map[string]any{
+		"time":      time.Now().UTC(),
+		"adapter":   adapter,
+		"direction": direction,
+		"from":      from,
+		"to":        to,
+		"content":   content,
+		"addressed": addressed,
+	}
+	b, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(t.dir, time.Now().UTC().Format("2006-01-02")+".jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(b, '\n'))
+	return err
+}
+
+func logLine(format string, args ...any) {
+	fmt.Fprintf(os.Stdout, "%s homelabd %s\n", time.Now().UTC().Format(time.RFC3339), fmt.Sprintf(format, args...))
+}
+
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 240 {
+		return s[:240] + "..."
+	}
+	return s
+}
+
+func shouldAck(content string) bool {
+	fields := strings.Fields(strings.ToLower(content))
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "new", "task", "run", "work", "start", "delegate", "escalate", "codex", "claude", "gemini", "review", "approve", "delete", "remove", "cancel":
+		return true
+	default:
+		return false
+	}
+}
+
+func quoteForAck(content string) string {
+	content = strings.TrimSpace(content)
+	if len(content) > 80 {
+		content = content[:80] + "..."
+	}
+	return strconvQuote(content)
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func fatal(err error) {

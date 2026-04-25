@@ -1,6 +1,7 @@
 /.artifacts/
 /.bin/
 /.env
+/.codex
 services/*/.env
 /data/events/*.jsonl
 /data/tasks/*.json
@@ -8,3 +9,4 @@ services/*/.env
 /data/runs/*.json
 /workspaces/
 data/
+workspaces/

@@ -280,8 +280,10 @@ func (t WritePatchTool) Run(ctx context.Context, input json.RawMessage) (json.Ra
 
 type CurrentDiffTool struct{ base Base }
 
-func (CurrentDiffTool) Name() string        { return "repo.current_diff" }
-func (CurrentDiffTool) Description() string { return "Return git diff for a workspace." }
+func (CurrentDiffTool) Name() string { return "repo.current_diff" }
+func (CurrentDiffTool) Description() string {
+	return "Return git diff for a workspace, including untracked files."
+}
 func (CurrentDiffTool) Schema() json.RawMessage {
 	return schema(`{"type":"object","required":["workspace"],"properties":{"workspace":{"type":"string"}}}`)
 }
@@ -296,11 +298,39 @@ func (t CurrentDiffTool) Run(ctx context.Context, input json.RawMessage) (json.R
 	if err := safeWorkspace(t.base.WorkspaceRoot, req.Workspace); err != nil {
 		return nil, err
 	}
-	out, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "diff", "--", ".").CombinedOutput()
+	out, err := workspaceDiff(ctx, req.Workspace)
 	if err != nil {
-		return nil, fmt.Errorf("git diff: %w: %s", err, strings.TrimSpace(string(out)))
+		return nil, err
 	}
-	return json.Marshal(map[string]any{"diff": string(out)})
+	return json.Marshal(map[string]any{"diff": out})
+}
+
+func workspaceDiff(ctx context.Context, workspace string) (string, error) {
+	diffOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--", ".").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w: %s", err, strings.TrimSpace(string(diffOut)))
+	}
+	var b strings.Builder
+	b.Write(diffOut)
+	untrackedOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "ls-files", "--others", "--exclude-standard").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git ls-files untracked: %w: %s", err, strings.TrimSpace(string(untrackedOut)))
+	}
+	for _, rel := range strings.Split(string(untrackedOut), "\n") {
+		rel = strings.TrimSpace(rel)
+		if rel == "" || strings.HasPrefix(rel, ".codex") {
+			continue
+		}
+		out, diffErr := exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--no-index", "--", "/dev/null", rel).CombinedOutput()
+		if diffErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(diffErr, &exitErr) || exitErr.ExitCode() != 1 {
+				return "", fmt.Errorf("git diff untracked %s: %w: %s", rel, diffErr, strings.TrimSpace(string(out)))
+			}
+		}
+		b.Write(out)
+	}
+	return b.String(), nil
 }
 
 type ApplyPatchToMainTool struct{ base Base }

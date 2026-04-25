@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrewneudegg/lab/pkg/agent"
@@ -18,9 +20,12 @@ import (
 type Server struct {
 	Addr         string
 	Orchestrator *agent.Orchestrator
+	ChatLogDir   string
+
+	logMu sync.Mutex
 }
 
-func (s Server) Listen(ctx context.Context) error {
+func (s *Server) Listen(ctx context.Context) error {
 	mux := http.NewServeMux()
 	s.register(mux)
 	server := &http.Server{Addr: s.Addr, Handler: mux}
@@ -37,16 +42,29 @@ func (s Server) Listen(ctx context.Context) error {
 	return err
 }
 
-func (s Server) register(mux *http.ServeMux) {
-	mux.HandleFunc("/message", s.handleMessage)
-	mux.HandleFunc("/tasks", s.handleTasks)
-	mux.HandleFunc("/tasks/", s.handleTask)
-	mux.HandleFunc("/approvals", s.handleApprovals)
-	mux.HandleFunc("/approvals/", s.handleApproval)
-	mux.HandleFunc("/events", s.handleEvents)
+func (s *Server) register(mux *http.ServeMux) {
+	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
+	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
+	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
+	mux.HandleFunc("/approvals", s.withCORS(s.handleApprovals))
+	mux.HandleFunc("/approvals/", s.withCORS(s.handleApproval))
+	mux.HandleFunc("/events", s.withCORS(s.handleEvents))
 }
 
-func (s Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
+func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Access-Control-Allow-Origin", "*")
+		rw.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		rw.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		if req.Method == http.MethodOptions {
+			rw.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(rw, req)
+	}
+}
+
+func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -68,15 +86,50 @@ func (s Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 	if from == "" {
 		from = "webhook"
 	}
-	reply, err := s.Orchestrator.Handle(req.Context(), from, content)
+	_ = s.appendChat("http", "in", from, "homelabd", content, true)
+	result, err := s.Orchestrator.HandleDetailed(req.Context(), from, content)
 	if err != nil {
+		_ = s.appendChat("http", "out", "homelabd", from, "error: "+err.Error(), true)
 		writeError(rw, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(rw, http.StatusOK, map[string]any{"id": id.New("msg"), "reply": reply})
+	_ = s.appendChat("http", "out", "homelabd", from, result.Reply, true)
+	writeJSON(rw, http.StatusOK, map[string]any{"id": id.New("msg"), "reply": result.Reply, "source": result.Source})
 }
 
-func (s Server) handleTasks(rw http.ResponseWriter, req *http.Request) {
+func (s *Server) appendChat(adapter, direction, from, to, content string, addressed bool) error {
+	if s.ChatLogDir == "" {
+		return nil
+	}
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	if err := os.MkdirAll(s.ChatLogDir, 0o755); err != nil {
+		return err
+	}
+	record := map[string]any{
+		"time":      time.Now().UTC(),
+		"adapter":   adapter,
+		"direction": direction,
+		"from":      from,
+		"to":        to,
+		"content":   content,
+		"addressed": addressed,
+	}
+	b, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.ChatLogDir, time.Now().UTC().Format("2006-01-02")+".jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(b, '\n'))
+	return err
+}
+
+func (s *Server) handleTasks(rw http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
 		tasks, err := s.Orchestrator.ListTasks()
@@ -104,7 +157,7 @@ func (s Server) handleTasks(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (s Server) handleTask(rw http.ResponseWriter, req *http.Request) {
+func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 	rest := strings.TrimPrefix(req.URL.Path, "/tasks/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -145,7 +198,7 @@ func (s Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 	writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 }
 
-func (s Server) handleApprovals(rw http.ResponseWriter, req *http.Request) {
+func (s *Server) handleApprovals(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -158,7 +211,7 @@ func (s Server) handleApprovals(rw http.ResponseWriter, req *http.Request) {
 	writeJSON(rw, http.StatusOK, map[string]any{"approvals": requests})
 }
 
-func (s Server) handleApproval(rw http.ResponseWriter, req *http.Request) {
+func (s *Server) handleApproval(rw http.ResponseWriter, req *http.Request) {
 	rest := strings.TrimPrefix(req.URL.Path, "/approvals/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) != 2 || req.Method != http.MethodPost {
@@ -183,7 +236,7 @@ func (s Server) handleApproval(rw http.ResponseWriter, req *http.Request) {
 	writeJSON(rw, http.StatusOK, map[string]any{"reply": reply})
 }
 
-func (s Server) handleEvents(rw http.ResponseWriter, req *http.Request) {
+func (s *Server) handleEvents(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 		return

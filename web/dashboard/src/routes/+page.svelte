@@ -17,6 +17,7 @@
     id: 'welcome',
     role: 'assistant',
     content: 'Ready for homelabd.',
+    source: 'program',
     actions: ['status', 'tasks', 'help'],
     time: 'Now'
   };
@@ -34,8 +35,8 @@
       minute: '2-digit'
     });
 
-  const safeCommandPattern =
-    /^(help|tasks|status|agents|approvals|show\s+\S+|run\s+\S+|work\s+\S+|review\s+\S+|diff\s+\S+|test\s+\S+|approve\s+\S+|deny\s+\S+|cancel\s+\S+|stop\s+\S+|delete\s+\S+|remove\s+\S+|rm\s+\S+)$/i;
+  const taskRefPattern = /^(?:[a-f0-9]{6,12}|task_\d{8}_\d{6}_[a-f0-9]{8})$/i;
+  const approvalRefPattern = /^approval_\d{8}_\d{6}_[a-f0-9]{8}$/i;
 
   const isTranscriptMessage = (value: unknown): value is ChatTranscriptMessage => {
     if (!value || typeof value !== 'object') {
@@ -48,12 +49,14 @@
       candidate.actions === undefined ||
       (Array.isArray(candidate.actions) &&
         candidate.actions.every((action) => typeof action === 'string'));
+    const validSource = candidate.source === undefined || typeof candidate.source === 'string';
 
     return (
       typeof candidate.id === 'string' &&
       validRole &&
       typeof candidate.content === 'string' &&
       typeof candidate.time === 'string' &&
+      validSource &&
       validActions
     );
   };
@@ -85,13 +88,40 @@
     }
   };
 
+  const isSafeCommand = (command: string) => {
+    if (!command || command.includes('<') || command.endsWith(':')) {
+      return false;
+    }
+
+    const parts = command.split(/\s+/);
+    const verb = parts[0]?.toLowerCase();
+
+    if (parts.length === 1) {
+      return ['help', 'tasks', 'status', 'agents', 'approvals'].includes(verb);
+    }
+
+    if (['show', 'run', 'work', 'start', 'review', 'diff', 'test', 'cancel', 'stop', 'delete', 'remove', 'rm'].includes(verb)) {
+      return parts.length === 2 && taskRefPattern.test(parts[1]);
+    }
+
+    if (['approve', 'deny'].includes(verb)) {
+      return parts.length === 2 && approvalRefPattern.test(parts[1]);
+    }
+
+    if (verb === 'delegate') {
+      return parts.length >= 4 && taskRefPattern.test(parts[1]) && parts[2]?.toLowerCase() === 'to' && ['codex', 'claude', 'gemini'].includes(parts[3]?.toLowerCase());
+    }
+
+    return false;
+  };
+
   const extractCommands = (content: string): string[] => {
     const commands = new Set<string>();
     const backticked = content.matchAll(/`([^`\n]+)`/g);
 
     for (const match of backticked) {
       const command = match[1].trim().replace(/\s+/g, ' ');
-      if (safeCommandPattern.test(command) && !command.includes('<')) {
+      if (isSafeCommand(command)) {
         commands.add(command);
       }
     }
@@ -102,7 +132,7 @@
         .replace(/^[>-]\s*/, '')
         .replace(/[.。]$/, '')
         .replace(/\s+/g, ' ');
-      if (safeCommandPattern.test(command) && !command.includes('<')) {
+      if (isSafeCommand(command)) {
         commands.add(command);
       }
     }
@@ -114,7 +144,7 @@
     requestAnimationFrame(() => inputEl?.focus());
   };
 
-  const addMessage = (role: ChatRole, content: string) => {
+  const addMessage = (role: ChatRole, content: string, source?: string) => {
     messageId += 1;
     messages = [
       ...messages,
@@ -122,6 +152,7 @@
         id: `${role}-${messageId}`,
         role,
         content,
+        source,
         actions: role === 'assistant' ? extractCommands(content) : undefined,
         time: timeLabel()
       }
@@ -152,7 +183,7 @@
         content: trimmed
       });
 
-      addMessage('assistant', response.reply || 'No reply returned.');
+      addMessage('assistant', response.reply || 'No reply returned.', response.source || 'program');
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to reach homelabd.';
     } finally {

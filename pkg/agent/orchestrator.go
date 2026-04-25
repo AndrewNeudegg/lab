@@ -52,123 +52,150 @@ type toolExecution struct {
 	Reason        string          `json:"reason,omitempty"`
 }
 
+type HandleResult struct {
+	Reply  string
+	Source string
+}
+
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
 	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model}
 }
 
 func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string, error) {
+	result, err := o.HandleDetailed(ctx, from, message)
+	return result.Reply, err
+}
+
+func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string) (HandleResult, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
-		return "empty message", nil
+		return HandleResult{Reply: "empty message", Source: "program"}, nil
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "user.message", Actor: from, Payload: eventlog.Payload(map[string]any{"message": message})})
-	reply, err := o.handleMessage(ctx, message)
+	reply, source, err := o.handleMessage(ctx, message)
+	if err != nil && isUserFacingCommandError(err) {
+		reply = "I couldn't match that to a task. Use `tasks` to see current task IDs, or click one of the suggested action buttons."
+		source = "program"
+		err = nil
+	}
 	if err == nil {
 		o.appendChatReply(ctx, from, reply)
 	}
-	return reply, err
+	return HandleResult{Reply: reply, Source: normalizeSource(source)}, err
 }
 
-func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, error) {
+func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, string, error) {
 	fields := strings.Fields(message)
 	cmd := strings.ToLower(fields[0])
 	if isCasualMessage(message) {
-		return "I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil
+		return programResult("I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil)
 	}
-	if isActiveTaskStatusRequest(message) {
-		return o.listActiveTasks()
+	if isActiveTaskStatusRequest(message) || isInFlightQuery(message) {
+		return programResult(o.listInFlight())
 	}
 	switch cmd {
 	case "help":
-		return help(), nil
-	case "new", "task":
-		return o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])))
-	case "tasks":
-		return o.listTasks()
+		return programResult(help(), nil)
 	case "status":
-		return o.listActiveTasks()
+		return programResult(o.listInFlight())
+	case "new", "task":
+		return programResult(o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
+	case "tasks":
+		return programResult(o.listTasks())
 	case "agents":
-		return o.listAgents(ctx)
+		return programResult(o.listAgents(ctx))
 	case "cancel", "stop":
 		if len(fields) < 2 {
-			return "usage: cancel <task_id>", nil
+			return programResult("usage: cancel <task_id>", nil)
 		}
-		return o.cancelTask(ctx, strings.Join(fields[1:], " "))
+		return programResult(o.cancelTask(ctx, strings.Join(fields[1:], " ")))
 	case "delete", "remove", "rm":
 		if len(fields) < 2 {
-			return "usage: delete <task_id>", nil
+			return programResult("usage: delete <task_id>", nil)
 		}
-		return o.deleteTask(ctx, strings.Join(fields[1:], " "))
+		return programResult(o.deleteTask(ctx, strings.Join(fields[1:], " ")))
 	case "show":
 		if len(fields) < 2 {
-			return "usage: show <task_id>", nil
+			return programResult("usage: show <task_id>", nil)
 		}
-		return o.showTask(fields[1])
+		return programResult(o.showTask(strings.Join(fields[1:], " ")))
 	case "read":
 		if len(fields) < 2 {
-			return "usage: read <repo_path>", nil
+			return programResult("usage: read <repo_path>", nil)
 		}
-		return o.readRepo(ctx, strings.Join(fields[1:], " "))
+		return programResult(o.readRepo(ctx, strings.Join(fields[1:], " ")))
 	case "search":
 		if len(fields) < 2 {
-			return "usage: search <text>", nil
+			return programResult("usage: search <text>", nil)
 		}
-		return o.searchRepo(ctx, strings.Join(fields[1:], " "))
+		return programResult(o.searchRepo(ctx, strings.Join(fields[1:], " ")))
 	case "patch":
 		if len(fields) < 3 {
-			return "usage: patch <task_id> <patch_file>", nil
+			return programResult("usage: patch <task_id> <patch_file>", nil)
 		}
-		return o.patchTask(ctx, fields[1], fields[2])
+		return programResult(o.patchTask(ctx, fields[1], fields[2]))
 	case "test":
 		if len(fields) < 2 {
-			return "usage: test <task_id>", nil
+			return programResult("usage: test <task_id>", nil)
 		}
-		return o.testTask(ctx, fields[1])
+		return programResult(o.testTask(ctx, strings.Join(fields[1:], " ")))
 	case "diff":
 		if len(fields) < 2 {
-			return "usage: diff <task_id>", nil
+			return programResult("usage: diff <task_id>", nil)
 		}
-		return o.diffTask(ctx, fields[1])
+		return programResult(o.diffTask(ctx, strings.Join(fields[1:], " ")))
 	case "review":
 		if len(fields) < 2 {
-			return "usage: review <task_id>", nil
+			return programResult("usage: review <task_id>", nil)
 		}
-		return o.reviewTask(ctx, fields[1])
-	case "run", "work":
+		return programResult(o.reviewTask(ctx, strings.Join(fields[1:], " ")))
+	case "run", "work", "start":
 		if len(fields) < 2 {
-			return "usage: run <task_id>", nil
+			return programResult("usage: run <task_id|task title>", nil)
 		}
-		return o.runCoderTask(ctx, fields[1])
+		return programResult(o.runCoderTask(ctx, strings.Join(fields[1:], " ")))
 	case "delegate", "escalate":
-		if len(fields) < 4 {
-			return "usage: delegate <task_id> <backend> <instruction>", nil
+		selector, backend, instruction, ok := parseDelegateCommand(fields)
+		if !ok {
+			return programResult("usage: delegate <task_id|task title> to <codex|claude|gemini> [instruction]", nil)
 		}
-		instruction := strings.TrimSpace(strings.Join(fields[3:], " "))
-		return o.delegateTask(ctx, fields[1], fields[2], instruction)
+		return programResult(o.delegateTask(ctx, selector, backend, instruction))
 	case "codex", "claude", "gemini":
-		if len(fields) < 3 {
-			return fmt.Sprintf("usage: %s <task_id> <instruction>", cmd), nil
+		if len(fields) < 2 {
+			return programResult(fmt.Sprintf("usage: %s <task_id|task title> [instruction]", cmd), nil)
 		}
-		instruction := strings.TrimSpace(strings.Join(fields[2:], " "))
-		return o.delegateTask(ctx, fields[1], cmd, instruction)
+		selector, instruction := splitSelectorAndInstruction(fields[1:])
+		return programResult(o.delegateTask(ctx, selector, cmd, instruction))
 	case "approvals":
-		return o.listApprovals()
+		return programResult(o.listApprovals())
 	case "approve":
 		if len(fields) < 2 {
-			return "usage: approve <approval_id>", nil
+			return programResult("usage: approve <approval_id>", nil)
 		}
-		return o.resolveApproval(ctx, fields[1], true)
+		return programResult(o.resolveApproval(ctx, fields[1], true))
 	case "deny":
 		if len(fields) < 2 {
-			return "usage: deny <approval_id>", nil
+			return programResult("usage: deny <approval_id>", nil)
 		}
-		return o.resolveApproval(ctx, fields[1], false)
+		return programResult(o.resolveApproval(ctx, fields[1], false))
 	default:
 		if isPlainWorkRequest(message) {
-			return o.startOneShotWork(ctx, message)
+			return programResult(o.startOneShotWork(ctx, message))
 		}
 		return o.handleWithLLM(ctx, message)
 	}
+}
+
+func programResult(reply string, err error) (string, string, error) {
+	return reply, "program", err
+}
+
+func normalizeSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "program"
+	}
+	return source
 }
 
 func (o *Orchestrator) appendChatReply(ctx context.Context, to, message string) {
@@ -191,6 +218,31 @@ func isCasualMessage(message string) bool {
 	default:
 		return false
 	}
+}
+
+func isUserFacingCommandError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.HasPrefix(message, "no task matches ") ||
+		strings.HasPrefix(message, "task selector ") ||
+		strings.Contains(message, "task id or title is required")
+}
+
+func isInFlightQuery(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.Trim(message, ".,!?")))
+	if len(strings.Fields(normalized)) > 5 {
+		return false
+	}
+	return strings.Contains(normalized, "in flight") ||
+		strings.Contains(normalized, "cooking") ||
+		strings.Contains(normalized, "in progress") ||
+		strings.Contains(normalized, "progress") ||
+		strings.Contains(normalized, "what work") ||
+		strings.Contains(normalized, "what is running") ||
+		strings.Contains(normalized, "what's running") ||
+		strings.Contains(normalized, "whats running")
 }
 
 func isActiveTaskStatusRequest(message string) bool {
@@ -223,8 +275,7 @@ func isPlainWorkRequest(message string) bool {
 		return false
 	}
 	first := ""
-	fields := strings.Fields(normalized)
-	for _, field := range fields {
+	for _, field := range strings.Fields(normalized) {
 		switch field {
 		case "please", "can", "could", "you", "would", "we", "need", "to":
 			continue
@@ -246,6 +297,54 @@ func normalizeIntentText(message string) string {
 	normalized = strings.Trim(normalized, " \t\r\n.,!?")
 	normalized = strings.ReplaceAll(normalized, "'", "")
 	return strings.Join(strings.Fields(normalized), " ")
+}
+
+func parseDelegateCommand(fields []string) (selector, backend, instruction string, ok bool) {
+	args := fields[1:]
+	if len(args) == 0 {
+		return "", "", "", false
+	}
+	for i, arg := range args {
+		if strings.EqualFold(arg, "to") && i+1 < len(args) && isExternalBackend(args[i+1]) {
+			selector = strings.Join(args[:i], " ")
+			backend = strings.ToLower(args[i+1])
+			instruction = strings.Join(args[i+2:], " ")
+			return strings.TrimSpace(selector), backend, strings.TrimSpace(instruction), strings.TrimSpace(selector) != ""
+		}
+	}
+	if len(args) >= 2 && isExternalBackend(args[1]) {
+		selector = args[0]
+		backend = strings.ToLower(args[1])
+		instruction = strings.Join(args[2:], " ")
+		return selector, backend, strings.TrimSpace(instruction), true
+	}
+	if len(args) >= 2 && isExternalBackend(args[len(args)-1]) {
+		selector = strings.Join(args[:len(args)-1], " ")
+		backend = strings.ToLower(args[len(args)-1])
+		return strings.TrimSpace(selector), backend, "", strings.TrimSpace(selector) != ""
+	}
+	return "", "", "", false
+}
+
+func splitSelectorAndInstruction(args []string) (string, string) {
+	if len(args) == 0 {
+		return "", ""
+	}
+	for i, arg := range args {
+		if strings.EqualFold(arg, "with") || strings.EqualFold(arg, "and") {
+			return strings.Join(args[:i], " "), strings.Join(args[i+1:], " ")
+		}
+	}
+	return strings.Join(args, " "), ""
+}
+
+func isExternalBackend(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "codex", "claude", "gemini":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) CreateTask(ctx context.Context, goal string) (string, error) {
@@ -301,20 +400,24 @@ func help() string {
 		"commands:",
 		"  new <goal>                 create task and isolated worktree",
 		"  tasks                      list tasks",
-		"  status                     list active tasks",
+		"  status                     show active tasks and next actions",
+		"  what's cooking             show active tasks and next actions",
 		"  show <task_id>             show task",
 		"  cancel <task_id>           mark task cancelled, keep workspace",
 		"  delete <task_id>           remove task record and worktree",
+		"  start <task_id|title>      run a task by id, short id, or title",
 		"  read <repo_path>           inspect repo file",
 		"  search <text>              search repo text",
 		"  patch <task_id> <file>     apply unified diff to task worktree",
-		"  test <task_id>             run go test ./... in worktree",
+		"  test <task_id>             run project checks in worktree",
 		"  diff <task_id>             show worktree diff",
 		"  review <task_id>           run tests, show diff, request merge approval",
 		"  run <task_id>              let CoderAgent work in the task worktree",
 		"  agents                     list external worker backends",
 		"  delegate <task_id> <agent> <instruction>",
 		"                             run codex/claude/gemini in the task worktree",
+		"  delegate <task title> to <agent>",
+		"                             natural form, e.g. delegate the bun task to codex",
 		"  codex|claude|gemini <task_id> <instruction>",
 		"                             shortcut for delegate <task_id> <agent> ...",
 		"  approvals                  list approval requests",
@@ -323,9 +426,9 @@ func help() string {
 	}, "\n")
 }
 
-func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (string, error) {
+func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (string, string, error) {
 	if o.provider == nil || o.model == "" {
-		return "I do not have an LLM provider configured for open-ended chat. Use `help`, `status`, or `new <goal>`.", nil
+		return programResult("I do not have an LLM provider configured for open-ended chat. Use `help`, `status`, or describe development work to start a task.", nil)
 	}
 	maxToolCalls := o.cfg.Limits.MaxToolCallsPerTurn
 	if maxToolCalls <= 0 {
@@ -349,17 +452,18 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			Messages:    messages,
 		}
 		resp, err := o.provider.Complete(ctx, req)
+		source := responseSource(resp, o.provider.Name())
 		if err != nil {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "error": err.Error()})})
-			return "", err
+			return programResult("I couldn't reach the configured LLM provider. I did not create a task. Use `status` for active work, or describe development work to start a task.", nil)
 		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "message": resp.Message.Content, "usage": resp.Usage})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": source, "model": resp.Model, "message": resp.Message.Content, "usage": resp.Usage})})
 		parsed, err := parseAgentResponse(resp.Message.Content)
 		if err != nil {
 			if strings.TrimSpace(resp.Message.Content) != "" {
-				return strings.TrimSpace(resp.Message.Content), nil
+				return strings.TrimSpace(resp.Message.Content), source, nil
 			}
-			return "I could not parse the model response. Use `help`, `status`, or `new <goal>`.", nil
+			return programResult("I could not parse the model response. Use `help`, `status`, or describe development work to start a task.", nil)
 		}
 		if parsed.Message != "" {
 			lastMessage = parsed.Message
@@ -368,7 +472,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			if lastMessage == "" {
 				lastMessage = "Done."
 			}
-			return lastMessage, nil
+			return lastMessage, source, nil
 		}
 		messages = append(messages, llm.Message{Role: "assistant", Content: mustJSON(parsed)})
 		var results []toolExecution
@@ -381,7 +485,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			result := o.executeProposedTool(ctx, "OrchestratorAgent", call, "")
 			results = append(results, result)
 			if result.NeedsApproval {
-				return formatApprovalStop(lastMessage, result), nil
+				return formatApprovalStop(lastMessage, result), "program", nil
 			}
 		}
 		messages = append(messages, llm.Message{Role: "user", Content: "Tool results:\n" + truncateForPrompt(mustJSON(results))})
@@ -389,7 +493,14 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 	if lastMessage == "" {
 		lastMessage = "Stopped after reaching the turn limit."
 	}
-	return lastMessage, nil
+	return lastMessage, "program", nil
+}
+
+func responseSource(resp llm.CompletionResponse, fallback string) string {
+	if strings.TrimSpace(resp.Provider) != "" {
+		return strings.TrimSpace(resp.Provider)
+	}
+	return normalizeSource(fallback)
 }
 
 func (o *Orchestrator) recentChatHistory(day time.Time, limit int) []llm.Message {
@@ -524,6 +635,14 @@ func truncateForPrompt(s string) string {
 	return s[:max] + "...[truncated]"
 }
 
+func truncateForChat(s string) string {
+	const max = 12000
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + fmt.Sprintf("\n...[truncated %d bytes]", len(s)-max)
+}
+
 func formatApprovalStop(message string, result toolExecution) string {
 	if message == "" {
 		message = "A tool call requires approval."
@@ -585,10 +704,10 @@ func firstJSONObject(s string) string {
 
 func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, error) {
 	created, err := o.createTaskRecord(ctx, goal)
-	if err != nil || created.Task.ID == "" {
-		if err != nil {
-			return "", err
-		}
+	if err != nil {
+		return "", err
+	}
+	if created.Task.ID == "" {
 		return "usage: new <goal>", nil
 	}
 	t := created.Task
@@ -638,47 +757,82 @@ func (o *Orchestrator) listTasks() (string, error) {
 	}
 	var b strings.Builder
 	for _, t := range tasks {
-		fmt.Fprintf(&b, "%s [%s] %s workspace=%s\n", t.ID, t.Status, t.Title, t.Workspace)
+		fmt.Fprintf(&b, "%s [%s] %s\n  id: %s\n  workspace: %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), t.ID, t.Workspace)
+		if !taskTerminal(t.Status) {
+			fmt.Fprintf(&b, "  next: `%s`, `delegate %s to codex`, or `delete %s`\n", nextActionForTask(t), taskShortID(t.ID), taskShortID(t.ID))
+		}
 	}
 	return strings.TrimSpace(b.String()), nil
 }
 
-func (o *Orchestrator) listActiveTasks() (string, error) {
+func (o *Orchestrator) listInFlight() (string, error) {
 	tasks, err := o.tasks.List()
 	if err != nil {
 		return "", err
 	}
-	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt) })
 	var b strings.Builder
 	for _, t := range tasks {
-		if !isInFlightStatus(t.Status) {
+		if taskTerminal(t.Status) {
 			continue
 		}
-		fmt.Fprintf(&b, "%s [%s] %s workspace=%s\n", t.ID, t.Status, t.Title, t.Workspace)
+		next := nextActionForTask(t)
+		fmt.Fprintf(&b, "- %s [%s] %s\n  next: `%s`, `delegate %s to codex`, or `delete %s`\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), next, taskShortID(t.ID), taskShortID(t.ID))
 	}
-	out := strings.TrimSpace(b.String())
-	if out == "" {
-		return "no active tasks", nil
+	if b.Len() == 0 {
+		return "Nothing active. Use `new <goal>` to create a task.", nil
 	}
-	return out, nil
+	return "In flight:\n" + strings.TrimSpace(b.String()), nil
 }
 
-func isInFlightStatus(status string) bool {
-	switch status {
-	case taskstore.StatusQueued, taskstore.StatusRunning, taskstore.StatusBlocked, taskstore.StatusAwaitingApproval:
-		return true
+func nextActionForTask(t taskstore.Task) string {
+	shortID := taskShortID(t.ID)
+	switch t.Status {
+	case taskstore.StatusAwaitingApproval:
+		return "approvals"
+	case taskstore.StatusReadyForReview:
+		return fmt.Sprintf("review %s", shortID)
+	case taskstore.StatusBlocked:
+		result := strings.ToLower(t.Result)
+		if strings.Contains(result, "external agent returned") || strings.Contains(result, "finished") || strings.Contains(result, "diff") {
+			return fmt.Sprintf("review %s", shortID)
+		}
+		return fmt.Sprintf("start %s", shortID)
+	case taskstore.StatusFailed:
+		return fmt.Sprintf("start %s", shortID)
 	default:
-		return false
+		if t.AssignedTo != "" && t.AssignedTo != "OrchestratorAgent" && t.AssignedTo != "CoderAgent" {
+			return fmt.Sprintf("show %s", shortID)
+		}
+		return fmt.Sprintf("run %s", shortID)
 	}
 }
 
 func (o *Orchestrator) showTask(taskID string) (string, error) {
-	t, err := o.tasks.Load(taskID)
+	resolved, err := o.resolveTaskID(taskID)
 	if err != nil {
 		return "", err
 	}
-	b, _ := json.MarshalIndent(t, "", "  ")
-	return string(b), nil
+	t, err := o.tasks.Load(resolved)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s [%s] %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t))
+	fmt.Fprintf(&b, "id: %s\n", t.ID)
+	if t.AssignedTo != "" {
+		fmt.Fprintf(&b, "assigned: %s\n", t.AssignedTo)
+	}
+	if t.Workspace != "" {
+		fmt.Fprintf(&b, "workspace: %s\n", t.Workspace)
+	}
+	if strings.TrimSpace(t.Result) != "" {
+		fmt.Fprintf(&b, "result: %s\n", strings.TrimSpace(t.Result))
+	}
+	if !taskTerminal(t.Status) {
+		fmt.Fprintf(&b, "next: `%s`, `delegate %s to codex`, or `delete %s`", nextActionForTask(t), taskShortID(t.ID), taskShortID(t.ID))
+	}
+	return strings.TrimSpace(b.String()), nil
 }
 
 func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string, error) {
@@ -734,6 +888,9 @@ func (o *Orchestrator) resolveTaskID(selector string) (string, error) {
 	if selector == "" {
 		return "", fmt.Errorf("task id or title is required")
 	}
+	if isTaskPronoun(selector) {
+		return o.latestActionableTask()
+	}
 	if _, err := o.tasks.Load(selector); err == nil {
 		return selector, nil
 	}
@@ -744,11 +901,15 @@ func (o *Orchestrator) resolveTaskID(selector string) (string, error) {
 	needle := normalizeTaskSelector(selector)
 	var matches []taskstore.Task
 	for _, t := range tasks {
-		if normalizeTaskSelector(t.ID) == needle || normalizeTaskSelector(t.Title) == needle {
+		shortID := normalizeTaskSelector(taskShortID(t.ID))
+		fullID := normalizeTaskSelector(t.ID)
+		title := normalizeTaskSelector(t.Title)
+		goal := normalizeTaskSelector(t.Goal)
+		if fullID == needle || shortID == needle || title == needle || goal == needle {
 			matches = append(matches, t)
 			continue
 		}
-		if needle != "" && strings.Contains(normalizeTaskSelector(t.Title), needle) {
+		if needle != "" && (strings.Contains(title, needle) || strings.Contains(goal, needle)) {
 			matches = append(matches, t)
 		}
 	}
@@ -756,9 +917,18 @@ func (o *Orchestrator) resolveTaskID(selector string) (string, error) {
 		return matches[0].ID, nil
 	}
 	if len(matches) > 1 {
+		sort.Slice(matches, func(i, j int) bool {
+			if taskTerminal(matches[i].Status) != taskTerminal(matches[j].Status) {
+				return !taskTerminal(matches[i].Status)
+			}
+			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
+		})
+		if !taskTerminal(matches[0].Status) && (len(matches) == 1 || taskTerminal(matches[1].Status)) {
+			return matches[0].ID, nil
+		}
 		var ids []string
 		for _, t := range matches {
-			ids = append(ids, t.ID)
+			ids = append(ids, taskShortID(t.ID)+"="+friendlyTaskTitle(t))
 		}
 		sort.Strings(ids)
 		return "", fmt.Errorf("task selector %q is ambiguous: %s", selector, strings.Join(ids, ", "))
@@ -766,18 +936,75 @@ func (o *Orchestrator) resolveTaskID(selector string) (string, error) {
 	return "", fmt.Errorf("no task matches %q", selector)
 }
 
+func (o *Orchestrator) latestActionableTask() (string, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return "", err
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt) })
+	for _, t := range tasks {
+		if !taskTerminal(t.Status) {
+			return t.ID, nil
+		}
+	}
+	if len(tasks) > 0 {
+		return tasks[0].ID, nil
+	}
+	return "", fmt.Errorf("no tasks exist")
+}
+
 func normalizeTaskSelector(s string) string {
 	words := strings.Fields(strings.ToLower(strings.TrimSpace(strings.Trim(s, ".,!?"))))
 	filtered := words[:0]
 	for _, word := range words {
 		switch word {
-		case "the", "a", "an", "task":
+		case "the", "a", "an", "task", "please":
 			continue
 		default:
 			filtered = append(filtered, word)
 		}
 	}
 	return strings.Join(filtered, " ")
+}
+
+func isTaskPronoun(selector string) bool {
+	switch normalizeTaskSelector(selector) {
+	case "it", "this", "that", "current", "latest", "last":
+		return true
+	default:
+		return false
+	}
+}
+
+func taskTerminal(status string) bool {
+	switch status {
+	case taskstore.StatusDone, taskstore.StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func taskShortID(taskID string) string {
+	parts := strings.Split(taskID, "_")
+	if len(parts) > 0 && len(parts[len(parts)-1]) >= 6 {
+		return parts[len(parts)-1]
+	}
+	if len(taskID) <= 8 {
+		return taskID
+	}
+	return taskID[len(taskID)-8:]
+}
+
+func friendlyTaskTitle(t taskstore.Task) string {
+	title := strings.TrimSpace(t.Title)
+	if title == "" {
+		title = strings.TrimSpace(t.Goal)
+	}
+	if len(title) > 72 {
+		title = title[:72] + "..."
+	}
+	return title
 }
 
 func (o *Orchestrator) listAgents(ctx context.Context) (string, error) {
@@ -816,35 +1043,18 @@ func (o *Orchestrator) listAgents(ctx context.Context) (string, error) {
 	return strings.TrimSpace(b.String()), nil
 }
 
-func (o *Orchestrator) delegateTask(ctx context.Context, taskID, backend, instruction string) (string, error) {
-	if strings.TrimSpace(instruction) == "" {
-		return "usage: delegate <task_id> <backend> <instruction>", nil
-	}
-	if err := o.startExternalDelegation(context.WithoutCancel(ctx), taskID, backend, instruction); err != nil {
+func (o *Orchestrator) delegateTask(ctx context.Context, selector, backend, instruction string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Started %s for %s. It is cooking in the background.\nCheck `show %s`, `diff %s`, `test %s`, or `review %s`.", backend, taskID, taskID, taskID, taskID, taskID), nil
+	if err := o.startDelegationForTask(context.Background(), taskID, backend, instruction); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Started %s on %s.\nThis is running in the background; chat is not blocked.\nNext: `status`, `show %s`, or `review %s` after it finishes.", backend, taskShortID(taskID), taskShortID(taskID), taskShortID(taskID)), nil
 }
 
-func (o *Orchestrator) startExternalDelegation(ctx context.Context, taskID, backend, instruction string) error {
-	t, err := o.tasks.Load(taskID)
-	if err != nil {
-		return err
-	}
-	if t.Workspace == "" {
-		return fmt.Errorf("task %s has no workspace", taskID)
-	}
-	t.Status = taskstore.StatusRunning
-	t.AssignedTo = backend
-	if err := o.tasks.Save(t); err != nil {
-		return err
-	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent": backend})})
-	go o.runExternalDelegation(ctx, taskID, backend, t.Workspace, instruction)
-	return nil
-}
-
-func (o *Orchestrator) runExternalDelegation(ctx context.Context, taskID, backend, workspace, instruction string) {
+func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend, workspace, instruction string) {
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.delegate", map[string]any{
 		"backend":     backend,
 		"task_id":     taskID,
@@ -862,11 +1072,12 @@ func (o *Orchestrator) runExternalDelegation(ctx context.Context, taskID, backen
 	_ = json.Unmarshal(raw, &out)
 	t, loadErr := o.tasks.Load(taskID)
 	if loadErr != nil {
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.failed", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"error": loadErr.Error()})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.failed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "error": loadErr.Error()})})
 		return
 	}
 	t.AssignedTo = "OrchestratorAgent"
-	t.Result = strings.TrimSpace(out.Output)
+	output := strings.TrimSpace(out.Output)
+	t.Result = output
 	if err != nil {
 		t.Status = taskstore.StatusBlocked
 		if out.Error != "" {
@@ -875,12 +1086,17 @@ func (o *Orchestrator) runExternalDelegation(ctx context.Context, taskID, backen
 			t.Result = err.Error()
 		}
 		_ = o.tasks.Save(t)
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"error": t.Result})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.failed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "error": err.Error(), "result": out})})
 		return
 	}
+	t.Status = taskstore.StatusBlocked
+	if t.Result == "" {
+		t.Result = "external agent returned no output"
+	}
+	t.Result = "external agent finished; ready for review.\n" + t.Result
 	t.Status = taskstore.StatusReadyForReview
 	_ = o.tasks.Save(t)
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.external_agent.finished", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"backend": out.Backend, "run_id": out.ID})})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.completed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "result": out})})
 }
 
 func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (string, error) {
@@ -892,54 +1108,49 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 		return "usage: new <goal>", nil
 	}
 	taskID := created.Task.ID
-	short := shortTaskID(taskID)
-	if !o.externalAgentAvailable(ctx, "codex") {
-		t := created.Task
-		t.Status = taskstore.StatusQueued
-		t.AssignedTo = "OrchestratorAgent"
-		t.Result = "codex is not available"
-		_ = o.tasks.Save(t)
-		return fmt.Sprintf("Created task %s (%s), but codex is not available. Start it with `run %s` or `delegate %s codex <instruction>`.", short, taskID, taskID, taskID), nil
-	}
-	instruction := strings.Join([]string{
+	if err := o.startDelegationForTask(context.Background(), taskID, "codex", strings.Join([]string{
 		goal,
 		"",
 		"Work only in this task worktree. Inspect first, make the smallest practical patch, run relevant formatting and tests, and leave a concise summary of what changed.",
-	}, "\n")
-	if err := o.startExternalDelegation(context.WithoutCancel(ctx), taskID, "codex", instruction); err != nil {
-		return "", err
+	}, "\n")); err != nil {
+		return fmt.Sprintf("Created task %s, but could not start codex: %v\nNext: `run %s` or `delegate %s to codex`.", taskShortID(taskID), err, taskShortID(taskID), taskShortID(taskID)), nil
 	}
-	return fmt.Sprintf("Created task %s (%s) and started codex. It is cooking in the background.\nCheck `show %s`, `diff %s`, `test %s`, or `review %s`.", short, taskID, taskID, taskID, taskID, taskID), nil
+	return fmt.Sprintf("Created task %s and started codex. It is cooking in the background.\nNext: `status`, `show %s`, or `review %s` when ready.", taskShortID(taskID), taskShortID(taskID), taskShortID(taskID)), nil
 }
 
-func (o *Orchestrator) externalAgentAvailable(ctx context.Context, backend string) bool {
-	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.list", map[string]any{}, "")
+func (o *Orchestrator) startDelegationForTask(ctx context.Context, taskID, backend, instruction string) error {
+	t, err := o.tasks.Load(taskID)
 	if err != nil {
-		return false
+		return err
 	}
-	var out struct {
-		Agents []struct {
-			Name      string `json:"name"`
-			Enabled   bool   `json:"enabled"`
-			Available bool   `json:"available"`
-		} `json:"agents"`
+	if t.Workspace == "" {
+		return fmt.Errorf("task %s has no workspace", taskID)
 	}
-	if json.Unmarshal(raw, &out) != nil {
-		return false
+	if strings.TrimSpace(instruction) == "" {
+		instruction = defaultDelegationInstruction(t)
 	}
-	for _, agent := range out.Agents {
-		if agent.Name == backend && agent.Enabled && agent.Available {
-			return true
-		}
+	t.Status = taskstore.StatusRunning
+	t.AssignedTo = backend
+	t.Result = fmt.Sprintf("delegated to %s; external worker is running", backend)
+	if err := o.tasks.Save(t); err != nil {
+		return err
 	}
-	return false
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent": backend})})
+	runID := id.New("delegate")
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.started", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "workspace": t.Workspace})})
+	go o.runDelegation(ctx, runID, taskID, backend, t.Workspace, instruction)
+	return nil
 }
 
-func shortTaskID(taskID string) string {
-	if len(taskID) <= 13 {
-		return taskID
-	}
-	return taskID[len(taskID)-8:]
+func defaultDelegationInstruction(t taskstore.Task) string {
+	return strings.Join([]string{
+		"Work this task to completion if possible.",
+		"Inspect the task workspace before editing.",
+		"Make a minimal patch that satisfies the task goal.",
+		"Run relevant formatting and tests when available.",
+		"Summarize changed files, test results, and any follow-up needed.",
+		"Task goal: " + t.Goal,
+	}, " ")
 }
 
 func (o *Orchestrator) readRepo(ctx context.Context, path string) (string, error) {
@@ -989,23 +1200,23 @@ func (o *Orchestrator) patchTask(ctx context.Context, taskID, patchFile string) 
 	return "Patch applied to workspace " + t.Workspace, nil
 }
 
-func (o *Orchestrator) testTask(ctx context.Context, taskID string) (string, error) {
+func (o *Orchestrator) testTask(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
 	}
-	raw, err := o.runTool(ctx, "CoderAgent", "go.test", map[string]any{"dir": t.Workspace}, taskID)
-	var out struct {
-		Output string `json:"output"`
-	}
-	_ = json.Unmarshal(raw, &out)
-	if err != nil {
-		return out.Output, err
-	}
-	return strings.TrimSpace(out.Output), nil
+	return o.runProjectChecks(ctx, taskID, t.Workspace, "CoderAgent")
 }
 
-func (o *Orchestrator) diffTask(ctx context.Context, taskID string) (string, error) {
+func (o *Orchestrator) diffTask(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
@@ -1024,8 +1235,11 @@ func (o *Orchestrator) diffTask(ctx context.Context, taskID string) (string, err
 	return out.Diff, nil
 }
 
-func (o *Orchestrator) reviewTask(ctx context.Context, taskID string) (string, error) {
-	testOut, testErr := o.testTask(ctx, taskID)
+func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
 	diffOut, diffErr := o.diffTask(ctx, taskID)
 	if diffErr != nil {
 		return "", diffErr
@@ -1037,9 +1251,17 @@ func (o *Orchestrator) reviewTask(ctx context.Context, taskID string) (string, e
 	if diffOut == "no diff" {
 		return "ReviewerAgent: no diff to approve.", nil
 	}
+	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent")
 	status := "pass"
 	if testErr != nil {
 		status = "fail"
+		t.Status = taskstore.StatusBlocked
+		t.AssignedTo = "OrchestratorAgent"
+		t.Result = "ReviewerAgent checks failed: " + testErr.Error()
+		_ = o.tasks.Save(t)
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+		shortID := taskShortID(taskID)
+		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nNo approval created because checks failed.\nNext: `delegate %s to codex fix the failing tests`, `diff %s`, or `delete %s`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), shortID, shortID, shortID), nil
 	}
 	approvalID := id.New("approval")
 	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})
@@ -1051,10 +1273,128 @@ func (o *Orchestrator) reviewTask(ctx context.Context, taskID string) (string, e
 	t.Result = "ReviewerAgent test status: " + status
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(req)})
-	return fmt.Sprintf("ReviewerAgent:\nTests: %s\n%s\nDiff:\n%s\nApproval requested: %s\nApprove merge with `approve %s`.", status, strings.TrimSpace(testOut), diffOut, approvalID, approvalID), nil
+	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nApproval requested: %s\nApprove merge with `approve %s`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), approvalID, approvalID), nil
 }
 
-func (o *Orchestrator) runCoderTask(ctx context.Context, taskID string) (string, error) {
+func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string) (string, error) {
+	var outputs []string
+	var firstErr error
+	if exists(filepath.Join(workspace, "go.mod")) {
+		out, err := o.runCheckTool(ctx, actor, "go.test", workspace, taskID)
+		outputs = append(outputs, "go.test:\n"+strings.TrimSpace(out))
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	webDir := filepath.Join(workspace, "web")
+	if exists(filepath.Join(webDir, "package.json")) {
+		out, err := o.runCheckTool(ctx, actor, "bun.check", webDir, taskID)
+		outputs = append(outputs, "bun.check:\n"+strings.TrimSpace(out))
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		out, err = o.runCheckTool(ctx, actor, "bun.build", webDir, taskID)
+		outputs = append(outputs, "bun.build:\n"+strings.TrimSpace(out))
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if len(outputs) == 0 {
+		return "no configured checks found", nil
+	}
+	return truncateForChat(strings.Join(outputs, "\n\n")), firstErr
+}
+
+func (o *Orchestrator) runCheckTool(ctx context.Context, actor, name, dir, taskID string) (string, error) {
+	raw, err := o.runTool(ctx, actor, name, map[string]any{"dir": dir}, taskID)
+	var out struct {
+		Output   string `json:"output"`
+		Command  string `json:"command"`
+		TimedOut bool   `json:"timed_out"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	output := out.Output
+	if out.Command != "" {
+		output = "$ " + out.Command + "\n" + output
+	}
+	if out.TimedOut {
+		output += "\n[timed out]"
+	}
+	return output, err
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func summarizeDiffForChat(diff string) string {
+	diff = strings.TrimSpace(diff)
+	if diff == "" {
+		return "no diff"
+	}
+	files := diffFileList(diff)
+	additions, deletions := diffLineStats(diff)
+	header := fmt.Sprintf("%d changed file(s), +%d/-%d", len(files), additions, deletions)
+	if len(files) > 0 {
+		limit := len(files)
+		if limit > 20 {
+			limit = 20
+		}
+		header += ":\n- " + strings.Join(files[:limit], "\n- ")
+		if len(files) > limit {
+			header += fmt.Sprintf("\n- ... %d more", len(files)-limit)
+		}
+	}
+	return header + "\n\nFull diff is available with `diff <task_id>`."
+}
+
+func diffFileList(diff string) []string {
+	seen := map[string]bool{}
+	var files []string
+	for _, line := range strings.Split(diff, "\n") {
+		var path string
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				path = strings.TrimPrefix(parts[3], "b/")
+			}
+		case strings.HasPrefix(line, "+++ b/"):
+			path = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
+		case strings.HasPrefix(line, "## "):
+			continue
+		}
+		if path != "" && path != "/dev/null" && !seen[path] {
+			seen[path] = true
+			files = append(files, path)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+func diffLineStats(diff string) (int, int) {
+	additions := 0
+	deletions := 0
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+			continue
+		case strings.HasPrefix(line, "+"):
+			additions++
+		case strings.HasPrefix(line, "-"):
+			deletions++
+		}
+	}
+	return additions, deletions
+}
+
+func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
@@ -1231,6 +1571,9 @@ func (o *Orchestrator) listApprovals() (string, error) {
 	var b strings.Builder
 	for _, r := range requests {
 		fmt.Fprintf(&b, "%s [%s] task=%s tool=%s reason=%s\n", r.ID, r.Status, r.TaskID, r.Tool, r.Reason)
+		if r.Status == approvalstore.StatusPending {
+			fmt.Fprintf(&b, "  next: `approve %s` or `deny %s`\n", r.ID, r.ID)
+		}
 	}
 	return strings.TrimSpace(b.String()), nil
 }

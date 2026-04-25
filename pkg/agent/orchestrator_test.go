@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,6 +80,26 @@ func TestPlainWorkRequestIntent(t *testing.T) {
 	}
 }
 
+func TestParseDelegateCommandNaturalForm(t *testing.T) {
+	selector, backend, instruction, ok := parseDelegateCommand([]string{"delegate", "the", "bun", "task", "to", "codex"})
+	if !ok {
+		t.Fatalf("expected delegate command to parse")
+	}
+	if selector != "the bun task" || backend != "codex" || instruction != "" {
+		t.Fatalf("unexpected parse: selector=%q backend=%q instruction=%q", selector, backend, instruction)
+	}
+}
+
+func TestParseDelegateCommandStrictForm(t *testing.T) {
+	selector, backend, instruction, ok := parseDelegateCommand([]string{"delegate", "c26f013d", "codex", "finish", "it"})
+	if !ok {
+		t.Fatalf("expected delegate command to parse")
+	}
+	if selector != "c26f013d" || backend != "codex" || instruction != "finish it" {
+		t.Fatalf("unexpected parse: selector=%q backend=%q instruction=%q", selector, backend, instruction)
+	}
+}
+
 func TestNaturalActiveTasksDoesNotCreateTask(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	now := time.Now().UTC()
@@ -103,7 +125,7 @@ func TestNaturalActiveTasksDoesNotCreateTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "task_running") {
+	if !strings.Contains(reply, "running work") {
 		t.Fatalf("reply = %q, want active task", reply)
 	}
 	if strings.Contains(reply, "task_done") {
@@ -115,6 +137,132 @@ func TestNaturalActiveTasksDoesNotCreateTask(t *testing.T) {
 	}
 	if len(tasks) != 2 {
 		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+}
+
+func TestTaskViewsIncludeClickableNextActions(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_20260425_174912_1db1c910",
+		Title:      "retain chat history",
+		Goal:       "retain chat history",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, view := range map[string]func() (string, error){
+		"tasks": func() (string, error) { return orch.listTasks() },
+		"show":  func() (string, error) { return orch.showTask("1db1c910") },
+	} {
+		reply, err := view()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(reply, "`review 1db1c910`") {
+			t.Fatalf("%s reply = %q, want review action", name, reply)
+		}
+		if !strings.Contains(reply, "`delete 1db1c910`") {
+			t.Fatalf("%s reply = %q, want delete action", name, reply)
+		}
+	}
+}
+
+func TestBadTaskSelectorReturnsChatErrorNotHTTPFailure(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	reply, err := orch.Handle(context.Background(), "test", "Diff summary:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "I couldn't match that to a task") {
+		t.Fatalf("reply = %q, want friendly task selector error", reply)
+	}
+}
+
+func TestApprovalsIncludeClickableActions(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	req := approvalstore.Request{
+		ID:     "approval_20260425_205243_caf98d74",
+		TaskID: "task_20260425_174912_1db1c910",
+		Tool:   "git.merge_approved",
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.listApprovals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "`approve approval_20260425_205243_caf98d74`") {
+		t.Fatalf("reply = %q, want approve action", reply)
+	}
+	if !strings.Contains(reply, "`deny approval_20260425_205243_caf98d74`") {
+		t.Fatalf("reply = %q, want deny action", reply)
+	}
+}
+
+func TestReviewDoesNotRequestApprovalWhenChecksFail(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.registry.Register(goTestFailStub{}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module reviewtest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:        "task_20260425_205658_1e0b26b6",
+		Title:     "add internet search",
+		Goal:      "add internet search",
+		Status:    taskstore.StatusReadyForReview,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Workspace: workspace,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), "1e0b26b6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reply, "Approval requested") || strings.Contains(reply, "`approve ") {
+		t.Fatalf("reply = %q, should not request approval", reply)
+	}
+	if !strings.Contains(reply, "No approval created because checks failed") {
+		t.Fatalf("reply = %q, want no approval explanation", reply)
+	}
+	if !strings.Contains(reply, "`delegate 1e0b26b6 to codex fix the failing tests`") {
+		t.Fatalf("reply = %q, want rework action", reply)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 0 {
+		t.Fatalf("approval count = %d, want 0", len(approvals))
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", updated.Status)
 	}
 }
 
@@ -146,6 +294,21 @@ func TestOpenEndedChatRetainsHistory(t *testing.T) {
 	assertContainsLLMMessage(t, got, llm.Message{Role: "user", Content: "what is this project?"})
 	assertContainsLLMMessage(t, got, llm.Message{Role: "assistant", Content: "reply 1"})
 	assertContainsLLMMessage(t, got, llm.Message{Role: "user", Content: "what did I ask first?"})
+}
+
+func TestOpenEndedChatReportsProviderSource(t *testing.T) {
+	provider := &recordingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	result, err := orch.HandleDetailed(context.Background(), "test", "what is this project?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != "recording" {
+		t.Fatalf("source = %q, want recording", result.Source)
+	}
 }
 
 func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
@@ -187,7 +350,7 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(tasks) == 1 && tasks[0].AssignedTo == "OrchestratorAgent" && tasks[0].Status == taskstore.StatusReadyForReview && tasks[0].Result == "done" {
+		if len(tasks) == 1 && tasks[0].AssignedTo == "OrchestratorAgent" && tasks[0].Status == taskstore.StatusReadyForReview && strings.Contains(tasks[0].Result, "done") {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -209,6 +372,7 @@ func (p *recordingProvider) Complete(_ context.Context, req llm.CompletionReques
 			Role:    "assistant",
 			Content: `{"message":"` + reply + `","done":true,"tool_calls":[]}`,
 		},
+		Provider: p.Name(),
 	}, nil
 }
 
@@ -331,4 +495,37 @@ func (s agentDelegateStub) Run(ctx context.Context, raw json.RawMessage) (json.R
 		"workspace": req.Workspace,
 		"output":    "done",
 	})
+}
+
+type currentDiffStub struct{}
+
+func (currentDiffStub) Name() string        { return "repo.current_diff" }
+func (currentDiffStub) Description() string { return "" }
+func (currentDiffStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (currentDiffStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (currentDiffStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]any{
+		"diff": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n",
+	})
+}
+
+type goTestFailStub struct{}
+
+func (goTestFailStub) Name() string        { return "go.test" }
+func (goTestFailStub) Description() string { return "" }
+func (goTestFailStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (goTestFailStub) Risk() tool.RiskLevel { return tool.RiskLow }
+func (goTestFailStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	raw, err := json.Marshal(map[string]any{
+		"command": "go test ./...",
+		"output":  "FAIL\n",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return raw, fmt.Errorf("go test failed")
 }

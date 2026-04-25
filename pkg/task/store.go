@@ -39,6 +39,12 @@ func (s *Store) Save(t Task) error {
 }
 
 func (s *Store) Load(id string) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadLocked(id)
+}
+
+func (s *Store) loadLocked(id string) (Task, error) {
 	b, err := os.ReadFile(filepath.Join(s.dir, id+".json"))
 	if err != nil {
 		return Task{}, err
@@ -57,6 +63,8 @@ func (s *Store) Delete(id string) error {
 }
 
 func (s *Store) List() ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -69,7 +77,7 @@ func (s *Store) List() ([]Task, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		t, err := s.Load(entry.Name()[:len(entry.Name())-len(".json")])
+		t, err := s.loadLocked(entry.Name()[:len(entry.Name())-len(".json")])
 		if err != nil {
 			return nil, err
 		}

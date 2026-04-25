@@ -189,9 +189,13 @@ func commitWorkspaceChanges(ctx context.Context, workspacePath, message string) 
 	if message == "" {
 		message = "Apply approved task changes"
 	}
-	addOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "add", "-A").CombinedOutput()
+	addOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "add", "-A", "--", ".").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git add workspace: %w: %s", err, strings.TrimSpace(string(addOut)))
+	}
+	cleanupOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "reset", "--", ".codex").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git reset workspace metadata: %w: %s", err, strings.TrimSpace(string(cleanupOut)))
 	}
 	commitOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "commit", "-m", message).CombinedOutput()
 	if err != nil {

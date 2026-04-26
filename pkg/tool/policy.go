@@ -34,7 +34,7 @@ func (p Policy) Decide(agent string, t Tool, input json.RawMessage) PolicyDecisi
 	if p.requireApproval[t.Name()] {
 		return PolicyDecision{Allowed: true, NeedsApproval: true, Reason: "configured approval gate"}
 	}
-	switch t.Risk() {
+	switch EffectiveRisk(t, input) {
 	case RiskReadOnly:
 		return PolicyDecision{Allowed: true, Reason: "read-only tool"}
 	case RiskLow:
@@ -91,6 +91,7 @@ func defaultAgentTools() map[string]map[string]bool {
 			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
 			"git.commit", "git.revert", "git.merge", "git.worktree_create", "git.worktree_remove",
 			"go.test", "go.build", "bun.check", "bun.build",
+			"shell.run_limited", "shell.run_approved",
 		),
 		"CoderAgent": allow(
 			"internet.search", "internet.fetch",

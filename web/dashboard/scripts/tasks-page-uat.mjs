@@ -133,7 +133,11 @@ const run = async () => {
     assert(initial.filters.some((text) => text.includes('Running')), 'Running filter missing', initial);
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
     assert(initial.panelCollapsed === false, 'Act on this queue should start open', initial);
-    assert(initial.targetCreate.includes('New task target'), 'remote/local task target creator missing', initial);
+    assert(
+      initial.targetCreate.toLowerCase().includes('new task target'),
+      'remote/local task target creator missing',
+      initial
+    );
     assert(initial.createDisabled === true, 'empty target task creator should start disabled', initial);
 
     const afterTargetDraft = await evalJS(
@@ -220,7 +224,9 @@ const run = async () => {
           stopDisabled: [...document.querySelectorAll('[aria-label="Worker runs"] button')]
             .find((button) => button.innerText.includes('Stop'))?.disabled ?? null,
           retryDisabled: [...document.querySelectorAll('[aria-label="Worker runs"] button')]
-            .find((button) => button.innerText.includes('Retry'))?.disabled ?? null
+            .find((button) => button.innerText.includes('Retry'))?.disabled ?? null,
+          recordActions: [...document.querySelectorAll('[aria-label="Task actions"] button')]
+            .map((button) => button.innerText)
         }), 100)))`
     );
     assert(afterSelect.queueCollapsed === false, 'desktop task queue collapsed after selecting a task', afterSelect);
@@ -235,6 +241,11 @@ const run = async () => {
     assert(
       afterSelect.stopDisabled !== afterSelect.retryDisabled,
       'worker Stop/Retry controls did not reflect active versus retryable state',
+      afterSelect
+    );
+    assert(
+      afterSelect.recordActions.some((text) => /^ux\s+/i.test(text)),
+      'task actions did not expose UXAgent command',
       afterSelect
     );
 

@@ -34,6 +34,7 @@ status
 tasks
 show task_123
 delegate task_123 to codex fix the failing tests
+ux task_123 audit keyboard and mobile states
 approve app_123
 ```
 
@@ -78,6 +79,7 @@ Top-level aliases are available for common task actions:
 ```bash
 go run ./cmd/homelabctl new "Fix stale running task recovery"
 go run ./cmd/homelabctl run task_123
+go run ./cmd/homelabctl ux task_123 "audit accessibility, responsive layout, and interaction states"
 go run ./cmd/homelabctl review task_123
 go run ./cmd/homelabctl accept task_123
 go run ./cmd/homelabctl reopen task_123 "needs mobile UAT"
@@ -86,18 +88,21 @@ go run ./cmd/homelabctl retry task_123
 go run ./cmd/homelabctl runs task_123
 ```
 
-Some orchestrator actions, such as `delegate`, `refresh`, `diff`, `test`, and `delete`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
+Some orchestrator actions, such as `delegate`, `ux`, `refresh`, `diff`, `test`, and `delete`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
 
 ```bash
 go run ./cmd/homelabctl delegate task_123 to codex "finish docs and tests"
+go run ./cmd/homelabctl ux task_123 "run a UX pass with research, regression tests, and browser UAT"
 go run ./cmd/homelabctl refresh task_123
 go run ./cmd/homelabctl diff task_123
 go run ./cmd/homelabctl delete task_123
 ```
 
+`ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
+
 ## Remote Agent Commands
 
-Remote machines use the `/agents` inventory. This is separate from the chat command `agents`, which lists external local worker backends such as `codex`, `claude`, and `gemini`.
+Remote machines use the `/agents` inventory. This is separate from the chat command `agents`, which lists external local worker backends such as `codex`, `claude`, and `gemini`. Built-in role agents such as `UXAgent` are invoked with commands like `ux task_123`.
 
 ```bash
 go run ./cmd/homelabctl agent list

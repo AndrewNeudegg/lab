@@ -232,6 +232,23 @@ func TestParseDelegateCommandStrictForm(t *testing.T) {
 	}
 }
 
+func TestParseDelegateCommandAcceptsUXAgent(t *testing.T) {
+	selector, backend, instruction, ok := parseDelegateCommand([]string{"delegate", "the", "task", "to", "ux", "audit", "mobile"})
+	if !ok {
+		t.Fatalf("expected delegate command to parse")
+	}
+	if selector != "the task" || backend != "ux" || instruction != "audit mobile" {
+		t.Fatalf("unexpected parse: selector=%q backend=%q instruction=%q", selector, backend, instruction)
+	}
+}
+
+func TestParseSpecialistRunCommandWithTaskIDInstruction(t *testing.T) {
+	selector, instruction := parseSpecialistRunCommand([]string{"1e0b26b6", "check", "mobile", "states"})
+	if selector != "1e0b26b6" || instruction != "check mobile states" {
+		t.Fatalf("unexpected parse: selector=%q instruction=%q", selector, instruction)
+	}
+}
+
 func TestParseReopenCommandWithBareReason(t *testing.T) {
 	selector, reason := parseReopenCommand([]string{"28493611", "needs", "rework"})
 	if selector != "28493611" || reason != "needs rework" {
@@ -1922,6 +1939,91 @@ func TestReflectIncludesActionableNewTaskCommand(t *testing.T) {
 	}
 }
 
+func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
+	provider := &staticProvider{content: `{"message":"UX pass complete","done":true,"tool_calls":[]}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+	if err := orch.registry.Register(noDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_20260426_010101_a927493f"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:        taskID,
+		Title:     "improve task page ergonomics",
+		Goal:      "improve task page ergonomics",
+		Status:    taskstore.StatusBlocked,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Workspace: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "ux a927493f focus on touch targets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "UX pass complete") {
+		t.Fatalf("reply = %q, want UX completion", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
+	}
+	system := provider.requests[0].Messages[0].Content
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT"} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("UX prompt missing %q:\n%s", want, system)
+		}
+	}
+	user := provider.requests[0].Messages[1].Content
+	if !strings.Contains(user, "Human instruction") || !strings.Contains(user, "focus on touch targets") {
+		t.Fatalf("UX user prompt = %q, want human instruction", user)
+	}
+}
+
+func TestDelegateToUXRunsInternalUXAgent(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	provider := &staticProvider{content: `{"message":"UX delegated","done":true,"tool_calls":[]}`}
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: make(chan struct{}),
+	})
+	orch.provider = provider
+	orch.model = "test-model"
+	if err := orch.registry.Register(noDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_20260426_010102_bbbb2222"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:        taskID,
+		Title:     "audit dashboard empty state",
+		Goal:      "audit dashboard empty state",
+		Status:    taskstore.StatusBlocked,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Workspace: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "delegate bbbb2222 to ux audit empty and mobile states")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "UX delegated") {
+		t.Fatalf("reply = %q, want UX delegated message", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
+	}
+	select {
+	case <-delegateStarted:
+		t.Fatal("delegate to UX should use the internal UXAgent, not the external delegate tool")
+	default:
+	}
+}
+
 func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
@@ -2346,6 +2448,14 @@ func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
 	}
 	close(releaseDelegate)
 	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+}
+
+func TestRecoveryPlanPreservesUXAgent(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	strategy, backend := orch.recoveryPlan(taskstore.Task{AssignedTo: "UXAgent"})
+	if strategy != recoveryUX || backend != "" {
+		t.Fatalf("recoveryPlan() = (%q, %q), want UX recovery", strategy, backend)
+	}
 }
 
 func TestReviewNoDiffBlocksTask(t *testing.T) {

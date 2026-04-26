@@ -182,6 +182,26 @@ func TestMessagePrintsPlainReplyAndSendsConfiguredSender(t *testing.T) {
 	}
 }
 
+func TestUXShortcutSendsChatCommand(t *testing.T) {
+	var observed observedRequest
+	stdout, stderr, code := runAgainstServer(t, []string{"ux", "task_123", "audit", "mobile", "states"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		observed = observeRequest(t, req)
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "queued ux", "source": "program"})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if observed.Method != http.MethodPost || observed.Path != "/message" {
+		t.Fatalf("request = %s %s, want POST /message", observed.Method, observed.Path)
+	}
+	if observed.Body["content"] != "ux task_123 audit mobile states" {
+		t.Fatalf("body = %#v", observed.Body)
+	}
+	if stdout != "queued ux\n" {
+		t.Fatalf("stdout = %q, want plain reply", stdout)
+	}
+}
+
 func TestInteractiveShellSendsLinesToMessageEndpoint(t *testing.T) {
 	var messages []string
 	stdout, stderr, code := runAgainstServer(t, []string{"shell"}, "status\n\napprove app_1\nexit\n", func(rw http.ResponseWriter, req *http.Request) {

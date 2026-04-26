@@ -43,6 +43,35 @@ func TestCoderAgentCanPatchWorkspace(t *testing.T) {
 	}
 }
 
+func TestUXAgentCanResearchPatchAndRunBrowserUATCommand(t *testing.T) {
+	policy := NewPolicy(nil)
+	for _, tt := range []struct {
+		name  string
+		risk  RiskLevel
+		input string
+	}{
+		{name: "internet.research", risk: RiskReadOnly, input: `{"query":"WCAG 2.2 target size"}`},
+		{name: "repo.write_patch", risk: RiskMedium, input: `{"workspace":"/tmp/workspaces/task_123","patch":"diff"}`},
+		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":"nix develop -c bash -lc 'cd web && bun run uat:tasks'"}`},
+	} {
+		decision := policy.Decide("UXAgent", stubTool{name: tt.name, risk: tt.risk}, json.RawMessage(tt.input))
+		if !decision.Allowed || decision.NeedsApproval {
+			t.Fatalf("expected UXAgent %s to be allowed without approval: %+v", tt.name, decision)
+		}
+	}
+}
+
+func TestUXAgentCannotUseMergeTool(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.Decide("UXAgent", stubTool{name: "git.merge_approved", risk: RiskHigh}, json.RawMessage(`{"target":"main"}`))
+	if decision.Allowed {
+		t.Fatalf("expected UXAgent merge to be denied")
+	}
+	if decision.Reason != "tool not allowed for agent" {
+		t.Fatalf("unexpected denial reason: %s", decision.Reason)
+	}
+}
+
 func TestOrchestratorCannotUseServiceRestart(t *testing.T) {
 	policy := NewPolicy(nil)
 	decision := policy.Decide("OrchestratorAgent", stubTool{name: "service.restart", risk: RiskHigh}, json.RawMessage(`{"target":"svc"}`))
@@ -79,7 +108,7 @@ func TestReviewerCanRunPremergeCheck(t *testing.T) {
 
 func TestAgentsCanUseInternetReadTools(t *testing.T) {
 	policy := NewPolicy(nil)
-	for _, agent := range []string{"OrchestratorAgent", "CoderAgent", "ResearchAgent", "ReviewerAgent"} {
+	for _, agent := range []string{"OrchestratorAgent", "CoderAgent", "UXAgent", "ResearchAgent", "ReviewerAgent"} {
 		for _, name := range []string{"internet.search", "internet.fetch", "internet.research"} {
 			decision := policy.Decide(agent, stubTool{name: name, risk: RiskReadOnly}, json.RawMessage(`{"query":"golang","url":"https://example.com"}`))
 			if !decision.Allowed || decision.NeedsApproval {

@@ -313,10 +313,19 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 			return programResult("usage: run <task_id|task title>", nil)
 		}
 		return programResult(o.runCoderTask(ctx, strings.Join(fields[1:], " ")))
+	case "ux":
+		if len(fields) < 2 {
+			return programResult("usage: ux <task_id|task title> [instruction]", nil)
+		}
+		selector, instruction := parseSpecialistRunCommand(fields[1:])
+		return programResult(o.runUXTask(ctx, selector, instruction))
 	case "delegate", "escalate":
 		selector, backend, instruction, ok := parseDelegateCommand(fields)
 		if !ok {
-			return programResult("usage: delegate <task_id|task title> to <codex|claude|gemini> [instruction]", nil)
+			return programResult("usage: delegate <task_id|task title> to <codex|claude|gemini|ux> [instruction]", nil)
+		}
+		if backend == "ux" {
+			return programResult(o.runUXTask(ctx, selector, instruction))
 		}
 		return programResult(o.delegateTask(ctx, selector, backend, instruction))
 	case "codex", "claude", "gemini":
@@ -734,25 +743,35 @@ func parseDelegateCommand(fields []string) (selector, backend, instruction strin
 		return "", "", "", false
 	}
 	for i, arg := range args {
-		if strings.EqualFold(arg, "to") && i+1 < len(args) && isExternalBackend(args[i+1]) {
+		if strings.EqualFold(arg, "to") && i+1 < len(args) && isDelegationTarget(args[i+1]) {
 			selector = strings.Join(args[:i], " ")
 			backend = strings.ToLower(args[i+1])
 			instruction = strings.Join(args[i+2:], " ")
 			return strings.TrimSpace(selector), backend, strings.TrimSpace(instruction), strings.TrimSpace(selector) != ""
 		}
 	}
-	if len(args) >= 2 && isExternalBackend(args[1]) {
+	if len(args) >= 2 && isDelegationTarget(args[1]) {
 		selector = args[0]
 		backend = strings.ToLower(args[1])
 		instruction = strings.Join(args[2:], " ")
 		return selector, backend, strings.TrimSpace(instruction), true
 	}
-	if len(args) >= 2 && isExternalBackend(args[len(args)-1]) {
+	if len(args) >= 2 && isDelegationTarget(args[len(args)-1]) {
 		selector = strings.Join(args[:len(args)-1], " ")
 		backend = strings.ToLower(args[len(args)-1])
 		return strings.TrimSpace(selector), backend, "", strings.TrimSpace(selector) != ""
 	}
 	return "", "", "", false
+}
+
+func parseSpecialistRunCommand(args []string) (selector, instruction string) {
+	if len(args) == 0 {
+		return "", ""
+	}
+	if isLikelyTaskID(args[0]) {
+		return args[0], strings.TrimSpace(strings.Join(args[1:], " "))
+	}
+	return splitSelectorAndInstruction(args)
 }
 
 func splitSelectorAndInstruction(args []string) (string, string) {
@@ -872,6 +891,13 @@ func isExternalBackend(name string) bool {
 	default:
 		return false
 	}
+}
+
+func isDelegationTarget(name string) bool {
+	if isExternalBackend(name) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(name), "ux")
 }
 
 func (o *Orchestrator) CreateTask(ctx context.Context, goal string) (string, error) {
@@ -1156,6 +1182,7 @@ type recoveryStrategy string
 const (
 	recoveryCoder    recoveryStrategy = "coder"
 	recoveryDelegate recoveryStrategy = "delegate"
+	recoveryUX       recoveryStrategy = "ux"
 )
 
 func (o *Orchestrator) StartTaskSupervisor(ctx context.Context) {
@@ -1389,6 +1416,9 @@ func (o *Orchestrator) recoveryPlan(t taskstore.Task) (recoveryStrategy, string)
 			return recoveryDelegate, backend
 		}
 	}
+	if assigned == "uxagent" {
+		return recoveryUX, ""
+	}
 	return recoveryCoder, ""
 }
 
@@ -1440,6 +1470,20 @@ func (o *Orchestrator) resumeRecoveredTask(ctx context.Context, sem chan struct{
 			})})
 			return
 		}
+	case recoveryUX:
+		_, err := o.runUXTask(ctx, t.ID, recoveredUXInstruction(t))
+		if err != nil {
+			o.log().Error("task recovery UX run failed", "task_id", t.ID, "error", err)
+			if ctx.Err() == nil {
+				o.markRecoveryBlocked(ctx, t.ID, err)
+				return
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.failed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+				"strategy": string(strategy),
+				"error":    err.Error(),
+			})})
+			return
+		}
 	default:
 		o.markRecoveryBlocked(ctx, t.ID, fmt.Errorf("unknown recovery strategy %q", strategy))
 		return
@@ -1456,6 +1500,14 @@ func recoveredDelegationInstruction(t taskstore.Task) string {
 		"Resume this task after homelabd restarted while it was marked running.",
 		"Do not assume prior in-memory worker state survived the restart.",
 		defaultDelegationInstruction(t),
+	}, " ")
+}
+
+func recoveredUXInstruction(t taskstore.Task) string {
+	return strings.Join([]string{
+		"Resume this UX task after homelabd restarted while it was marked running.",
+		"Do not assume prior in-memory worker state survived the restart.",
+		"Continue the UX research, implementation, regression tests, and browser-level verification from the current workspace state.",
 	}, " ")
 }
 
@@ -1497,9 +1549,10 @@ func help() string {
 		"  reopen <task_id> [reason]  mark task not done and continue work",
 		"  refresh <task_id>          reset task worktree branch to current main",
 		"  run <task_id>              let CoderAgent work in the task worktree",
+		"  ux <task_id> [instruction] let UXAgent audit, research, improve, and test UI/UX",
 		"  agents                     list external worker backends",
 		"  delegate <task_id> <agent> <instruction>",
-		"                             run codex/claude/gemini in the task worktree",
+		"                             run codex/claude/gemini or UXAgent in the task worktree",
 		"  delegate <task title> to <agent>",
 		"                             natural form, e.g. delegate the bun task to codex",
 		"  codex|claude|gemini <task_id> <instruction>",
@@ -2283,7 +2336,7 @@ func nextActionForTask(t taskstore.Task) string {
 	case taskstore.StatusFailed:
 		return fmt.Sprintf("start %s", shortID)
 	default:
-		if t.AssignedTo != "" && t.AssignedTo != "OrchestratorAgent" && t.AssignedTo != "CoderAgent" {
+		if t.AssignedTo != "" && t.AssignedTo != "OrchestratorAgent" && t.AssignedTo != "CoderAgent" && t.AssignedTo != "UXAgent" {
 			return fmt.Sprintf("show %s", shortID)
 		}
 		return fmt.Sprintf("run %s", shortID)
@@ -2305,7 +2358,7 @@ func nextActionsForTaskWithPrimary(t taskstore.Task, primary string) string {
 	if t.Status == taskstore.StatusAwaitingVerification {
 		return fmt.Sprintf("`%s`, `reopen %s needs rework`, or `delete %s`", primary, shortID, shortID)
 	}
-	return fmt.Sprintf("`%s`, `delegate %s to codex`, or `delete %s`", primary, shortID, shortID)
+	return fmt.Sprintf("`%s`, `ux %s`, `delegate %s to codex`, or `delete %s`", primary, shortID, shortID, shortID)
 }
 
 func taskStateDescription(status string) string {
@@ -4021,11 +4074,44 @@ func diffLineStats(diff string) (int, int) {
 }
 
 func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (string, error) {
+	return o.runSpecialistTask(ctx, selector, specialistTaskAgent{
+		Name: "CoderAgent",
+		Prompt: func(t taskstore.Task) string {
+			return o.coderPrompt(t)
+		},
+		InitialUserMessage: "Work this task to completion if possible. Inspect the workspace, apply a minimal patch, run formatting/tests, then summarize the diff.",
+	})
+}
+
+func (o *Orchestrator) runUXTask(ctx context.Context, selector, instruction string) (string, error) {
+	initial := "Work this task as UXAgent. Research applicable UI, UX, and accessibility guidance, inspect the live UI code path, improve the experience, add regression tests, run automated validation, and report the browser-level UAT needed or completed."
+	if strings.TrimSpace(instruction) != "" {
+		initial += "\nHuman instruction:\n" + strings.TrimSpace(instruction)
+	}
+	return o.runSpecialistTask(ctx, selector, specialistTaskAgent{
+		Name: "UXAgent",
+		Prompt: func(t taskstore.Task) string {
+			return o.uxPrompt(t)
+		},
+		InitialUserMessage: initial,
+	})
+}
+
+type specialistTaskAgent struct {
+	Name               string
+	Prompt             func(taskstore.Task) string
+	InitialUserMessage string
+}
+
+func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, agent specialistTaskAgent) (string, error) {
+	if agent.Name == "" {
+		agent.Name = "CoderAgent"
+	}
 	taskID, err := o.resolveTaskID(selector)
 	if err != nil {
 		return "", err
 	}
-	if !o.markTaskActive(taskID, "CoderAgent") {
+	if !o.markTaskActive(taskID, agent.Name) {
 		return fmt.Sprintf("Task %s is already running. Use `show %s` or `status` for progress.", taskShortID(taskID), taskShortID(taskID)), nil
 	}
 	defer o.clearTaskActive(taskID)
@@ -4055,20 +4141,31 @@ func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (strin
 	}
 	o.ensureTaskPlan(ctx, &t)
 	t.Status = taskstore.StatusRunning
-	t.AssignedTo = "CoderAgent"
+	t.AssignedTo = agent.Name
 	if err := o.tasks.Save(t); err != nil {
 		return "", err
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent": "CoderAgent"})})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent": agent.Name})})
 
 	maxToolCalls := o.cfg.Limits.MaxToolCallsPerTurn
 	if maxToolCalls <= 0 {
 		maxToolCalls = 12
 	}
 	maxToolCalls *= 2
+	prompt := ""
+	if agent.Prompt != nil {
+		prompt = agent.Prompt(t)
+	}
+	if prompt == "" {
+		prompt = o.coderPrompt(t)
+	}
+	initialUserMessage := strings.TrimSpace(agent.InitialUserMessage)
+	if initialUserMessage == "" {
+		initialUserMessage = "Work this task to completion if possible. Inspect the workspace, apply a minimal patch, run formatting/tests, then summarize the diff."
+	}
 	messages := []llm.Message{
-		{Role: "system", Content: o.coderPrompt(t)},
-		{Role: "user", Content: "Work this task to completion if possible. Inspect the workspace, apply a minimal patch, run formatting/tests, then summarize the diff."},
+		{Role: "system", Content: prompt},
+		{Role: "user", Content: initialUserMessage},
 	}
 	toolCallsUsed := 0
 	lastMessage := ""
@@ -4087,7 +4184,7 @@ func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (strin
 			_ = o.writeRunArtifact(taskID, "failed", lastMessage, allResults, err.Error())
 			return "", err
 		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "CoderAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "message": resp.Message.Content, "usage": resp.Usage})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: agent.Name, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "message": resp.Message.Content, "usage": resp.Usage})})
 		parsed, err := parseAgentResponse(resp.Message.Content)
 		if err != nil {
 			t.Result = strings.TrimSpace(resp.Message.Content)
@@ -4109,12 +4206,12 @@ func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (strin
 				continue
 			}
 			toolCallsUsed++
-			result := o.executeProposedTool(ctx, "CoderAgent", call, taskID)
+			result := o.executeProposedTool(ctx, agent.Name, call, taskID)
 			turnResults = append(turnResults, result)
 			allResults = append(allResults, result)
 			if result.NeedsApproval {
 				t.Status = taskstore.StatusAwaitingApproval
-				t.Result = "CoderAgent is waiting for approval: " + result.ApprovalID
+				t.Result = agent.Name + " is waiting for approval: " + result.ApprovalID
 				_ = o.tasks.Save(t)
 				_ = o.writeRunArtifact(taskID, "awaiting_approval", lastMessage, allResults, result.Reason)
 				return formatApprovalStop(lastMessage, result), nil
@@ -4173,6 +4270,47 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
 			"go.fmt": true, "go.test": true, "go.build": true,
+		}),
+	}, "\n")
+}
+
+func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
+	return strings.Join([]string{
+		"You are UXAgent. You inspect, research, design, implement, and verify UI/UX improvements only in the isolated task workspace.",
+		"The Go runtime is the authority. You propose tool calls; tools execute only after policy validation.",
+		"Respond with exactly one JSON object and no prose.",
+		"Protocol:",
+		`{"message":"short UX status","done":false,"tool_calls":[{"tool":"internet.research","args":{"query":"WCAG 2.2 focus target size WAI-ARIA APG keyboard UX heuristics","source":"web","depth":"standard"}}]}`,
+		`{"message":"summary of completed UX work","done":true,"tool_calls":[]}`,
+		"Task:",
+		mustJSON(t),
+		"UX standards to apply:",
+		"- Start with the user's task, context, and visible state; avoid decorative changes that do not improve task success.",
+		"- Use current external evidence before UX implementation choices: WCAG 2.2, WAI-ARIA APG patterns, platform or framework docs, design-system guidance, and reputable usability research such as NN/g heuristics.",
+		"- Prioritise semantic HTML, accessible names, keyboard operation, visible focus, target size and spacing, colour contrast, predictable states, clear errors, responsive layouts, and content that matches user language.",
+		"- Check loading, empty, error, disabled, selected, hover/focus, long-content, and mobile states when relevant.",
+		"- Ensure text does not overlap, truncate badly, or depend on colour alone; UI changes must be usable at narrow and desktop viewports.",
+		"Rules:",
+		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
+		"- Use internet.research for broad or current UX/accessibility questions before implementation choices.",
+		"- Use internet.search for precise current documentation lookups and internet.fetch before citing or relying on details.",
+		"- Prefer official standards, primary framework docs, design-system docs, and reputable UX research. Mention source URLs in the final message.",
+		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
+		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
+		"- Add automated regression coverage for fixed UX bugs. Prefer testable view/state logic plus browser-level tests where interaction matters.",
+		"- For changed UI, perform browser-level UAT against the live page when possible. Exercise the reported interaction, visible data, state changes, selected items, and mobile viewport behaviour when relevant.",
+		"- If the dashboard task page changed, run `nix develop -c bash -lc 'cd web && bun run uat:tasks'` against the running stack after restarting the dashboard.",
+		"- If browser UAT is not possible, say exactly why and what automated coverage ran instead.",
+		"- If behaviour, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
+		"- Final done=true message must include: source URLs consulted, changed files, automated tests, browser/UAT command and interaction verified, how to use the change, and docs updated or why no docs change was needed.",
+		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
+		"Available UXAgent tools:",
+		o.filteredToolCatalog(map[string]bool{
+			"internet.search": true, "internet.fetch": true, "internet.research": true,
+			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
+			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
+			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true,
+			"shell.run_limited": true,
 		}),
 	}, "\n")
 }

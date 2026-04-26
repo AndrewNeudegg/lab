@@ -118,7 +118,7 @@ func (c cli) dispatch(args []string) error {
 	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry":
 		return c.task(withAction(cmd, args[1:]))
 	case "status", "agents", "delete", "remove", "rm", "refresh", "rebase", "sync",
-		"delegate", "escalate", "codex", "claude", "gemini", "diff", "test", "patch",
+		"delegate", "escalate", "codex", "claude", "gemini", "ux", "diff", "test", "patch",
 		"search", "web", "internet", "research", "read", "reflect", "deep", "work", "start":
 		return c.message(strings.Join(args, " "))
 	default:
@@ -625,5 +625,5 @@ Top-level shortcuts:
   homelabctl new <goal>
   homelabctl run|review|accept|reopen|cancel|retry <task_id> [...]
   homelabctl approve|deny <approval_id>
-  homelabctl status|agents|delegate|refresh|diff|test|delete ...`)
+  homelabctl status|agents|delegate|ux|refresh|diff|test|delete ...`)
 }

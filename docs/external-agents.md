@@ -3,14 +3,18 @@
 `homelabd` can delegate a task to a headless CLI worker such as Codex, Claude, or Gemini.
 For local tasks, the CLI runs inside the task worktree, so any file edits stay isolated until the normal `review` and `approve` merge flow. For remote tasks, `homelab-agent` runs the same backend command in the selected advertised remote directory; the control plane records the result but does not create a local worktree or merge approval.
 
+Built-in role agents are separate from external CLI backends. `UXAgent` is invoked with `ux <task_id> [instruction]` or `delegate <task_id> to ux ...`; it uses the local LLM provider and the same worktree/review flow, not an entry in `external_agents`.
+
 ## Commands
 
 ```text
 agents
 delegate <task_id> <backend> <instruction>
+delegate <task_id> to ux <instruction>
 codex <task_id> <instruction>
 claude <task_id> <instruction>
 gemini <task_id> <instruction>
+ux <task_id> [instruction]
 diff <task_id>
 review <task_id>
 ```
@@ -20,6 +24,7 @@ Example:
 ```text
 new add structured logging to backup service
 codex task_20260424_001 inspect the backup service, make a minimal patch, and run relevant tests
+ux task_20260424_001 audit accessibility, responsive behaviour, and browser UAT
 diff task_20260424_001
 review task_20260424_001
 approve approval_...

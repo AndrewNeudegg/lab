@@ -88,6 +88,7 @@ On startup, `homelabd` scans durable task records. Any task still marked `runnin
 
 - tasks assigned to `codex`, `claude`, or `gemini` restart on the same external backend
 - tasks assigned to `CoderAgent` restart through the built-in coder loop
+- tasks assigned to `UXAgent` restart through the built-in UX loop so UI research, tests, and browser-UAT expectations are preserved
 - tasks assigned to `OrchestratorAgent` prefer `codex` when it is configured, otherwise they use `CoderAgent`
 
 Remote tasks are excluded from local restart recovery. A remote task stays in its target queue for the selected `homelab-agent`, and a running remote task is completed or failed only by that agent's completion callback.

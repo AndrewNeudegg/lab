@@ -90,7 +90,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Selected task title: use a compact summary derived from the task input so long prompts do not dominate the top of the record.
 - Task summary: ID, status, owner, started time, runtime, and update time. This answers what object is selected and how long it has been running before asking the operator to act.
 - Primary action: one emphasized button derived from task state. The UI should not make the operator infer the next command from raw status.
-- Secondary actions: show, delegate, delete, or reopen. These are useful but lower priority than the primary action.
+- Secondary actions: show, `ux <task_id>`, delegate, delete, or reopen. Use the UX action when a task needs a researched UI/accessibility pass, automated regression coverage, and browser-level UAT.
 - Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
 - Remote execution context: shown as a warning-colored block for remote tasks. It must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.

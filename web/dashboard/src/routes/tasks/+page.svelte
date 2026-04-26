@@ -267,6 +267,7 @@
       [
         'show',
         'run',
+        'ux',
         'work',
         'start',
         'review',
@@ -297,7 +298,7 @@
         parts.length >= 4 &&
         taskRefPattern.test(parts[1]) &&
         parts[2]?.toLowerCase() === 'to' &&
-        ['codex', 'claude', 'gemini'].includes(parts[3]?.toLowerCase())
+        ['codex', 'claude', 'gemini', 'ux'].includes(parts[3]?.toLowerCase())
       );
     }
 
@@ -531,6 +532,7 @@
     const primary = taskPrimaryAction(task).command;
     const actions = new Set<string>([`show ${id}`]);
     if (!taskIsTerminal(task)) {
+      actions.add(`ux ${id}`);
       actions.add(`delegate ${id} to codex`);
       actions.add(`delete ${id}`);
     }

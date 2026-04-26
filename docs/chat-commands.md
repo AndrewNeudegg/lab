@@ -34,6 +34,18 @@ inspect -> design -> implement -> test -> docs -> review
 
 Use `show <root_task_id>` to see the graph. Use `accept <child_task_id>` after verifying a child phase; accepting it releases the next phase when its dependencies are satisfied. `run` or `delegate` refuses a child phase while `blocked_by` contains unresolved dependencies.
 
+## UX Agent
+
+Use `UXAgent` when a task changes a page, component, interaction, or visual state and needs a dedicated usability pass:
+
+```text
+ux task_123
+ux task_123 check the mobile queue and touch targets
+delegate task_123 to ux audit the empty, loading, keyboard, and mobile states
+```
+
+`UXAgent` works in the same isolated task worktree as `CoderAgent`, but its prompt requires current UX and accessibility research, focused UI changes, automated regression coverage, and browser-level UAT for changed UI. It should consult sources such as WCAG 2.2, WAI-ARIA APG, official framework or design-system docs, and reputable usability research before making UX decisions.
+
 ## Remote Agent Tasks
 
 Remote machines are managed outside chat through the task API, dashboard, or `homelabctl`:
@@ -46,7 +58,7 @@ homelabctl -addr http://127.0.0.1:18080 task new --agent workstation --workdir r
 
 `--workdir` names an advertised workdir id. `--workdir-path` may be used for a full advertised path. Unknown workdir ids or paths are rejected so remote tasks do not silently run in a different checkout.
 
-The chat command `agents` lists external CLI backends such as `codex`, `claude`, and `gemini`; it is not the remote-machine inventory. Use the dashboard task queue filters or `homelabctl agent list` for remote agents.
+The chat command `agents` lists external CLI backends such as `codex`, `claude`, and `gemini`; it does not list built-in role agents such as `UXAgent`, and it is not the remote-machine inventory. Use the dashboard task queue filters or `homelabctl agent list` for remote agents.
 
 ## Search
 

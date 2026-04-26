@@ -131,8 +131,17 @@
     if (['new', 'task'].includes(verb)) {
       return normalized.length > verb.length + 1;
     }
-    if (['show', 'run', 'review', 'diff', 'test', 'delete', 'accept', 'verify'].includes(verb)) {
+    if (['show', 'run', 'ux', 'review', 'diff', 'test', 'delete', 'accept', 'verify'].includes(verb)) {
       return taskRefPattern.test(normalized);
+    }
+    if (verb === 'delegate') {
+      const parts = normalized.split(' ');
+      return (
+        parts.length >= 4 &&
+        taskRefPattern.test(parts[1]) &&
+        parts[2]?.toLowerCase() === 'to' &&
+        ['codex', 'claude', 'gemini', 'ux'].includes(parts[3]?.toLowerCase())
+      );
     }
     if (['approve', 'deny'].includes(verb)) {
       return approvalRefPattern.test(normalized);

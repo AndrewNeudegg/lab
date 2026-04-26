@@ -100,6 +100,13 @@ func defaultAgentTools() map[string]map[string]bool {
 			"go.fmt", "go.test", "go.build", "test.run", "bun.check", "bun.build",
 			"shell.run_limited",
 		),
+		"UXAgent": allow(
+			"internet.search", "internet.fetch", "internet.research",
+			"repo.list", "repo.search", "repo.read", "repo.write_patch", "repo.current_diff",
+			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
+			"go.fmt", "go.test", "go.build", "test.run", "bun.check", "bun.build",
+			"shell.run_limited",
+		),
 		"ResearchAgent": allow("internet.search", "internet.fetch", "internet.research", "memory.propose_write"),
 		"ReviewerAgent": allow("internet.search", "internet.fetch", "internet.research", "repo.read", "repo.search", "repo.current_diff", "git.diff", "git.status", "git.branch", "git.describe", "git.log", "git.show", "git.merge_check", "go.test", "go.build", "test.run", "bun.check", "bun.build"),
 		"OpsAgent":      allow("service.status"),
@@ -119,7 +126,7 @@ func allow(names ...string) map[string]bool {
 
 func trustedAgent(agent string) bool {
 	switch agent {
-	case "OrchestratorAgent", "CoderAgent", "ResearchAgent", "ReviewerAgent", "OpsAgent", "homelabd":
+	case "OrchestratorAgent", "CoderAgent", "UXAgent", "ResearchAgent", "ReviewerAgent", "OpsAgent", "homelabd":
 		return true
 	default:
 		return false

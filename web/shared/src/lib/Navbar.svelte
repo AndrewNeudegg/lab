@@ -325,7 +325,8 @@
 	  }
 
   .navbar {
-    position: relative;
+    position: sticky;
+    top: 0;
     z-index: 20;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;

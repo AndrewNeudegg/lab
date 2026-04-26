@@ -15,13 +15,16 @@
     type ChatTranscriptMessage,
     type HomelabdApproval,
     type HomelabdEvent,
+    type HomelabdRunArtifact,
     type HomelabdTask
   } from '@homelab/shared';
   import {
+    buildWorkerTraceRuns,
     createTaskQueueView,
     selectTaskForQueue,
     type TaskFilter,
-    type TaskQueueView
+    type TaskQueueView,
+    type WorkerTraceRun
   } from './view-model';
 
   type PromptAction = {
@@ -70,6 +73,7 @@
   let loading = false;
   let refreshing = false;
   let error = '';
+  let taskActionLoading = '';
   let messageId = 0;
   let taskFilter: TaskFilter = 'attention';
   let taskSearch = '';
@@ -83,6 +87,7 @@
   let tasks: HomelabdTask[] = [];
   let approvals: HomelabdApproval[] = [];
   let events: HomelabdEvent[] = [];
+  let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskQueueView: TaskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -97,6 +102,7 @@
   let visibleTaskItems: HomelabdTask[] = [];
   let currentTask: HomelabdTask | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
+  let currentTaskRuns: WorkerTraceRun[] = [];
   let needsActionTotal = 0;
 
   const timeLabel = () =>
@@ -300,6 +306,9 @@
   $: visibleTaskItems = taskQueueView.visibleTaskItems;
   $: currentTask = taskQueueView.currentTask;
   $: currentTaskEvents = taskQueueView.currentTaskEvents;
+  $: currentTaskRuns = currentTask
+    ? buildWorkerTraceRuns(currentTaskEvents, taskRuns[currentTask.id] || [])
+    : [];
   $: needsActionTotal =
     attentionTaskItems.length + pendingApprovalItems.filter((approval) => !approval.task_id).length;
 
@@ -325,6 +334,35 @@
       }
     }
     return truncate(JSON.stringify(payload), 180);
+  };
+
+  const runStatusTone = (run: WorkerTraceRun) => {
+    if (run.active || run.status === 'running') {
+      return 'blue';
+    }
+    if (run.status === 'failed') {
+      return 'red';
+    }
+    if (run.status === 'ignored') {
+      return 'amber';
+    }
+    return 'green';
+  };
+
+  const runOutput = (run: WorkerTraceRun) => run.output || run.artifact?.output || '';
+
+  const runCommand = (run: WorkerTraceRun) => run.command?.join(' ') || 'external worker';
+
+  const refreshTaskRuns = async (taskId: string) => {
+    if (!taskId) {
+      return;
+    }
+    try {
+      const result = await client.listTaskRuns(taskId);
+      taskRuns = { ...taskRuns, [taskId]: result.runs };
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to load worker runs.';
+    }
   };
 
   const taskTone = (task: HomelabdTask) => {
@@ -498,6 +536,9 @@
       if (selectedTaskId && !tasks.some((task) => task.id === selectedTaskId)) {
         selectedTaskId = '';
       }
+      if (selectedTaskId) {
+        await refreshTaskRuns(selectedTaskId);
+      }
     } finally {
       refreshing = false;
     }
@@ -549,6 +590,29 @@
 
   const selectTask = (id: string) => {
     selectedTaskId = id;
+    void refreshTaskRuns(id);
+  };
+
+  const performTaskAction = async (action: 'cancel' | 'retry') => {
+    if (!currentTask || taskActionLoading) {
+      return;
+    }
+    taskActionLoading = action;
+    error = '';
+    const taskId = currentTask.id;
+    try {
+      const response =
+        action === 'cancel'
+          ? await client.cancelTask(taskId)
+          : await client.retryTask(taskId);
+      addMessage('assistant', response.reply || `${action} submitted.`, 'program');
+      await refreshState();
+      await refreshTaskRuns(taskId);
+    } catch (err) {
+      error = err instanceof Error ? err.message : `Unable to ${action} task.`;
+    } finally {
+      taskActionLoading = '';
+    }
   };
 
   const setTaskFilter = (filter: TaskFilter) => {
@@ -773,6 +837,64 @@
             <p>{currentTask?.result}</p>
           </section>
         {/if}
+
+        <section class="worker-runs" aria-label="Worker runs">
+          <header>
+            <div>
+              <p>Worker trace</p>
+              <h3>{currentTaskRuns.length} run{currentTaskRuns.length === 1 ? '' : 's'}</h3>
+            </div>
+            <div class="worker-controls">
+              <button
+                type="button"
+                disabled={taskActionLoading !== '' || !taskIsActive(currentTask)}
+                on:click={() => void performTaskAction('cancel')}
+              >
+                {taskActionLoading === 'cancel' ? 'Stopping' : 'Stop'}
+              </button>
+              <button
+                type="button"
+                disabled={taskActionLoading !== '' || taskIsActive(currentTask)}
+                on:click={() => void performTaskAction('retry')}
+              >
+                {taskActionLoading === 'retry' ? 'Retrying' : 'Retry'}
+              </button>
+            </div>
+          </header>
+
+          {#if currentTaskRuns.length === 0}
+            <p class="empty">No external worker runs recorded for this task.</p>
+          {:else}
+            <div class="run-list">
+              {#each currentTaskRuns as run}
+                <article class={`worker-run ${runStatusTone(run)}`}>
+                  <header>
+                    <span class={`dot ${runStatusTone(run)}`} aria-hidden="true"></span>
+                    <div>
+                      <strong>{run.backend}</strong>
+                      <small>{shortID(run.id)} · {run.status} · {compactTime(run.startedAt)}</small>
+                    </div>
+                    {#if run.artifact}
+                      <span class="artifact-pill">artifact</span>
+                    {/if}
+                  </header>
+                  <p class="run-command">{runCommand(run)}</p>
+                  {#if run.artifact?.path}
+                    <p class="run-artifact-path">{run.artifact.path}</p>
+                  {/if}
+                  {#if run.error}
+                    <p class="run-error">{run.error}</p>
+                  {/if}
+                  {#if runOutput(run)}
+                    <pre>{runOutput(run)}</pre>
+                  {:else}
+                    <p class="empty compact">No output captured yet.</p>
+                  {/if}
+                </article>
+              {/each}
+            </div>
+          {/if}
+        </section>
 
         <section class="activity" aria-label="Task activity">
           <header>
@@ -1085,6 +1207,7 @@
   .triage button,
   .mini-actions button,
   .record-actions button,
+  .worker-controls button,
   .next-step button,
   .message-actions button,
   .prompt-actions button {
@@ -1104,6 +1227,7 @@
   .triage button:hover,
   .mini-actions button:hover:not(:disabled),
   .record-actions button:hover:not(:disabled),
+  .worker-controls button:hover:not(:disabled),
   .next-step button:hover:not(:disabled),
   .message-actions button:hover:not(:disabled),
   .prompt-actions button:hover:not(:disabled) {
@@ -1496,6 +1620,7 @@
   .task-plan,
   .task-input,
   .state-machine,
+  .worker-runs,
   .activity,
   .empty-record {
     margin: 1rem 1.25rem 0;
@@ -1670,6 +1795,154 @@
 
   .activity {
     overflow: hidden;
+  }
+
+  .worker-runs {
+    overflow: hidden;
+  }
+
+  .worker-runs > header,
+  .worker-run > header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .worker-runs > header {
+    justify-content: space-between;
+    padding: 0.85rem;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .worker-runs header p,
+  .worker-runs h3,
+  .worker-run p {
+    margin: 0;
+  }
+
+  .worker-runs header p {
+    color: #64748b;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .worker-runs h3 {
+    margin-top: 0.1rem;
+    color: #111827;
+    font-size: 0.95rem;
+  }
+
+  .worker-controls {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
+  }
+
+  .run-list {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0.85rem;
+  }
+
+  .worker-run {
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    background: #f8fafc;
+  }
+
+  .worker-run.blue {
+    border-color: #bfdbfe;
+    background: #eff6ff;
+  }
+
+  .worker-run.green {
+    border-color: #bbf7d0;
+    background: #f0fdf4;
+  }
+
+  .worker-run.amber {
+    border-color: #fde68a;
+    background: #fffbeb;
+  }
+
+  .worker-run.red {
+    border-color: #fecaca;
+    background: #fff7f7;
+  }
+
+  .worker-run > header {
+    padding: 0.75rem 0.8rem 0;
+  }
+
+  .worker-run strong,
+  .worker-run small {
+    display: block;
+  }
+
+  .worker-run strong {
+    color: #111827;
+    font-size: 0.88rem;
+  }
+
+  .worker-run small,
+  .run-command,
+  .run-artifact-path {
+    color: #64748b;
+    font-size: 0.76rem;
+  }
+
+  .artifact-pill {
+    margin-left: auto;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    padding: 0.15rem 0.45rem;
+    color: #475569;
+    background: #ffffff;
+    font-size: 0.68rem;
+    font-weight: 850;
+  }
+
+  .run-command,
+  .run-artifact-path,
+  .run-error {
+    padding: 0.45rem 0.8rem 0;
+    overflow-wrap: anywhere;
+  }
+
+  .run-artifact-path {
+    font-family:
+      "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+
+  .run-error {
+    color: #991b1b;
+    font-size: 0.8rem;
+    font-weight: 750;
+  }
+
+  .worker-run pre {
+    max-height: 15rem;
+    margin: 0.65rem 0 0;
+    overflow: auto;
+    padding: 0.8rem;
+    border-top: 1px solid rgb(148 163 184 / 0.28);
+    color: #0f172a;
+    background: rgb(255 255 255 / 0.72);
+    font-family:
+      "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+  }
+
+  .empty.compact {
+    padding: 0.7rem 0.8rem 0.8rem;
+    font-size: 0.8rem;
+    text-align: left;
   }
 
   .task-input {

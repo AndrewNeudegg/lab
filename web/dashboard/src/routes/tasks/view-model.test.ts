@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { HomelabdApproval, HomelabdEvent, HomelabdTask } from '@homelab/shared';
-import { createTaskQueueView, selectTaskForQueue, type TaskFilter } from './view-model';
+import {
+  buildWorkerTraceRuns,
+  createTaskQueueView,
+  selectTaskForQueue,
+  type TaskFilter
+} from './view-model';
 
 const task = (id: string, status: string, updatedMinute: string): HomelabdTask => ({
   id,
@@ -45,6 +50,20 @@ const event = (id: string, taskID: string, minute: string): HomelabdEvent => ({
   actor: 'CoderAgent',
   type: 'task.updated',
   time: `2026-04-26T00:${minute}:00Z`
+});
+
+const delegateEvent = (
+  id: string,
+  minute: string,
+  type: string,
+  payload: Record<string, unknown>
+): HomelabdEvent => ({
+  id,
+  task_id: 'task_review',
+  actor: 'codex',
+  type,
+  time: `2026-04-26T00:${minute}:00Z`,
+  payload
 });
 
 const view = (
@@ -146,5 +165,80 @@ describe('task queue selection helper', () => {
 
     expect(selectTaskForQueue(tasks, [], 'active', '', 'task_review')).toBe('task_running');
     expect(selectTaskForQueue(tasks, [], 'attention', '', 'task_running')).toBe('task_review');
+  });
+});
+
+describe('worker trace runs', () => {
+  test('keeps active output-only runs running until terminal event arrives', () => {
+    const runs = buildWorkerTraceRuns([
+      delegateEvent('out1', '02', 'agent.delegate.output', {
+        id: 'delegate_active',
+        backend: 'codex',
+        text: 'working'
+      })
+    ]);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0].id).toBe('delegate_active');
+    expect(runs[0].status).toBe('running');
+    expect(runs[0].active).toBe(true);
+    expect(runs[0].output).toBe('working');
+  });
+
+  test('marks failed runs terminal and preserves error text', () => {
+    const runs = buildWorkerTraceRuns([
+      delegateEvent('out1', '02', 'agent.delegate.output', {
+        id: 'delegate_failed',
+        backend: 'codex',
+        text: 'before failure\n'
+      }),
+      delegateEvent('fail1', '03', 'agent.delegate.failed', {
+        id: 'delegate_failed',
+        backend: 'codex',
+        error: 'signal: killed'
+      })
+    ]);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0].status).toBe('failed');
+    expect(runs[0].active).toBe(false);
+    expect(runs[0].error).toBe('signal: killed');
+    expect(runs[0].output).toBe('before failure\n');
+  });
+
+  test('groups delegate output events by run id and merges artifact status', () => {
+    const runs = buildWorkerTraceRuns(
+      [
+        delegateEvent('out1', '02', 'agent.delegate.output', {
+          id: 'delegate_one',
+          backend: 'codex',
+          text: 'hello '
+        }),
+        delegateEvent('out2', '03', 'agent.delegate.output', {
+          id: 'delegate_one',
+          backend: 'codex',
+          text: 'world'
+        })
+      ],
+      [
+        {
+          id: 'delegate_one',
+          kind: 'external_agent',
+          task_id: 'task_review',
+          backend: 'codex',
+          workspace: '/tmp/work',
+          status: 'completed',
+          output: 'artifact output',
+          time: '2026-04-26T00:04:00Z'
+        }
+      ]
+    );
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0].id).toBe('delegate_one');
+    expect(runs[0].status).toBe('completed');
+    expect(runs[0].active).toBe(false);
+    expect(runs[0].output).toBe('hello world');
+    expect(runs[0].events.map((item) => item.id)).toEqual(['out1', 'out2']);
   });
 });

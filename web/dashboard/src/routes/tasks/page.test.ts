@@ -64,6 +64,17 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('{#each currentTask.plan.steps as step}');
   });
 
+  test('renders worker trace runs with direct stop and retry controls', () => {
+    expect(pageSource).toContain('buildWorkerTraceRuns');
+    expect(pageSource).toContain('let currentTaskRuns: WorkerTraceRun[] = []');
+    expect(pageSource).toContain('aria-label="Worker runs"');
+    expect(pageSource).toContain("performTaskAction('cancel')");
+    expect(pageSource).toContain("performTaskAction('retry')");
+    expect(pageSource).toContain('client.listTaskRuns');
+    expect(pageSource).toContain('runOutput(run)');
+    expect(pageSource).toContain('run.artifact?.path');
+  });
+
   test('caps the mobile queue above the selected task record', () => {
     expect(pageSource).toContain('height: auto;');
     expect(pageSource).toContain('max-height: min(54dvh, 28rem);');

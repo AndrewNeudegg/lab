@@ -198,6 +198,15 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 		writeJSON(rw, http.StatusOK, task)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "runs" && req.Method == http.MethodGet {
+		runs, err := s.Orchestrator.ListTaskRuns(taskID)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"runs": runs})
+		return
+	}
 	if len(parts) == 2 && req.Method == http.MethodPost {
 		var (
 			reply string
@@ -218,6 +227,17 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 				_ = json.NewDecoder(req.Body).Decode(&in)
 			}
 			reply, err = s.Orchestrator.ReopenTask(req.Context(), taskID, in.Reason)
+		case "cancel":
+			reply, err = s.Orchestrator.CancelTask(req.Context(), taskID)
+		case "retry":
+			var in struct {
+				Backend     string `json:"backend"`
+				Instruction string `json:"instruction"`
+			}
+			if req.Body != nil {
+				_ = json.NewDecoder(req.Body).Decode(&in)
+			}
+			reply, err = s.Orchestrator.RetryTask(req.Context(), taskID, in.Backend, in.Instruction)
 		default:
 			writeError(rw, http.StatusNotFound, "unknown task action")
 			return

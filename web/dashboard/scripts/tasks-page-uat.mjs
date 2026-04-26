@@ -200,11 +200,28 @@ const run = async () => {
         new Promise((resolve) => setTimeout(() => resolve({
           queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
           selected: document.querySelector('.task-row.selected')?.innerText || '',
-          rows: document.querySelectorAll('.task-row').length
+          rows: document.querySelectorAll('.task-row').length,
+          workerTrace: document.querySelector('[aria-label="Worker runs"]')?.innerText || '',
+          stopDisabled: [...document.querySelectorAll('[aria-label="Worker runs"] button')]
+            .find((button) => button.innerText.includes('Stop'))?.disabled ?? null,
+          retryDisabled: [...document.querySelectorAll('[aria-label="Worker runs"] button')]
+            .find((button) => button.innerText.includes('Retry'))?.disabled ?? null
         }), 100)))`
     );
     assert(afterSelect.queueCollapsed === false, 'desktop task queue collapsed after selecting a task', afterSelect);
     assert(afterSelect.rows > 0, 'task rows disappeared after selecting a task', afterSelect);
+    assert(
+      afterSelect.workerTrace.toLowerCase().includes('worker trace'),
+      'worker trace panel did not render',
+      afterSelect
+    );
+    assert(afterSelect.stopDisabled !== null, 'worker Stop control did not render', afterSelect);
+    assert(afterSelect.retryDisabled !== null, 'worker Retry control did not render', afterSelect);
+    assert(
+      afterSelect.stopDisabled !== afterSelect.retryDisabled,
+      'worker Stop/Retry controls did not reflect active versus retryable state',
+      afterSelect
+    );
 
     const collapse = await evalJS(
       cdp,

@@ -119,11 +119,11 @@ Do not rely on color alone. Always show the status text next to the colored indi
 
 On compact screens `/tasks` stacks:
 
-1. Task queue first, capped to the top portion of the viewport.
+1. Task queue first, capped to the top portion of the viewport and collapsible from the queue header.
 2. Selected-task record below it.
 3. Global command panel below the selected-task record.
 
-The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read.
+The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. After a task is selected on mobile, collapse the queue so the selected-task record remains readable while the queue stays reachable through the `Show queue` control.
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
 

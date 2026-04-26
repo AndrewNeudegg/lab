@@ -72,6 +72,7 @@
   let taskSearch = '';
   let selectedTaskId = '';
   let lastRefresh = '';
+  let taskQueueOpen = true;
   let commandPanelOpen = false;
   let inputEl: HTMLTextAreaElement | undefined;
   let messagesEl: HTMLElement | undefined;
@@ -534,6 +535,11 @@
     void sendMessage(command);
   };
 
+  const selectTask = (id: string) => {
+    selectedTaskId = id;
+    taskQueueOpen = false;
+  };
+
   const handleComposerKeydown = (event: KeyboardEvent) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -554,7 +560,7 @@
 <Navbar title="Tasks" subtitle="homelabd" current="/tasks" />
 
 <div class="shell">
-  <aside class="task-pane" aria-label="Tasks">
+  <aside class="task-pane" class:collapsed={!taskQueueOpen} aria-label="Tasks">
     <header class="task-header">
       <div>
         <p>Task queue</p>
@@ -562,81 +568,92 @@
         <span>Synced {lastRefresh || 'never'}</span>
       </div>
       <nav aria-label="Dashboard views">
+        <button
+          type="button"
+          class="queue-toggle"
+          aria-controls="task-sidebar-content"
+          aria-expanded={taskQueueOpen}
+          on:click={() => (taskQueueOpen = !taskQueueOpen)}
+        >
+          {taskQueueOpen ? 'Hide queue' : `Show queue (${visibleTasks().length})`}
+        </button>
         <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
           {refreshing ? 'Syncing' : 'Sync'}
         </button>
       </nav>
     </header>
 
-    <section class="triage" aria-label="Task filters">
-      {#each [
-        { id: 'attention', label: 'Needs action', count: needsActionCount(tasks, approvals) },
-        { id: 'active', label: 'Running', count: activeTasks().length },
-        { id: 'all', label: 'All', count: tasks.length }
-      ] as filter}
-        <button
-          type="button"
-          class:active={taskFilter === filter.id}
-          on:click={() => (taskFilter = filter.id as TaskFilter)}
-        >
-          <strong>{filter.count}</strong>
-          <span>{filter.label}</span>
-        </button>
-      {/each}
-    </section>
-
-    <label class="hidden" for="task-search">Search tasks</label>
-    <input id="task-search" bind:value={taskSearch} placeholder="Search tasks…" />
-
-    {#if pendingApprovals().length}
-      <section class="approval-list" aria-label="Pending approvals">
-        <h2>Needs decision</h2>
-        {#each pendingApprovals() as approval}
-          <article>
-            <span class="dot amber"></span>
-            <div>
-              <strong>{approval.tool}</strong>
-              <small>{shortID(approval.id)}</small>
-              <p>{truncate(approval.reason, 96)}</p>
-              <div class="mini-actions">
-                <button type="button" disabled={loading} on:click={() => sendCommand(`approve ${approval.id}`)}>
-                  approve
-                </button>
-                <button type="button" disabled={loading} on:click={() => sendCommand(`deny ${approval.id}`)}>
-                  deny
-                </button>
-              </div>
-            </div>
-          </article>
-        {/each}
-      </section>
-    {/if}
-
-    <section class="task-list" aria-label="Task list">
-      {#if visibleTasks().length === 0}
-        <p class="empty">No matching tasks.</p>
-      {:else}
-        {#each visibleTasks() as task}
+    <div id="task-sidebar-content" class="task-sidebar-content">
+      <section class="triage" aria-label="Task filters">
+        {#each [
+          { id: 'attention', label: 'Needs action', count: needsActionCount(tasks, approvals) },
+          { id: 'active', label: 'Running', count: activeTasks().length },
+          { id: 'all', label: 'All', count: tasks.length }
+        ] as filter}
           <button
             type="button"
-            class:selected={selectedTask()?.id === task.id}
-            class="task-row"
-            on:click={() => (selectedTaskId = task.id)}
+            class:active={taskFilter === filter.id}
+            on:click={() => (taskFilter = filter.id as TaskFilter)}
           >
-            <span class={`dot ${taskTone(task)}`} aria-hidden="true"></span>
-            <span class="task-copy">
-              <strong>{truncate(task.title || task.goal || task.id, 82)}</strong>
-              <small>
-                <span>{shortID(task.id)} · updated {compactTime(task.updated_at)}</span>
-                <span class={`status ${taskTone(task)}`}>{statusLabel(task.status)}</span>
-              </small>
-            </span>
+            <strong>{filter.count}</strong>
+            <span>{filter.label}</span>
           </button>
         {/each}
-      {/if}
-    </section>
+      </section>
 
-    <footer>{apiBase}</footer>
+      <label class="hidden" for="task-search">Search tasks</label>
+      <input id="task-search" bind:value={taskSearch} placeholder="Search tasks…" />
+
+      {#if pendingApprovals().length}
+        <section class="approval-list" aria-label="Pending approvals">
+          <h2>Needs decision</h2>
+          {#each pendingApprovals() as approval}
+            <article>
+              <span class="dot amber"></span>
+              <div>
+                <strong>{approval.tool}</strong>
+                <small>{shortID(approval.id)}</small>
+                <p>{truncate(approval.reason, 96)}</p>
+                <div class="mini-actions">
+                  <button type="button" disabled={loading} on:click={() => sendCommand(`approve ${approval.id}`)}>
+                    approve
+                  </button>
+                  <button type="button" disabled={loading} on:click={() => sendCommand(`deny ${approval.id}`)}>
+                    deny
+                  </button>
+                </div>
+              </div>
+            </article>
+          {/each}
+        </section>
+      {/if}
+
+      <section class="task-list" aria-label="Task list">
+        {#if visibleTasks().length === 0}
+          <p class="empty">No matching tasks.</p>
+        {:else}
+          {#each visibleTasks() as task}
+            <button
+              type="button"
+              class:selected={selectedTask()?.id === task.id}
+              class="task-row"
+              on:click={() => selectTask(task.id)}
+            >
+              <span class={`dot ${taskTone(task)}`} aria-hidden="true"></span>
+              <span class="task-copy">
+                <strong>{truncate(task.title || task.goal || task.id, 82)}</strong>
+                <small>
+                  <span>{shortID(task.id)} · updated {compactTime(task.updated_at)}</span>
+                  <span class={`status ${taskTone(task)}`}>{statusLabel(task.status)}</span>
+                </small>
+              </span>
+            </button>
+          {/each}
+        {/if}
+      </section>
+
+      <footer>{apiBase}</footer>
+    </div>
   </aside>
 
   <main class="workbench" aria-label="Selected task record">
@@ -918,11 +935,18 @@
 
   .task-pane {
     display: grid;
-    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 0.75rem;
     padding: 1rem;
     border-right: 1px solid #dde4ef;
     background: #ffffff;
+  }
+
+  .task-sidebar-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-height: 0;
   }
 
   .task-header,
@@ -989,6 +1013,7 @@
   }
 
   .task-header button,
+  .queue-toggle,
   .triage button,
   .mini-actions button,
   .record-actions button,
@@ -1007,6 +1032,7 @@
   }
 
   .task-header button:hover:not(:disabled),
+  .queue-toggle:hover:not(:disabled),
   .triage button:hover,
   .mini-actions button:hover:not(:disabled),
   .record-actions button:hover:not(:disabled),
@@ -1019,6 +1045,10 @@
 
   .triage {
     gap: 0.5rem;
+  }
+
+  .queue-toggle {
+    display: none;
   }
 
   .triage button {
@@ -1138,6 +1168,7 @@
     display: grid;
     align-content: start;
     gap: 0.35rem;
+    flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     padding-right: 0.2rem;
@@ -1710,9 +1741,34 @@
 
     .task-pane {
       display: grid;
-      max-height: 48dvh;
+      max-height: 64dvh;
       border-right: 0;
       border-bottom: 1px solid #dde4ef;
+    }
+
+    .task-header {
+      align-items: flex-start;
+    }
+
+    .task-header nav {
+      flex-wrap: wrap;
+    }
+
+    .task-pane.collapsed {
+      max-height: none;
+    }
+
+    .task-pane.collapsed .task-sidebar-content {
+      display: none;
+    }
+
+    .task-sidebar-content {
+      overflow: hidden;
+    }
+
+    .queue-toggle {
+      display: inline-flex;
+      align-items: center;
     }
 
     .workbench {

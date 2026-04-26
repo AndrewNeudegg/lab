@@ -177,6 +177,8 @@ func Default() Config {
 				"service.restart",
 				"llm.switch_provider",
 				"git.commit",
+				"git.revert",
+				"git.merge",
 				"repo.apply_patch_to_main",
 				"git.merge_approved",
 			},

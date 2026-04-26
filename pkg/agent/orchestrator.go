@@ -2369,7 +2369,8 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		o.filteredToolCatalog(map[string]bool{
 			"internet.search": true, "internet.fetch": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
-			"git.status": true, "git.diff": true, "go.fmt": true, "go.test": true, "go.build": true,
+			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
+			"go.fmt": true, "go.test": true, "go.build": true,
 		}),
 	}, "\n")
 }

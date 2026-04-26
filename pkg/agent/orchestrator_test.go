@@ -1081,6 +1081,29 @@ func TestReconcileTaskWorkspaceWithMainReportsConflicts(t *testing.T) {
 	}
 }
 
+func TestRestartPlanForDiffDetectsTouchedComponents(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/cmd/homelabd/main.go b/cmd/homelabd/main.go",
+		"diff --git a/web/dashboard/src/routes/tasks/+page.svelte b/web/dashboard/src/routes/tasks/+page.svelte",
+		"diff --git a/docs/task-workflow.md b/docs/task-workflow.md",
+	}, "\n")
+	got := restartPlanForDiff(diff)
+	if !strings.Contains(got, "homelabd") || !strings.Contains(got, "dashboard") {
+		t.Fatalf("restartPlanForDiff() = %q, want homelabd and dashboard", got)
+	}
+	if strings.Contains(got, "docs") {
+		t.Fatalf("restartPlanForDiff() = %q, should not restart docs", got)
+	}
+}
+
+func TestUsageNotesIncludeRestartPlan(t *testing.T) {
+	result := "ReviewerAgent test status: pass\nRestart plan: restart homelabd after merge before final acceptance"
+	got := usageNotesFromResult(result)
+	if !strings.Contains(got, "Restart plan: restart homelabd") {
+		t.Fatalf("usageNotesFromResult() = %q, want restart plan", got)
+	}
+}
+
 func TestReopenTaskAcceptsBareReasonAfterID(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	task := taskstore.Task{

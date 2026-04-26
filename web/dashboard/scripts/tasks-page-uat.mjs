@@ -131,13 +131,26 @@ const run = async () => {
     assert(initial.filters.some((text) => text.includes('Running')), 'Running filter missing', initial);
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
     assert(initial.panelCollapsed === false, 'Act on this queue should start open', initial);
-    if (initial.rows > 0) {
-      assert(
-        initial.workflowState.toLowerCase().includes('workflow state'),
-        'workflow state machine guidance did not render',
-        initial
-      );
-    }
+
+    let afterAll = await evalJS(
+      cdp,
+      `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          active: document.querySelector('.triage button.active')?.innerText || '',
+          rows: document.querySelectorAll('.task-row').length,
+          selected: document.querySelector('.task-row.selected')?.innerText || '',
+          workflowState: document.querySelector('.state-machine')?.innerText || '',
+          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null
+        }), 100)))`
+    );
+    assert(afterAll.active.includes('All'), 'All filter did not become active', afterAll);
+    assert(afterAll.rows > 0, 'All queue rendered no task rows', afterAll);
+    assert(
+      afterAll.workflowState.toLowerCase().includes('workflow state'),
+      'workflow state machine guidance did not render',
+      afterAll
+    );
+    assert(afterAll.queueCollapsed === false, 'desktop task queue collapsed during all-filter selection', afterAll);
 
     const afterRunning = await evalJS(
       cdp,
@@ -152,7 +165,7 @@ const run = async () => {
     assert(afterRunning.active.includes('Running'), 'Running filter did not become active', afterRunning);
     assert(afterRunning.queueCollapsed === false, 'desktop task queue collapsed during filter change', afterRunning);
 
-    const afterAll = await evalJS(
+    afterAll = await evalJS(
       cdp,
       `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
         new Promise((resolve) => setTimeout(() => resolve({

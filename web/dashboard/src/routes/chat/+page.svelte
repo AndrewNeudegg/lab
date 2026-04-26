@@ -378,12 +378,17 @@
     display: grid;
     gap: 0.45rem;
     min-width: 0;
-    max-width: min(48rem, 92%);
+    width: min(48rem, 92%);
     padding: 0.85rem 0.95rem;
     border: 1px solid #e2e8f0;
     border-radius: 0.9rem;
     background: #ffffff;
     box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+  }
+
+  .message :global(.markdown) {
+    min-width: 0;
+    overflow: hidden;
   }
 
   .message.user {

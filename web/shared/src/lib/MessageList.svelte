@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import Markdown from './Markdown.svelte';
   import type { ChatTranscriptMessage } from './types';
 
   export let messages: ChatTranscriptMessage[] = [];
@@ -46,7 +47,7 @@
         <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
         <time>{message.time}</time>
       </div>
-      <p>{message.content}</p>
+      <Markdown content={message.content} />
       {#if message.role === 'assistant' && message.actions?.length}
         <div class="actions" aria-label="Suggested commands">
           {#each message.actions as action}
@@ -114,14 +115,6 @@
   .meta span {
     color: #111827;
     font-weight: 700;
-  }
-
-  p {
-    margin: 0;
-    color: #1f2937;
-    line-height: 1.45;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
   }
 
   .actions {

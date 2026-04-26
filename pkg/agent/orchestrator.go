@@ -135,10 +135,17 @@ func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string)
 }
 
 func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, string, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return programResult("I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil)
+	}
 	fields := strings.Fields(message)
-	cmd := strings.ToLower(fields[0])
+	cmd := commandWord(fields[0])
 	if isCasualMessage(message) {
 		return programResult("I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil)
+	}
+	if goal, ok := taskCreationGoal(message); ok {
+		return programResult(o.createTask(ctx, goal))
 	}
 	if isActiveTaskStatusRequest(message) || isInFlightQuery(message) {
 		return programResult(o.listInFlight())
@@ -346,6 +353,124 @@ func isInFlightQuery(message string) bool {
 		strings.Contains(normalized, "whats running")
 }
 
+func commandWord(field string) string {
+	return strings.ToLower(strings.Trim(field, " \t\r\n:.,!?"))
+}
+
+func taskCreationGoal(message string) (string, bool) {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return "", false
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return "", false
+	}
+	first := commandWord(fields[0])
+	switch first {
+	case "new", "task":
+		goal := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
+		if !isCreatableTaskGoal(goal) {
+			return "", false
+		}
+		return cleanupTaskCreationGoal(goal), true
+	case "tasks":
+		return "", false
+	}
+
+	normalized := normalizeIntentText(trimmed)
+	for _, prefix := range taskCreationPrefixes() {
+		if strings.HasPrefix(normalized, prefix+" ") {
+			goal := wordsAfterPrefix(trimmed, len(strings.Fields(prefix)))
+			if !isCreatableTaskGoal(goal) {
+				return "", false
+			}
+			return cleanupTaskCreationGoal(goal), true
+		}
+	}
+	for _, marker := range []string{" task to ", " task that ", " task which "} {
+		if idx := strings.Index(normalized, marker); idx >= 0 {
+			before := strings.TrimSpace(normalized[:idx])
+			if !taskCreationLeadIn(before) {
+				continue
+			}
+			goal := wordsAfterPrefix(trimmed, len(strings.Fields(normalized[:idx+len(marker)])))
+			if !isCreatableTaskGoal(goal) {
+				return "", false
+			}
+			return cleanupTaskCreationGoal(goal), true
+		}
+	}
+	return "", false
+}
+
+func taskCreationPrefixes() []string {
+	return []string{
+		"create task",
+		"create a task",
+		"create a new task",
+		"add task",
+		"add a task",
+		"make task",
+		"make a task",
+		"please create task",
+		"please create a task",
+		"please create a new task",
+		"can you create task",
+		"can you create a task",
+		"could you create task",
+		"could you create a task",
+		"i want to create task",
+		"i want to create a task",
+		"i need to create task",
+		"i need to create a task",
+	}
+}
+
+func taskCreationLeadIn(value string) bool {
+	switch value {
+	case "create", "please create", "can you create", "could you create", "i want", "i want to create", "i need", "i need to create", "make", "please make", "add", "please add":
+		return true
+	default:
+		return false
+	}
+}
+
+func wordsAfterPrefix(message string, wordCount int) string {
+	fields := strings.Fields(message)
+	if wordCount >= len(fields) {
+		return ""
+	}
+	return strings.Join(fields[wordCount:], " ")
+}
+
+func cleanupTaskCreationGoal(goal string) string {
+	goal = strings.TrimSpace(strings.Trim(goal, " \t\r\n:"))
+	lower := strings.ToLower(goal)
+	for _, prefix := range []string{"to ", "that ", "which ", "for "} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(goal[len(prefix):])
+		}
+	}
+	return goal
+}
+
+func isCreatableTaskGoal(goal string) bool {
+	goal = cleanupTaskCreationGoal(goal)
+	if goal == "" {
+		return false
+	}
+	normalized := normalizeIntentText(goal)
+	switch normalized {
+	case "", "status", "task status", "tasks", "active tasks", "list active tasks", "list all active tasks", "in flight", "whats cooking", "what is cooking":
+		return false
+	}
+	if isInFlightQuery(goal) || isActiveTaskStatusRequest(goal) {
+		return false
+	}
+	return true
+}
+
 func isWebSearchRequest(message string) bool {
 	normalized := " " + strings.ToLower(strings.Join(strings.Fields(message), " ")) + " "
 	return strings.Contains(normalized, " web ") ||
@@ -408,16 +533,29 @@ func isActiveTaskStatusRequest(message string) bool {
 	case "status", "task status", "tasks status", "active tasks", "active task", "list active tasks", "list all active tasks", "what tasks are active", "what task are active", "what work is in progress", "work in progress", "in progress", "whats in progress", "what is in progress":
 		return true
 	}
-	if strings.Contains(normalized, "active") && strings.Contains(normalized, "task") {
+	if statusQuestionLead(normalized) && strings.Contains(normalized, "active") && strings.Contains(normalized, "task") {
 		return true
 	}
-	if strings.Contains(normalized, "work") && strings.Contains(normalized, "in progress") {
+	if statusQuestionLead(normalized) && strings.Contains(normalized, "work") && strings.Contains(normalized, "in progress") {
 		return true
 	}
-	if strings.Contains(normalized, "task") && strings.Contains(normalized, "in progress") {
+	if statusQuestionLead(normalized) && strings.Contains(normalized, "task") && strings.Contains(normalized, "in progress") {
 		return true
 	}
 	return false
+}
+
+func statusQuestionLead(normalized string) bool {
+	fields := strings.Fields(normalized)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "list", "show", "status", "what", "whats", "which":
+		return true
+	default:
+		return false
+	}
 }
 
 func isReflectionRequest(message string) bool {
@@ -491,6 +629,7 @@ func normalizeIntentText(message string) string {
 	normalized := strings.ToLower(strings.TrimSpace(message))
 	normalized = strings.Trim(normalized, " \t\r\n.,!?")
 	normalized = strings.ReplaceAll(normalized, "'", "")
+	normalized = strings.ReplaceAll(normalized, ":", " ")
 	return strings.Join(strings.Fields(normalized), " ")
 }
 

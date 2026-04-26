@@ -58,6 +58,67 @@ func TestActiveTaskStatusIntent(t *testing.T) {
 			t.Fatalf("isActiveTaskStatusRequest(%q) = false, want true", input)
 		}
 	}
+	for _, input := range []string{
+		"Task: add active task parser coverage",
+		"create a task to fix running task creation parsing",
+		"Resolve parsing of task creation messages where the goal mentions active tasks",
+	} {
+		if isActiveTaskStatusRequest(input) {
+			t.Fatalf("isActiveTaskStatusRequest(%q) = true, want false", input)
+		}
+	}
+}
+
+func TestTaskCreationIntentParsesNaturalForms(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{
+			input: "Task: Add Playwright end-to-end tests for the chat and task components covering queue filters",
+			want:  "Add Playwright end-to-end tests for the chat and task components covering queue filters",
+		},
+		{
+			input: "task the chat markdown code blocks are exceeding the bounds of their message bubble",
+			want:  "the chat markdown code blocks are exceeding the bounds of their message bubble",
+		},
+		{
+			input: "create a task to Resolve parsing of task creation messages in chat where the task to be created contains words like running or active tasks",
+			want:  "Resolve parsing of task creation messages in chat where the task to be created contains words like running or active tasks",
+		},
+		{
+			input: "please create a task: Implement a pre-review rebase worker that automatically attempts to recover",
+			want:  "Implement a pre-review rebase worker that automatically attempts to recover",
+		},
+		{
+			input: "can you create a task that when a task is complete and a component was touched homelabd restarts it",
+			want:  "when a task is complete and a component was touched homelabd restarts it",
+		},
+	} {
+		got, ok := taskCreationGoal(tt.input)
+		if !ok {
+			t.Fatalf("taskCreationGoal(%q) ok = false, want true", tt.input)
+		}
+		if got != tt.want {
+			t.Fatalf("taskCreationGoal(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestTaskCreationIntentRejectsStatusAndExistingTaskCommands(t *testing.T) {
+	for _, input := range []string{
+		"tasks",
+		"task status",
+		"Task: status",
+		"list all active tasks",
+		"what tasks are active?",
+		"start the bun task",
+		"delegate the bun task to codex",
+	} {
+		if goal, ok := taskCreationGoal(input); ok {
+			t.Fatalf("taskCreationGoal(%q) = %q, true; want false", input, goal)
+		}
+	}
 }
 
 func TestSearchTheWebUsesInternetTool(t *testing.T) {
@@ -398,6 +459,54 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	}
 	if strings.Contains(reply, "`run ") {
 		t.Fatalf("reply = %q, should not inline command suggestions", reply)
+	}
+}
+
+func TestTaskColonCreationDoesNotListInFlight(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         "task_20260426_014212_653ddcbc",
+		Title:      "existing running task",
+		Goal:       "existing running task",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "codex",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	goal := "Add Playwright end-to-end tests for the chat and task components covering queue filters and active tasks"
+	reply, err := orch.Handle(context.Background(), "test", "Task: "+goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(reply, "In flight:") {
+		t.Fatalf("reply = %q, want task creation not status", reply)
+	}
+	if !strings.Contains(reply, "Created queued task") {
+		t.Fatalf("reply = %q, want created task", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+	var created taskstore.Task
+	for _, task := range tasks {
+		if task.Goal == goal {
+			created = task
+			break
+		}
+	}
+	if created.ID == "" {
+		t.Fatalf("created task with goal %q not found in %#v", goal, tasks)
+	}
+	if created.Status != taskstore.StatusQueued {
+		t.Fatalf("status = %q, want queued", created.Status)
 	}
 }
 

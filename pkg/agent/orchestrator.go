@@ -145,6 +145,16 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 	if isCasualMessage(message) {
 		return programResult("I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil)
 	}
+	if action, selector, reason, ok := parseTaskStateCommand(message); ok {
+		switch action {
+		case "accept":
+			return programResult(o.acceptTask(ctx, selector))
+		case "reopen":
+			return programResult(o.reopenTask(ctx, selector, reason))
+		case "delete":
+			return programResult(o.deleteTask(ctx, selector))
+		}
+	}
 	if goal, ok := taskCreationGoal(message); ok {
 		return programResult(o.createTask(ctx, goal))
 	}
@@ -691,6 +701,73 @@ func parseReopenCommand(args []string) (string, string) {
 		}
 	}
 	return strings.Join(args, " "), ""
+}
+
+func parseTaskStateCommand(message string) (action, selector, reason string, ok bool) {
+	fields := strings.Fields(strings.TrimSpace(message))
+	if len(fields) == 0 {
+		return "", "", "", false
+	}
+	start := 0
+	for start < len(fields) && isCommandFiller(fields[start]) {
+		start++
+	}
+	if start >= len(fields) {
+		return "", "", "", false
+	}
+	verb := commandWord(fields[start])
+	args := fields[start+1:]
+	switch verb {
+	case "accept", "verify":
+		selector = strings.Join(dropTrailingStateWords(args), " ")
+		return "accept", strings.TrimSpace(selector), "", strings.TrimSpace(selector) != ""
+	case "delete", "remove", "rm":
+		selector = strings.Join(dropTrailingStateWords(args), " ")
+		return "delete", strings.TrimSpace(selector), "", strings.TrimSpace(selector) != ""
+	case "reopen":
+		selector, reason = parseReopenCommand(args)
+		return "reopen", selector, reason, strings.TrimSpace(selector) != ""
+	case "mark":
+		if len(args) < 2 || !isAcceptStateWord(args[len(args)-1]) {
+			return "", "", "", false
+		}
+		selector = strings.Join(dropTrailingStateWords(args[:len(args)-1]), " ")
+		return "accept", strings.TrimSpace(selector), "", strings.TrimSpace(selector) != ""
+	case "send":
+		for i, arg := range args {
+			if strings.EqualFold(arg, "back") {
+				selector = strings.Join(args[:i], " ")
+				reason = strings.Join(args[i+1:], " ")
+				return "reopen", strings.TrimSpace(selector), strings.TrimSpace(reason), strings.TrimSpace(selector) != ""
+			}
+		}
+	}
+	return "", "", "", false
+}
+
+func isCommandFiller(word string) bool {
+	switch strings.ToLower(strings.Trim(word, ".,!?")) {
+	case "please", "pls", "can", "could", "would", "you":
+		return true
+	default:
+		return false
+	}
+}
+
+func dropTrailingStateWords(args []string) []string {
+	for len(args) > 0 && isAcceptStateWord(args[len(args)-1]) {
+		args = args[:len(args)-1]
+	}
+	return args
+}
+
+func isAcceptStateWord(word string) bool {
+	switch strings.ToLower(strings.Trim(word, ".,!?")) {
+	case "done", "complete", "completed", "verified", "accepted":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLikelyTaskID(value string) bool {

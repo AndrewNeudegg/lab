@@ -1033,6 +1033,102 @@ func TestReopenTaskAcceptsBareReasonAfterID(t *testing.T) {
 	}
 }
 
+func TestNaturalTaskStateCommands(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	for _, task := range []taskstore.Task{
+		{
+			ID:         "task_20260426_000000_aaaa1111",
+			Title:      "chat markdown code blocks",
+			Goal:       "chat markdown code blocks",
+			Status:     taskstore.StatusAwaitingVerification,
+			AssignedTo: "OrchestratorAgent",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		},
+		{
+			ID:         "task_20260426_000001_bbbb2222",
+			Title:      "search internet",
+			Goal:       "search internet",
+			Status:     taskstore.StatusAwaitingVerification,
+			AssignedTo: "OrchestratorAgent",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		},
+		{
+			ID:         "task_20260426_000002_cccc3333",
+			Title:      "obsolete placeholder",
+			Goal:       "obsolete placeholder",
+			Status:     taskstore.StatusBlocked,
+			AssignedTo: "OrchestratorAgent",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "please accept the chat markdown code blocks task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Accepted aaaa1111") {
+		t.Fatalf("reply = %q, want accepted confirmation", reply)
+	}
+
+	reply, err = orch.Handle(context.Background(), "test", "can you reopen bbbb2222 because the provider fallback is still wrong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Reopened bbbb2222") {
+		t.Fatalf("reply = %q, want reopened confirmation", reply)
+	}
+	updated, err := orch.tasks.Load("task_20260426_000001_bbbb2222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusQueued || !strings.Contains(updated.Result, "provider fallback is still wrong") {
+		t.Fatalf("updated task = %#v, want queued with reopen reason", updated)
+	}
+
+	reply, err = orch.Handle(context.Background(), "test", "please delete the obsolete placeholder task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Deleted task_20260426_000002_cccc3333") {
+		t.Fatalf("reply = %q, want delete confirmation", reply)
+	}
+	if _, err := orch.tasks.Load("task_20260426_000002_cccc3333"); err == nil {
+		t.Fatal("deleted task still loads")
+	}
+}
+
+func TestParseTaskStateCommandVariants(t *testing.T) {
+	tests := []struct {
+		input        string
+		wantAction   string
+		wantSelector string
+		wantReason   string
+	}{
+		{"please accept the search internet task", "accept", "the search internet task", ""},
+		{"mark 28493611 done", "accept", "28493611", ""},
+		{"can you reopen 28493611 because tests failed", "reopen", "28493611", "because tests failed"},
+		{"send the bun task back for rework", "reopen", "the bun task", "for rework"},
+		{"please delete the hi task", "delete", "the hi task", ""},
+	}
+	for _, tt := range tests {
+		action, selector, reason, ok := parseTaskStateCommand(tt.input)
+		if !ok {
+			t.Fatalf("parseTaskStateCommand(%q) ok = false, want true", tt.input)
+		}
+		if action != tt.wantAction || selector != tt.wantSelector || reason != tt.wantReason {
+			t.Fatalf("parseTaskStateCommand(%q) = (%q, %q, %q), want (%q, %q, %q)", tt.input, action, selector, reason, tt.wantAction, tt.wantSelector, tt.wantReason)
+		}
+	}
+}
+
 func TestOpenEndedChatRetainsHistory(t *testing.T) {
 	provider := &recordingProvider{}
 	orch := newTestOrchestrator(t, nil)

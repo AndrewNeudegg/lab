@@ -8,6 +8,7 @@
   export let links: { href: string; label: string }[] = [
     { href: '/chat', label: 'Chat' },
     { href: '/tasks', label: 'Tasks' },
+    { href: '/terminal', label: 'Terminal' },
     { href: '/supervisord', label: 'Supervisor' },
     { href: '/healthd', label: 'Health' }
   ];
@@ -148,6 +149,9 @@
 	  :global(html[data-theme='dark'] .message-actions button),
   :global(html[data-theme='dark'] .prompt-actions button),
   :global(html[data-theme='dark'] .command-header-actions button),
+  :global(html[data-theme='dark'] .terminal-panel),
+  :global(html[data-theme='dark'] .terminal-composer),
+  :global(html[data-theme='dark'] .terminal-actions button),
   :global(html[data-theme='dark'] input),
   :global(html[data-theme='dark'] textarea) {
     color: var(--text) !important;

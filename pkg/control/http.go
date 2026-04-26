@@ -339,12 +339,14 @@ func (s *Server) handleTerminalSessions(rw http.ResponseWriter, req *http.Reques
 		return
 	}
 	var in struct {
-		CWD string `json:"cwd"`
+		CWD  string `json:"cwd"`
+		Cols int    `json:"cols"`
+		Rows int    `json:"rows"`
 	}
 	if req.Body != nil {
 		_ = json.NewDecoder(req.Body).Decode(&in)
 	}
-	session, err := s.terminals().create(in.CWD)
+	session, err := s.terminals().createWithSize(in.CWD, terminalSize{Cols: in.Cols, Rows: in.Rows})
 	if err != nil {
 		writeError(rw, http.StatusInternalServerError, err.Error())
 		return
@@ -382,6 +384,8 @@ func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request
 		return
 	}
 	switch parts[1] {
+	case "ws":
+		s.streamTerminalWebSocket(rw, req, session)
 	case "events":
 		if req.Method != http.MethodGet {
 			writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
@@ -422,6 +426,25 @@ func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request
 			return
 		}
 		writeJSON(rw, http.StatusOK, map[string]any{"ok": true})
+	case "resize":
+		if req.Method != http.MethodPost {
+			writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var in struct {
+			Cols int `json:"cols"`
+			Rows int `json:"rows"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		size := normalizeTerminalSize(terminalSize{Cols: in.Cols, Rows: in.Rows})
+		if err := session.resize(size); err != nil {
+			writeError(rw, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "cols": size.Cols, "rows": size.Rows})
 	default:
 		writeError(rw, http.StatusNotFound, "terminal action not found")
 	}

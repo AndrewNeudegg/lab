@@ -10,7 +10,7 @@
     "dev": "bun run --cwd dashboard dev",
     "build": "bun run --cwd dashboard build",
     "check": "bun run --cwd shared check && bun run --cwd dashboard check",
-    "test": "bun test",
+    "test": "bun test shared/src/lib dashboard/src/routes dashboard/scripts",
     "uat:tasks": "bun run --cwd dashboard uat:tasks",
     "e2e": "bun run --cwd dashboard e2e"
   },

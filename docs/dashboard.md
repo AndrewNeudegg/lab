@@ -131,11 +131,13 @@ The split view is not forced into a narrow screen because that makes task names,
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
 
-On compact screens `/terminal` keeps the shell output as the primary scroll area and places large control-key buttons above the command composer. Include controls for keys commonly missing or awkward on Android keyboards, including `Ctrl-C`, `Ctrl-D`, `Ctrl-Z`, `Tab`, `Esc`, and arrow keys.
+On compact screens `/terminal` keeps the xterm viewport as the primary scroll area and places large control-key buttons below it. Include controls for keys commonly missing or awkward on Android keyboards, including `Ctrl-C`, `Ctrl-D`, `Ctrl-Z`, `Tab`, and `Esc`.
 
 ## Terminal Runtime
 
-The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts the user's shell in the homelabd working directory, using the system `script` utility as a pseudo-terminal wrapper when available so control keys behave like a terminal. It streams shell output with Server-Sent Events, sends command input with `POST /terminal/sessions/{id}/input`, and sends interrupt/suspend/terminate actions with `POST /terminal/sessions/{id}/signal`.
+The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts the user's shell in the homelabd working directory inside a Linux PTY. The browser renders the session with xterm.js, connects terminal bytes over `GET /terminal/sessions/{id}/ws`, and sends terminal resize updates with `POST /terminal/sessions/{id}/resize`.
+
+Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colors, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
 
 This is an operator shell. Run it only where the homelabd HTTP API is already trusted, because anyone who can reach the endpoint can execute commands as the homelabd process user.
 

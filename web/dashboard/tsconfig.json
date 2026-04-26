@@ -13,5 +13,8 @@
     "sourceMap": true,
     "strict": true,
     "moduleResolution": "Bundler"
-  }
+  },
+  "exclude": [
+    "src/**/*.test.ts"
+  ]
 }

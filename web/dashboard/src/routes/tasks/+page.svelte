@@ -80,6 +80,11 @@
   let tasks: HomelabdTask[] = [];
   let approvals: HomelabdApproval[] = [];
   let events: HomelabdEvent[] = [];
+  let pendingApprovalItems: HomelabdApproval[] = [];
+  let activeTaskItems: HomelabdTask[] = [];
+  let visibleTaskItems: HomelabdTask[] = [];
+  let currentTask: HomelabdTask | undefined;
+  let currentTaskEvents: HomelabdEvent[] = [];
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -268,14 +273,8 @@
     return [...commands].slice(0, 5);
   };
 
-  const selectedTask = () =>
-    tasks.find((task) => task.id === selectedTaskId) ||
-    tasks.find(taskNeedsAttention) ||
-    tasks[0];
-
-  const pendingApprovals = () => pendingActionableApprovals(approvals, tasks);
-  const attentionTasks = () => tasks.filter(taskNeedsAttention);
-  const activeTasks = () => tasks.filter(taskIsActive);
+  $: pendingApprovalItems = pendingActionableApprovals(approvals, tasks);
+  $: activeTaskItems = tasks.filter(taskIsActive);
 
   const taskMatchesFilter = (task: HomelabdTask) => {
     switch (taskFilter) {
@@ -299,17 +298,20 @@
       .includes(query);
   };
 
-  const visibleTasks = () => tasks.filter((task) => taskMatchesFilter(task) && taskMatchesSearch(task));
-
-  const taskEvents = (task?: HomelabdTask) => {
-    if (!task) {
+  $: visibleTaskItems = tasks.filter((task) => taskMatchesFilter(task) && taskMatchesSearch(task));
+  $: currentTask =
+    tasks.find((task) => task.id === selectedTaskId) ||
+    tasks.find(taskNeedsAttention) ||
+    tasks[0];
+  $: currentTaskEvents = (() => {
+    if (!currentTask) {
       return [];
     }
     return events
-      .filter((event) => event.task_id === task.id)
+      .filter((event) => event.task_id === currentTask?.id)
       .sort((left, right) => Date.parse(right.time) - Date.parse(left.time))
       .slice(0, 80);
-  };
+  })();
 
   const eventLabel = (event: HomelabdEvent) => event.type.replaceAll('.', ' ');
 
@@ -575,7 +577,7 @@
           aria-expanded={taskQueueOpen}
           on:click={() => (taskQueueOpen = !taskQueueOpen)}
         >
-          {taskQueueOpen ? 'Hide queue' : `Show queue (${visibleTasks().length})`}
+          {taskQueueOpen ? 'Hide queue' : `Show queue (${visibleTaskItems.length})`}
         </button>
         <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
           {refreshing ? 'Syncing' : 'Sync'}
@@ -587,7 +589,7 @@
       <section class="triage" aria-label="Task filters">
         {#each [
           { id: 'attention', label: 'Needs action', count: needsActionCount(tasks, approvals) },
-          { id: 'active', label: 'Running', count: activeTasks().length },
+          { id: 'active', label: 'Running', count: activeTaskItems.length },
           { id: 'all', label: 'All', count: tasks.length }
         ] as filter}
           <button
@@ -604,10 +606,10 @@
       <label class="hidden" for="task-search">Search tasks</label>
       <input id="task-search" bind:value={taskSearch} placeholder="Search tasks…" />
 
-      {#if pendingApprovals().length}
+      {#if pendingApprovalItems.length}
         <section class="approval-list" aria-label="Pending approvals">
           <h2>Needs decision</h2>
-          {#each pendingApprovals() as approval}
+          {#each pendingApprovalItems as approval}
             <article>
               <span class="dot amber"></span>
               <div>
@@ -629,13 +631,13 @@
       {/if}
 
       <section class="task-list" aria-label="Task list">
-        {#if visibleTasks().length === 0}
+        {#if visibleTaskItems.length === 0}
           <p class="empty">No matching tasks.</p>
         {:else}
-          {#each visibleTasks() as task}
+          {#each visibleTaskItems as task}
             <button
               type="button"
-              class:selected={selectedTask()?.id === task.id}
+              class:selected={currentTask?.id === task.id}
               class="task-row"
               on:click={() => selectTask(task.id)}
             >
@@ -661,80 +663,80 @@
       <header class="record-header">
         <div>
           <p>Selected task</p>
-          {#if selectedTask()}
-            <h2>{taskSummaryTitle(selectedTask() as HomelabdTask)}</h2>
+          {#if currentTask}
+            <h2>{taskSummaryTitle(currentTask)}</h2>
           {:else}
             <h2>No task selected</h2>
           {/if}
         </div>
       </header>
 
-      {#if selectedTask()}
+      {#if currentTask}
         <section class="record-summary" aria-label="Task summary">
           <div>
             <span>ID</span>
-            <strong>{shortID(selectedTask()?.id)}</strong>
+            <strong>{shortID(currentTask?.id)}</strong>
           </div>
           <div>
             <span>Status</span>
             <strong>
-              <span class={`dot ${taskTone(selectedTask() as HomelabdTask)}`} aria-hidden="true"></span>
-              {statusLabel(selectedTask()?.status)}
+              <span class={`dot ${taskTone(currentTask)}`} aria-hidden="true"></span>
+              {statusLabel(currentTask?.status)}
             </strong>
           </div>
           <div>
             <span>Owner</span>
-            <strong>{selectedTask()?.assigned_to || 'unassigned'}</strong>
+            <strong>{currentTask?.assigned_to || 'unassigned'}</strong>
           </div>
           <div>
             <span>Started</span>
-            <strong>{compactTime(taskStartedAt(selectedTask() as HomelabdTask))}</strong>
+            <strong>{compactTime(taskStartedAt(currentTask))}</strong>
           </div>
           <div>
             <span>Runtime</span>
-            <strong>{compactDuration(taskRuntimeMs(selectedTask() as HomelabdTask))}</strong>
+            <strong>{compactDuration(taskRuntimeMs(currentTask))}</strong>
           </div>
           <div>
             <span>Updated</span>
-            <strong>{compactTime(selectedTask()?.updated_at)}</strong>
+            <strong>{compactTime(currentTask?.updated_at)}</strong>
           </div>
         </section>
 
-        <section class={`next-step ${taskTone(selectedTask() as HomelabdTask)}`}>
-          <span class={`dot ${taskTone(selectedTask() as HomelabdTask)}`} aria-hidden="true"></span>
+        <section class={`next-step ${taskTone(currentTask)}`}>
+          <span class={`dot ${taskTone(currentTask)}`} aria-hidden="true"></span>
           <div>
-            <h3>{taskPrimaryAction(selectedTask()).label}</h3>
-            <p>{taskPrimaryAction(selectedTask()).reason}</p>
+            <h3>{taskPrimaryAction(currentTask).label}</h3>
+            <p>{taskPrimaryAction(currentTask).reason}</p>
           </div>
           <button
             type="button"
             class="primary-action"
             disabled={loading}
-            on:click={() => sendCommand(taskPrimaryAction(selectedTask()).command)}
+            on:click={() => sendCommand(taskPrimaryAction(currentTask).command)}
           >
-            {taskPrimaryAction(selectedTask()).label}
+            {taskPrimaryAction(currentTask).label}
           </button>
         </section>
 
         <section class="record-actions" aria-label="Task actions">
-          {#each secondaryTaskActions(selectedTask()) as action}
+          {#each secondaryTaskActions(currentTask) as action}
             <button type="button" disabled={loading} on:click={() => sendCommand(action)}>
               {action}
             </button>
           {/each}
         </section>
 
-        {#if selectedTask()?.workspace}
+        {#if currentTask?.workspace}
           <section class="workspace-path" aria-label="Workspace path">
             <span>Workspace</span>
-            <code>{selectedTask()?.workspace}</code>
+            <code>{currentTask?.workspace}</code>
           </section>
         {/if}
 
-        {#if selectedTask()?.result}
+        {#if currentTask?.result}
           <section class="task-result">
             <h3>Result</h3>
-            <p>{selectedTask()?.result}</p>
+            <p>{currentTask?.result}</p>
           </section>
         {/if}
 
@@ -742,14 +744,14 @@
           <header>
             <div>
               <p>Task activity</p>
-              <h3>{taskEvents(selectedTask()).length} recent event{taskEvents(selectedTask()).length === 1 ? '' : 's'}</h3>
+              <h3>{currentTaskEvents.length} recent event{currentTaskEvents.length === 1 ? '' : 's'}</h3>
             </div>
           </header>
-          {#if taskEvents(selectedTask()).length === 0}
+          {#if currentTaskEvents.length === 0}
             <p class="empty">No task-specific events loaded yet.</p>
           {:else}
             <ol>
-              {#each taskEvents(selectedTask()) as event}
+              {#each currentTaskEvents as event}
                 <li>
                   <time>{compactTime(event.time)}</time>
                   <div>
@@ -767,7 +769,7 @@
 
         <section class="task-input" aria-label="Original task input">
           <h3>Original input</h3>
-          <p>{taskInputText(selectedTask() as HomelabdTask)}</p>
+          <p>{taskInputText(currentTask)}</p>
         </section>
       {:else}
         <section class="empty-record">

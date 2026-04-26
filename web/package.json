@@ -10,7 +10,8 @@
     "dev": "bun run --cwd dashboard dev",
     "build": "bun run --cwd dashboard build",
     "check": "bun run --cwd shared check && bun run --cwd dashboard check",
-    "test": "bun test"
+    "test": "bun test",
+    "uat:tasks": "bun run --cwd dashboard uat:tasks"
   },
   "devDependencies": {
     "typescript": "^5.4.0"

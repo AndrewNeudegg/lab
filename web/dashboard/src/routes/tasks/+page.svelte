@@ -2,15 +2,11 @@
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
-    needsActionCount,
     Navbar,
-    pendingActionableApprovals,
     taskInputText,
     taskRuntimeMs,
     taskIsActive,
     taskIsTerminal,
-    taskNeedsAttention,
-    taskNeedsQueueAction,
     taskStartedAt,
     taskSummaryTitle,
     type ChatRole,
@@ -19,8 +15,13 @@
     type HomelabdEvent,
     type HomelabdTask
   } from '@homelab/shared';
+  import {
+    createTaskQueueView,
+    selectTaskForQueue,
+    type TaskFilter,
+    type TaskQueueView
+  } from './view-model';
 
-  type TaskFilter = 'attention' | 'active' | 'all';
   type PromptAction = {
     label: string;
     command: string;
@@ -73,18 +74,28 @@
   let selectedTaskId = '';
   let lastRefresh = '';
   let taskQueueOpen = true;
-  let commandPanelOpen = false;
+  let commandPanelOpen = true;
   let inputEl: HTMLTextAreaElement | undefined;
   let messagesEl: HTMLElement | undefined;
   let messages: ChatTranscriptMessage[] = [welcomeMessage];
   let tasks: HomelabdTask[] = [];
   let approvals: HomelabdApproval[] = [];
   let events: HomelabdEvent[] = [];
+  let taskQueueView: TaskQueueView = createTaskQueueView({
+    tasks,
+    approvals,
+    events,
+    taskFilter,
+    taskSearch,
+    selectedTaskId
+  });
   let pendingApprovalItems: HomelabdApproval[] = [];
+  let attentionTaskItems: HomelabdTask[] = [];
   let activeTaskItems: HomelabdTask[] = [];
   let visibleTaskItems: HomelabdTask[] = [];
   let currentTask: HomelabdTask | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
+  let needsActionTotal = 0;
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -273,45 +284,22 @@
     return [...commands].slice(0, 5);
   };
 
-  $: pendingApprovalItems = pendingActionableApprovals(approvals, tasks);
-  $: activeTaskItems = tasks.filter(taskIsActive);
-
-  const taskMatchesFilter = (task: HomelabdTask) => {
-    switch (taskFilter) {
-      case 'attention':
-        return taskNeedsQueueAction(task, approvals);
-      case 'active':
-        return taskIsActive(task);
-      default:
-        return true;
-    }
-  };
-
-  const taskMatchesSearch = (task: HomelabdTask) => {
-    const query = taskSearch.trim().toLowerCase();
-    if (!query) {
-      return true;
-    }
-    return [task.id, task.title, task.goal, task.status, task.assigned_to]
-      .join(' ')
-      .toLowerCase()
-      .includes(query);
-  };
-
-  $: visibleTaskItems = tasks.filter((task) => taskMatchesFilter(task) && taskMatchesSearch(task));
-  $: currentTask =
-    tasks.find((task) => task.id === selectedTaskId) ||
-    tasks.find(taskNeedsAttention) ||
-    tasks[0];
-  $: currentTaskEvents = (() => {
-    if (!currentTask) {
-      return [];
-    }
-    return events
-      .filter((event) => event.task_id === currentTask?.id)
-      .sort((left, right) => Date.parse(right.time) - Date.parse(left.time))
-      .slice(0, 80);
-  })();
+  $: taskQueueView = createTaskQueueView({
+    tasks,
+    approvals,
+    events,
+    taskFilter,
+    taskSearch,
+    selectedTaskId
+  });
+  $: pendingApprovalItems = taskQueueView.pendingApprovalItems;
+  $: activeTaskItems = taskQueueView.activeTaskItems;
+  $: attentionTaskItems = taskQueueView.attentionTaskItems;
+  $: visibleTaskItems = taskQueueView.visibleTaskItems;
+  $: currentTask = taskQueueView.currentTask;
+  $: currentTaskEvents = taskQueueView.currentTaskEvents;
+  $: needsActionTotal =
+    attentionTaskItems.length + pendingApprovalItems.filter((approval) => !approval.task_id).length;
 
   const eventLabel = (event: HomelabdEvent) => event.type.replaceAll('.', ' ');
 
@@ -533,13 +521,31 @@
   };
 
   const sendCommand = (command: string) => {
-    commandPanelOpen = true;
+    setCommandPanelOpen(true);
     void sendMessage(command);
   };
 
   const selectTask = (id: string) => {
     selectedTaskId = id;
-    taskQueueOpen = false;
+    if (window.matchMedia('(max-width: 760px)').matches) {
+      taskQueueOpen = false;
+    }
+  };
+
+  const setTaskFilter = (filter: TaskFilter) => {
+    taskFilter = filter;
+    selectedTaskId = selectTaskForQueue(tasks, approvals, filter, taskSearch, selectedTaskId);
+  };
+
+  const setCommandPanelOpen = (open: boolean) => {
+    commandPanelOpen = open;
+    if (open) {
+      focusInput();
+    }
+  };
+
+  const toggleCommandPanel = () => {
+    setCommandPanelOpen(!commandPanelOpen);
   };
 
   const handleComposerKeydown = (event: KeyboardEvent) => {
@@ -588,14 +594,14 @@
     <div id="task-sidebar-content" class="task-sidebar-content">
       <section class="triage" aria-label="Task filters">
         {#each [
-          { id: 'attention', label: 'Needs action', count: needsActionCount(tasks, approvals) },
+          { id: 'attention', label: 'Needs action', count: needsActionTotal },
           { id: 'active', label: 'Running', count: activeTaskItems.length },
           { id: 'all', label: 'All', count: tasks.length }
         ] as filter}
           <button
             type="button"
             class:active={taskFilter === filter.id}
-            on:click={() => (taskFilter = filter.id as TaskFilter)}
+            on:click={() => setTaskFilter(filter.id as TaskFilter)}
           >
             <strong>{filter.count}</strong>
             <span>{filter.label}</span>
@@ -793,12 +799,7 @@
           <button
             type="button"
             aria-expanded={commandPanelOpen}
-            on:click={() => {
-              commandPanelOpen = !commandPanelOpen;
-              if (commandPanelOpen) {
-                focusInput();
-              }
-            }}
+            on:click={toggleCommandPanel}
           >
             {commandPanelOpen ? 'Collapse' : 'Open command'}
           </button>
@@ -1574,6 +1575,7 @@
   }
 
   .command-panel.collapsed {
+    grid-template-rows: auto;
     max-height: none;
   }
 
@@ -1595,6 +1597,9 @@
   }
 
   .command-header-actions button {
+    position: relative;
+    z-index: 1;
+    flex: 0 0 auto;
     min-height: 2rem;
     padding: 0 0.7rem;
     border: 1px solid #cbd5e1;

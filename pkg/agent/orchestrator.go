@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -2277,15 +2278,32 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	if err != nil {
 		return "", err
 	}
-	diffOut, diffErr := o.diffTask(ctx, taskID)
-	if diffErr != nil {
-		return "", diffErr
-	}
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
 	}
 	shortID := taskShortID(taskID)
+	diffOut := ""
+	if workspaceHasGit(t.Workspace) {
+		if _, err := commitReviewWorkspaceChanges(ctx, t.Workspace, taskID); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = "ReviewerAgent could not commit workspace changes before review: " + err.Error()
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review commit: fail\n%s\nNo approval created.\nNext: `delegate %s to codex fix the workspace git state`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
+		}
+		diffOut, err = o.taskBranchDiff(ctx, t.Workspace)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		var diffErr error
+		diffOut, diffErr = o.diffTask(ctx, taskID)
+		if diffErr != nil {
+			return "", diffErr
+		}
+	}
 	if diffOut == "no diff" {
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
@@ -2356,6 +2374,53 @@ func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, 
 		return "no configured checks found", nil
 	}
 	return truncateForChat(strings.Join(outputs, "\n\n")), firstErr
+}
+
+func workspaceHasGit(workspace string) bool {
+	if strings.TrimSpace(workspace) == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(workspace, ".git"))
+	return err == nil
+}
+
+func commitReviewWorkspaceChanges(ctx context.Context, workspace, taskID string) (string, error) {
+	statusOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git status workspace: %w: %s", err, strings.TrimSpace(string(statusOut)))
+	}
+	if strings.TrimSpace(string(statusOut)) == "" {
+		return "workspace has no uncommitted changes", nil
+	}
+	addOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "add", "-A", "--", ".").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git add workspace: %w: %s", err, strings.TrimSpace(string(addOut)))
+	}
+	resetOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "reset", "--", ".codex").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git reset workspace metadata: %w: %s", err, strings.TrimSpace(string(resetOut)))
+	}
+	commitOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "commit", "-m", "Apply "+taskID+" for review").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git commit workspace: %w: %s", err, strings.TrimSpace(string(commitOut)))
+	}
+	return string(commitOut), nil
+}
+
+func (o *Orchestrator) taskBranchDiff(ctx context.Context, workspace string) (string, error) {
+	baseOut, err := exec.CommandContext(ctx, "git", "-C", o.cfg.Repo.Root, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse repo head: %w: %s", err, strings.TrimSpace(string(baseOut)))
+	}
+	base := strings.TrimSpace(string(baseOut))
+	diffOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--binary", base+"...HEAD", "--", ".").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git diff task branch: %w: %s", err, strings.TrimSpace(string(diffOut)))
+	}
+	if strings.TrimSpace(string(diffOut)) == "" {
+		return "no diff", nil
+	}
+	return string(diffOut), nil
 }
 
 func (o *Orchestrator) runCheckTool(ctx context.Context, actor, name, dir, taskID string) (string, error) {

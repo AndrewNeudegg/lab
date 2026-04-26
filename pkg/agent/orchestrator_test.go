@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -657,6 +658,41 @@ func TestReviewSuccessMovesOwnershipBackToOrchestrator(t *testing.T) {
 	}
 	if updated.AssignedTo != "OrchestratorAgent" {
 		t.Fatalf("AssignedTo = %q, want OrchestratorAgent", updated.AssignedTo)
+	}
+}
+
+func TestReviewWorkspaceCommitFeedsBranchDiff(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspace := filepath.Join(tempDir, "workspace")
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", "app.txt")
+	gitTestRun(t, root, "commit", "-m", "base")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_test", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := commitReviewWorkspaceChanges(ctx, workspace, "task_test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(gitTestOutput(t, workspace, "status", "--porcelain")); got != "" {
+		t.Fatalf("workspace status = %q, want clean", got)
+	}
+	orch := newTestOrchestrator(t, nil)
+	orch.cfg.Repo.Root = root
+	diff, err := orch.taskBranchDiff(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "+changed") {
+		t.Fatalf("diff = %q, want committed workspace change", diff)
 	}
 }
 
@@ -1399,6 +1435,24 @@ func newTestOrchestrator(t *testing.T, delegate *delegateStub) *Orchestrator {
 		nil,
 		"",
 	)
+}
+
+func gitTestRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	_ = gitTestOutput(t, dir, args...)
+}
+
+func gitTestOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out)
 }
 
 type worktreeCreateStub struct {

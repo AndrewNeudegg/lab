@@ -2,6 +2,8 @@
 
 `homelabd` accepts short operational commands and natural development requests from chat.
 
+From a terminal, use `homelabctl shell` for interactive chat-command operation, or `homelabctl message <text>` for a single message. The CLI is documented in `docs/homelabctl.md` and should be kept current with this command surface.
+
 ## Reflection
 
 Use reflection when you want one improvement from the recent interaction and a follow-up task you can action:

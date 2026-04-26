@@ -47,6 +47,33 @@ export const taskRuntimeMs = (
   return ended - started;
 };
 
+const normalizedTaskText = (value = '') => value.trim().replace(/\s+/g, ' ');
+
+export const taskInputText = (task: Pick<HomelabdTask, 'id' | 'title' | 'goal'>) =>
+  task.goal?.trim() || task.title?.trim() || task.id;
+
+export const taskSummaryTitle = (
+  task: Pick<HomelabdTask, 'id' | 'title' | 'goal'>,
+  maxLength = 96
+) => {
+  const source = normalizedTaskText(task.goal) || normalizedTaskText(task.title) || task.id;
+  if (source.length <= maxLength) {
+    return source;
+  }
+
+  const sentenceEnd = source.search(/[.!?](?:\s|$)/);
+  if (sentenceEnd >= 24 && sentenceEnd + 1 <= maxLength) {
+    return source.slice(0, sentenceEnd + 1);
+  }
+
+  const clipped = source.slice(0, maxLength).trimEnd();
+  const wordBoundary = clipped.lastIndexOf(' ');
+  if (wordBoundary >= Math.floor(maxLength * 0.6)) {
+    return `${clipped.slice(0, wordBoundary)}...`;
+  }
+  return `${clipped}...`;
+};
+
 export const pendingActionableApprovals = (
   approvals: HomelabdApproval[],
   tasks: Pick<HomelabdTask, 'id' | 'status'>[]

@@ -5,12 +5,14 @@
     needsActionCount,
     Navbar,
     pendingActionableApprovals,
+    taskInputText,
     taskRuntimeMs,
     taskIsActive,
     taskIsTerminal,
     taskNeedsAttention,
     taskNeedsQueueAction,
     taskStartedAt,
+    taskSummaryTitle,
     type ChatRole,
     type ChatTranscriptMessage,
     type HomelabdApproval,
@@ -639,7 +641,7 @@
         <div>
           <p>Selected task</p>
           {#if selectedTask()}
-            <h2>{selectedTask()?.title}</h2>
+            <h2>{taskSummaryTitle(selectedTask() as HomelabdTask)}</h2>
           {:else}
             <h2>No task selected</h2>
           {/if}
@@ -740,6 +742,11 @@
               {/each}
             </ol>
           {/if}
+        </section>
+
+        <section class="task-input" aria-label="Original task input">
+          <h3>Original input</h3>
+          <p>{taskInputText(selectedTask() as HomelabdTask)}</p>
         </section>
       {:else}
         <section class="empty-record">
@@ -1383,6 +1390,7 @@
 
   .workspace-path,
   .task-result,
+  .task-input,
   .activity,
   .empty-record {
     margin: 1rem 1.25rem 0;
@@ -1410,26 +1418,35 @@
   }
 
   .task-result h3,
-  .task-result p {
+  .task-result p,
+  .task-input h3,
+  .task-input p {
     margin: 0;
   }
 
-  .task-result h3 {
+  .task-result h3,
+  .task-input h3 {
     color: #111827;
     font-size: 0.9rem;
   }
 
-  .task-result p {
+  .task-result p,
+  .task-input p {
     margin-top: 0.4rem;
     color: #475569;
     font-size: 0.88rem;
     line-height: 1.45;
+    overflow-wrap: anywhere;
     white-space: pre-wrap;
   }
 
   .activity {
-    margin-bottom: 1.25rem;
     overflow: hidden;
+  }
+
+  .task-input {
+    margin-bottom: 1.25rem;
+    padding: 0.8rem;
   }
 
   .activity header {

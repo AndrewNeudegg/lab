@@ -80,6 +80,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Decision block: pending approvals appear before the task list because they are human-blocked work.
 - Task rows: colored dot plus text status. Color gives scan speed; text keeps it accessible and unambiguous.
 - Right pane: selected task record. It is not a chat transcript. Selecting a different task changes the record, summary, result, and activity timeline.
+- Selected task title: use a compact summary derived from the task input so long prompts do not dominate the top of the record.
 - Task summary: ID, status, owner, started time, runtime, and update time. This answers what object is selected and how long it has been running before asking the operator to act.
 - Primary action: one emphasized button derived from task state. The UI should not make the operator infer the next command from raw status.
 - Secondary actions: show, delegate, delete, or reopen. These are useful but lower priority than the primary action.
@@ -87,6 +88,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
 - Result block: shown only when a task has a stored result.
 - Task activity: event-log timeline filtered to the selected task. This is the task-scoped history equivalent to issue activity or incident timelines.
+- Original input: shown below task activity, preserving the full task goal text for reference after the timeline.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 

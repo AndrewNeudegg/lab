@@ -3,11 +3,13 @@ import {
   needsActionCount,
   pendingActionableApprovals,
   taskRuntimeMs,
+  taskInputText,
   taskIsActive,
   taskIsTerminal,
   taskNeedsAttention,
   taskNeedsQueueAction,
-  taskStartedAt
+  taskStartedAt,
+  taskSummaryTitle
 } from './tasks';
 import type { HomelabdApproval, HomelabdTask } from './types';
 
@@ -101,5 +103,27 @@ describe('task queue attention logic', () => {
     expect(taskRuntimeMs(completed)).toBe(330000);
     expect(taskRuntimeMs(running, new Date('2026-04-25T00:03:00Z'))).toBe(120000);
     expect(taskRuntimeMs(legacy)).toBe(240000);
+  });
+
+  test('summarizes selected task titles from full task input', () => {
+    const detailed = timedTask({
+      id: 'task_long',
+      title: 'Work this task to completion if possible. Inspect the task workspace before editing',
+      goal:
+        'Work this task to completion if possible. Inspect the task workspace before editing. Make a minimal patch that satisfies the task goal.\nTask goal: expose the full input below activity.'
+    });
+
+    expect(taskSummaryTitle(detailed)).toBe(
+      'Work this task to completion if possible. Inspect the task workspace before editing.'
+    );
+    expect(taskInputText(detailed)).toContain('Task goal: expose the full input below activity.');
+  });
+
+  test('falls back to title and id for task display text', () => {
+    const withoutGoal = timedTask({ id: 'task_title_only', title: 'title only', goal: '' });
+    const withoutText = timedTask({ id: 'task_empty', title: '', goal: '' });
+
+    expect(taskSummaryTitle(withoutGoal)).toBe('title only');
+    expect(taskInputText(withoutText)).toBe('task_empty');
   });
 });

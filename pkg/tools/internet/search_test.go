@@ -36,7 +36,7 @@ func TestSearchToolReturnsLimitedResults(t *testing.T) {
 		}, nil
 	})}
 
-	raw, err := SearchTool{base: Base{Endpoint: "https://search.example/", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"golang testing","max_results":2}`))
+	raw, err := SearchTool{base: Base{Endpoint: "https://search.example/", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"golang testing","max_results":2}`))
 	if err != nil {
 		t.Fatalf("run search: %v", err)
 	}
@@ -126,6 +126,107 @@ func TestSearchToolReturnsAcademicResults(t *testing.T) {
 	}
 }
 
+func TestSearchToolUsesBraveWhenConfigured(t *testing.T) {
+	var gotToken string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotToken = r.Header.Get("X-Subscription-Token")
+		if r.URL.Query().Get("q") != "agent research" {
+			t.Fatalf("unexpected brave query: %q", r.URL.Query().Get("q"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"web":{"results":[{"title":"Brave result","url":"https://example.com/brave","description":"Useful brave snippet"}]}
+			}`)),
+		}, nil
+	})}
+
+	raw, err := SearchTool{base: Base{BraveEndpoint: "https://brave.example/search", BraveAPIKey: "token", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"agent research","provider":"brave"}`))
+	if err != nil {
+		t.Fatalf("run brave search: %v", err)
+	}
+	if gotToken != "token" {
+		t.Fatalf("got token %q, want configured token", gotToken)
+	}
+	var result struct {
+		Source   string              `json:"source"`
+		Provider string              `json:"provider"`
+		Results  []map[string]string `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.Source != "brave" || result.Provider != "brave" || len(result.Results) != 1 {
+		t.Fatalf("unexpected brave result: %+v", result)
+	}
+}
+
+func TestResearchToolFansOutSearchesAndFetchesSources(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "search.example":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{
+					"Results":[{"Text":"Official docs - implementation guidance","FirstURL":"https://docs.example.com/guide"}]
+				}`)),
+			}, nil
+		case "academic.example":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{
+					"results":[{
+						"id":"https://openalex.org/W1",
+						"title":"Research paper",
+						"publication_year":2026,
+						"primary_location":{"landing_page_url":"https://papers.example.org/paper","source":{"display_name":"Journal"}},
+						"abstract_inverted_index":{"Agentic":[0],"research":[1],"works":[2]}
+					}]
+				}`)),
+			}, nil
+		case "docs.example.com", "papers.example.org":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+				Request:    r,
+				Body:       io.NopCloser(strings.NewReader(`<html><head><title>Fetched</title></head><body><main>Fetched source evidence for research.</main></body></html>`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected host %q", r.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	raw, err := ResearchTool{base: Base{Endpoint: "https://search.example/", AcademicEndpoint: "https://academic.example/works", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"agent research","source":"all","depth":"standard","max_searches":2,"max_sources":3}`))
+	if err != nil {
+		t.Fatalf("run research: %v", err)
+	}
+	var result struct {
+		Query      string           `json:"query"`
+		Subqueries []string         `json:"subqueries"`
+		Sources    []ResearchSource `json:"sources"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal research result: %v", err)
+	}
+	if result.Query != "agent research" || len(result.Subqueries) != 2 {
+		t.Fatalf("unexpected research metadata: %+v", result)
+	}
+	if len(result.Sources) < 2 {
+		t.Fatalf("expected web and academic sources, got %+v", result.Sources)
+	}
+	if !result.Sources[0].Fetched || !strings.Contains(result.Sources[0].Text, "Fetched source evidence") {
+		t.Fatalf("expected fetched source text, got %+v", result.Sources[0])
+	}
+}
+
 func TestSearchToolRequiresQuery(t *testing.T) {
 	_, err := SearchTool{}.Run(context.Background(), json.RawMessage(`{"query":"   "}`))
 	if err == nil {
@@ -142,7 +243,7 @@ func TestSearchToolReportsHTTPError(t *testing.T) {
 		}, nil
 	})}
 
-	_, err := SearchTool{base: Base{Endpoint: "https://search.example/", Timeout: time.Second, Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"status"}`))
+	_, err := SearchTool{base: Base{Endpoint: "https://search.example/", SearchProvider: "duckduckgo", Timeout: time.Second, Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"status"}`))
 	if err == nil {
 		t.Fatalf("expected http error")
 	}

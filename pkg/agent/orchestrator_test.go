@@ -999,6 +999,88 @@ func TestRefreshTaskWorkspaceResetsBranchToCurrentMain(t *testing.T) {
 	}
 }
 
+func TestReconcileTaskWorkspaceWithMainMergesNonConflictingMainChanges(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspace := filepath.Join(tempDir, "workspaces", "task_20260426_094828_3936a7ef")
+	orch.cfg.Repo.Root = root
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "base")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_20260426_094828_3936a7ef", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "task.txt"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, workspace, "add", ".")
+	gitTestRun(t, workspace, "commit", "-m", "task change")
+	if err := os.WriteFile(filepath.Join(root, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "main change")
+
+	out, err := orch.reconcileTaskWorkspaceWithMain(context.Background(), workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Merge made") && !strings.Contains(out, "Fast-forward") && !strings.Contains(out, "Already up to date") {
+		t.Fatalf("merge output = %q, want successful merge output", out)
+	}
+	if got := readTestFile(t, filepath.Join(workspace, "main.txt")); got != "main\n" {
+		t.Fatalf("main.txt = %q, want main content", got)
+	}
+	if got := readTestFile(t, filepath.Join(workspace, "task.txt")); got != "task\n" {
+		t.Fatalf("task.txt = %q, want task content", got)
+	}
+	status := gitTestOutput(t, workspace, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("workspace status = %q, want clean", status)
+	}
+}
+
+func TestReconcileTaskWorkspaceWithMainReportsConflicts(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspace := filepath.Join(tempDir, "workspaces", "task_20260426_094828_3936a7ef")
+	orch.cfg.Repo.Root = root
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "base")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_20260426_094828_3936a7ef", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, workspace, "commit", "-am", "task conflict")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "commit", "-am", "main conflict")
+
+	_, err := orch.reconcileTaskWorkspaceWithMain(context.Background(), workspace)
+	if err == nil {
+		t.Fatal("reconcile succeeded, want conflict error")
+	}
+	if !strings.Contains(err.Error(), "git merge current main") {
+		t.Fatalf("err = %v, want merge context", err)
+	}
+	status := gitTestOutput(t, workspace, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("workspace status = %q, want merge aborted and clean", status)
+	}
+}
+
 func TestReopenTaskAcceptsBareReasonAfterID(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	task := taskstore.Task{

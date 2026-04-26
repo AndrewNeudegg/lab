@@ -2439,6 +2439,16 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review commit: fail\n%s\nNo approval created.\nNext: `delegate %s to codex fix the workspace git state`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
 		}
+		if mergeOut, err := o.reconcileTaskWorkspaceWithMain(ctx, t.Workspace); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = "ReviewerAgent could not reconcile task branch with current main before checks: " + err.Error()
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result, "from_status": taskstore.StatusReadyForReview, "to_status": taskstore.StatusBlocked})})
+			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review rebase: fail\n%s\nNo checks or approval created.\nNext: `delegate %s to codex resolve the main-branch conflict`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
+		} else if strings.TrimSpace(mergeOut) != "" {
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.reconciled", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"output": strings.TrimSpace(mergeOut)})})
+		}
 		diffOut, err = o.taskBranchDiff(ctx, t.Workspace)
 		if err != nil {
 			return "", err
@@ -2491,6 +2501,27 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(req)})
 	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\nAfter merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), approvalID, approvalID, shortID, shortID), nil
+}
+
+func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, workspace string) (string, error) {
+	headOut, err := exec.CommandContext(ctx, "git", "-C", o.cfg.Repo.Root, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse repo head: %w: %s", err, strings.TrimSpace(string(headOut)))
+	}
+	statusOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git status task workspace: %w: %s", err, strings.TrimSpace(string(statusOut)))
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		return "", fmt.Errorf("task workspace has uncommitted changes after pre-review commit: %s", strings.TrimSpace(string(statusOut)))
+	}
+	head := strings.TrimSpace(string(headOut))
+	mergeOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "merge", "--no-edit", head).CombinedOutput()
+	if err != nil {
+		_ = exec.CommandContext(context.Background(), "git", "-C", workspace, "merge", "--abort").Run()
+		return "", fmt.Errorf("git merge current main into task workspace: %w: %s", err, strings.TrimSpace(string(mergeOut)))
+	}
+	return string(mergeOut), nil
 }
 
 func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string) (string, error) {

@@ -297,11 +297,6 @@
         on:input={handleDraftInput}
         on:keydown={handleComposerKeydown}
       ></textarea>
-      {#if draft.trim()}
-        <div class="draft-preview" aria-label="Formatted draft">
-          <Markdown content={draft} />
-        </div>
-      {/if}
       <button type="submit" disabled={loading || !draft.trim()}>
         {loading ? 'Sending' : 'Send'}
       </button>
@@ -474,16 +469,6 @@
   textarea:focus {
     border-color: #2563eb;
     outline: 3px solid rgb(37 99 235 / 0.14);
-  }
-
-  .draft-preview {
-    grid-column: 1 / -1;
-    max-height: 14rem;
-    overflow: auto;
-    padding: 0.8rem 0.9rem;
-    border: 1px solid #dbe3ef;
-    border-radius: 0.75rem;
-    background: #f8fafc;
   }
 
   .composer button[type='submit'] {

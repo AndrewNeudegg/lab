@@ -80,6 +80,54 @@
       }
     ]
   },
+  "supervisord": {
+    "addr": "127.0.0.1:18082",
+    "healthd_url": "http://127.0.0.1:18081",
+    "heartbeat_interval_seconds": 5,
+    "shutdown_timeout_seconds": 10,
+    "state_path": "data/supervisord/state.json",
+    "working_dir": ".",
+    "restart_command": "go",
+    "restart_args": ["run", "./cmd/supervisord"],
+    "apps": [
+      {
+        "name": "healthd",
+        "type": "daemon",
+        "command": "go",
+        "args": ["run", "./cmd/healthd"],
+        "working_dir": ".",
+        "start_order": 10,
+        "auto_start": false,
+        "restart": "always",
+        "health_url": "http://127.0.0.1:18081/healthd",
+        "shutdown_timeout_seconds": 10
+      },
+      {
+        "name": "homelabd",
+        "type": "daemon",
+        "command": "go",
+        "args": ["run", "./cmd/homelabd", "-mode", "matrix"],
+        "working_dir": ".",
+        "start_order": 20,
+        "auto_start": false,
+        "restart": "always",
+        "health_url": "http://127.0.0.1:18080/events",
+        "shutdown_timeout_seconds": 15
+      },
+      {
+        "name": "dashboard",
+        "type": "web",
+        "command": "bun",
+        "args": ["run", "dev", "--", "--host", "0.0.0.0"],
+        "working_dir": "web/dashboard",
+        "start_order": 30,
+        "auto_start": false,
+        "restart": "on_failure",
+        "health_url": "http://127.0.0.1:5173/chat",
+        "shutdown_timeout_seconds": 10
+      }
+    ]
+  },
   "matrix": {
     "homeserver": "http://lab:8008",
     "user": "${ELEMENT_BOT_USERNAME}",

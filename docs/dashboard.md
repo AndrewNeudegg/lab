@@ -4,6 +4,7 @@ The dashboard has two primary operator surfaces:
 
 - `/chat`: global conversation, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
+- `/supervisord`: supervised application status and start, stop, restart controls.
 - `/healthd`: healthd service status, system utilization, checks, SLOs, and notifications.
 
 Do not collapse these into one surface. Chat and tasks represent different mental models.
@@ -16,7 +17,7 @@ Use the shared responsive navbar on every dashboard page.
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Chat`, `Tasks`, and `Health`.
+- Keep top-level destinations flat: `Chat`, `Tasks`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 
 ## Research Inputs

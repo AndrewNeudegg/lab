@@ -15,6 +15,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:18081',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/healthd-api/, '')
+      },
+      '/supervisord-api': {
+        target: 'http://127.0.0.1:18082',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/supervisord-api/, '')
       }
     }
   }

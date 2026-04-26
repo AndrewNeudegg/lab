@@ -8,6 +8,7 @@
   export let links: { href: string; label: string }[] = [
     { href: '/chat', label: 'Chat' },
     { href: '/tasks', label: 'Tasks' },
+    { href: '/supervisord', label: 'Supervisor' },
     { href: '/healthd', label: 'Health' }
   ];
 

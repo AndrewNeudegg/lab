@@ -8,7 +8,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARTIFACTS_DIR="${ROOT_DIR}/.artifacts"
 GO_CACHE_DIR="${ARTIFACTS_DIR}/gocache"
 GO_TMP_DIR="${ARTIFACTS_DIR}/gotmp"
-mkdir -p "$ARTIFACTS_DIR" "$GO_CACHE_DIR" "$GO_TMP_DIR"
+DATA_DIR="${ROOT_DIR}/data"
+mkdir -p "$ARTIFACTS_DIR" "$GO_CACHE_DIR" "$GO_TMP_DIR" "$DATA_DIR"
+
+SUPERVISORD_URL="${SUPERVISORD_URL:-http://127.0.0.1:18082}"
 
 GO_SOURCE_FIND_ARGS=(
   -name '*.go'
@@ -22,6 +25,100 @@ run_go() {
 
 clean_go_cache() {
   env TMPDIR="$GO_TMP_DIR" GOTMPDIR="$GO_TMP_DIR" GOCACHE="$GO_CACHE_DIR" go clean -cache
+}
+
+supervisord_up() {
+  curl -fsS "${SUPERVISORD_URL}/supervisord" >/dev/null 2>&1
+}
+
+wait_for_supervisord() {
+  local deadline=$((SECONDS + 45))
+  until supervisord_up; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "supervisord did not become ready at ${SUPERVISORD_URL}" >&2
+      tail -80 "${DATA_DIR}/supervisord.log" 2>/dev/null || true
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+start_supervisord() {
+  if supervisord_up; then
+    return
+  fi
+  mkdir -p "${DATA_DIR}/supervisord"
+  : > "${DATA_DIR}/supervisord.log"
+  if command -v nix >/dev/null 2>&1; then
+    setsid -f bash -lc "cd '${ROOT_DIR}' && exec nix develop -c go run ./cmd/supervisord >> '${DATA_DIR}/supervisord.log' 2>&1"
+  else
+    setsid -f bash -lc "cd '${ROOT_DIR}' && exec go run ./cmd/supervisord >> '${DATA_DIR}/supervisord.log' 2>&1"
+  fi
+  wait_for_supervisord
+}
+
+post_supervisord() {
+  local path="$1"
+  local body="${2:-{}}"
+  curl -fsS -X POST "${SUPERVISORD_URL}${path}" \
+    -H 'Content-Type: application/json' \
+    -d "$body" >/dev/null
+}
+
+process_pid() {
+  local name="$1"
+  ps -eo pid=,args= | awk -v name="$name" '
+    name == "healthd" && ($0 ~ /\.\/\.bin\/healthd/ || $0 ~ /go run \.\/cmd\/healthd/ || $0 ~ /\/exe\/healthd/) { print $1; exit }
+    name == "homelabd" && ($0 ~ /\.\/\.bin\/homelabd/ || $0 ~ /go run \.\/cmd\/homelabd/ || $0 ~ /\/exe\/homelabd/) { print $1; exit }
+    name == "dashboard" && $0 ~ /bun run dev -- --host 0\.0\.0\.0/ { print $1; exit }
+  '
+}
+
+adopt_existing_processes() {
+  local app pid
+  for app in healthd homelabd dashboard; do
+    pid="$(process_pid "$app" || true)"
+    if [ -n "$pid" ]; then
+      post_supervisord "/supervisord/apps/${app}/adopt" "{\"pid\":${pid}}" || true
+    fi
+  done
+}
+
+stack_start() {
+  start_supervisord
+  adopt_existing_processes
+  post_supervisord /supervisord/apps/healthd/start
+  post_supervisord /supervisord/apps/homelabd/start
+  post_supervisord /supervisord/apps/dashboard/start
+  echo "stack started; dashboard: http://lab:5173/supervisord"
+}
+
+stack_stop_apps() {
+  post_supervisord /supervisord/apps/dashboard/stop || true
+  post_supervisord /supervisord/apps/homelabd/stop || true
+  post_supervisord /supervisord/apps/healthd/stop || true
+}
+
+stack_stop() {
+  start_supervisord
+  adopt_existing_processes
+  stack_stop_apps
+  post_supervisord /supervisord/stop || true
+  sleep 1
+  echo "stack stopped"
+}
+
+stack_restart() {
+  start_supervisord
+  adopt_existing_processes
+  stack_stop_apps
+  post_supervisord /supervisord/restart || true
+  sleep 2
+  wait_for_supervisord
+  post_supervisord /supervisord/apps/healthd/start
+  post_supervisord /supervisord/apps/homelabd/start
+  post_supervisord /supervisord/apps/dashboard/start
+  echo "stack restarted; dashboard: http://lab:5173/supervisord"
 }
 
 case "$cmd" in
@@ -95,6 +192,18 @@ case "$cmd" in
   serve-healthd)
     exec go run ./cmd/healthd "$@"
     ;;
+  serve-supervisord)
+    exec go run ./cmd/supervisord "$@"
+    ;;
+  stack-start)
+    stack_start
+    ;;
+  stack-stop)
+    stack_stop
+    ;;
+  stack-restart)
+    stack_restart
+    ;;
 
   # ── Aggregate ─────────────────────────────────────────────────────
   verify)
@@ -118,6 +227,10 @@ Usage:
   ./run.sh build-healthd [out] # build healthd (CGO disabled)
   ./run.sh serve [args...]     # go run ./cmd/homelabd
   ./run.sh serve-healthd       # go run ./cmd/healthd
+  ./run.sh serve-supervisord   # go run ./cmd/supervisord
+  ./run.sh stack-start         # start/adopt healthd, homelabd, dashboard
+  ./run.sh stack-stop          # gracefully stop dashboard, homelabd, healthd, supervisord
+  ./run.sh stack-restart       # gracefully restart the full local stack
   ./run.sh verify              # fmt-check + vet + test
   ./run.sh clean-cache         # clear the Go build cache
   ./run.sh shell               # enter the nix dev shell

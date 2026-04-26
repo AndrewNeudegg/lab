@@ -173,6 +173,46 @@ export interface HealthdSnapshot {
   notifications: HealthdNotification[];
 }
 
+export type SupervisorAppState =
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'failed'
+  | string;
+
+export interface SupervisorAppStatus {
+  name: string;
+  type: string;
+  state: SupervisorAppState;
+  desired: string;
+  pid?: number;
+  restarts: number;
+  exit_code?: number;
+  message: string;
+  started_at?: string;
+  stopped_at?: string;
+  updated_at: string;
+  start_order: number;
+  restart: string;
+  health_url?: string;
+  last_health?: string;
+  last_output?: string;
+  working_dir?: string;
+  command: string;
+  args?: string[];
+  environment?: Record<string, string>;
+}
+
+export interface SupervisorSnapshot {
+  status: 'healthy' | 'warning' | 'critical' | string;
+  started_at: string;
+  restartable: boolean;
+  restart_hint?: string;
+  restart_after?: string;
+  apps: SupervisorAppStatus[];
+}
+
 export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;

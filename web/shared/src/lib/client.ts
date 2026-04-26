@@ -7,11 +7,13 @@ import type {
   HomelabdEventsResponse,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
-  HomelabdTasksResponse
+  HomelabdTasksResponse,
+  SupervisorSnapshot
 } from './types';
 
 export const DEFAULT_HOMELABD_API_BASE = 'http://127.0.0.1:18080';
 export const DEFAULT_HEALTHD_API_BASE = 'http://127.0.0.1:18081';
+export const DEFAULT_SUPERVISORD_API_BASE = 'http://127.0.0.1:18082';
 
 export const apiFetch: FetchClient = async <TResponse>(
   path: string,
@@ -78,6 +80,43 @@ export const createHomelabdClient = (
       return apiFetch<HomelabdEventsResponse>(`/events${query}`, {
         baseUrl,
         fetcher
+      });
+    }
+  };
+};
+
+export const createSupervisorClient = (options: HomelabdClientOptions = {}) => {
+  const { baseUrl = DEFAULT_SUPERVISORD_API_BASE, fetcher } = options;
+  return {
+    snapshot() {
+      return apiFetch<SupervisorSnapshot>('/supervisord', { baseUrl, fetcher });
+    },
+    restartSelf() {
+      return apiFetch<{ reply: string }>('/supervisord/restart', {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    start(name: string) {
+      return apiFetch<SupervisorSnapshot>(`/supervisord/apps/${encodeURIComponent(name)}/start`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    stop(name: string) {
+      return apiFetch<SupervisorSnapshot>(`/supervisord/apps/${encodeURIComponent(name)}/stop`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    restart(name: string) {
+      return apiFetch<SupervisorSnapshot>(`/supervisord/apps/${encodeURIComponent(name)}/restart`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
       });
     }
   };

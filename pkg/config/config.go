@@ -18,6 +18,7 @@ type Config struct {
 	DataDir         string                         `json:"data_dir"`
 	HTTP            HTTPConfig                     `json:"http"`
 	Healthd         HealthdConfig                  `json:"healthd"`
+	Supervisord     SupervisordConfig              `json:"supervisord"`
 	Matrix          MatrixConfig                   `json:"matrix"`
 	ExternalAgents  map[string]ExternalAgentConfig `json:"external_agents"`
 }
@@ -87,6 +88,32 @@ type HealthNotificationConfig struct {
 	Type        string `json:"type"`
 	URL         string `json:"url,omitempty"`
 	MinSeverity string `json:"min_severity,omitempty"`
+}
+
+type SupervisordConfig struct {
+	Addr                     string                `json:"addr"`
+	HealthdURL               string                `json:"healthd_url"`
+	HeartbeatIntervalSeconds int                   `json:"heartbeat_interval_seconds"`
+	ShutdownTimeoutSeconds   int                   `json:"shutdown_timeout_seconds"`
+	StatePath                string                `json:"state_path,omitempty"`
+	WorkingDir               string                `json:"working_dir,omitempty"`
+	RestartCommand           string                `json:"restart_command,omitempty"`
+	RestartArgs              []string              `json:"restart_args,omitempty"`
+	Apps                     []SupervisorAppConfig `json:"apps,omitempty"`
+}
+
+type SupervisorAppConfig struct {
+	Name               string            `json:"name"`
+	Type               string            `json:"type,omitempty"`
+	Command            string            `json:"command"`
+	Args               []string          `json:"args,omitempty"`
+	WorkingDir         string            `json:"working_dir,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
+	StartOrder         int               `json:"start_order"`
+	AutoStart          bool              `json:"auto_start"`
+	Restart            string            `json:"restart,omitempty"`
+	HealthURL          string            `json:"health_url,omitempty"`
+	ShutdownTimeoutSec int               `json:"shutdown_timeout_seconds,omitempty"`
 }
 
 type MatrixConfig struct {
@@ -206,6 +233,54 @@ func Default() Config {
 					WindowSeconds:   300,
 					WarningBurnRate: 2,
 					PageBurnRate:    10,
+				},
+			},
+		},
+		Supervisord: SupervisordConfig{
+			Addr:                     "127.0.0.1:18082",
+			HealthdURL:               "http://127.0.0.1:18081",
+			HeartbeatIntervalSeconds: 5,
+			ShutdownTimeoutSeconds:   10,
+			StatePath:                filepath.Join("data", "supervisord", "state.json"),
+			WorkingDir:               ".",
+			RestartCommand:           "go",
+			RestartArgs:              []string{"run", "./cmd/supervisord"},
+			Apps: []SupervisorAppConfig{
+				{
+					Name:               "healthd",
+					Type:               "daemon",
+					Command:            "go",
+					Args:               []string{"run", "./cmd/healthd"},
+					WorkingDir:         ".",
+					StartOrder:         10,
+					AutoStart:          false,
+					Restart:            "always",
+					HealthURL:          "http://127.0.0.1:18081/healthd",
+					ShutdownTimeoutSec: 10,
+				},
+				{
+					Name:               "homelabd",
+					Type:               "daemon",
+					Command:            "go",
+					Args:               []string{"run", "./cmd/homelabd", "-mode", "matrix"},
+					WorkingDir:         ".",
+					StartOrder:         20,
+					AutoStart:          false,
+					Restart:            "always",
+					HealthURL:          "http://127.0.0.1:18080/events",
+					ShutdownTimeoutSec: 15,
+				},
+				{
+					Name:               "dashboard",
+					Type:               "web",
+					Command:            "bun",
+					Args:               []string{"run", "dev", "--", "--host", "0.0.0.0"},
+					WorkingDir:         "web/dashboard",
+					StartOrder:         30,
+					AutoStart:          false,
+					Restart:            "on_failure",
+					HealthURL:          "http://127.0.0.1:5173/chat",
+					ShutdownTimeoutSec: 10,
 				},
 			},
 		},
@@ -355,6 +430,45 @@ func (c Config) WithDefaults() Config {
 			}
 			c.Healthd.SLOs[i] = slo
 		}
+	}
+	if c.Supervisord.Addr == "" {
+		c.Supervisord.Addr = d.Supervisord.Addr
+	}
+	if c.Supervisord.HealthdURL == "" {
+		c.Supervisord.HealthdURL = d.Supervisord.HealthdURL
+	}
+	if c.Supervisord.HeartbeatIntervalSeconds == 0 {
+		c.Supervisord.HeartbeatIntervalSeconds = d.Supervisord.HeartbeatIntervalSeconds
+	}
+	if c.Supervisord.ShutdownTimeoutSeconds == 0 {
+		c.Supervisord.ShutdownTimeoutSeconds = d.Supervisord.ShutdownTimeoutSeconds
+	}
+	if c.Supervisord.StatePath == "" {
+		c.Supervisord.StatePath = filepath.Join(c.DataDir, "supervisord", "state.json")
+	}
+	if c.Supervisord.WorkingDir == "" {
+		c.Supervisord.WorkingDir = d.Supervisord.WorkingDir
+	}
+	if c.Supervisord.RestartCommand == "" {
+		c.Supervisord.RestartCommand = d.Supervisord.RestartCommand
+	}
+	if c.Supervisord.RestartArgs == nil {
+		c.Supervisord.RestartArgs = d.Supervisord.RestartArgs
+	}
+	if c.Supervisord.Apps == nil {
+		c.Supervisord.Apps = d.Supervisord.Apps
+	}
+	for i, app := range c.Supervisord.Apps {
+		if app.Type == "" {
+			app.Type = "process"
+		}
+		if app.Restart == "" {
+			app.Restart = "on_failure"
+		}
+		if app.ShutdownTimeoutSec == 0 {
+			app.ShutdownTimeoutSec = c.Supervisord.ShutdownTimeoutSeconds
+		}
+		c.Supervisord.Apps[i] = app
 	}
 	if c.Matrix.Homeserver == "" {
 		c.Matrix.Homeserver = "http://lab:8008"

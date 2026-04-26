@@ -224,6 +224,22 @@ const run = async () => {
     assert(mobile.rows > 0, 'mobile viewport rendered no task rows', mobile);
     assert(mobile.bodyWidth <= mobile.viewport + 2, 'mobile viewport has horizontal overflow', mobile);
 
+    const typed = await evalJS(
+      cdp,
+      `(document.querySelector('#message').focus(),
+        document.querySelector('#message').value = 'mobile typing should not echo below composer',
+        document.querySelector('#message').dispatchEvent(new Event('input', { bubbles: true })),
+        new Promise((resolve) => setTimeout(() => resolve({
+          draftPreviewCount: document.querySelectorAll('.draft-preview').length,
+          composerText: document.querySelector('#message')?.value || '',
+          echoedBelowComposer: [...document.querySelectorAll('.composer ~ *, .draft-preview')]
+            .some((element) => element.textContent.includes('mobile typing should not echo below composer'))
+        }), 100)))`
+    );
+    assert(typed.composerText.includes('mobile typing should not echo'), 'mobile composer did not retain typed text', typed);
+    assert(typed.draftPreviewCount === 0, 'mobile task command composer rendered a draft preview', typed);
+    assert(typed.echoedBelowComposer === false, 'mobile typed text echoed below the composer', typed);
+
     const errors = await evalJS(cdp, `window.__uatErrors || []`);
     assert(errors.length === 0, 'browser console reported runtime errors', errors);
 
@@ -238,7 +254,8 @@ const run = async () => {
           afterSelect,
           collapse,
           open,
-          mobile
+          mobile,
+          typed
         },
         null,
         2

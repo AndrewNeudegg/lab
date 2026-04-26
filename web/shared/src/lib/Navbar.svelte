@@ -141,7 +141,6 @@
 	  :global(html[data-theme='dark'] .toolbar-actions span),
 	  :global(html[data-theme='dark'] .budget),
 	  :global(html[data-theme='dark'] .empty),
-	  :global(html[data-theme='dark'] .draft-preview),
 	  :global(html[data-theme='dark'] .composer),
 	  :global(html[data-theme='dark'] .triage button),
 	  :global(html[data-theme='dark'] .task-header button),

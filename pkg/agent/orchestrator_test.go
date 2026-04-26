@@ -678,12 +678,19 @@ func TestReviewWorkspaceCommitFeedsBranchDiff(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(workspace, ".git-local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git-local", "config"), []byte("metadata\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := commitReviewWorkspaceChanges(ctx, workspace, "task_test"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(gitTestOutput(t, workspace, "status", "--porcelain")); got != "" {
-		t.Fatalf("workspace status = %q, want clean", got)
+	tree := gitTestOutput(t, workspace, "ls-tree", "-r", "--name-only", "HEAD")
+	if strings.Contains(tree, ".git-local") {
+		t.Fatalf("committed tree = %q, should not include workspace metadata", tree)
 	}
 	orch := newTestOrchestrator(t, nil)
 	orch.cfg.Repo.Root = root

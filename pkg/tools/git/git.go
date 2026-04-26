@@ -546,9 +546,15 @@ func commitWorkspaceChanges(ctx context.Context, workspacePath, message string) 
 	if err != nil {
 		return "", fmt.Errorf("git add workspace: %w: %s", err, strings.TrimSpace(string(addOut)))
 	}
-	cleanupOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "reset", "--", ".codex").CombinedOutput()
+	cleanupOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "reset", "--", ".codex", ".git-local", ".artifacts", "data").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git reset workspace metadata: %w: %s", err, strings.TrimSpace(string(cleanupOut)))
+	}
+	diffCmd := exec.CommandContext(ctx, "git", "-C", workspacePath, "diff", "--cached", "--quiet")
+	if err := diffCmd.Run(); err == nil {
+		return "workspace has no committable changes", nil
+	} else if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
+		return "", fmt.Errorf("git diff cached workspace: %w", err)
 	}
 	commitOut, err := exec.CommandContext(ctx, "git", "-C", workspacePath, "commit", "-m", message).CombinedOutput()
 	if err != nil {

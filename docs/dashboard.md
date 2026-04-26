@@ -4,6 +4,7 @@ The dashboard has these primary operator surfaces:
 
 - `/chat`: global conversation, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
+- `/docs`: searchable documentation library generated from Markdown files in `./docs`.
 - `/terminal`: browser terminal backed by a homelabd shell session for direct operator commands.
 - `/supervisord`: supervised application status and start, stop, restart controls.
 - `/healthd`: healthd service status, system utilization, checks, SLOs, and notifications.
@@ -18,8 +19,12 @@ Use the shared responsive navbar on every dashboard page.
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Chat`, `Tasks`, `Terminal`, `Supervisor`, and `Health`.
+- Keep top-level destinations flat: `Chat`, `Tasks`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
+
+## Documentation Library
+
+The `/docs` page imports every Markdown file under `./docs` into the dashboard. It shows a searchable document catalogue, selected document content, heading anchors, and an on-page table of contents. Keep document titles specific and include the terms operators and LLM agents are likely to search for.
 
 ## Research Inputs
 

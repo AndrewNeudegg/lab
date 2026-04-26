@@ -8,18 +8,19 @@
   export let links: { href: string; label: string }[] = [
     { href: '/chat', label: 'Chat' },
     { href: '/tasks', label: 'Tasks' },
+    { href: '/docs', label: 'Docs' },
     { href: '/terminal', label: 'Terminal' },
     { href: '/supervisord', label: 'Supervisor' },
     { href: '/healthd', label: 'Health' }
   ];
 
-  let open = false;
+  let mobileMenuOpen = false;
 
   const isActive = (href: string) => current === href;
 </script>
 
 <header class="navbar">
-  <a class="brand" href="/chat" on:click={() => (open = false)}>
+  <a class="brand" href="/chat" onclick={() => (mobileMenuOpen = false)}>
     <span>{subtitle}</span>
     <strong>{title}</strong>
   </a>
@@ -39,32 +40,31 @@
     <div class="desktop-theme">
       <ThemeToggle />
     </div>
-    <button
-      type="button"
-      class="menu-button"
-      aria-controls="primary-mobile-nav"
-      aria-expanded={open}
-      on:click={() => (open = !open)}
-    >
-      <span aria-hidden="true">☰</span>
-      Menu
-    </button>
+    <details class="mobile-menu" bind:open={mobileMenuOpen}>
+      <!-- svelte-ignore a11y_no_redundant_roles -- Chromium exposes this styled summary consistently with an explicit role. -->
+      <summary
+        class="menu-button"
+        role="button"
+        aria-controls="primary-mobile-nav"
+        aria-expanded={mobileMenuOpen}
+      >
+        <span aria-hidden="true">☰</span>
+        Menu
+      </summary>
+      <nav id="primary-mobile-nav" class="mobile-nav" aria-label="Primary mobile">
+        {#each links as link}
+          <a
+            href={link.href}
+            aria-current={isActive(link.href) ? 'page' : undefined}
+            onclick={() => (mobileMenuOpen = false)}
+          >
+            {link.label}
+          </a>
+        {/each}
+        <ThemeToggle compact />
+      </nav>
+    </details>
   </div>
-
-  {#if open}
-    <nav id="primary-mobile-nav" class="mobile-nav" aria-label="Primary mobile">
-      {#each links as link}
-        <a
-          href={link.href}
-          aria-current={isActive(link.href) ? 'page' : undefined}
-          on:click={() => (open = false)}
-        >
-          {link.label}
-        </a>
-      {/each}
-      <ThemeToggle compact />
-    </nav>
-  {/if}
 </header>
 
 <style>
@@ -432,6 +432,18 @@
     white-space: nowrap;
   }
 
+  .mobile-menu {
+    display: none;
+  }
+
+  .mobile-menu summary {
+    list-style: none;
+  }
+
+  .mobile-menu summary::-webkit-details-marker {
+    display: none;
+  }
+
   .menu-button {
     display: none;
     min-height: 2.4rem;
@@ -443,6 +455,7 @@
     font: inherit;
     font-size: 0.88rem;
     font-weight: 850;
+    cursor: pointer;
   }
 
   .menu-button span {
@@ -488,6 +501,10 @@
 
     .api {
       display: none;
+    }
+
+    .mobile-menu {
+      display: block;
     }
 
     .menu-button {

@@ -2,10 +2,11 @@
   import { renderMarkdown } from './markdown';
 
   export let content = '';
+  export let headingIds = false;
 </script>
 
 <div class="markdown">
-  {@html renderMarkdown(content)}
+  {@html renderMarkdown(content, { headingIds })}
 </div>
 
 <style>
@@ -117,5 +118,36 @@
   .markdown :global(a) {
     color: #1d4ed8;
     font-weight: 700;
+  }
+
+  .markdown :global(img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0.75rem 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.45rem;
+  }
+
+  .markdown :global(table) {
+    display: block;
+    max-width: 100%;
+    margin: 0.75rem 0;
+    overflow-x: auto;
+    border-collapse: collapse;
+  }
+
+  .markdown :global(th),
+  .markdown :global(td) {
+    padding: 0.45rem 0.55rem;
+    border: 1px solid #cbd5e1;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown :global(th) {
+    background: #f1f5f9;
+    color: #0f172a;
+    font-weight: 800;
   }
 </style>

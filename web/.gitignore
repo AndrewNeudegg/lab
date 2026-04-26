@@ -3,3 +3,5 @@ node_modules
 .vite
 build
 dist
+
+dashboard/test-results/

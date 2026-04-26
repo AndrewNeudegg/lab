@@ -40,6 +40,7 @@ export type TaskStatus =
   | 'queued'
   | 'running'
   | 'blocked'
+  | 'conflict_resolution'
   | 'ready_for_review'
   | 'awaiting_approval'
   | 'awaiting_verification'

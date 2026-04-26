@@ -2,6 +2,7 @@ import type { HomelabdApproval, HomelabdTask } from './types';
 
 const attentionStatuses = new Set([
   'blocked',
+  'conflict_resolution',
   'failed',
   'ready_for_review',
   'awaiting_approval',
@@ -29,6 +30,8 @@ export const taskStateDescription = (status = '') => {
       return 'Worker finished. The review gate has not passed yet.';
     case 'blocked':
       return 'Review or execution stopped. Pick a fix, rerun, or delete.';
+    case 'conflict_resolution':
+      return 'Task branch conflicts with current main. Delegate or manually resolve before review.';
     case 'awaiting_approval':
       return 'Review gate passed. Merge approval is pending.';
     case 'awaiting_verification':
@@ -51,11 +54,13 @@ export const taskStateTransitions = (status = '') => {
     case 'running':
       return 'running → ready for review or blocked';
     case 'ready_for_review':
-      return 'ready for review → awaiting approval or blocked';
+      return 'ready for review → awaiting approval, conflict resolution, or blocked';
     case 'blocked':
       return 'blocked → running, cancelled, or deleted';
+    case 'conflict_resolution':
+      return 'conflict resolution → running, ready for review, cancelled, or deleted';
     case 'awaiting_approval':
-      return 'awaiting approval → awaiting verification or blocked';
+      return 'awaiting approval → awaiting verification, conflict resolution, or blocked';
     case 'awaiting_verification':
       return 'awaiting verification → done or queued';
     case 'done':

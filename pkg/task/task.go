@@ -6,6 +6,7 @@ const (
 	StatusQueued               = "queued"
 	StatusRunning              = "running"
 	StatusBlocked              = "blocked"
+	StatusConflictResolution   = "conflict_resolution"
 	StatusReadyForReview       = "ready_for_review"
 	StatusAwaitingApproval     = "awaiting_approval"
 	StatusAwaitingVerification = "awaiting_verification"

@@ -126,6 +126,34 @@ export interface HomelabdTaskRunsResponse {
   runs: HomelabdRunArtifact[];
 }
 
+export interface HomelabdTaskDiffSummary {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface HomelabdTaskDiffFile {
+  path: string;
+  old_path?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+}
+
+export interface HomelabdTaskDiffResponse {
+  task_id: string;
+  base_ref?: string;
+  base_label?: string;
+  head_ref?: string;
+  head_label?: string;
+  workspace?: string;
+  raw_diff: string;
+  summary: HomelabdTaskDiffSummary;
+  files: HomelabdTaskDiffFile[];
+  generated_at: string;
+}
+
 export type ApprovalStatus = 'pending' | 'granted' | 'denied' | string;
 
 export interface HomelabdApproval {
@@ -276,6 +304,7 @@ export interface HomelabdClient {
   listApprovals(): Promise<HomelabdApprovalsResponse>;
   listEvents(options?: { date?: string; limit?: number }): Promise<HomelabdEventsResponse>;
   listTaskRuns(taskId: string): Promise<HomelabdTaskRunsResponse>;
+  getTaskDiff(taskId: string): Promise<HomelabdTaskDiffResponse>;
   cancelTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   retryTask(
     taskId: string,

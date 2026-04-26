@@ -36,6 +36,9 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Atlassian/Jira issue views: work-item detail pages have top-level issue actions and an activity feed containing changes, comments, history, and related updates.
 - Slack threads and incident-command tools: conversations need explicit context boundaries; task or incident timelines prevent important work from being buried in a global chat scroll.
 - Atlassian dashboard and status guidance: centralize task visibility, make bottlenecks obvious, use semantic color roles, and pair color with text.
+- GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
+- GitLab merge request reviews: the changes view is the primary review surface, with review status and merge checks kept close to the diff.
+- CodeMirror and Monaco diff APIs: mature web diff viewers support hidden unchanged regions, gutters, syntax-aware deleted text, inline change highlighting, and unified or side-by-side review modes.
 
 Sources:
 
@@ -56,6 +59,10 @@ Sources:
 - https://atlassian.design/foundations/color
 - https://atlassian.design/components/lozenge/
 - https://www.atlassian.com/agile/project-management/task-management-dashboard
+- https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-comparing-branches-in-pull-requests
+- https://docs.gitlab.com/user/project/merge_requests/reviews/
+- https://codemirror.net/docs/ref/#merge.unifiedMergeView
+- https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor.IDiffEditorConstructionOptions.html
 
 ## Layout Rationale
 
@@ -93,6 +100,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Secondary actions: show, delegate, delete, or reopen. These are useful but lower priority than the primary action.
 - Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
+- Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, and inline changed-text highlights. Use this before review, conflict-resolution delegation, or approval.
 - Result block: shown only when a task has a stored result.
 - Worker trace: groups external worker output by run id, combines live `agent.delegate.output`
   events with completed artifacts from `data/runs`, and exposes direct stop/retry controls.

@@ -74,6 +74,7 @@ For command-line operation, use `homelabctl` rather than raw HTTP calls:
 go run ./cmd/homelabctl status
 go run ./cmd/homelabctl task show <task_id>
 go run ./cmd/homelabctl task runs <task_id>
+go run ./cmd/homelabctl task diff <task_id>
 go run ./cmd/homelabctl task review <task_id>
 go run ./cmd/homelabctl approve <approval_id>
 go run ./cmd/homelabctl task accept <task_id>
@@ -81,6 +82,14 @@ go run ./cmd/homelabctl task reopen <task_id> "needs rework"
 ```
 
 See `docs/homelabctl.md` for the full CLI command surface and the rule that new operator workflows must keep the CLI up to date.
+
+## Diff Review
+
+Use `diff <task_id>` or `homelabctl task diff <task_id>` when an operator asks what a task branch changes relative to current `main`. The HTTP endpoint is `GET /tasks/{task_id}/diff`; it returns the raw patch, file stats, branch labels, refs, and per-file summaries.
+
+The dashboard `/tasks` selected-task record renders the same data in the `Changes vs main` panel. It uses a three-dot task-branch comparison for git worktrees, matching pull-request review semantics: the diff focuses on what the task branch introduces since it diverged from `main`. The panel provides changed-file navigation plus split and unified views with line numbers and inline changed-text highlights.
+
+Natural questions like `what is the diff between c01777ee and main?` are handled by the Orchestrator as program commands. The reply gives a compact summary and points to the dashboard or `homelabctl task diff`; it should not fall back to an LLM that lacks repository access.
 
 ## Restart Recovery
 

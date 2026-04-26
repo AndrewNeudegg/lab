@@ -75,6 +75,20 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('run.artifact?.path');
   });
 
+  test('renders highlighted task diff controls from the dedicated diff endpoint', () => {
+    expect(pageSource).toContain('client.getTaskDiff');
+    expect(pageSource).toContain('aria-label="Task diff"');
+    expect(pageSource).toContain('Changes vs main');
+    expect(pageSource).toContain("type DiffMode = 'split' | 'unified'");
+    expect(pageSource).toContain('parseUnifiedDiff');
+    expect(pageSource).toContain('buildSplitRows');
+    expect(pageSource).toContain('inlineChangeSegments');
+    expect(pageSource).toContain('aria-label="Changed files"');
+    expect(pageSource).toContain('aria-label="Split diff"');
+    expect(pageSource).toContain('aria-label="Unified diff"');
+    expect(pageSource).toContain('selectedDiffFilePath');
+  });
+
   test('caps the mobile queue above the selected task record', () => {
     expect(pageSource).toContain('height: auto;');
     expect(pageSource).toContain('max-height: min(54dvh, 28rem);');

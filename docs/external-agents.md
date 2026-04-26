@@ -26,6 +26,8 @@ review task_20260424_001
 approve approval_...
 ```
 
+`diff <task_id>` uses the dedicated task diff API. In chat it returns a compact summary; `homelabctl task diff <task_id>` prints the raw patch; the dashboard task record shows the same comparison in the highlighted `Changes vs main` panel with split and unified views.
+
 ## Configuration
 
 The default config reads CLI commands from environment variables:

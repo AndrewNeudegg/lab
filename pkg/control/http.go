@@ -207,6 +207,15 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 		writeJSON(rw, http.StatusOK, map[string]any{"runs": runs})
 		return
 	}
+	if len(parts) == 2 && parts[1] == "diff" && req.Method == http.MethodGet {
+		diff, err := s.Orchestrator.TaskDiff(req.Context(), taskID)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, diff)
+		return
+	}
 	if len(parts) == 2 && req.Method == http.MethodPost {
 		var (
 			reply string

@@ -118,9 +118,15 @@
 
   const isSafeCommand = (command: string) => {
     const normalized = command.trim().replace(/\s+/g, ' ');
-    const verb = normalized.split(' ')[0]?.toLowerCase();
+    if (!normalized || normalized.includes('<') || normalized.length > 260) {
+      return false;
+    }
+    const verb = normalized.split(' ')[0]?.toLowerCase() || '';
     if (['tasks', 'status', 'approvals', 'agents', 'help'].includes(normalized.toLowerCase())) {
       return true;
+    }
+    if (['new', 'task'].includes(verb)) {
+      return normalized.length > verb.length + 1;
     }
     if (['show', 'run', 'review', 'diff', 'test', 'delete', 'accept', 'verify'].includes(verb)) {
       return taskRefPattern.test(normalized);

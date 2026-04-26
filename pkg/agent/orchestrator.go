@@ -117,6 +117,8 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 	switch cmd {
 	case "help":
 		return programResult(help(), nil)
+	case "reflect":
+		return o.reflectOnInteraction(ctx, message)
 	case "status":
 		return programResult(o.listInFlight())
 	case "new", "task":
@@ -224,6 +226,9 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		}
 		return programResult(o.resolveApproval(ctx, fields[1], false))
 	default:
+		if isReflectionRequest(message) {
+			return o.reflectOnInteraction(ctx, message)
+		}
 		if isPlainWorkRequest(message) {
 			return programResult(o.startOneShotWork(ctx, message))
 		}
@@ -371,6 +376,21 @@ func isActiveTaskStatusRequest(message string) bool {
 	}
 	if strings.Contains(normalized, "task") && strings.Contains(normalized, "in progress") {
 		return true
+	}
+	return false
+}
+
+func isReflectionRequest(message string) bool {
+	normalized := normalizeIntentText(message)
+	for _, field := range strings.Fields(normalized) {
+		switch field {
+		case "please", "can", "could", "you", "would":
+			continue
+		case "reflect":
+			return true
+		default:
+			return false
+		}
 	}
 	return false
 }
@@ -721,6 +741,7 @@ func help() string {
 		"  search <text>              search repo text",
 		"  web <query>                search the public web",
 		"  search web for <query>     search the public web",
+		"  reflect [prompt]           reflect and suggest a new-task action",
 		"  patch <task_id> <file>     apply unified diff to task worktree",
 		"  test <task_id>             run project checks in worktree",
 		"  diff <task_id>             show worktree diff",
@@ -809,6 +830,78 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 		lastMessage = "Stopped after reaching the turn limit."
 	}
 	return lastMessage, "program", nil
+}
+
+type reflectionResult struct {
+	Reflection string `json:"reflection"`
+	TaskGoal   string `json:"task_goal"`
+}
+
+func (o *Orchestrator) reflectOnInteraction(ctx context.Context, message string) (string, string, error) {
+	if o.provider == nil || o.model == "" {
+		return programResult("I do not have an LLM provider configured for reflection. Use `new <goal>` to create a task directly.", nil)
+	}
+	history := o.recentChatHistory(time.Now().UTC(), 24)
+	messages := []llm.Message{{
+		Role: "system",
+		Content: strings.Join([]string{
+			"You are OrchestratorAgent reflecting on the recent homelabd interaction.",
+			"Return exactly one JSON object and no prose.",
+			`Schema: {"reflection":"one concise observation or improvement","task_goal":"one concrete development task goal the user can create with new <goal>"}`,
+			"The task_goal must be actionable, scoped, and phrased as implementation work.",
+		}, "\n"),
+	}}
+	messages = append(messages, history...)
+	if !chatHistoryEndsWith(history, "user", message) {
+		messages = append(messages, llm.Message{Role: "user", Content: message})
+	}
+	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
+		Model:       o.model,
+		Temperature: 0,
+		MaxTokens:   512,
+		Messages:    messages,
+	})
+	source := responseSource(resp, o.provider.Name())
+	if err != nil {
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "error": err.Error()})})
+		return programResult("I couldn't reach the configured LLM provider. I did not create a task. Use `new <goal>` to create one directly.", nil)
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": source, "model": resp.Model, "message": resp.Message.Content, "usage": resp.Usage})})
+
+	var result reflectionResult
+	if err := json.Unmarshal([]byte(extractJSON(resp.Message.Content)), &result); err != nil {
+		result.Reflection = strings.TrimSpace(resp.Message.Content)
+	}
+	result.Reflection = cleanReflectionText(result.Reflection)
+	result.TaskGoal = cleanNewTaskGoal(result.TaskGoal)
+	if result.Reflection == "" {
+		result.Reflection = "I could not extract a specific reflection, but this can still be turned into a follow-up task."
+	}
+	if result.TaskGoal == "" {
+		result.TaskGoal = cleanNewTaskGoal("Follow up on this reflection: " + result.Reflection)
+	}
+	if result.TaskGoal == "" {
+		result.TaskGoal = "Improve the homelabd workflow based on the latest reflection"
+	}
+	return fmt.Sprintf("Reflection: %s\n\nAction: `new %s`", result.Reflection, result.TaskGoal), source, nil
+}
+
+func cleanReflectionText(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "`", "'")
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func cleanNewTaskGoal(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "`", "'")
+	value = strings.ReplaceAll(value, "<", "")
+	value = strings.ReplaceAll(value, ">", "")
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 220 {
+		value = strings.TrimSpace(value[:220])
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, "new "))
 }
 
 func responseSource(resp llm.CompletionResponse, fallback string) string {

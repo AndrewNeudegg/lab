@@ -602,6 +602,40 @@ func TestOpenEndedChatReportsProviderSource(t *testing.T) {
 	}
 }
 
+func TestReflectIncludesActionableNewTaskCommand(t *testing.T) {
+	goal := "Add task-ready action buttons for reflection results"
+	provider := &staticProvider{content: `{"reflection":"Keep improvement ideas task-ready.","task_goal":"` + goal + `"}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "please reflect on our recent interaction and suggest one improvement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Reflection: Keep improvement ideas task-ready.") {
+		t.Fatalf("reply = %q, want reflection", reply)
+	}
+	action := "`new " + goal + "`"
+	if !strings.Contains(reply, action) {
+		t.Fatalf("reply = %q, want actionable command %q", reply, action)
+	}
+
+	if _, err := orch.Handle(context.Background(), "test", "new "+goal); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Goal != goal {
+		t.Fatalf("task goal = %q, want %q", tasks[0].Goal, goal)
+	}
+}
+
 func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
@@ -798,6 +832,24 @@ func (p *recordingProvider) Complete(_ context.Context, req llm.CompletionReques
 		Message: llm.Message{
 			Role:    "assistant",
 			Content: `{"message":"` + reply + `","done":true,"tool_calls":[]}`,
+		},
+		Provider: p.Name(),
+	}, nil
+}
+
+type staticProvider struct {
+	content  string
+	requests []llm.CompletionRequest
+}
+
+func (p *staticProvider) Name() string { return "static" }
+
+func (p *staticProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.requests = append(p.requests, req)
+	return llm.CompletionResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: p.content,
 		},
 		Provider: p.Name(),
 	}, nil

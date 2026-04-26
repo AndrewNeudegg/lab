@@ -165,15 +165,19 @@
   };
 
   const isSafeCommand = (command: string) => {
-    if (!command || command.includes('<') || command.endsWith(':')) {
+    if (!command || command.includes('<') || command.endsWith(':') || command.length > 260) {
       return false;
     }
 
     const parts = command.split(/\s+/);
-    const verb = parts[0]?.toLowerCase();
+    const verb = parts[0]?.toLowerCase() || '';
 
     if (parts.length === 1) {
       return ['help', 'tasks', 'status', 'agents', 'approvals'].includes(verb);
+    }
+
+    if (['new', 'task'].includes(verb)) {
+      return command.length > verb.length + 1;
     }
 
     if (

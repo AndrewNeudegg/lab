@@ -42,4 +42,13 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('.command-panel.collapsed');
     expect(pageSource).toContain('grid-template-rows: auto;');
   });
+
+  test('renders explicit workflow state machine guidance', () => {
+    expect(pageSource).toContain('taskStateDescription');
+    expect(pageSource).toContain('taskStateTransitions');
+    expect(pageSource).toContain('aria-label="Workflow state"');
+    expect(pageSource).toContain('Expected transition:');
+    expect(pageSource).toContain('It will not restart a worker automatically.');
+    expect(pageSource).toContain('A worker currently owns this task.');
+  });
 });

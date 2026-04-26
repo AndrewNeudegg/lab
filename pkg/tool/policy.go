@@ -101,7 +101,7 @@ func defaultAgentTools() map[string]map[string]bool {
 			"shell.run_limited",
 		),
 		"ResearchAgent": allow("internet.search", "internet.fetch", "memory.propose_write"),
-		"ReviewerAgent": allow("internet.search", "internet.fetch", "repo.read", "repo.search", "repo.current_diff", "git.diff", "git.status", "git.branch", "git.describe", "git.log", "git.show", "go.test", "go.build", "test.run", "bun.check", "bun.build"),
+		"ReviewerAgent": allow("internet.search", "internet.fetch", "repo.read", "repo.search", "repo.current_diff", "git.diff", "git.status", "git.branch", "git.describe", "git.log", "git.show", "git.merge_check", "go.test", "go.build", "test.run", "bun.check", "bun.build"),
 		"OpsAgent":      allow("service.status"),
 		"homelabd":      allow("*"),
 		"human":         allow("*"),

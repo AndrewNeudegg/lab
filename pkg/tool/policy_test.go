@@ -69,6 +69,14 @@ func TestOrchestratorCanRequestApprovalGatedGitWorkflow(t *testing.T) {
 	}
 }
 
+func TestReviewerCanRunPremergeCheck(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.Decide("ReviewerAgent", stubTool{name: "git.merge_check", risk: RiskReadOnly}, json.RawMessage(`{"target":"/repo","branch":"homelabd/task_123"}`))
+	if !decision.Allowed || decision.NeedsApproval {
+		t.Fatalf("expected ReviewerAgent premerge check to be allowed without approval: %+v", decision)
+	}
+}
+
 func TestAgentsCanUseInternetReadTools(t *testing.T) {
 	policy := NewPolicy(nil)
 	for _, agent := range []string{"OrchestratorAgent", "CoderAgent", "ResearchAgent", "ReviewerAgent"} {

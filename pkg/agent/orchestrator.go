@@ -1474,7 +1474,7 @@ func (o *Orchestrator) listInFlight() (string, error) {
 			continue
 		}
 		next := nextActionForTask(t)
-		fmt.Fprintf(&b, "- %s [%s] %s\n  next: %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), nextActionsForTaskWithPrimary(t, next))
+		fmt.Fprintf(&b, "- %s [%s] %s\n  state: %s\n  next: %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), taskStateDescription(t.Status), nextActionsForTaskWithPrimary(t, next))
 	}
 	if b.Len() == 0 {
 		return "Nothing active. Use `new <goal>` to create a task.", nil
@@ -1519,6 +1519,54 @@ func nextActionsForTaskWithPrimary(t taskstore.Task, primary string) string {
 	return fmt.Sprintf("`%s`, `delegate %s to codex`, or `delete %s`", primary, shortID, shortID)
 }
 
+func taskStateDescription(status string) string {
+	switch status {
+	case taskstore.StatusQueued:
+		return "waiting for the task supervisor to assign a worker"
+	case taskstore.StatusRunning:
+		return "a worker owns this task; wait for completion or inspect progress"
+	case taskstore.StatusReadyForReview:
+		return "worker finished; review gate has not passed yet"
+	case taskstore.StatusBlocked:
+		return "review or execution stopped; a human or worker must choose the next action"
+	case taskstore.StatusAwaitingApproval:
+		return "review gate passed; merge approval is pending"
+	case taskstore.StatusAwaitingVerification:
+		return "merge landed; verify the running app before accepting"
+	case taskstore.StatusDone:
+		return "accepted by the human"
+	case taskstore.StatusFailed:
+		return "runtime failure; rerun or delegate with failure context"
+	case taskstore.StatusCancelled:
+		return "intentionally stopped"
+	default:
+		return "unknown state"
+	}
+}
+
+func taskStateTransitions(status string) string {
+	switch status {
+	case taskstore.StatusQueued:
+		return "queued -> running"
+	case taskstore.StatusRunning:
+		return "running -> ready_for_review or blocked"
+	case taskstore.StatusReadyForReview:
+		return "ready_for_review -> awaiting_approval or blocked"
+	case taskstore.StatusBlocked:
+		return "blocked -> running, cancelled, or deleted"
+	case taskstore.StatusAwaitingApproval:
+		return "awaiting_approval -> awaiting_verification or blocked"
+	case taskstore.StatusAwaitingVerification:
+		return "awaiting_verification -> done or queued"
+	case taskstore.StatusDone, taskstore.StatusCancelled:
+		return "terminal"
+	case taskstore.StatusFailed:
+		return "failed -> running, cancelled, or deleted"
+	default:
+		return "unknown"
+	}
+}
+
 func (o *Orchestrator) showTask(taskID string) (string, error) {
 	resolved, err := o.resolveTaskID(taskID)
 	if err != nil {
@@ -1530,6 +1578,8 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s [%s] %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t))
+	fmt.Fprintf(&b, "state: %s\n", taskStateDescription(t.Status))
+	fmt.Fprintf(&b, "transitions: %s\n", taskStateTransitions(t.Status))
 	fmt.Fprintf(&b, "id: %s\n", t.ID)
 	if t.AssignedTo != "" {
 		fmt.Fprintf(&b, "assigned: %s\n", t.AssignedTo)
@@ -2261,17 +2311,8 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			t.AssignedTo = "OrchestratorAgent"
 			t.Result = "ReviewerAgent premerge check failed: " + err.Error()
 			_ = o.tasks.Save(t)
-			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
-			instruction := strings.Join([]string{
-				"The task branch cannot be merged cleanly into the current main branch.",
-				"Bring the task worktree up to date, resolve conflicts in the task branch, remove all conflict markers, and rerun relevant tests.",
-				"Do not edit the main repository. Work only in the task workspace.",
-				"Premerge error: " + err.Error(),
-			}, "\n")
-			if delegateErr := o.startDelegationForTask(context.Background(), taskID, "codex", instruction); delegateErr == nil {
-				return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created. Requeued %s to codex to rebase/resolve conflicts before merge.", status, strings.TrimSpace(testOut), err.Error(), shortID), nil
-			}
-			return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created. Next: `delegate %s to codex rebase and resolve merge conflicts`, `diff %s`, or `delete %s`.", status, strings.TrimSpace(testOut), err.Error(), shortID, shortID, shortID), nil
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result, "from_status": taskstore.StatusReadyForReview, "to_status": taskstore.StatusBlocked})})
+			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created and no worker was restarted automatically.\nNext: `delegate %s to codex rebase and resolve merge conflicts`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, status, strings.TrimSpace(testOut), err.Error(), shortID, shortID, shortID), nil
 		}
 	}
 	approvalID := id.New("approval")
@@ -2281,6 +2322,7 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		return "", err
 	}
 	t.Status = taskstore.StatusAwaitingApproval
+	t.AssignedTo = "OrchestratorAgent"
 	t.Result = "ReviewerAgent test status: " + status
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(req)})

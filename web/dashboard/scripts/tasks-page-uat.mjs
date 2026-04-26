@@ -122,7 +122,8 @@ const run = async () => {
         rows: document.querySelectorAll('.task-row').length,
         panelCollapsed: document.querySelector('.command-panel')?.classList.contains('collapsed') ?? null,
         panelButton: document.querySelector('.command-header-actions button')?.innerText || '',
-        queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null
+        queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
+        workflowState: document.querySelector('.state-machine')?.innerText || ''
       })`
     );
     assert(initial.filters.length === 3, 'task filters did not render', initial);
@@ -131,6 +132,11 @@ const run = async () => {
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
     assert(initial.rows > 0, 'initial task queue rendered no task rows', initial);
     assert(initial.panelCollapsed === false, 'Act on this queue should start open', initial);
+    assert(
+      initial.workflowState.toLowerCase().includes('workflow state'),
+      'workflow state machine guidance did not render',
+      initial
+    );
 
     const afterRunning = await evalJS(
       cdp,

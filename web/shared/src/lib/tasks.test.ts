@@ -9,6 +9,8 @@ import {
   taskNeedsAttention,
   taskNeedsQueueAction,
   taskStartedAt,
+  taskStateDescription,
+  taskStateTransitions,
   taskSummaryTitle
 } from './tasks';
 import type { HomelabdApproval, HomelabdTask } from './types';
@@ -125,5 +127,12 @@ describe('task queue attention logic', () => {
 
     expect(taskSummaryTitle(withoutGoal)).toBe('title only');
     expect(taskInputText(withoutText)).toBe('task_empty');
+  });
+
+  test('explains workflow states and valid next transitions', () => {
+    expect(taskStateDescription('ready_for_review')).toContain('review gate');
+    expect(taskStateTransitions('ready_for_review')).toBe('ready for review → awaiting approval or blocked');
+    expect(taskStateDescription('running')).toContain('worker owns');
+    expect(taskStateTransitions('blocked')).toBe('blocked → running, cancelled, or deleted');
   });
 });

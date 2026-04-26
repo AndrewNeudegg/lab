@@ -19,6 +19,55 @@ export const taskIsActive = (task: Pick<HomelabdTask, 'status'>) => activeStatus
 export const taskIsTerminal = (task: Pick<HomelabdTask, 'status'>) =>
   terminalStatuses.has(task.status);
 
+export const taskStateDescription = (status = '') => {
+  switch (status) {
+    case 'queued':
+      return 'Waiting for the task supervisor to assign a worker.';
+    case 'running':
+      return 'A worker owns this task. Wait for completion or inspect progress.';
+    case 'ready_for_review':
+      return 'Worker finished. The review gate has not passed yet.';
+    case 'blocked':
+      return 'Review or execution stopped. Pick a fix, rerun, or delete.';
+    case 'awaiting_approval':
+      return 'Review gate passed. Merge approval is pending.';
+    case 'awaiting_verification':
+      return 'Merge landed. Verify the running app before accepting.';
+    case 'done':
+      return 'Accepted by the human.';
+    case 'failed':
+      return 'Runtime failure. Rerun or delegate with failure context.';
+    case 'cancelled':
+      return 'Intentionally stopped.';
+    default:
+      return 'Unknown workflow state.';
+  }
+};
+
+export const taskStateTransitions = (status = '') => {
+  switch (status) {
+    case 'queued':
+      return 'queued → running';
+    case 'running':
+      return 'running → ready for review or blocked';
+    case 'ready_for_review':
+      return 'ready for review → awaiting approval or blocked';
+    case 'blocked':
+      return 'blocked → running, cancelled, or deleted';
+    case 'awaiting_approval':
+      return 'awaiting approval → awaiting verification or blocked';
+    case 'awaiting_verification':
+      return 'awaiting verification → done or queued';
+    case 'done':
+    case 'cancelled':
+      return 'terminal';
+    case 'failed':
+      return 'failed → running, cancelled, or deleted';
+    default:
+      return 'unknown';
+  }
+};
+
 const parseTime = (value?: string) => {
   if (!value) {
     return undefined;
@@ -63,6 +112,17 @@ export const taskSummaryTitle = (
 
   const sentenceEnd = source.search(/[.!?](?:\s|$)/);
   if (sentenceEnd >= 24 && sentenceEnd + 1 <= maxLength) {
+    const firstSentence = source.slice(0, sentenceEnd + 1);
+    const secondSentenceEnd = source.slice(sentenceEnd + 1).search(/[.!?](?:\s|$)/);
+    const combinedSentenceEnd =
+      secondSentenceEnd >= 0 ? sentenceEnd + 1 + secondSentenceEnd + 1 : -1;
+    if (
+      firstSentence.toLowerCase() === 'work this task to completion if possible.' &&
+      combinedSentenceEnd > sentenceEnd &&
+      combinedSentenceEnd <= maxLength
+    ) {
+      return source.slice(0, combinedSentenceEnd);
+    }
     return source.slice(0, sentenceEnd + 1);
   }
 

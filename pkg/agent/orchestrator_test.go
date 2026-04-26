@@ -567,6 +567,99 @@ func TestReviewDoesNotRequestApprovalWhenChecksFail(t *testing.T) {
 	}
 }
 
+func TestReviewPremergeFailureBlocksWithoutAutoDelegating(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	defer close(releaseDelegate)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.registry.Register(mergeCheckFailStub{}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260426_012457_899298ac",
+		Title:      "restart touched components",
+		Goal:       "restart touched components",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), "899298ac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "ready_for_review -> blocked") || !strings.Contains(reply, "no worker was restarted automatically") {
+		t.Fatalf("reply = %q, want explicit blocked transition without auto restart", reply)
+	}
+	select {
+	case <-delegateStarted:
+		t.Fatal("review premerge failure should not auto-delegate")
+	default:
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked || updated.AssignedTo != "OrchestratorAgent" {
+		t.Fatalf("task = %#v, want blocked OrchestratorAgent", updated)
+	}
+	if !strings.Contains(updated.Result, "premerge check failed") {
+		t.Fatalf("result = %q, want premerge failure reason", updated.Result)
+	}
+}
+
+func TestReviewSuccessMovesOwnershipBackToOrchestrator(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.registry.Register(mergeCheckPassStub{}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260426_012457_899298ac",
+		Title:      "restart touched components",
+		Goal:       "restart touched components",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "codex",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), "899298ac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Merge approval requested") {
+		t.Fatalf("reply = %q, want merge approval", reply)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusAwaitingApproval {
+		t.Fatalf("status = %q, want awaiting_approval", updated.Status)
+	}
+	if updated.AssignedTo != "OrchestratorAgent" {
+		t.Fatalf("AssignedTo = %q, want OrchestratorAgent", updated.AssignedTo)
+	}
+}
+
 func TestApprovedMergeAwaitsVerificationUntilAccepted(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
@@ -1389,6 +1482,30 @@ func (mergeApprovedStub) Schema() json.RawMessage {
 func (mergeApprovedStub) Risk() tool.RiskLevel { return tool.RiskHigh }
 func (mergeApprovedStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(map[string]any{"merged": true})
+}
+
+type mergeCheckFailStub struct{}
+
+func (mergeCheckFailStub) Name() string        { return "git.merge_check" }
+func (mergeCheckFailStub) Description() string { return "" }
+func (mergeCheckFailStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (mergeCheckFailStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (mergeCheckFailStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return nil, fmt.Errorf("git merge-tree: conflict in web/dashboard/src/routes/tasks/+page.svelte")
+}
+
+type mergeCheckPassStub struct{}
+
+func (mergeCheckPassStub) Name() string        { return "git.merge_check" }
+func (mergeCheckPassStub) Description() string { return "" }
+func (mergeCheckPassStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (mergeCheckPassStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (mergeCheckPassStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]any{"mergeable": true})
 }
 
 type mergeFailStub struct{}

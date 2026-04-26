@@ -7,6 +7,8 @@
     taskRuntimeMs,
     taskIsActive,
     taskIsTerminal,
+    taskStateDescription,
+    taskStateTransitions,
     taskStartedAt,
     taskSummaryTitle,
     type ChatRole,
@@ -355,9 +357,9 @@
     switch (task.status) {
       case 'ready_for_review':
         return {
-          label: 'Review patch',
+          label: 'Run review gate',
           command: `review ${id}`,
-          reason: 'The task claims work is ready; tests and diff need to be checked before merge.'
+          reason: 'Runs checks and premerge. It moves to awaiting approval if clean, or blocked if not. It will not restart a worker automatically.'
         };
       case 'awaiting_verification':
         return {
@@ -378,6 +380,18 @@
           command: 'approvals',
           reason: 'The runtime is waiting for permission before it can perform a gated action.'
         };
+      case 'running':
+        return {
+          label: 'Show progress',
+          command: `show ${id}`,
+          reason: 'A worker currently owns this task. Do not restart it unless it is stale or clearly blocked.'
+        };
+      case 'queued':
+        return {
+          label: 'Show queue state',
+          command: `show ${id}`,
+          reason: 'The task is waiting for the supervisor to assign a worker.'
+        };
       default:
         if (taskIsTerminal(task)) {
           return {
@@ -389,7 +403,7 @@
         return {
           label: 'Continue work',
           command: `run ${id}`,
-          reason: 'The task is active and can continue in its isolated workspace.'
+          reason: 'Only use this if no worker is currently running. Active external workers update the task when they finish.'
         };
     }
   };
@@ -706,6 +720,15 @@
             <span>Updated</span>
             <strong>{compactTime(currentTask?.updated_at)}</strong>
           </div>
+        </section>
+
+        <section class="state-machine" aria-label="Workflow state">
+          <div>
+            <span>Workflow state</span>
+            <strong>{statusLabel(currentTask?.status)}</strong>
+          </div>
+          <p>{taskStateDescription(currentTask?.status)}</p>
+          <small>Expected transition: {taskStateTransitions(currentTask?.status)}</small>
         </section>
 
         <section class={`next-step ${taskTone(currentTask)}`}>
@@ -1429,6 +1452,7 @@
   .workspace-path,
   .task-result,
   .task-input,
+  .state-machine,
   .activity,
   .empty-record {
     margin: 1rem 1.25rem 0;
@@ -1439,6 +1463,40 @@
 
   .workspace-path {
     padding: 0.8rem;
+  }
+
+  .state-machine {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.85rem;
+  }
+
+  .state-machine div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .state-machine span,
+  .state-machine small {
+    color: #64748b;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .state-machine strong {
+    color: #111827;
+    font-size: 0.9rem;
+  }
+
+  .state-machine p {
+    margin: 0;
+    color: #334155;
+    font-size: 0.88rem;
+    line-height: 1.4;
   }
 
   .workspace-path code {

@@ -945,6 +945,35 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		if taskTerminal(t.Status) || o.taskActive(t.ID) {
 			continue
 		}
+		if len(t.DependsOn) > 0 {
+			unresolved, err := o.unresolvedDependencies(t)
+			if err != nil {
+				o.log().Error("task dependency check failed", "task_id", t.ID, "error", err)
+				continue
+			}
+			if len(unresolved) > 0 {
+				if t.Status == taskstore.StatusQueued {
+					t.Status = taskstore.StatusBlocked
+					t.BlockedBy = unresolved
+					t.AssignedTo = "OrchestratorAgent"
+					t.Result = "blocked by graph dependencies: " + strings.Join(shortTaskIDs(unresolved), ", ")
+					_ = o.tasks.Save(t)
+					_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.graph.blocked", Actor: "homelabd", TaskID: t.ID, ParentID: t.ParentID, Payload: eventlog.Payload(map[string]any{"blocked_by": unresolved})})
+				}
+				continue
+			}
+			if t.Status == taskstore.StatusBlocked {
+				t.Status = taskstore.StatusQueued
+				t.BlockedBy = nil
+				t.AssignedTo = "OrchestratorAgent"
+				t.Result = appendResultLine(t.Result, "dependencies satisfied; queued graph phase")
+				if err := o.tasks.Save(t); err != nil {
+					o.log().Error("task dependency release failed", "task_id", t.ID, "error", err)
+					continue
+				}
+				_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.graph.released", Actor: "homelabd", TaskID: t.ID, ParentID: t.ParentID, Payload: eventlog.Payload(map[string]any{"depends_on": t.DependsOn})})
+			}
+		}
 		if t.Status == taskstore.StatusQueued {
 			backend, ok := o.preferredWorkerBackend()
 			if !ok {
@@ -1019,6 +1048,55 @@ func (o *Orchestrator) runningTaskStale(t taskstore.Task, now time.Time) bool {
 		return true
 	}
 	return now.Sub(t.UpdatedAt) >= threshold
+}
+
+func (o *Orchestrator) unresolvedDependencies(t taskstore.Task) ([]string, error) {
+	var unresolved []string
+	for _, depID := range uniqueStrings(t.DependsOn) {
+		dep, err := o.tasks.Load(depID)
+		if err != nil {
+			unresolved = append(unresolved, depID)
+			continue
+		}
+		if dep.Status != taskstore.StatusDone {
+			unresolved = append(unresolved, dep.ID)
+		}
+	}
+	return unresolved, nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	var out []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func shortTaskIDs(ids []string) []string {
+	short := make([]string, 0, len(ids))
+	for _, taskID := range ids {
+		short = append(short, taskShortID(taskID))
+	}
+	return short
+}
+
+func appendResultLine(result, line string) string {
+	result = strings.TrimSpace(result)
+	line = strings.TrimSpace(line)
+	if line == "" || strings.Contains(result, line) {
+		return result
+	}
+	if result == "" {
+		return line
+	}
+	return result + "\n" + line
 }
 
 func (o *Orchestrator) preferredWorkerBackend() (string, bool) {
@@ -1528,11 +1606,34 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 		return "usage: new <goal>", nil
 	}
 	t := created.Task
-	return fmt.Sprintf("Created queued task %s.\nPlan created and reviewed before execution.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
+	childSummary := formatCreatedGraphChildren(created.Children)
+	return fmt.Sprintf("Created task graph %s with %d child phase(s).\nPlan created and reviewed before execution.\n%s\nFirst branch: %s\nThe task supervisor will start the first unblocked child phase automatically.\nNext:\n%s", t.ID, len(created.Children), childSummary, created.Branch, commandBlock(
 		"status",
-		"run "+t.ID,
-		"delegate "+t.ID+" <agent> <instruction>",
+		"show "+t.ID,
+		"run "+created.firstChildID(),
 	)), nil
+}
+
+func (c createdTask) firstChildID() string {
+	if len(c.Children) == 0 {
+		return c.Task.ID
+	}
+	return c.Children[0].ID
+}
+
+func formatCreatedGraphChildren(children []taskstore.Task) string {
+	if len(children) == 0 {
+		return "No child phases were created."
+	}
+	var b strings.Builder
+	b.WriteString("Child phases:")
+	for _, child := range children {
+		fmt.Fprintf(&b, "\n- %s [%s] %s", taskShortID(child.ID), child.Status, child.GraphPhase)
+		if len(child.DependsOn) > 0 {
+			fmt.Fprintf(&b, " after %s", strings.Join(shortTaskIDs(child.DependsOn), ", "))
+		}
+	}
+	return b.String()
 }
 
 func commandBlock(commands ...string) string {
@@ -1540,8 +1641,9 @@ func commandBlock(commands ...string) string {
 }
 
 type createdTask struct {
-	Task   taskstore.Task
-	Branch string
+	Task     taskstore.Task
+	Branch   string
+	Children []taskstore.Task
 }
 
 func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (createdTask, error) {
@@ -1549,26 +1651,195 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 		return createdTask{}, nil
 	}
 	now := time.Now().UTC()
-	t := taskstore.Task{ID: id.New("task"), Title: firstLine(goal), Goal: goal, Status: taskstore.StatusQueued, AssignedTo: "OrchestratorAgent", Priority: 5, CreatedAt: now, UpdatedAt: now, Result: "queued for task supervisor"}
-	o.ensureTaskPlan(ctx, &t)
-	raw, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_create", map[string]any{"task_id": t.ID}, t.ID)
+	parent := taskstore.Task{
+		ID:                 id.New("task"),
+		Title:              firstLine(goal),
+		Goal:               goal,
+		Status:             taskstore.StatusBlocked,
+		AssignedTo:         "OrchestratorAgent",
+		Priority:           5,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		GraphPhase:         "root",
+		Result:             "task graph parent; child phases drive execution",
+		AcceptanceCriteria: rootAcceptanceCriteria(),
+	}
+	o.ensureTaskPlan(ctx, &parent)
+	if err := o.tasks.Save(parent); err != nil {
+		return createdTask{}, err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: parent.ID, Payload: eventlog.Payload(parent)})
+	children, branch, err := o.createTaskGraphChildren(ctx, parent, now)
 	if err != nil {
-		t.Status = taskstore.StatusFailed
-		t.Result = err.Error()
-		_ = o.tasks.Save(t)
+		parent.Status = taskstore.StatusFailed
+		parent.Result = err.Error()
+		_ = o.tasks.Save(parent)
 		return createdTask{}, err
 	}
-	var out struct {
-		Workspace string `json:"workspace"`
-		Branch    string `json:"branch"`
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.graph.created", Actor: "OrchestratorAgent", TaskID: parent.ID, Payload: eventlog.Payload(map[string]any{
+		"children": taskIDs(children),
+		"phases":   taskGraphPhaseNames(),
+	})})
+	return createdTask{Task: parent, Branch: branch, Children: children}, nil
+}
+
+func (o *Orchestrator) createTaskGraphChildren(ctx context.Context, parent taskstore.Task, now time.Time) ([]taskstore.Task, string, error) {
+	phases := defaultTaskGraphPhases(parent.Goal)
+	children := make([]taskstore.Task, 0, len(phases))
+	firstBranch := ""
+	var previousID string
+	for i, phase := range phases {
+		child := taskstore.Task{
+			ID:                 id.New("task"),
+			Title:              phase.Title,
+			Goal:               phase.Goal,
+			Status:             taskstore.StatusBlocked,
+			AssignedTo:         "OrchestratorAgent",
+			Priority:           parent.Priority + i + 1,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+			ParentID:           parent.ID,
+			ContextIDs:         []string{parent.ID},
+			GraphPhase:         phase.Name,
+			AcceptanceCriteria: phase.AcceptanceCriteria,
+			Result:             "blocked on earlier graph phase",
+		}
+		if previousID == "" {
+			child.Status = taskstore.StatusQueued
+			child.Result = "queued as first graph phase"
+		} else {
+			child.DependsOn = []string{previousID}
+			child.BlockedBy = []string{previousID}
+			child.ContextIDs = append(child.ContextIDs, previousID)
+		}
+		o.ensureTaskPlan(ctx, &child)
+		raw, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_create", map[string]any{"task_id": child.ID}, child.ID)
+		if err != nil {
+			child.Status = taskstore.StatusFailed
+			child.Result = err.Error()
+			_ = o.tasks.Save(child)
+			return children, firstBranch, err
+		}
+		var out struct {
+			Workspace string `json:"workspace"`
+			Branch    string `json:"branch"`
+		}
+		_ = json.Unmarshal(raw, &out)
+		child.Workspace = out.Workspace
+		if firstBranch == "" {
+			firstBranch = out.Branch
+		}
+		if err := o.tasks.Save(child); err != nil {
+			return children, firstBranch, err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: child.ID, ParentID: parent.ID, Payload: eventlog.Payload(child)})
+		children = append(children, child)
+		previousID = child.ID
 	}
-	_ = json.Unmarshal(raw, &out)
-	t.Workspace = out.Workspace
-	if err := o.tasks.Save(t); err != nil {
-		return createdTask{}, err
+	return children, firstBranch, nil
+}
+
+type taskGraphPhase struct {
+	Name               string
+	Title              string
+	Goal               string
+	AcceptanceCriteria []taskstore.AcceptanceCriterion
+}
+
+func defaultTaskGraphPhases(goal string) []taskGraphPhase {
+	shortGoal := firstLine(goal)
+	return []taskGraphPhase{
+		{
+			Name:  "inspect",
+			Title: "inspect: " + shortGoal,
+			Goal:  "Inspect the repository and current task context for: " + goal,
+			AcceptanceCriteria: criteria(
+				"Relevant files, commands, docs, and existing behavior are identified.",
+				"Unknowns, risks, and likely validation needs are recorded in the task result.",
+			),
+		},
+		{
+			Name:  "design",
+			Title: "design: " + shortGoal,
+			Goal:  "Design the smallest implementation approach for: " + goal,
+			AcceptanceCriteria: criteria(
+				"Implementation boundaries, affected modules, and data contracts are described.",
+				"Validation commands and expected user-facing behavior are listed before coding starts.",
+			),
+		},
+		{
+			Name:  "implement",
+			Title: "implement: " + shortGoal,
+			Goal:  "Implement the approved design for: " + goal,
+			AcceptanceCriteria: criteria(
+				"Code changes are made in the task workspace and match the design scope.",
+				"Changed behavior is summarized with changed files and remaining risks.",
+			),
+		},
+		{
+			Name:  "test",
+			Title: "test: " + shortGoal,
+			Goal:  "Validate the implementation for: " + goal,
+			AcceptanceCriteria: criteria(
+				"Focused automated checks run and results are recorded.",
+				"Browser/UAT validation is run for UI changes or explicitly marked not applicable.",
+			),
+		},
+		{
+			Name:  "docs",
+			Title: "docs: " + shortGoal,
+			Goal:  "Update operator docs, help text, or handoff notes for: " + goal,
+			AcceptanceCriteria: criteria(
+				"Relevant docs/help text are updated, or the result explains why no docs changed.",
+				"Usage notes are ready for the final review handoff.",
+			),
+		},
+		{
+			Name:  "review",
+			Title: "review: " + shortGoal,
+			Goal:  "Review the completed task graph for: " + goal,
+			AcceptanceCriteria: criteria(
+				"All prior graph phases are accepted or explicitly waived.",
+				"Final result states what changed, how it was validated, and what remains open.",
+			),
+		},
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(t)})
-	return createdTask{Task: t, Branch: out.Branch}, nil
+}
+
+func rootAcceptanceCriteria() []taskstore.AcceptanceCriterion {
+	return criteria(
+		"Inspect, design, implement, test, docs, and review child phases are completed in order.",
+		"Final review confirms the original goal is satisfied or records remaining follow-up work.",
+	)
+}
+
+func criteria(descriptions ...string) []taskstore.AcceptanceCriterion {
+	out := make([]taskstore.AcceptanceCriterion, 0, len(descriptions))
+	for i, description := range descriptions {
+		out = append(out, taskstore.AcceptanceCriterion{
+			ID:          fmt.Sprintf("ac-%d", i+1),
+			Description: description,
+			Status:      "pending",
+		})
+	}
+	return out
+}
+
+func taskGraphPhaseNames() []string {
+	phases := defaultTaskGraphPhases("")
+	names := make([]string, 0, len(phases))
+	for _, phase := range phases {
+		names = append(names, phase.Name)
+	}
+	return names
+}
+
+func taskIDs(tasks []taskstore.Task) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		ids = append(ids, t.ID)
+	}
+	return ids
 }
 
 func (o *Orchestrator) ensureTaskPlan(ctx context.Context, t *taskstore.Task) bool {
@@ -1624,6 +1895,9 @@ func (o *Orchestrator) listTasks() (string, error) {
 	var b strings.Builder
 	for _, t := range tasks {
 		fmt.Fprintf(&b, "%s [%s] %s\n  id: %s\n  workspace: %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), t.ID, t.Workspace)
+		if t.GraphPhase != "" {
+			fmt.Fprintf(&b, "  graph: %s%s\n", t.GraphPhase, graphRelationSummary(t))
+		}
 		if !taskTerminal(t.Status) {
 			fmt.Fprintf(&b, "  next: %s\n", nextActionsForTask(t))
 		}
@@ -1653,6 +1927,9 @@ func (o *Orchestrator) listInFlight() (string, error) {
 
 func nextActionForTask(t taskstore.Task) string {
 	shortID := taskShortID(t.ID)
+	if t.GraphPhase == "root" {
+		return fmt.Sprintf("show %s", shortID)
+	}
 	switch t.Status {
 	case taskstore.StatusAwaitingApproval:
 		return "approvals"
@@ -1663,6 +1940,9 @@ func nextActionForTask(t taskstore.Task) string {
 	case taskstore.StatusConflictResolution:
 		return fmt.Sprintf("delegate %s to codex resolve the main-branch conflict", shortID)
 	case taskstore.StatusBlocked:
+		if len(t.BlockedBy) > 0 {
+			return fmt.Sprintf("show %s", shortID)
+		}
 		result := strings.ToLower(t.Result)
 		if strings.Contains(result, "external agent returned") || strings.Contains(result, "finished") || strings.Contains(result, "diff") {
 			return fmt.Sprintf("review %s", shortID)
@@ -1684,6 +1964,12 @@ func nextActionsForTask(t taskstore.Task) string {
 
 func nextActionsForTaskWithPrimary(t taskstore.Task, primary string) string {
 	shortID := taskShortID(t.ID)
+	if t.GraphPhase == "root" {
+		return fmt.Sprintf("`%s` or `delete %s`", primary, shortID)
+	}
+	if len(t.BlockedBy) > 0 {
+		return fmt.Sprintf("`%s` after blockers %s, or `delete %s`", primary, strings.Join(shortTaskIDs(t.BlockedBy), ", "), shortID)
+	}
 	if t.Status == taskstore.StatusAwaitingVerification {
 		return fmt.Sprintf("`%s`, `reopen %s needs rework`, or `delete %s`", primary, shortID, shortID)
 	}
@@ -1765,6 +2051,23 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 	if t.Plan != nil {
 		fmt.Fprintf(&b, "plan: %s - %s\n", t.Plan.Status, t.Plan.Summary)
 	}
+	if t.GraphPhase != "" {
+		fmt.Fprintf(&b, "graph: %s%s\n", t.GraphPhase, graphRelationSummary(t))
+	}
+	if len(t.DependsOn) > 0 {
+		fmt.Fprintf(&b, "depends on: %s\n", strings.Join(shortTaskIDs(t.DependsOn), ", "))
+	}
+	if len(t.BlockedBy) > 0 {
+		fmt.Fprintf(&b, "blocked by: %s\n", strings.Join(shortTaskIDs(t.BlockedBy), ", "))
+	}
+	if len(t.AcceptanceCriteria) > 0 {
+		fmt.Fprintf(&b, "acceptance criteria:\n%s\n", formatAcceptanceCriteria(t.AcceptanceCriteria))
+	}
+	if t.GraphPhase == "root" {
+		if children, err := o.graphChildren(t.ID); err == nil && len(children) > 0 {
+			fmt.Fprintf(&b, "child phases:\n%s\n", formatGraphChildren(children))
+		}
+	}
 	if strings.TrimSpace(t.Result) != "" {
 		fmt.Fprintf(&b, "result: %s\n", strings.TrimSpace(t.Result))
 	}
@@ -1772,6 +2075,62 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 		fmt.Fprintf(&b, "next: %s", nextActionsForTask(t))
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func graphRelationSummary(t taskstore.Task) string {
+	var parts []string
+	if t.ParentID != "" {
+		parts = append(parts, "parent="+taskShortID(t.ParentID))
+	}
+	if len(t.DependsOn) > 0 {
+		parts = append(parts, "depends_on="+strings.Join(shortTaskIDs(t.DependsOn), ","))
+	}
+	if len(t.BlockedBy) > 0 {
+		parts = append(parts, "blocked_by="+strings.Join(shortTaskIDs(t.BlockedBy), ","))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, " ") + ")"
+}
+
+func formatAcceptanceCriteria(criteria []taskstore.AcceptanceCriterion) string {
+	var b strings.Builder
+	for _, criterion := range criteria {
+		status := criterion.Status
+		if status == "" {
+			status = "pending"
+		}
+		fmt.Fprintf(&b, "- [%s] %s %s\n", status, criterion.ID, criterion.Description)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (o *Orchestrator) graphChildren(parentID string) ([]taskstore.Task, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	var children []taskstore.Task
+	for _, task := range tasks {
+		if task.ParentID == parentID {
+			children = append(children, task)
+		}
+	}
+	sort.Slice(children, func(i, j int) bool { return children[i].Priority < children[j].Priority })
+	return children, nil
+}
+
+func formatGraphChildren(children []taskstore.Task) string {
+	var b strings.Builder
+	for _, child := range children {
+		fmt.Fprintf(&b, "- %s [%s] %s", taskShortID(child.ID), child.Status, child.GraphPhase)
+		if len(child.DependsOn) > 0 {
+			fmt.Fprintf(&b, " after %s", strings.Join(shortTaskIDs(child.DependsOn), ", "))
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string, error) {
@@ -1813,6 +2172,7 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 	}
 	t.Status = taskstore.StatusDone
 	t.AssignedTo = "OrchestratorAgent"
+	t.AcceptanceCriteria = markAcceptanceCriteria(t.AcceptanceCriteria, "accepted")
 	if strings.TrimSpace(t.Result) == "" {
 		t.Result = "accepted by human"
 	} else {
@@ -1822,7 +2182,25 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 		return "", err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.completed", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"result": t.Result})})
-	return fmt.Sprintf("Accepted %s. Task is now done.\nUsage/docs notes:\n%s", taskShortID(taskID), usageNotesFromResult(t.Result)), nil
+	released, releaseErr := o.releaseGraphDependents(ctx, taskID)
+	if releaseErr != nil {
+		return "", releaseErr
+	}
+	parentDone := false
+	if t.ParentID != "" {
+		parentDone, releaseErr = o.completeGraphParentIfReady(ctx, t.ParentID)
+		if releaseErr != nil {
+			return "", releaseErr
+		}
+	}
+	graphLine := ""
+	if released > 0 {
+		graphLine = fmt.Sprintf("\nReleased %d dependent graph phase(s).", released)
+	}
+	if parentDone {
+		graphLine += "\nAll child phases are done; parent task is now done."
+	}
+	return fmt.Sprintf("Accepted %s. Task is now done.%s\nUsage/docs notes:\n%s", taskShortID(taskID), graphLine, usageNotesFromResult(t.Result)), nil
 }
 
 func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) (string, error) {
@@ -1950,6 +2328,100 @@ func usageNotesFromResult(result string) string {
 		return "No explicit usage/docs notes were recorded. Reopen the task if this needs follow-up."
 	}
 	return strings.TrimSpace(strings.Join(selected, "\n"))
+}
+
+func markAcceptanceCriteria(criteria []taskstore.AcceptanceCriterion, status string) []taskstore.AcceptanceCriterion {
+	if len(criteria) == 0 {
+		return criteria
+	}
+	out := append([]taskstore.AcceptanceCriterion(nil), criteria...)
+	for i := range out {
+		out[i].Status = status
+	}
+	return out
+}
+
+func (o *Orchestrator) releaseGraphDependents(ctx context.Context, completedTaskID string) (int, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return 0, err
+	}
+	released := 0
+	for _, candidate := range tasks {
+		if taskTerminal(candidate.Status) || !containsString(candidate.DependsOn, completedTaskID) {
+			continue
+		}
+		unresolved, err := o.unresolvedDependencies(candidate)
+		if err != nil {
+			return released, err
+		}
+		candidate.BlockedBy = unresolved
+		if len(unresolved) > 0 {
+			if err := o.tasks.Save(candidate); err != nil {
+				return released, err
+			}
+			continue
+		}
+		if candidate.Status == taskstore.StatusBlocked {
+			candidate.Status = taskstore.StatusQueued
+			candidate.AssignedTo = "OrchestratorAgent"
+			candidate.Result = appendResultLine(candidate.Result, "dependencies satisfied; queued graph phase")
+			if err := o.tasks.Save(candidate); err != nil {
+				return released, err
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.graph.released", Actor: "OrchestratorAgent", TaskID: candidate.ID, ParentID: candidate.ParentID, Payload: eventlog.Payload(map[string]any{
+				"completed_dependency": completedTaskID,
+				"depends_on":           candidate.DependsOn,
+			})})
+			released++
+		}
+	}
+	return released, nil
+}
+
+func (o *Orchestrator) completeGraphParentIfReady(ctx context.Context, parentID string) (bool, error) {
+	parent, err := o.tasks.Load(parentID)
+	if err != nil {
+		return false, err
+	}
+	if parent.Status == taskstore.StatusDone || parent.GraphPhase != "root" {
+		return false, nil
+	}
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return false, err
+	}
+	childCount := 0
+	for _, child := range tasks {
+		if child.ParentID != parentID {
+			continue
+		}
+		childCount++
+		if child.Status != taskstore.StatusDone {
+			return false, nil
+		}
+	}
+	if childCount == 0 {
+		return false, nil
+	}
+	parent.Status = taskstore.StatusDone
+	parent.AssignedTo = "OrchestratorAgent"
+	parent.AcceptanceCriteria = markAcceptanceCriteria(parent.AcceptanceCriteria, "accepted")
+	parent.Result = appendResultLine(parent.Result, "all child graph phases accepted by human")
+	if err := o.tasks.Save(parent); err != nil {
+		return false, err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.graph.completed", Actor: "OrchestratorAgent", TaskID: parentID, Payload: eventlog.Payload(map[string]any{"children": childCount})})
+	return true, nil
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func restartPlanForDiff(diff string) string {
@@ -2318,23 +2790,25 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 	if created.Task.ID == "" {
 		return "usage: new <goal>", nil
 	}
-	taskID := created.Task.ID
+	taskID := created.firstChildID()
 	if err := o.startDelegationForTask(context.Background(), taskID, "codex", strings.Join([]string{
 		goal,
 		"",
 		"Work only in this task worktree. Inspect first, make the smallest practical patch, update relevant docs/help text when behavior or commands change, run relevant formatting and tests, and leave a concise summary with how to use the change.",
 	}, "\n")); err != nil {
-		shortID := taskShortID(taskID)
-		return fmt.Sprintf("Created task %s, but could not start codex: %v\nNext:\n%s", shortID, err, commandBlock(
-			"run "+shortID,
-			"delegate "+shortID+" to codex",
+		shortID := taskShortID(created.Task.ID)
+		childShortID := taskShortID(taskID)
+		return fmt.Sprintf("Created task graph %s, but could not start codex on %s: %v\nNext:\n%s", shortID, childShortID, err, commandBlock(
+			"run "+childShortID,
+			"delegate "+childShortID+" to codex",
 		)), nil
 	}
-	shortID := taskShortID(taskID)
-	return fmt.Sprintf("Created task %s and started codex. It is cooking in the background.\nNext:\n%s", shortID, commandBlock(
+	shortID := taskShortID(created.Task.ID)
+	childShortID := taskShortID(taskID)
+	return fmt.Sprintf("Created task graph %s and started codex on %s. It is cooking in the background.\nNext:\n%s", shortID, childShortID, commandBlock(
 		"status",
 		"show "+shortID,
-		"review "+shortID,
+		"show "+childShortID,
 	)), nil
 }
 
@@ -2361,6 +2835,20 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 	}
 	if t.Workspace == "" {
 		return delegationRun{}, fmt.Errorf("task %s has no workspace", taskID)
+	}
+	if len(t.DependsOn) > 0 {
+		unresolved, err := o.unresolvedDependencies(t)
+		if err != nil {
+			return delegationRun{}, err
+		}
+		if len(unresolved) > 0 {
+			t.Status = taskstore.StatusBlocked
+			t.BlockedBy = unresolved
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = "blocked by graph dependencies: " + strings.Join(shortTaskIDs(unresolved), ", ")
+			_ = o.tasks.Save(t)
+			return delegationRun{}, fmt.Errorf("task %s is blocked by graph dependencies: %s", taskShortID(taskID), strings.Join(shortTaskIDs(unresolved), ", "))
+		}
 	}
 	if o.ensureTaskPlan(ctx, &t) {
 		if err := o.tasks.Save(t); err != nil {
@@ -2392,8 +2880,35 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Run relevant formatting and tests when available.",
 		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"Reviewed task plan: " + formatTaskPlanForPrompt(t.Plan),
+		"Task graph context: " + formatGraphContextForPrompt(t),
 		"Task goal: " + t.Goal,
 	}, " ")
+}
+
+func formatGraphContextForPrompt(t taskstore.Task) string {
+	if t.GraphPhase == "" && t.ParentID == "" && len(t.DependsOn) == 0 && len(t.AcceptanceCriteria) == 0 {
+		return "none"
+	}
+	var b strings.Builder
+	if t.GraphPhase != "" {
+		fmt.Fprintf(&b, "phase=%s. ", t.GraphPhase)
+	}
+	if t.ParentID != "" {
+		fmt.Fprintf(&b, "parent=%s. ", t.ParentID)
+	}
+	if len(t.DependsOn) > 0 {
+		fmt.Fprintf(&b, "depends_on=%s. ", strings.Join(t.DependsOn, ","))
+	}
+	if len(t.AcceptanceCriteria) > 0 {
+		b.WriteString("acceptance_criteria=")
+		for i, criterion := range t.AcceptanceCriteria {
+			if i > 0 {
+				b.WriteString("; ")
+			}
+			b.WriteString(criterion.Description)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func formatTaskPlanForPrompt(plan *taskstore.TaskPlan) string {
@@ -2997,6 +3512,20 @@ func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (strin
 	}
 	if t.Workspace == "" {
 		return "", fmt.Errorf("task %s has no workspace", taskID)
+	}
+	if len(t.DependsOn) > 0 {
+		unresolved, err := o.unresolvedDependencies(t)
+		if err != nil {
+			return "", err
+		}
+		if len(unresolved) > 0 {
+			t.Status = taskstore.StatusBlocked
+			t.BlockedBy = unresolved
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = "blocked by graph dependencies: " + strings.Join(shortTaskIDs(unresolved), ", ")
+			_ = o.tasks.Save(t)
+			return fmt.Sprintf("Task %s is blocked by graph dependencies: %s.", taskShortID(taskID), strings.Join(shortTaskIDs(unresolved), ", ")), nil
+		}
 	}
 	if o.provider == nil || o.model == "" {
 		return "", fmt.Errorf("no LLM provider configured")

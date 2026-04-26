@@ -62,9 +62,19 @@ export interface HomelabdTask {
   due_at?: string;
   parent_id?: string;
   context_ids?: string[];
+  depends_on?: string[];
+  blocked_by?: string[];
+  graph_phase?: string;
+  acceptance_criteria?: HomelabdAcceptanceCriterion[];
   workspace?: string;
   result?: string;
   plan?: HomelabdTaskPlan;
+}
+
+export interface HomelabdAcceptanceCriterion {
+  id: string;
+  description: string;
+  status: string;
 }
 
 export interface HomelabdTaskPlan {

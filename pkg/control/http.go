@@ -47,6 +47,7 @@ func (s *Server) Listen(ctx context.Context) error {
 }
 
 func (s *Server) register(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", s.withCORS(s.handleHealthz))
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
@@ -55,6 +56,14 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/events", s.withCORS(s.handleEvents))
 	mux.HandleFunc("/terminal/sessions", s.withCORS(s.handleTerminalSessions))
 	mux.HandleFunc("/terminal/sessions/", s.withCORS(s.handleTerminalSession))
+}
+
+func (s *Server) handleHealthz(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {

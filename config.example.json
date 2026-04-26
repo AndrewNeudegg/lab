@@ -60,7 +60,7 @@
       {
         "name": "homelabd-api",
         "type": "http",
-        "url": "http://127.0.0.1:18080/events",
+        "url": "http://127.0.0.1:18080/healthz",
         "method": "GET"
       }
     ],
@@ -113,7 +113,7 @@
         "start_order": 20,
         "auto_start": false,
         "restart": "always",
-        "health_url": "http://127.0.0.1:18080/events",
+        "health_url": "http://127.0.0.1:18080/healthz",
         "shutdown_timeout_seconds": 15
       },
       {

@@ -199,7 +199,7 @@ func (m *Matrix) syncLoop(ctx context.Context, since string, ch chan<- ChatMessa
 }
 
 func (m *Matrix) sync(ctx context.Context, since string, timeoutMS int) (matrixSyncResponse, error) {
-	path := fmt.Sprintf("/sync?timeout=%d", timeoutMS)
+	path := fmt.Sprintf("/sync?timeout=%d&filter=%s", timeoutMS, url.QueryEscape(matrixSyncFilter))
 	if since != "" {
 		path += "&since=" + url.QueryEscape(since)
 	}
@@ -207,6 +207,8 @@ func (m *Matrix) sync(ctx context.Context, since string, timeoutMS int) (matrixS
 	err := m.doJSON(ctx, http.MethodGet, path, nil, &resp)
 	return resp, err
 }
+
+const matrixSyncFilter = `{"room":{"timeline":{"limit":20}}}`
 
 func (m *Matrix) resolveRoomFromSync(resp matrixSyncResponse) {
 	if m.getRoomID() != "" {

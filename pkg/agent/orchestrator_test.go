@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -470,25 +471,55 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("task count = %d, want 1", len(tasks))
+	if len(tasks) != 7 {
+		t.Fatalf("task count = %d, want parent plus 6 child phases", len(tasks))
 	}
-	if tasks[0].Status != taskstore.StatusQueued {
-		t.Fatalf("status = %q, want queued", tasks[0].Status)
+	var parent taskstore.Task
+	var children []taskstore.Task
+	for _, task := range tasks {
+		if task.ParentID == "" {
+			parent = task
+			continue
+		}
+		children = append(children, task)
 	}
-	if tasks[0].Plan == nil {
+	if parent.ID == "" {
+		t.Fatalf("parent task not found in %#v", tasks)
+	}
+	if parent.Status != taskstore.StatusBlocked || parent.GraphPhase != "root" {
+		t.Fatalf("parent status/phase = %q/%q, want blocked/root", parent.Status, parent.GraphPhase)
+	}
+	if len(children) != 6 {
+		t.Fatalf("child count = %d, want 6", len(children))
+	}
+	sort.Slice(children, func(i, j int) bool { return children[i].Priority < children[j].Priority })
+	if children[0].Status != taskstore.StatusQueued || children[0].GraphPhase != "inspect" {
+		t.Fatalf("first child = %#v, want queued inspect phase", children[0])
+	}
+	for i, child := range children[1:] {
+		if child.Status != taskstore.StatusBlocked {
+			t.Fatalf("child %d status = %q, want blocked", i+1, child.Status)
+		}
+		if len(child.DependsOn) != 1 || child.DependsOn[0] != children[i].ID {
+			t.Fatalf("child %d depends_on = %#v, want previous child %s", i+1, child.DependsOn, children[i].ID)
+		}
+	}
+	if parent.Plan == nil {
 		t.Fatal("task plan is nil, want reviewed plan")
 	}
-	if tasks[0].Plan.Status != "reviewed" {
-		t.Fatalf("plan status = %q, want reviewed", tasks[0].Plan.Status)
+	if parent.Plan.Status != "reviewed" {
+		t.Fatalf("plan status = %q, want reviewed", parent.Plan.Status)
 	}
-	if len(tasks[0].Plan.Steps) != 4 {
-		t.Fatalf("plan step count = %d, want 4", len(tasks[0].Plan.Steps))
+	if len(parent.Plan.Steps) != 4 {
+		t.Fatalf("plan step count = %d, want 4", len(parent.Plan.Steps))
 	}
 	if !strings.Contains(reply, "Plan created and reviewed before execution") {
 		t.Fatalf("reply = %q, want plan creation note", reply)
 	}
-	want := "Next:\n```\nstatus\nrun " + tasks[0].ID + "\ndelegate " + tasks[0].ID + " <agent> <instruction>\n```"
+	if !strings.Contains(reply, "Created task graph") || !strings.Contains(reply, "Child phases:") {
+		t.Fatalf("reply = %q, want task graph summary", reply)
+	}
+	want := "Next:\n```\nstatus\nshow " + parent.ID + "\nrun " + children[0].ID + "\n```"
 	if !strings.Contains(reply, want) {
 		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
 	}
@@ -501,7 +532,7 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	}
 	var sawCreated, sawReviewed bool
 	for _, event := range events {
-		if event.TaskID != tasks[0].ID {
+		if event.TaskID != parent.ID {
 			continue
 		}
 		switch event.Type {
@@ -513,6 +544,111 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	}
 	if !sawCreated || !sawReviewed {
 		t.Fatalf("plan events created=%v reviewed=%v, want both", sawCreated, sawReviewed)
+	}
+}
+
+func TestAcceptingGraphPhaseReleasesNextChild(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if _, err := orch.Handle(context.Background(), "test", "new improve task graph execution"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspect := taskByPhase(tasks, "inspect")
+	design := taskByPhase(tasks, "design")
+	if inspect.ID == "" || design.ID == "" {
+		t.Fatalf("missing graph children in %#v", tasks)
+	}
+	reply, err := orch.acceptTask(context.Background(), inspect.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Released 1 dependent graph phase") {
+		t.Fatalf("reply = %q, want released child note", reply)
+	}
+	updatedDesign, err := orch.tasks.Load(design.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedDesign.Status != taskstore.StatusQueued || len(updatedDesign.BlockedBy) != 0 {
+		t.Fatalf("design task = %#v, want queued with no blockers", updatedDesign)
+	}
+	updatedInspect, err := orch.tasks.Load(inspect.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, criterion := range updatedInspect.AcceptanceCriteria {
+		if criterion.Status != "accepted" {
+			t.Fatalf("criterion = %#v, want accepted", criterion)
+		}
+	}
+}
+
+func TestGraphParentCompletesAfterAllChildrenAccepted(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if _, err := orch.Handle(context.Background(), "test", "new build graph parent completion"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := taskByPhase(tasks, "root")
+	var children []taskstore.Task
+	for _, task := range tasks {
+		if task.ParentID == parent.ID {
+			task.Status = taskstore.StatusDone
+			task.AcceptanceCriteria = markAcceptanceCriteria(task.AcceptanceCriteria, "accepted")
+			if err := orch.tasks.Save(task); err != nil {
+				t.Fatal(err)
+			}
+			children = append(children, task)
+		}
+	}
+	if len(children) != 6 {
+		t.Fatalf("child count = %d, want 6", len(children))
+	}
+	ok, err := orch.completeGraphParentIfReady(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("completeGraphParentIfReady returned false, want true")
+	}
+	updatedParent, err := orch.tasks.Load(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedParent.Status != taskstore.StatusDone {
+		t.Fatalf("parent status = %q, want done", updatedParent.Status)
+	}
+}
+
+func TestBlockedGraphChildCannotDelegateUntilDependencyAccepted(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if _, err := orch.Handle(context.Background(), "test", "new enforce graph dependencies"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	design := taskByPhase(tasks, "design")
+	if design.ID == "" {
+		t.Fatalf("design task not found in %#v", tasks)
+	}
+	err = orch.startDelegationForTask(context.Background(), design.ID, "codex", "start early")
+	if err == nil || !strings.Contains(err.Error(), "blocked by graph dependencies") {
+		t.Fatalf("err = %v, want blocked by graph dependencies", err)
+	}
+	updated, err := orch.tasks.Load(design.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked || len(updated.BlockedBy) == 0 {
+		t.Fatalf("task = %#v, want blocked with blockers", updated)
 	}
 }
 
@@ -574,15 +710,15 @@ func TestTaskColonCreationDoesNotListInFlight(t *testing.T) {
 	if strings.HasPrefix(reply, "In flight:") {
 		t.Fatalf("reply = %q, want task creation not status", reply)
 	}
-	if !strings.Contains(reply, "Created queued task") {
-		t.Fatalf("reply = %q, want created task", reply)
+	if !strings.Contains(reply, "Created task graph") {
+		t.Fatalf("reply = %q, want created task graph", reply)
 	}
 	tasks, err := orch.tasks.List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 2 {
-		t.Fatalf("task count = %d, want 2", len(tasks))
+	if len(tasks) != 8 {
+		t.Fatalf("task count = %d, want existing task plus parent and 6 child phases", len(tasks))
 	}
 	var created taskstore.Task
 	for _, task := range tasks {
@@ -594,8 +730,8 @@ func TestTaskColonCreationDoesNotListInFlight(t *testing.T) {
 	if created.ID == "" {
 		t.Fatalf("created task with goal %q not found in %#v", goal, tasks)
 	}
-	if created.Status != taskstore.StatusQueued {
-		t.Fatalf("status = %q, want queued", created.Status)
+	if created.Status != taskstore.StatusBlocked || created.GraphPhase != "root" {
+		t.Fatalf("status/phase = %q/%q, want blocked root graph", created.Status, created.GraphPhase)
 	}
 }
 
@@ -1549,11 +1685,12 @@ func TestReflectIncludesActionableNewTaskCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("task count = %d, want 1", len(tasks))
+	if len(tasks) != 7 {
+		t.Fatalf("task count = %d, want parent plus 6 child phases", len(tasks))
 	}
-	if tasks[0].Goal != goal {
-		t.Fatalf("task goal = %q, want %q", tasks[0].Goal, goal)
+	parent := taskByPhase(tasks, "root")
+	if parent.Goal != goal {
+		t.Fatalf("task goal = %q, want %q", parent.Goal, goal)
 	}
 }
 
@@ -1583,19 +1720,22 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("task count = %d, want 1", len(tasks))
+	if len(tasks) != 7 {
+		t.Fatalf("task count = %d, want parent plus 6 child phases", len(tasks))
 	}
-	shortID := taskShortID(tasks[0].ID)
-	want := "Next:\n```\nstatus\nshow " + shortID + "\nreview " + shortID + "\n```"
+	parent := taskByPhase(tasks, "root")
+	inspect := taskByPhase(tasks, "inspect")
+	shortID := taskShortID(parent.ID)
+	inspectShortID := taskShortID(inspect.ID)
+	want := "Next:\n```\nstatus\nshow " + shortID + "\nshow " + inspectShortID + "\n```"
 	if !strings.Contains(reply, want) {
 		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
 	}
 	if strings.Contains(reply, "`status`") {
 		t.Fatalf("reply = %q, should not inline command suggestions", reply)
 	}
-	if tasks[0].AssignedTo != "codex" {
-		t.Fatalf("AssignedTo = %q, want codex", tasks[0].AssignedTo)
+	if inspect.AssignedTo != "codex" {
+		t.Fatalf("AssignedTo = %q, want codex", inspect.AssignedTo)
 	}
 	close(releaseDelegate)
 	deadline := time.Now().Add(2 * time.Second)
@@ -1604,7 +1744,8 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(tasks) == 1 && tasks[0].AssignedTo == "OrchestratorAgent" && tasks[0].Status == taskstore.StatusReadyForReview && strings.Contains(tasks[0].Result, "done") {
+		inspect = taskByPhase(tasks, "inspect")
+		if len(tasks) == 7 && inspect.AssignedTo == "OrchestratorAgent" && inspect.Status == taskstore.StatusReadyForReview && strings.Contains(inspect.Result, "done") {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1654,10 +1795,10 @@ func TestStaleDelegateCompletionDoesNotChangeMergedOrDoneTask(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(tasks) != 1 {
-				t.Fatalf("task count = %d, want 1", len(tasks))
+			if len(tasks) != 7 {
+				t.Fatalf("task count = %d, want parent plus 6 child phases", len(tasks))
 			}
-			task := tasks[0]
+			task := taskByPhase(tasks, "inspect")
 			task.Status = tt.status
 			task.AssignedTo = "OrchestratorAgent"
 			task.Result = tt.result
@@ -1975,6 +2116,15 @@ func waitForTaskStatus(t *testing.T, orch *Orchestrator, taskID, status string) 
 		t.Fatal(err)
 	}
 	t.Fatalf("task status = %q, want %q", updated.Status, status)
+}
+
+func taskByPhase(tasks []taskstore.Task, phase string) taskstore.Task {
+	for _, task := range tasks {
+		if task.GraphPhase == phase {
+			return task
+		}
+	}
+	return taskstore.Task{}
 }
 
 type delegateStub struct {

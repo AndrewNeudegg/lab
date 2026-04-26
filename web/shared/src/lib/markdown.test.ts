@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { renderMarkdown } from './markdown';
+import { createMarkdownHeadingSlugger, renderMarkdown, slugifyMarkdownHeading } from './markdown';
 
 describe('renderMarkdown', () => {
   test('renders paragraphs with soft line breaks', () => {
@@ -21,6 +21,25 @@ describe('renderMarkdown', () => {
   test('renders lists, headings, quotes, and links', () => {
     expect(renderMarkdown('# Title\n\n- [docs](/docs)\n- item\n\n> quoted')).toBe(
       '<h1>Title</h1><ul><li><a href="/docs" rel="noreferrer">docs</a></li><li>item</li></ul><blockquote><p>quoted</p></blockquote>'
+    );
+  });
+
+  test('adds stable unique heading ids when requested', () => {
+    expect(renderMarkdown('## Task Flow\n\n### Task Flow', { headingIds: true })).toBe(
+      '<h2 id="task-flow">Task Flow</h2><h3 id="task-flow-2">Task Flow</h3>'
+    );
+  });
+
+  test('slugifies markdown headings consistently', () => {
+    const slug = createMarkdownHeadingSlugger();
+    expect(slugifyMarkdownHeading('Use `run` and [review](/docs)')).toBe('use-run-and-review');
+    expect(slug('Use `run`')).toBe('use-run');
+    expect(slug('Use run')).toBe('use-run-2');
+  });
+
+  test('renders raw URLs and images safely', () => {
+    expect(renderMarkdown('See https://example.com/docs.\n\n![Alt <x>](/shot.png)')).toBe(
+      '<p>See <a href="https://example.com/docs" rel="noreferrer">https://example.com/docs</a>.</p><p><img src="/shot.png" alt="Alt &lt;x&gt;" loading="lazy"></p>'
     );
   });
 

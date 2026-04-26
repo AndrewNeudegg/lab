@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "uat:chat-markdown": "bun scripts/chat-markdown-uat.mjs",
+    "uat:docs": "playwright test e2e/docs-library.spec.ts",
     "uat:tasks": "bun scripts/tasks-page-uat.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "e2e": "playwright test"

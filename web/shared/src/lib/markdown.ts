@@ -16,28 +16,82 @@ const sanitizeHref = (href: string) => {
   return '#';
 };
 
+export type MarkdownRenderOptions = {
+  headingIds?: boolean;
+};
+
+export const slugifyMarkdownHeading = (value: string) => {
+  const slug = value
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/!\[([^\]\n]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]\n]+)\]\([^)]+\)/g, '$1')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || 'section';
+};
+
+export const createMarkdownHeadingSlugger = () => {
+  const seen = new Map<string, number>();
+
+  return (value: string) => {
+    const base = slugifyMarkdownHeading(value);
+    const count = seen.get(base) || 0;
+    seen.set(base, count + 1);
+    return count === 0 ? base : `${base}-${count + 1}`;
+  };
+};
+
+const createHtmlToken = (tokens: string[], html: string) => {
+  const token = `\u0000HTML${tokens.length}\u0000`;
+  tokens.push(html);
+  return token;
+};
+
 const renderInlineMarkdown = (value: string): string => {
   const codeSpans: string[] = [];
+  const htmlTokens: string[] = [];
   let rendered = value.replace(/`([^`\n]+)`/g, (_match, code: string) => {
     const token = `\u0000CODE${codeSpans.length}\u0000`;
     codeSpans.push(`<code>${escapeHtml(code)}</code>`);
     return token;
   });
 
-  rendered = escapeHtml(rendered);
+  rendered = rendered.replace(
+    /!\[([^\]\n]*)\]\(([^ \n]+)\)/g,
+    (_match, alt: string, src: string) =>
+      createHtmlToken(
+        htmlTokens,
+        `<img src="${escapeAttribute(sanitizeHref(src))}" alt="${escapeAttribute(alt)}" loading="lazy">`
+      )
+  );
   rendered = rendered.replace(
     /\[([^\]\n]+)\]\(([^ \n]+)\)/g,
     (_match, label: string, href: string) =>
-      `<a href="${escapeAttribute(sanitizeHref(href))}" rel="noreferrer">${label}</a>`
+      createHtmlToken(
+        htmlTokens,
+        `<a href="${escapeAttribute(sanitizeHref(href))}" rel="noreferrer">${escapeHtml(label)}</a>`
+      )
   );
+  rendered = escapeHtml(rendered);
   rendered = rendered.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   rendered = rendered.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
   rendered = rendered.replace(/(^|[\s([])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   rendered = rendered.replace(/(^|[\s([])_([^_\n]+)_/g, '$1<em>$2</em>');
+  rendered = rendered.replace(/https?:\/\/[^\s<]+[^\s<.,;:!?")\]]/g, (url) => {
+    const href = url.replaceAll('&amp;', '&');
+    return `<a href="${escapeAttribute(sanitizeHref(href))}" rel="noreferrer">${url}</a>`;
+  });
+
+  const withHtmlTokens = htmlTokens.reduce(
+    (current, html, index) => current.replace(`\u0000HTML${index}\u0000`, html),
+    rendered
+  );
 
   return codeSpans.reduce(
     (current, code, index) => current.replace(`\u0000CODE${index}\u0000`, code),
-    rendered
+    withHtmlTokens
   );
 };
 
@@ -46,10 +100,11 @@ type ListState = {
   items: string[];
 };
 
-export const renderMarkdown = (source: string) => {
+export const renderMarkdown = (source: string, options: MarkdownRenderOptions = {}) => {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const blocks: string[] = [];
   const paragraph: string[] = [];
+  const headingSlug = createMarkdownHeadingSlugger();
   let list: ListState | undefined;
   let quote: string[] = [];
   let fenceLanguage = '';
@@ -131,7 +186,8 @@ export const renderMarkdown = (source: string) => {
     if (headingMatch) {
       flushTextBlocks();
       const level = headingMatch[1].length;
-      blocks.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+      const id = options.headingIds ? ` id="${escapeAttribute(headingSlug(headingMatch[2]))}"` : '';
+      blocks.push(`<h${level}${id}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
       continue;
     }
 

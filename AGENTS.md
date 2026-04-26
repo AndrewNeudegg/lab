@@ -6,3 +6,5 @@
 - If the app is served by `supervisord`, restart the affected app before browser UAT so the test is hitting the new bundle.
 - Add automated regression coverage for fixed bugs. Prefer extracting pure view/state logic into testable modules instead of only adding source-string assertions.
 - A final handoff for UI changes must say which browser/UAT command ran and what interaction it verified.
+- Documentation must be written and kept in sync with behaviour, commands, UI, configuration, tools, and workflows in the same change. If no docs update is needed, state why in the handoff.
+- Documentation is for humans and LLMs. Keep it concise, use British spelling, and emphasise discoverability and usability with clear titles, searchable terms, related links, and current examples.

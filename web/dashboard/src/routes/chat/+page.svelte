@@ -377,6 +377,7 @@
   .message {
     display: grid;
     gap: 0.45rem;
+    min-width: 0;
     max-width: min(48rem, 92%);
     padding: 0.85rem 0.95rem;
     border: 1px solid #e2e8f0;

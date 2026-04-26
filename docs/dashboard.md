@@ -92,6 +92,8 @@ If a component does not answer one of those questions, it should not be in the p
 
 ## Status Semantics
 
+- Queued: the task exists with an isolated worktree and is waiting for the task supervisor to assign a worker.
+- Running: an in-memory worker is active, or homelabd recovered a persisted running task and restarted a worker.
 - Red: failed or blocked. Needs intervention.
 - Amber: ready for review, awaiting approval, or awaiting verification. Needs a human decision.
 - Blue: queued or running. Work is active.
@@ -99,6 +101,16 @@ If a component does not answer one of those questions, it should not be in the p
 - Gray: unknown or neutral state.
 
 Do not rely on color alone. Always show the status text next to the colored indicator.
+
+## Task Supervisor
+
+`homelabd` owns task liveness; the UI should not make the operator babysit worker state.
+
+- New tasks start as `queued`, not `running`, until a worker is actually assigned.
+- The task supervisor periodically scans the durable task store and starts queued work with the preferred external worker, currently `codex` when configured.
+- On boot, persisted `running` tasks are recovered because in-memory worker state cannot survive a process restart.
+- During normal operation, stale `running` tasks with no in-memory owner are retried after `limits.task_stale_seconds`.
+- Supervisor activity is logged with `slog` and appended to the event log using `task.supervisor.*` or `task.recovery.*` events.
 
 ## Mobile Behavior
 

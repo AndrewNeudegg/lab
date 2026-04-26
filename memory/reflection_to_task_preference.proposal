@@ -1,0 +1,1 @@
+User preference: When they ask for reflection (e.g., "reflect on our recent interaction"), they want the reflection framed so it can be turned directly into a new task. Assistant should: (1) include 1–2 concrete, actionable improvement items, and (2) phrase them so the user can easily say something like "new <goal>" or "create a task to <goal>" to act on them.

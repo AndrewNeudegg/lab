@@ -44,6 +44,8 @@ type LimitsConfig struct {
 	MaxToolCallsPerTurn int   `json:"max_tool_calls_per_turn"`
 	MaxShellSeconds     int   `json:"max_shell_seconds"`
 	MaxFileBytes        int64 `json:"max_file_bytes"`
+	TaskWatchdogSeconds int   `json:"task_watchdog_seconds"`
+	TaskStaleSeconds    int   `json:"task_stale_seconds"`
 }
 
 type HTTPConfig struct {
@@ -182,6 +184,8 @@ func Default() Config {
 			MaxToolCallsPerTurn: 12,
 			MaxShellSeconds:     60,
 			MaxFileBytes:        1 << 20,
+			TaskWatchdogSeconds: 30,
+			TaskStaleSeconds:    300,
 		},
 		DataDir: "data",
 		HTTP:    HTTPConfig{Addr: "127.0.0.1:18080"},
@@ -295,6 +299,12 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Limits.MaxFileBytes == 0 {
 		c.Limits.MaxFileBytes = d.Limits.MaxFileBytes
+	}
+	if c.Limits.TaskWatchdogSeconds == 0 {
+		c.Limits.TaskWatchdogSeconds = d.Limits.TaskWatchdogSeconds
+	}
+	if c.Limits.TaskStaleSeconds == 0 {
+		c.Limits.TaskStaleSeconds = d.Limits.TaskStaleSeconds
 	}
 	if c.DataDir == "" {
 		c.DataDir = d.DataDir

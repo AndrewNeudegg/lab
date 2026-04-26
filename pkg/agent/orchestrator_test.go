@@ -314,7 +314,10 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("task count = %d, want 1", len(tasks))
 	}
-	want := "Next:\n```\nrun " + tasks[0].ID + "\ndelegate " + tasks[0].ID + " <agent> <instruction>\nreview " + tasks[0].ID + "\n```"
+	if tasks[0].Status != taskstore.StatusQueued {
+		t.Fatalf("status = %q, want queued", tasks[0].Status)
+	}
+	want := "Next:\n```\nstatus\nrun " + tasks[0].ID + "\ndelegate " + tasks[0].ID + " <agent> <instruction>\n```"
 	if !strings.Contains(reply, want) {
 		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
 	}
@@ -512,11 +515,11 @@ func TestReopenTaskMovesBackToRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != taskstore.StatusRunning {
-		t.Fatalf("status = %q, want running", updated.Status)
+	if updated.Status != taskstore.StatusQueued {
+		t.Fatalf("status = %q, want queued", updated.Status)
 	}
-	if updated.AssignedTo != "CoderAgent" {
-		t.Fatalf("AssignedTo = %q, want CoderAgent", updated.AssignedTo)
+	if updated.AssignedTo != "OrchestratorAgent" {
+		t.Fatalf("AssignedTo = %q, want OrchestratorAgent", updated.AssignedTo)
 	}
 	if !strings.Contains(updated.Result, "scroll still jumps") {
 		t.Fatalf("Result = %q, want reopen reason", updated.Result)
@@ -549,8 +552,8 @@ func TestReopenTaskAcceptsBareReasonAfterID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != taskstore.StatusRunning {
-		t.Fatalf("status = %q, want running", updated.Status)
+	if updated.Status != taskstore.StatusQueued {
+		t.Fatalf("status = %q, want queued", updated.Status)
 	}
 	if !strings.Contains(updated.Result, "needs rework") {
 		t.Fatalf("Result = %q, want reopen reason", updated.Result)
@@ -747,6 +750,104 @@ func TestRecoverRunningTasksSkipsNonRunningTasks(t *testing.T) {
 	}
 }
 
+func TestReconcileQueuedTasksStartsWorker(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	now := time.Now().UTC()
+	taskID := "task_20260426_010000_a927493f"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "action reflection into task",
+		Goal:       "action reflection into task",
+		Status:     taskstore.StatusQueued,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconciled count = %d, want 1", count)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued task was not delegated")
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" {
+		t.Fatalf("task = %#v, want running codex task", updated)
+	}
+	close(releaseDelegate)
+	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+}
+
+func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	orch.cfg.Limits.TaskStaleSeconds = 1
+	taskID := "task_20260425_235939_a927493f"
+	staleTask := taskstore.Task{
+		ID:         taskID,
+		Title:      "reflection task action",
+		Goal:       "reflection task action",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "CoderAgent",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		CreatedAt:  time.Now().UTC().Add(-time.Hour),
+		UpdatedAt:  time.Now().UTC().Add(-time.Hour),
+	}
+	if err := orch.tasks.Save(staleTask); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(staleTask, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orch.cfg.DataDir, "tasks", taskID+".json"), append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconciled count = %d, want 1", count)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale task was not delegated")
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" {
+		t.Fatalf("task = %#v, want stale task reassigned to codex", updated)
+	}
+	close(releaseDelegate)
+	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+}
+
 func TestReviewNoDiffBlocksTask(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(noDiffStub{}); err != nil {
@@ -811,6 +912,26 @@ func assertContainsLLMMessage(t *testing.T, messages []llm.Message, want llm.Mes
 		}
 	}
 	t.Fatalf("messages = %#v, want to contain %#v", messages, want)
+}
+
+func waitForTaskStatus(t *testing.T, orch *Orchestrator, taskID, status string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		updated, err := orch.tasks.Load(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Status == status {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("task status = %q, want %q", updated.Status, status)
 }
 
 type delegateStub struct {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrewneudegg/lab/pkg/config"
@@ -30,6 +31,8 @@ type Orchestrator struct {
 	provider  llm.Provider
 	model     string
 	logger    *slog.Logger
+	activeMu  sync.Mutex
+	active    map[string]string
 }
 
 type agentResponse struct {
@@ -60,7 +63,7 @@ type HandleResult struct {
 }
 
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
-	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model, logger: slog.Default()}
+	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model, logger: slog.Default(), active: make(map[string]string)}
 }
 
 func (o *Orchestrator) WithLogger(logger *slog.Logger) *Orchestrator {
@@ -75,6 +78,32 @@ func (o *Orchestrator) log() *slog.Logger {
 		return o.logger
 	}
 	return slog.Default()
+}
+
+func (o *Orchestrator) markTaskActive(taskID, worker string) bool {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	if o.active == nil {
+		o.active = make(map[string]string)
+	}
+	if _, ok := o.active[taskID]; ok {
+		return false
+	}
+	o.active[taskID] = worker
+	return true
+}
+
+func (o *Orchestrator) clearTaskActive(taskID string) {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	delete(o.active, taskID)
+}
+
+func (o *Orchestrator) taskActive(taskID string) bool {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	_, ok := o.active[taskID]
+	return ok
 }
 
 func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string, error) {
@@ -576,7 +605,37 @@ const (
 	recoveryDelegate recoveryStrategy = "delegate"
 )
 
+func (o *Orchestrator) StartTaskSupervisor(ctx context.Context) {
+	interval := time.Duration(o.cfg.Limits.TaskWatchdogSeconds) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				o.log().Info("task supervisor stopped", "error", ctx.Err())
+				return
+			case <-ticker.C:
+				if _, err := o.ReconcileTasks(ctx); err != nil {
+					o.log().Error("task supervisor reconcile failed", "error", err)
+				}
+			}
+		}
+	}()
+}
+
 func (o *Orchestrator) RecoverRunningTasks(ctx context.Context) (int, error) {
+	return o.reconcileTasks(ctx, true)
+}
+
+func (o *Orchestrator) ReconcileTasks(ctx context.Context) (int, error) {
+	return o.reconcileTasks(ctx, false)
+}
+
+func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning bool) (int, error) {
 	tasks, err := o.tasks.List()
 	if err != nil {
 		o.log().Error("task recovery list failed", "error", err)
@@ -588,8 +647,38 @@ func (o *Orchestrator) RecoverRunningTasks(ctx context.Context) (int, error) {
 	}
 	sem := make(chan struct{}, maxConcurrent)
 	recovered := 0
+	now := time.Now().UTC()
 	for _, t := range tasks {
+		if taskTerminal(t.Status) || o.taskActive(t.ID) {
+			continue
+		}
+		if t.Status == taskstore.StatusQueued {
+			backend, ok := o.preferredWorkerBackend()
+			if !ok {
+				o.log().Warn("queued task has no configured worker", "task_id", t.ID, "task_short_id", taskShortID(t.ID), "title", friendlyTaskTitle(t))
+				continue
+			}
+			recovered++
+			o.log().Info("task supervisor starting queued task",
+				"task_id", t.ID,
+				"task_short_id", taskShortID(t.ID),
+				"title", friendlyTaskTitle(t),
+				"backend", backend,
+				"workspace", t.Workspace,
+			)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.supervisor.queued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+				"backend": backend,
+				"reason":  "queued task picked up by task supervisor",
+			})})
+			if err := o.startDelegationForTask(ctx, t.ID, backend, defaultDelegationInstruction(t)); err != nil {
+				o.markRecoveryBlocked(ctx, t.ID, err)
+			}
+			continue
+		}
 		if t.Status != taskstore.StatusRunning {
+			continue
+		}
+		if !recoverAllRunning && !o.runningTaskStale(t, now) {
 			continue
 		}
 		recovered++
@@ -603,21 +692,52 @@ func (o *Orchestrator) RecoverRunningTasks(ctx context.Context) (int, error) {
 			"strategy", string(strategy),
 			"backend", backend,
 			"updated_at", t.UpdatedAt,
+			"recover_all_running", recoverAllRunning,
 		)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.queued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
 			"assigned_to": t.AssignedTo,
 			"strategy":    string(strategy),
 			"backend":     backend,
-			"reason":      "homelabd started with task persisted as running",
+			"reason":      recoveryReason(recoverAllRunning),
 		})})
 		go o.resumeRecoveredTask(ctx, sem, t, strategy, backend)
 	}
 	if recovered == 0 {
-		o.log().Info("task recovery found no persisted running tasks")
+		o.log().Info("task supervisor found no tasks requiring recovery")
 	} else {
 		o.log().Info("task recovery queued persisted running tasks", "count", recovered, "max_concurrent", maxConcurrent)
 	}
 	return recovered, nil
+}
+
+func recoveryReason(recoverAllRunning bool) string {
+	if recoverAllRunning {
+		return "homelabd started with task persisted as running"
+	}
+	return "running task is stale and no in-memory worker owns it"
+}
+
+func (o *Orchestrator) runningTaskStale(t taskstore.Task, now time.Time) bool {
+	threshold := time.Duration(o.cfg.Limits.TaskStaleSeconds) * time.Second
+	if threshold <= 0 {
+		threshold = 5 * time.Minute
+	}
+	if t.UpdatedAt.IsZero() {
+		return true
+	}
+	return now.Sub(t.UpdatedAt) >= threshold
+}
+
+func (o *Orchestrator) preferredWorkerBackend() (string, bool) {
+	if cfg, ok := o.cfg.ExternalAgents["codex"]; ok && cfg.Enabled && strings.TrimSpace(cfg.Command) != "" {
+		return "codex", true
+	}
+	for _, name := range []string{"claude", "gemini"} {
+		if cfg, ok := o.cfg.ExternalAgents[name]; ok && cfg.Enabled && strings.TrimSpace(cfg.Command) != "" {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 func (o *Orchestrator) recoveryPlan(t taskstore.Task) (recoveryStrategy, string) {
@@ -626,8 +746,13 @@ func (o *Orchestrator) recoveryPlan(t taskstore.Task) (recoveryStrategy, string)
 		return recoveryDelegate, assigned
 	}
 	if assigned == "" || assigned == "orchestratoragent" {
-		if cfg, ok := o.cfg.ExternalAgents["codex"]; ok && cfg.Enabled && strings.TrimSpace(cfg.Command) != "" {
-			return recoveryDelegate, "codex"
+		if backend, ok := o.preferredWorkerBackend(); ok {
+			return recoveryDelegate, backend
+		}
+	}
+	if assigned == "coderagent" {
+		if backend, ok := o.preferredWorkerBackend(); ok {
+			return recoveryDelegate, backend
 		}
 	}
 	return recoveryCoder, ""
@@ -655,11 +780,17 @@ func (o *Orchestrator) resumeRecoveredTask(ctx context.Context, sem chan struct{
 
 	switch strategy {
 	case recoveryDelegate:
+		if !o.markTaskActive(t.ID, backend) {
+			o.log().Info("task recovery skipped because task is already active", "task_id", t.ID, "backend", backend)
+			return
+		}
 		run, err := o.prepareDelegationForTask(ctx, t.ID, backend, recoveredDelegationInstruction(t))
 		if err != nil {
+			o.clearTaskActive(t.ID)
 			o.markRecoveryBlocked(ctx, t.ID, err)
 			return
 		}
+		defer o.clearTaskActive(run.TaskID)
 		o.runDelegation(ctx, run.ID, run.TaskID, run.Backend, run.Workspace, run.Instruction)
 	case recoveryCoder:
 		_, err := o.runCoderTask(ctx, t.ID)
@@ -1027,10 +1158,10 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 		return "usage: new <goal>", nil
 	}
 	t := created.Task
-	return fmt.Sprintf("Created task %s.\nWorkspace: %s\nBranch: %s\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
+	return fmt.Sprintf("Created queued task %s.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
+		"status",
 		"run "+t.ID,
 		"delegate "+t.ID+" <agent> <instruction>",
-		"review "+t.ID,
 	)), nil
 }
 
@@ -1048,7 +1179,7 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 		return createdTask{}, nil
 	}
 	now := time.Now().UTC()
-	t := taskstore.Task{ID: id.New("task"), Title: firstLine(goal), Goal: goal, Status: taskstore.StatusRunning, AssignedTo: "CoderAgent", Priority: 5, CreatedAt: now, UpdatedAt: now}
+	t := taskstore.Task{ID: id.New("task"), Title: firstLine(goal), Goal: goal, Status: taskstore.StatusQueued, AssignedTo: "OrchestratorAgent", Priority: 5, CreatedAt: now, UpdatedAt: now, Result: "queued for task supervisor"}
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_create", map[string]any{"task_id": t.ID}, t.ID)
 	if err != nil {
 		t.Status = taskstore.StatusFailed
@@ -1066,7 +1197,6 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 		return createdTask{}, err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(t)})
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.assigned", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"agent": "CoderAgent"})})
 	return createdTask{Task: t, Branch: out.Branch}, nil
 }
 
@@ -1239,8 +1369,8 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 	} else {
 		reason = "reopened by human: " + reason
 	}
-	t.Status = taskstore.StatusRunning
-	t.AssignedTo = "CoderAgent"
+	t.Status = taskstore.StatusQueued
+	t.AssignedTo = "OrchestratorAgent"
 	if strings.TrimSpace(t.Result) == "" {
 		t.Result = reason
 	} else {
@@ -1257,7 +1387,7 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 	if instruction == "" {
 		instruction = "continue the reopened task"
 	}
-	return fmt.Sprintf("Reopened %s.\nNext: `delegate %s to codex %s`, `run %s`, or `review %s`.", shortID, shortID, instruction, shortID, shortID), nil
+	return fmt.Sprintf("Reopened %s and queued it for the task supervisor.\nNext: `status`, `delegate %s to codex %s`, or `run %s`.", shortID, shortID, instruction, shortID), nil
 }
 
 func usageNotesFromResult(result string) string {
@@ -1479,6 +1609,13 @@ func (o *Orchestrator) delegateTask(ctx context.Context, selector, backend, inst
 		return "", err
 	}
 	if err := o.startDelegationForTask(context.Background(), taskID, backend, instruction); err != nil {
+		if strings.Contains(err.Error(), "already running") {
+			shortID := taskShortID(taskID)
+			return fmt.Sprintf("Task %s is already running.\nNext:\n%s", shortID, commandBlock(
+				"status",
+				"show "+shortID,
+			)), nil
+		}
 		return "", err
 	}
 	shortID := taskShortID(taskID)
@@ -1571,11 +1708,18 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 }
 
 func (o *Orchestrator) startDelegationForTask(ctx context.Context, taskID, backend, instruction string) error {
+	if !o.markTaskActive(taskID, backend) {
+		return fmt.Errorf("task %s is already running", taskID)
+	}
 	run, err := o.prepareDelegationForTask(ctx, taskID, backend, instruction)
 	if err != nil {
+		o.clearTaskActive(taskID)
 		return err
 	}
-	go o.runDelegation(ctx, run.ID, run.TaskID, run.Backend, run.Workspace, run.Instruction)
+	go func() {
+		defer o.clearTaskActive(run.TaskID)
+		o.runDelegation(ctx, run.ID, run.TaskID, run.Backend, run.Workspace, run.Instruction)
+	}()
 	return nil
 }
 
@@ -1972,6 +2116,10 @@ func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (strin
 	if err != nil {
 		return "", err
 	}
+	if !o.markTaskActive(taskID, "CoderAgent") {
+		return fmt.Sprintf("Task %s is already running. Use `show %s` or `status` for progress.", taskShortID(taskID), taskShortID(taskID)), nil
+	}
+	defer o.clearTaskActive(taskID)
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err

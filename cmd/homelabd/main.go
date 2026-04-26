@@ -66,6 +66,7 @@ func main() {
 	if _, err := orch.RecoverRunningTasks(ctx); err != nil {
 		fatal(err)
 	}
+	orch.StartTaskSupervisor(ctx)
 	switch *mode {
 	case "stdio":
 		runStdio(ctx, cfg, orch)

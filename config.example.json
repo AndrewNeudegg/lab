@@ -38,7 +38,9 @@
     "max_concurrent_tasks": 4,
     "max_tool_calls_per_turn": 12,
     "max_shell_seconds": 60,
-    "max_file_bytes": 1048576
+    "max_file_bytes": 1048576,
+    "task_watchdog_seconds": 30,
+    "task_stale_seconds": 300
   },
   "data_dir": "data",
   "http": {

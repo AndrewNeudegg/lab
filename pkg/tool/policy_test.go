@@ -59,6 +59,16 @@ func TestOrchestratorCanRemoveTaskWorkspace(t *testing.T) {
 	}
 }
 
+func TestOrchestratorCanRequestApprovalGatedGitWorkflow(t *testing.T) {
+	policy := NewPolicy(nil)
+	for _, name := range []string{"git.commit", "git.revert", "git.merge"} {
+		decision := policy.Decide("OrchestratorAgent", stubTool{name: name, risk: RiskHigh}, json.RawMessage(`{"dir":"/tmp/workspaces/task_123","target":"repo"}`))
+		if !decision.Allowed || !decision.NeedsApproval {
+			t.Fatalf("expected OrchestratorAgent %s to be allowed with approval: %+v", name, decision)
+		}
+	}
+}
+
 func TestAgentsCanUseInternetReadTools(t *testing.T) {
 	policy := NewPolicy(nil)
 	for _, agent := range []string{"OrchestratorAgent", "CoderAgent", "ResearchAgent", "ReviewerAgent"} {

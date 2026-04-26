@@ -48,3 +48,15 @@ Final task summaries should include:
 - validation run
 - how to use the change
 - docs updated, or why no docs change was needed
+
+## Git Agent Tools
+
+Agents can inspect repository state with `git.status`, `git.diff`, `git.branch`, `git.describe`, `git.log`, and `git.show`.
+
+Write workflow tools are available for explicit git operations:
+
+- `git.commit` stages selected paths or all changes and creates a commit
+- `git.revert` reverts a commit, optionally with `--no-commit`
+- `git.merge` merges a branch or commit into the current branch
+
+These write tools are high-risk and approval-gated by default. Task review still uses `git.merge_approved` for the normal reviewed-task merge path.

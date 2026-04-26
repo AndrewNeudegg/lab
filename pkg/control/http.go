@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +24,9 @@ type Server struct {
 	Orchestrator *agent.Orchestrator
 	ChatLogDir   string
 
-	logMu sync.Mutex
+	logMu      sync.Mutex
+	terminalMu sync.Mutex
+	terminal   *terminalManager
 }
 
 func (s *Server) Listen(ctx context.Context) error {
@@ -50,19 +53,30 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/approvals", s.withCORS(s.handleApprovals))
 	mux.HandleFunc("/approvals/", s.withCORS(s.handleApproval))
 	mux.HandleFunc("/events", s.withCORS(s.handleEvents))
+	mux.HandleFunc("/terminal/sessions", s.withCORS(s.handleTerminalSessions))
+	mux.HandleFunc("/terminal/sessions/", s.withCORS(s.handleTerminalSession))
 }
 
 func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, req *http.Request) {
 		rw.Header().Set("Access-Control-Allow-Origin", "*")
 		rw.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		rw.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		rw.Header().Set("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
 		if req.Method == http.MethodOptions {
 			rw.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next(rw, req)
 	}
+}
+
+func (s *Server) terminals() *terminalManager {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	if s.terminal == nil {
+		s.terminal = newTerminalManager()
+	}
+	return s.terminal
 }
 
 func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
@@ -284,6 +298,140 @@ func (s *Server) handleEvents(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 	writeJSON(rw, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *Server) handleTerminalSessions(rw http.ResponseWriter, req *http.Request) {
+	if req.URL.Path != "/terminal/sessions" {
+		writeError(rw, http.StatusNotFound, "terminal session not found")
+		return
+	}
+	if req.Method != http.MethodPost {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var in struct {
+		CWD string `json:"cwd"`
+	}
+	if req.Body != nil {
+		_ = json.NewDecoder(req.Body).Decode(&in)
+	}
+	session, err := s.terminals().create(in.CWD)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusCreated, map[string]any{
+		"id":         session.id,
+		"shell":      session.shell,
+		"cwd":        session.cwd,
+		"created_at": session.created,
+	})
+}
+
+func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request) {
+	rest := strings.TrimPrefix(req.URL.Path, "/terminal/sessions/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(rw, http.StatusNotFound, "terminal session id required")
+		return
+	}
+	if len(parts) == 1 && req.Method == http.MethodDelete {
+		if !s.terminals().close(parts[0]) {
+			writeError(rw, http.StatusNotFound, "terminal session not found")
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"closed": true})
+		return
+	}
+	if len(parts) != 2 {
+		writeError(rw, http.StatusNotFound, "terminal action not found")
+		return
+	}
+	session, ok := s.terminals().get(parts[0])
+	if !ok {
+		writeError(rw, http.StatusNotFound, "terminal session not found")
+		return
+	}
+	switch parts[1] {
+	case "events":
+		if req.Method != http.MethodGet {
+			writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.streamTerminalEvents(rw, req, session)
+	case "input":
+		if req.Method != http.MethodPost {
+			writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var in struct {
+			Data string `json:"data"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := session.write(in.Data); err != nil {
+			writeError(rw, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"ok": true})
+	case "signal":
+		if req.Method != http.MethodPost {
+			writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var in struct {
+			Signal string `json:"signal"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := session.signal(in.Signal); err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeError(rw, http.StatusNotFound, "terminal action not found")
+	}
+}
+
+func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request, session *terminalSession) {
+	flusher, ok := rw.(http.Flusher)
+	if !ok {
+		writeError(rw, http.StatusInternalServerError, "streaming is not supported")
+		return
+	}
+	rw.Header().Set("Content-Type", "text/event-stream")
+	rw.Header().Set("Cache-Control", "no-cache")
+	rw.Header().Set("Connection", "keep-alive")
+
+	events := session.subscribe()
+	defer session.unsubscribe(events)
+
+	fmt.Fprintf(rw, "event: ready\ndata: {}\n\n")
+	flusher.Flush()
+	for {
+		select {
+		case <-req.Context().Done():
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			b, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(rw, "event: %s\ndata: %s\n\n", event.Type, b)
+			flusher.Flush()
+			if event.Type == "exit" {
+				return
+			}
+		}
+	}
 }
 
 func writeJSON(rw http.ResponseWriter, status int, v any) {

@@ -1,9 +1,10 @@
 # Dashboard
 
-The dashboard has two primary operator surfaces:
+The dashboard has these primary operator surfaces:
 
 - `/chat`: global conversation, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
+- `/terminal`: browser terminal backed by a homelabd shell session for direct operator commands.
 - `/supervisord`: supervised application status and start, stop, restart controls.
 - `/healthd`: healthd service status, system utilization, checks, SLOs, and notifications.
 
@@ -17,7 +18,7 @@ Use the shared responsive navbar on every dashboard page.
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Chat`, `Tasks`, `Supervisor`, and `Health`.
+- Keep top-level destinations flat: `Chat`, `Tasks`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 
 ## Research Inputs
@@ -126,6 +127,14 @@ On compact screens `/tasks` stacks:
 The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Task selection itself must not hide the queue: the operator should still see queue position, counts, and nearby work after tapping a row. The `Hide queue` / `Show queue` control is a manual escape hatch when the selected-task record needs more vertical room.
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
+
+On compact screens `/terminal` keeps the shell output as the primary scroll area and places large control-key buttons above the command composer. Include controls for keys commonly missing or awkward on Android keyboards, including `Ctrl-C`, `Ctrl-D`, `Ctrl-Z`, `Tab`, `Esc`, and arrow keys.
+
+## Terminal Runtime
+
+The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts the user's shell in the homelabd working directory, using the system `script` utility as a pseudo-terminal wrapper when available so control keys behave like a terminal. It streams shell output with Server-Sent Events, sends command input with `POST /terminal/sessions/{id}/input`, and sends interrupt/suspend/terminate actions with `POST /terminal/sessions/{id}/signal`.
+
+This is an operator shell. Run it only where the homelabd HTTP API is already trusted, because anyone who can reach the endpoint can execute commands as the homelabd process user.
 
 ## Healthd Runtime
 

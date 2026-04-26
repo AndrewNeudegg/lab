@@ -29,9 +29,11 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).not.toContain('on:click={() => (taskFilter = filter.id as TaskFilter)}');
   });
 
-  test('does not collapse the task queue after desktop task selection', () => {
-    expect(pageSource).toContain("window.matchMedia('(max-width: 760px)').matches");
-    expect(pageSource).not.toContain('selectedTaskId = id;\\n    taskQueueOpen = false;');
+  test('does not hide the queue when a task is selected', () => {
+    expect(pageSource).toContain('const selectTask = (id: string) =>');
+    expect(pageSource).toContain('selectedTaskId = id;');
+    expect(pageSource).not.toContain('taskQueueOpen = false;');
+    expect(pageSource).not.toContain("window.matchMedia('(max-width: 760px)').matches");
   });
 
   test('keeps the command panel operable when collapsed', () => {
@@ -50,5 +52,13 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('Expected transition:');
     expect(pageSource).toContain('It will not restart a worker automatically.');
     expect(pageSource).toContain('A worker currently owns this task.');
+  });
+
+  test('caps the mobile queue above the selected task record', () => {
+    expect(pageSource).toContain('height: auto;');
+    expect(pageSource).toContain('max-height: min(54dvh, 28rem);');
+    expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr);');
+    expect(pageSource).toContain('.task-pane.collapsed');
+    expect(pageSource).toContain('position: sticky;');
   });
 });

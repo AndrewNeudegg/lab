@@ -541,9 +541,6 @@
 
   const selectTask = (id: string) => {
     selectedTaskId = id;
-    if (window.matchMedia('(max-width: 760px)').matches) {
-      taskQueueOpen = false;
-    }
   };
 
   const setTaskFilter = (filter: TaskFilter) => {
@@ -1796,9 +1793,15 @@
       overflow: auto;
     }
 
+    .tasks-page {
+      height: auto;
+      min-height: 100dvh;
+      grid-template-rows: auto auto;
+    }
+
     .shell {
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
       min-height: 0;
       height: auto;
       overflow: visible;
@@ -1811,13 +1814,20 @@
 
     .task-pane {
       display: grid;
-      max-height: 64dvh;
+      max-height: min(54dvh, 28rem);
+      padding: 0.75rem;
       border-right: 0;
       border-bottom: 1px solid #dde4ef;
+      overflow: hidden;
     }
 
     .task-header {
       align-items: flex-start;
+      gap: 0.6rem;
+    }
+
+    .task-header h1 {
+      font-size: 1.12rem;
     }
 
     .task-header nav {
@@ -1825,7 +1835,11 @@
     }
 
     .task-pane.collapsed {
+      position: sticky;
+      top: 0;
+      z-index: 5;
       max-height: none;
+      box-shadow: 0 8px 18px rgb(15 23 42 / 0.08);
     }
 
     .task-pane.collapsed .task-sidebar-content {
@@ -1836,13 +1850,47 @@
       overflow: hidden;
     }
 
+    .triage {
+      gap: 0.35rem;
+    }
+
+    .triage button {
+      padding: 0.5rem;
+    }
+
+    .triage strong {
+      font-size: 1rem;
+    }
+
+    .task-row {
+      align-items: flex-start;
+      padding: 0.58rem;
+    }
+
+    .task-copy strong {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+    }
+
+    .task-copy small {
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+
     .queue-toggle {
       display: inline-flex;
       align-items: center;
     }
 
     .workbench {
-      min-height: 52dvh;
+      display: block;
+      min-height: 0;
+      overflow: visible;
+    }
+
+    .task-record {
       overflow: visible;
     }
 
@@ -1853,6 +1901,10 @@
     .record-summary {
       display: grid;
       grid-template-columns: 1fr 1fr;
+    }
+
+    .record-summary div {
+      min-width: 0;
     }
 
     .next-step {

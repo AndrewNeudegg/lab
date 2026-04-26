@@ -15,22 +15,32 @@ const (
 )
 
 type Task struct {
-	ID         string     `json:"id"`
-	Title      string     `json:"title"`
-	Goal       string     `json:"goal"`
-	Status     string     `json:"status"`
-	AssignedTo string     `json:"assigned_to"`
-	Priority   int        `json:"priority"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	StoppedAt  *time.Time `json:"stopped_at,omitempty"`
-	DueAt      *time.Time `json:"due_at,omitempty"`
-	ParentID   string     `json:"parent_id,omitempty"`
-	ContextIDs []string   `json:"context_ids,omitempty"`
-	Workspace  string     `json:"workspace,omitempty"`
-	Result     string     `json:"result,omitempty"`
-	Plan       *TaskPlan  `json:"plan,omitempty"`
+	ID                 string                `json:"id"`
+	Title              string                `json:"title"`
+	Goal               string                `json:"goal"`
+	Status             string                `json:"status"`
+	AssignedTo         string                `json:"assigned_to"`
+	Priority           int                   `json:"priority"`
+	CreatedAt          time.Time             `json:"created_at"`
+	UpdatedAt          time.Time             `json:"updated_at"`
+	StartedAt          *time.Time            `json:"started_at,omitempty"`
+	StoppedAt          *time.Time            `json:"stopped_at,omitempty"`
+	DueAt              *time.Time            `json:"due_at,omitempty"`
+	ParentID           string                `json:"parent_id,omitempty"`
+	ContextIDs         []string              `json:"context_ids,omitempty"`
+	DependsOn          []string              `json:"depends_on,omitempty"`
+	BlockedBy          []string              `json:"blocked_by,omitempty"`
+	GraphPhase         string                `json:"graph_phase,omitempty"`
+	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria,omitempty"`
+	Workspace          string                `json:"workspace,omitempty"`
+	Result             string                `json:"result,omitempty"`
+	Plan               *TaskPlan             `json:"plan,omitempty"`
+}
+
+type AcceptanceCriterion struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
 }
 
 type TaskPlan struct {

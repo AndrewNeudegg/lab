@@ -32,6 +32,29 @@ The review gate must not silently restart a worker. If checks, diff validation, 
 
 Approvals are single-use decisions tied to the task state at the time they were requested. A merge approval for a task that is no longer `awaiting_approval` is stale and must not run. If an approved merge fails because the branch has become unmergeable, the approval is marked `failed`, the task moves to `blocked`, and the operator gets rework actions instead of a raw HTTP error.
 
+## Task Graphs
+
+New development tasks are represented as a graph. The root task keeps the original goal and durable acceptance criteria. `homelabd` creates six child phase tasks under that root:
+
+1. `inspect`
+2. `design`
+3. `implement`
+4. `test`
+5. `docs`
+6. `review`
+
+The first child phase is `queued`. Later phases start as `blocked` with `depends_on` and `blocked_by` pointing at the previous phase. A worker can only run a child phase when all dependency tasks are `done`. If an operator tries to run or delegate a blocked phase early, homelabd records the blockers and refuses execution.
+
+Use `accept <child_task_id>` after verifying a phase result. Accepting a child marks its acceptance criteria as accepted and releases any dependent child whose blockers are now done. When all child phases are accepted, the parent task is marked `done`.
+
+Task records now include:
+
+- `parent_id`: parent graph task, when this task is a child phase.
+- `depends_on`: task IDs that must be accepted before this task can run.
+- `blocked_by`: currently unresolved dependency task IDs.
+- `graph_phase`: `root`, `inspect`, `design`, `implement`, `test`, `docs`, or `review`.
+- `acceptance_criteria`: durable checklist items for the task or phase.
+
 ## Verification Commands
 
 Use `accept <task_id>` after checking that the merged change works.

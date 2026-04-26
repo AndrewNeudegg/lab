@@ -945,6 +945,60 @@ func TestReopenTaskMovesBackToRunning(t *testing.T) {
 	}
 }
 
+func TestRefreshTaskWorkspaceResetsBranchToCurrentMain(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspaceRoot := filepath.Join(tempDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "task_20260426_014005_793f04ec")
+	orch.cfg.Repo.Root = root
+	orch.cfg.Repo.WorkspaceRoot = workspaceRoot
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", "app.txt")
+	gitTestRun(t, root, "commit", "-m", "main")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_20260426_014005_793f04ec", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, workspace, "commit", "-am", "stale")
+	task := taskstore.Task{
+		ID:         "task_20260426_014005_793f04ec",
+		Title:      "parse task state commands",
+		Goal:       "parse task state commands",
+		Status:     taskstore.StatusBlocked,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "refresh 793f04ec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Refreshed 793f04ec") {
+		t.Fatalf("reply = %q, want refresh confirmation", reply)
+	}
+	if got := readTestFile(t, filepath.Join(workspace, "app.txt")); got != "main\n" {
+		t.Fatalf("app.txt = %q, want main content", got)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked || !strings.Contains(updated.Result, "workspace refreshed") {
+		t.Fatalf("task = %#v, want blocked refreshed task", updated)
+	}
+}
+
 func TestReopenTaskAcceptsBareReasonAfterID(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	task := taskstore.Task{
@@ -1460,6 +1514,15 @@ func gitTestOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return string(out)
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 type worktreeCreateStub struct {

@@ -233,6 +233,11 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		}
 		selector, reason := parseReopenCommand(fields[1:])
 		return programResult(o.reopenTask(ctx, selector, reason))
+	case "refresh", "rebase", "sync":
+		if len(fields) < 2 {
+			return programResult("usage: refresh <task_id>", nil)
+		}
+		return programResult(o.refreshTaskWorkspace(ctx, strings.Join(fields[1:], " ")))
 	case "run", "work", "start":
 		if len(fields) < 2 {
 			return programResult("usage: run <task_id|task title>", nil)
@@ -1030,6 +1035,7 @@ func help() string {
 		"  review <task_id>           run tests, show diff, request merge approval",
 		"  accept <task_id>           mark merged task verified and done",
 		"  reopen <task_id> [reason]  mark task not done and continue work",
+		"  refresh <task_id>          reset task worktree branch to current main",
 		"  run <task_id>              let CoderAgent work in the task worktree",
 		"  agents                     list external worker backends",
 		"  delegate <task_id> <agent> <instruction>",
@@ -1682,6 +1688,69 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 		instruction = "continue the reopened task"
 	}
 	return fmt.Sprintf("Reopened %s and queued it for the task supervisor.\nNext: `status`, `delegate %s to codex %s`, or `run %s`.", shortID, shortID, instruction, shortID), nil
+}
+
+func (o *Orchestrator) refreshTaskWorkspace(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if err := safeTaskWorkspace(o.cfg.Repo.WorkspaceRoot, t.Workspace); err != nil {
+		return "", err
+	}
+	headOut, err := exec.CommandContext(ctx, "git", "-C", o.cfg.Repo.Root, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse repo head: %w: %s", err, strings.TrimSpace(string(headOut)))
+	}
+	head := strings.TrimSpace(string(headOut))
+	_ = exec.CommandContext(context.Background(), "git", "-C", t.Workspace, "merge", "--abort").Run()
+	_ = exec.CommandContext(context.Background(), "git", "-C", t.Workspace, "rebase", "--abort").Run()
+	resetOut, err := exec.CommandContext(ctx, "git", "-C", t.Workspace, "reset", "--hard", head).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git reset task workspace: %w: %s", err, strings.TrimSpace(string(resetOut)))
+	}
+	cleanOut, err := exec.CommandContext(ctx, "git", "-C", t.Workspace, "clean", "-fd", "-e", ".codex", "-e", ".git-local", "-e", ".artifacts", "--", ".").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git clean task workspace: %w: %s", err, strings.TrimSpace(string(cleanOut)))
+	}
+	t.Status = taskstore.StatusBlocked
+	t.AssignedTo = "OrchestratorAgent"
+	t.Result = fmt.Sprintf("workspace refreshed to current main %s; delegate work from scratch", head)
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.refreshed", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"head": head, "workspace": t.Workspace})})
+	shortID := taskShortID(taskID)
+	return fmt.Sprintf("Refreshed %s to current main %s.\nNext: `delegate %s to codex <instruction>`.", shortID, head, shortID), nil
+}
+
+func safeTaskWorkspace(workspaceRoot, workspace string) error {
+	if strings.TrimSpace(workspace) == "" {
+		return fmt.Errorf("task has no workspace")
+	}
+	root, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	path, err := filepath.Abs(workspace)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return fmt.Errorf("workspace %q is outside workspace root %q", workspace, workspaceRoot)
+	}
+	if !workspaceHasGit(path) {
+		return fmt.Errorf("workspace %q is not a git worktree", workspace)
+	}
+	return nil
 }
 
 func usageNotesFromResult(result string) string {

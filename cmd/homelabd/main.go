@@ -401,7 +401,7 @@ func shouldAck(content string) bool {
 		return false
 	}
 	switch fields[0] {
-	case "new", "task", "run", "work", "start", "delegate", "escalate", "codex", "claude", "gemini", "review", "approve", "delete", "remove", "cancel":
+	case "new", "task", "run", "work", "start", "delegate", "escalate", "codex", "claude", "gemini", "review", "approve", "delete", "remove", "cancel", "refresh", "rebase", "sync":
 		return true
 	default:
 		return false

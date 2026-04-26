@@ -41,3 +41,14 @@ search internet for Bun workspace package.json docs
 ```
 
 Web search runs through the `internet.search` tool. Academic wording such as `academic`, `scholarly`, or `papers` searches scholarly sources.
+
+## Task Worktree Recovery
+
+External coding agents can edit files in task worktrees, but the runtime owns git state. If a task branch becomes too stale to rebase cleanly, refresh it from chat:
+
+```text
+refresh 793f04ec
+delegate 793f04ec to codex implement the task again from current main
+```
+
+`refresh <task_id>` resets the task worktree branch to the current repository `main` commit and leaves the task blocked for explicit redelegation. Use it when repeated review or approval attempts report premerge conflicts from old branch state.

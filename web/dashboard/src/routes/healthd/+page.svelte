@@ -4,6 +4,7 @@
     DEFAULT_HEALTHD_API_BASE,
     Navbar,
     apiFetch,
+    type HealthdProcessStatus,
     type HealthdSample,
     type HealthdSnapshot,
     type HealthdSLOReport
@@ -113,6 +114,30 @@
 
   const timeLabel = (value: string) =>
     new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const ageLabel = (value: string) => {
+    const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+    if (seconds < 60) {
+      return `${seconds}s ago`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) {
+      return `${minutes}m ago`;
+    }
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ago`;
+  };
+
+  const processDetail = (process: HealthdProcessStatus) => {
+    const parts = [process.type];
+    if (process.pid) {
+      parts.push(`pid ${process.pid}`);
+    }
+    if (process.addr) {
+      parts.push(process.addr);
+    }
+    return parts.join(' · ');
+  };
 
   const pathFor = (samples: HealthdSample[], field: keyof HealthdSample, max = 100) => {
     if (samples.length === 0) {
@@ -234,6 +259,28 @@
       <section class="split">
         <div>
           <div class="section-title">
+            <h2>Processes</h2>
+          </div>
+          <div class="list">
+            {#if snapshot.processes.length === 0}
+              <p class="empty">No processes have announced themselves.</p>
+            {:else}
+              {#each snapshot.processes as process}
+                <article class="process">
+                  <div>
+                    <h3>{process.name}</h3>
+                    <p>{processDetail(process)}</p>
+                    <small>{process.message}; last seen {ageLabel(process.last_seen)}</small>
+                  </div>
+                  <span class={`pill ${process.status}`}>{process.status}</span>
+                </article>
+              {/each}
+            {/if}
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">
             <h2>SLOs</h2>
           </div>
           <div class="list">
@@ -258,7 +305,9 @@
             {/each}
           </div>
         </div>
+      </section>
 
+      <section class="split">
         <div>
           <div class="section-title">
             <h2>Checks</h2>
@@ -278,27 +327,27 @@
             {/each}
           </div>
         </div>
-      </section>
 
-      <section>
-        <div class="section-title">
-          <h2>Notifications</h2>
-        </div>
-        <div class="notifications">
-          {#if snapshot.notifications.length === 0}
-            <p class="muted">No notifications.</p>
-          {:else}
-            {#each snapshot.notifications.slice(0, 8) as notification}
-              <article class="notification">
-                <span class={`pill ${notification.severity}`}>{notification.severity}</span>
-                <div>
-                  <h3>{notification.source}</h3>
-                  <p>{notification.message}</p>
-                </div>
-                <time>{timeLabel(notification.time)}</time>
-              </article>
-            {/each}
-          {/if}
+        <div>
+          <div class="section-title">
+            <h2>Notifications</h2>
+          </div>
+          <div class="notifications">
+            {#if snapshot.notifications.length === 0}
+              <p class="muted">No notifications.</p>
+            {:else}
+              {#each snapshot.notifications.slice(0, 8) as notification}
+                <article class="notification">
+                  <span class={`pill ${notification.severity}`}>{notification.severity}</span>
+                  <div>
+                    <h3>{notification.source}</h3>
+                    <p>{notification.message}</p>
+                  </div>
+                  <time>{timeLabel(notification.time)}</time>
+                </article>
+              {/each}
+            {/if}
+          </div>
         </div>
       </section>
     {:else}
@@ -355,6 +404,7 @@
   .metric p,
   .chart-panel p,
   .slo p,
+  .process p,
   .check p,
   .notification p,
   .muted {
@@ -366,6 +416,7 @@
   .panel-title h2,
   .section-title h2,
   .slo h3,
+  .process h3,
   .check h3,
   .notification h3 {
     margin: 0;
@@ -424,6 +475,7 @@
   .metric,
   .chart-panel,
   .slo,
+  .process,
   .check,
   .notification,
   .empty,
@@ -467,6 +519,7 @@
   .panel-title,
   .section-title,
   .row,
+  .process,
   .check,
   .notification {
     display: flex;
@@ -509,6 +562,7 @@
   }
 
   .slo,
+  .process,
   .check,
   .notification,
   .empty,

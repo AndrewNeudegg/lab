@@ -50,6 +50,8 @@
     "sample_interval_seconds": 5,
     "retention_seconds": 300,
     "request_timeout_seconds": 2,
+    "process_heartbeat_interval_seconds": 5,
+    "process_timeout_seconds": 15,
     "checks": [
       {
         "name": "homelabd-api",

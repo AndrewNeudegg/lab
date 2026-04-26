@@ -96,6 +96,36 @@ export interface HomelabdTasksResponse {
   tasks: HomelabdTask[];
 }
 
+export interface HomelabdTaskActionResponse {
+  reply: string;
+}
+
+export interface HomelabdTaskRetryRequest {
+  backend?: string;
+  instruction?: string;
+}
+
+export interface HomelabdRunArtifact {
+  id: string;
+  kind: string;
+  path?: string;
+  task_id: string;
+  backend: string;
+  workspace: string;
+  status: string;
+  command?: string[];
+  output?: string;
+  error?: string;
+  duration?: number;
+  started_at?: string;
+  finished_at?: string;
+  time?: string;
+}
+
+export interface HomelabdTaskRunsResponse {
+  runs: HomelabdRunArtifact[];
+}
+
 export type ApprovalStatus = 'pending' | 'granted' | 'denied' | string;
 
 export interface HomelabdApproval {
@@ -245,6 +275,12 @@ export interface HomelabdClient {
   listTasks(): Promise<HomelabdTasksResponse>;
   listApprovals(): Promise<HomelabdApprovalsResponse>;
   listEvents(options?: { date?: string; limit?: number }): Promise<HomelabdEventsResponse>;
+  listTaskRuns(taskId: string): Promise<HomelabdTaskRunsResponse>;
+  cancelTask(taskId: string): Promise<HomelabdTaskActionResponse>;
+  retryTask(
+    taskId: string,
+    request?: HomelabdTaskRetryRequest
+  ): Promise<HomelabdTaskActionResponse>;
 }
 
 export interface HomelabdClientOptions {

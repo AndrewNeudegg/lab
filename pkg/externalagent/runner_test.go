@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/andrewneudegg/lab/pkg/config"
 )
@@ -70,5 +71,70 @@ func TestRunnerStreamsOutputChunks(t *testing.T) {
 	}
 	if !streams["stdout"] || !streams["stderr"] {
 		t.Fatalf("streams = %v, want stdout and stderr", streams)
+	}
+}
+
+func TestRunnerCancelsRunningProcess(t *testing.T) {
+	started := make(chan struct{})
+	var once sync.Once
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"test": {
+			Enabled: true,
+			Command: "sh",
+			Args: []string{
+				"-c",
+				"printf 'ready\\n'; exec sleep 30",
+			},
+			TimeoutSeconds: 60,
+		},
+	}, WithOutputHandler(func(_ context.Context, chunk OutputChunk) {
+		if strings.Contains(chunk.Text, "ready") {
+			once.Do(func() { close(started) })
+		}
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	workspace := t.TempDir()
+	done := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runner.Run(ctx, RunRequest{
+			Backend:     "test",
+			RunID:       "delegate_cancel",
+			TaskID:      "task_cancel",
+			Workspace:   workspace,
+			Instruction: "run",
+		})
+		done <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not stream startup output before cancellation")
+	}
+	cancel()
+
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Fatal("Run() error = nil, want cancellation error")
+		}
+		if got.result.ID != "delegate_cancel" {
+			t.Fatalf("result ID = %q, want delegate_cancel", got.result.ID)
+		}
+		if !strings.Contains(got.result.Output, "ready") {
+			t.Fatalf("result output = %q, want streamed ready output", got.result.Output)
+		}
+		if got.result.Duration > 10*time.Second {
+			t.Fatalf("duration = %s, process was not cancelled promptly", got.result.Duration)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not return after context cancellation")
 	}
 }

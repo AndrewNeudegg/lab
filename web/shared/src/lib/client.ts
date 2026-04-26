@@ -7,6 +7,9 @@ import type {
   HomelabdEventsResponse,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
+  HomelabdTaskActionResponse,
+  HomelabdTaskRetryRequest,
+  HomelabdTaskRunsResponse,
   HomelabdTasksResponse,
   SupervisorSnapshot
 } from './types';
@@ -59,6 +62,27 @@ export const createHomelabdClient = (
       return apiFetch<HomelabdTasksResponse>('/tasks', {
         baseUrl,
         fetcher
+      });
+    },
+    listTaskRuns(taskId: string) {
+      return apiFetch<HomelabdTaskRunsResponse>(`/tasks/${encodeURIComponent(taskId)}/runs`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    cancelTask(taskId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/cancel`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    retryTask(taskId: string, request: HomelabdTaskRetryRequest = {}) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/retry`, {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
       });
     },
     listApprovals() {

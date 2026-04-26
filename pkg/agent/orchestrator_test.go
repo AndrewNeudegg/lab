@@ -1791,6 +1791,72 @@ func TestWriteExternalRunArtifact(t *testing.T) {
 			t.Fatalf("%s = %v, want %q", key, got[key], want)
 		}
 	}
+	runs, err := orch.ListTaskRuns("task_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != "delegate_test" {
+		t.Fatalf("runs = %#v, want delegate_test", runs)
+	}
+	if !strings.HasSuffix(runs[0].Path, filepath.Join("runs", "delegate_test.json")) {
+		t.Fatalf("run path = %q, want artifact path", runs[0].Path)
+	}
+}
+
+func TestCancelTaskStopsActiveDelegation(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: make(chan struct{}),
+	})
+	now := time.Now().UTC()
+	taskID := "task_20260426_120000_cancel01"
+	workspace := filepath.Join(t.TempDir(), "workspaces", taskID)
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "cancel running worker",
+		Goal:       "cancel running worker",
+		Status:     taskstore.StatusQueued,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.startDelegationForTask(context.Background(), taskID, "codex", "work"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate did not start")
+	}
+	reply, err := orch.CancelTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Cancelled") {
+		t.Fatalf("reply = %q, want cancellation", reply)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !orch.taskActive(taskID) {
+			task, err := orch.tasks.Load(taskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if task.Status != taskstore.StatusCancelled {
+				t.Fatalf("status = %q, want cancelled", task.Status)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("active delegation was not cleared after cancellation")
 }
 
 func TestStaleDelegateCompletionDoesNotChangeMergedOrDoneTask(t *testing.T) {

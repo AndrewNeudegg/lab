@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -33,7 +34,13 @@ type Orchestrator struct {
 	model     string
 	logger    *slog.Logger
 	activeMu  sync.Mutex
-	active    map[string]string
+	active    map[string]activeTaskRun
+}
+
+type activeTaskRun struct {
+	Worker string
+	RunID  string
+	Cancel context.CancelFunc
 }
 
 type agentResponse struct {
@@ -64,7 +71,7 @@ type HandleResult struct {
 }
 
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
-	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model, logger: slog.Default(), active: make(map[string]string)}
+	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model, logger: slog.Default(), active: make(map[string]activeTaskRun)}
 }
 
 func (o *Orchestrator) WithLogger(logger *slog.Logger) *Orchestrator {
@@ -85,13 +92,38 @@ func (o *Orchestrator) markTaskActive(taskID, worker string) bool {
 	o.activeMu.Lock()
 	defer o.activeMu.Unlock()
 	if o.active == nil {
-		o.active = make(map[string]string)
+		o.active = make(map[string]activeTaskRun)
 	}
 	if _, ok := o.active[taskID]; ok {
 		return false
 	}
-	o.active[taskID] = worker
+	o.active[taskID] = activeTaskRun{Worker: worker}
 	return true
+}
+
+func (o *Orchestrator) setTaskActiveRun(taskID, runID string, cancel context.CancelFunc) {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	if o.active == nil {
+		o.active = make(map[string]activeTaskRun)
+	}
+	run := o.active[taskID]
+	run.RunID = runID
+	run.Cancel = cancel
+	o.active[taskID] = run
+}
+
+func (o *Orchestrator) cancelTaskActiveRun(taskID string) (activeTaskRun, bool) {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	run, ok := o.active[taskID]
+	if !ok {
+		return activeTaskRun{}, false
+	}
+	if run.Cancel != nil {
+		run.Cancel()
+	}
+	return run, true
 }
 
 func (o *Orchestrator) clearTaskActive(taskID string) {
@@ -871,6 +903,14 @@ func (o *Orchestrator) ReopenTask(ctx context.Context, taskID, reason string) (s
 	return o.reopenTask(ctx, taskID, reason)
 }
 
+func (o *Orchestrator) CancelTask(ctx context.Context, taskID string) (string, error) {
+	return o.cancelTask(ctx, taskID)
+}
+
+func (o *Orchestrator) RetryTask(ctx context.Context, taskID, backend, instruction string) (string, error) {
+	return o.retryTask(ctx, taskID, backend, instruction)
+}
+
 func (o *Orchestrator) ListApprovals() ([]approvalstore.Request, error) {
 	requests, err := o.approvals.List()
 	if err != nil {
@@ -889,6 +929,48 @@ func (o *Orchestrator) ResolveApproval(ctx context.Context, approvalID string, g
 
 func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
 	return o.events.ReadDay(day)
+}
+
+func (o *Orchestrator) ListTaskRuns(taskID string) ([]ExternalRunArtifact, error) {
+	dir := filepath.Join(o.cfg.DataDir, "runs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []ExternalRunArtifact{}, nil
+		}
+		return nil, err
+	}
+	runs := []ExternalRunArtifact{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var run ExternalRunArtifact
+		if err := json.Unmarshal(b, &run); err != nil {
+			return nil, err
+		}
+		if run.Kind != "external_agent" || run.TaskID != taskID {
+			continue
+		}
+		run.Path = filepath.Join(dir, entry.Name())
+		runs = append(runs, run)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		left := runs[i].Time
+		if left.IsZero() {
+			left = runs[i].FinishedAt
+		}
+		right := runs[j].Time
+		if right.IsZero() {
+			right = runs[j].FinishedAt
+		}
+		return left.After(right)
+	})
+	return runs, nil
 }
 
 type recoveryStrategy string
@@ -2151,8 +2233,54 @@ func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string,
 	if err := o.tasks.Save(t); err != nil {
 		return "", err
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.cancelled", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"workspace": t.Workspace})})
+	activeRun, stopped := o.cancelTaskActiveRun(taskID)
+	payload := map[string]any{"workspace": t.Workspace, "stopped_active_worker": stopped}
+	if activeRun.RunID != "" {
+		payload["run_id"] = activeRun.RunID
+	}
+	if activeRun.Worker != "" {
+		payload["worker"] = activeRun.Worker
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.cancelled", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(payload)})
 	return fmt.Sprintf("Cancelled %s. Workspace kept at %s.", taskID, t.Workspace), nil
+}
+
+func (o *Orchestrator) retryTask(ctx context.Context, selector, backend, instruction string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if o.taskActive(taskID) {
+		return "", fmt.Errorf("task %s is already running", taskShortID(taskID))
+	}
+	if strings.TrimSpace(backend) == "" {
+		backend = externalBackendForTask(t)
+	}
+	if strings.TrimSpace(instruction) == "" {
+		instruction = strings.Join([]string{
+			"Retry this task from the current workspace state.",
+			"Inspect the latest task result, worker run trace, and git diff before editing.",
+			"Fix or complete the task with the smallest useful patch.",
+			"Run relevant validation and summarize changed files, validation, and any remaining risk.",
+		}, "\n")
+	}
+	if err := o.startDelegationForTask(ctx, taskID, backend, instruction); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Retried %s on %s. The worker is running in the background.", taskShortID(taskID), backend), nil
+}
+
+func externalBackendForTask(t taskstore.Task) string {
+	switch strings.ToLower(strings.TrimSpace(t.AssignedTo)) {
+	case "codex", "claude", "gemini":
+		return strings.ToLower(strings.TrimSpace(t.AssignedTo))
+	default:
+		return "codex"
+	}
 }
 
 func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string, error) {
@@ -2728,6 +2856,23 @@ type externalDelegateResult struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
+type ExternalRunArtifact struct {
+	ID         string    `json:"id"`
+	Kind       string    `json:"kind"`
+	Path       string    `json:"path,omitempty"`
+	TaskID     string    `json:"task_id"`
+	Backend    string    `json:"backend"`
+	Workspace  string    `json:"workspace"`
+	Status     string    `json:"status"`
+	Command    []string  `json:"command"`
+	Output     string    `json:"output"`
+	Error      string    `json:"error"`
+	Duration   int64     `json:"duration"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Time       time.Time `json:"time"`
+}
+
 func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend, workspace, instruction string) {
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.delegate", map[string]any{
 		"backend":     backend,
@@ -2835,9 +2980,11 @@ func (o *Orchestrator) startDelegationForTask(ctx context.Context, taskID, backe
 		o.clearTaskActive(taskID)
 		return err
 	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	o.setTaskActiveRun(run.TaskID, run.ID, cancel)
 	go func() {
 		defer o.clearTaskActive(run.TaskID)
-		o.runDelegation(ctx, run.ID, run.TaskID, run.Backend, run.Workspace, run.Instruction)
+		o.runDelegation(runCtx, run.ID, run.TaskID, run.Backend, run.Workspace, run.Instruction)
 	}()
 	return nil
 }

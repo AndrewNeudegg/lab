@@ -89,6 +89,8 @@ If a component does not answer one of those questions, it should not be in the p
 - Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
 - Result block: shown only when a task has a stored result.
+- Worker trace: groups external worker output by run id, combines live `agent.delegate.output`
+  events with completed artifacts from `data/runs`, and exposes direct stop/retry controls.
 - Task activity: event-log timeline filtered to the selected task. This is the task-scoped history equivalent to issue activity or incident timelines.
 - Reviewed plan: shown directly above the original input so the operator can see the intended execution path before rereading the full prompt.
 - Original input: shown below task activity, preserving the full task goal text for reference after the timeline.

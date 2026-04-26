@@ -124,7 +124,7 @@ On compact screens `/tasks` stacks:
 2. Selected-task record below it.
 3. Global command panel below the selected-task record.
 
-The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. After a task is selected on mobile, collapse the queue so the selected-task record remains readable while the queue stays reachable through the `Show queue` control.
+The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Task selection itself must not hide the queue: the operator should still see queue position, counts, and nearby work after tapping a row. The `Hide queue` / `Show queue` control is a manual escape hatch when the selected-task record needs more vertical room.
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
 

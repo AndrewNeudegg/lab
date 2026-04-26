@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,6 +117,121 @@ func TestManagerAdoptsPersistedRunningProcess(t *testing.T) {
 	}
 }
 
+func TestManagerStartsPersistedDesiredRunningProcess(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	now := time.Now().UTC()
+	state := persistedState{UpdatedAt: now, Apps: map[string]persistedApp{
+		"test-app": {
+			State:   StateStopped,
+			Desired: StateRunning,
+			Message: "stopped unexpectedly during restart",
+		},
+	}}
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager := NewManager(config.SupervisordConfig{
+		StatePath:                statePath,
+		HeartbeatIntervalSeconds: 1,
+		ShutdownTimeoutSeconds:   2,
+		HealthdURL:               "",
+		Apps: []config.SupervisorAppConfig{{
+			Name:               "test-app",
+			Type:               "test",
+			Command:            script,
+			AutoStart:          false,
+			Restart:            "on_failure",
+			ShutdownTimeoutSec: 2,
+		}},
+	}, nil)
+
+	manager.Start(ctx)
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "test-app") })
+	running := waitForAppState(t, manager, "test-app", StateRunning)
+	if running.PID == 0 || running.Desired != StateRunning {
+		t.Fatalf("status = %#v, want running desired process", running)
+	}
+}
+
+func TestManagerReconcilesStoppedDesiredRunningProcess(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		HeartbeatIntervalSeconds: 1,
+		ShutdownTimeoutSeconds:   2,
+		HealthdURL:               "",
+		Apps: []config.SupervisorAppConfig{{
+			Name:               "test-app",
+			Type:               "test",
+			Command:            script,
+			Restart:            "on_failure",
+			ShutdownTimeoutSec: 2,
+		}},
+	}, nil)
+
+	if err := manager.StartApp(context.Background(), "test-app"); err != nil {
+		t.Fatal(err)
+	}
+	first := waitForAppState(t, manager, "test-app", StateRunning)
+	if err := manager.stopApp(context.Background(), "test-app", StateRunning); err != nil {
+		t.Fatal(err)
+	}
+	stopped := waitForAppState(t, manager, "test-app", StateStopped)
+	if stopped.Desired != StateRunning {
+		t.Fatalf("status = %#v, want stopped app still desired running", stopped)
+	}
+
+	manager.reconcileDesiredState(context.Background())
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "test-app") })
+	recovered := waitForAppState(t, manager, "test-app", StateRunning)
+	if recovered.PID == 0 || recovered.PID == first.PID {
+		t.Fatalf("status = %#v, want recovered process with new pid", recovered)
+	}
+}
+
+func TestManagerRestartsStaleRunningPID(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		ShutdownTimeoutSeconds: 2,
+		Apps: []config.SupervisorAppConfig{{
+			Name:               "test-app",
+			Type:               "test",
+			Command:            script,
+			Restart:            "always",
+			ShutdownTimeoutSec: 2,
+		}},
+	}, nil)
+	manager.mu.Lock()
+	manager.apps["test-app"].status.State = StateRunning
+	manager.apps["test-app"].status.Desired = StateRunning
+	manager.apps["test-app"].status.PID = 99999999
+	manager.mu.Unlock()
+
+	if err := manager.StartApp(context.Background(), "test-app"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "test-app") })
+	running := waitForAppState(t, manager, "test-app", StateRunning)
+	if running.PID == 0 || running.PID == 99999999 {
+		t.Fatalf("status = %#v, want restarted app with live pid", running)
+	}
+}
+
 func TestManagerAdoptsExistingProcessByPID(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "app.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
@@ -163,4 +279,19 @@ func TestManagerAdoptsExistingProcessByPID(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("pid %d should be stopped", process.Pid)
 	}
+}
+
+func waitForAppState(t *testing.T, manager *Manager, name string, state string) AppStatus {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, app := range manager.Snapshot().Apps {
+			if app.Name == name && app.State == state {
+				return app
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("app %s did not reach state %s; snapshot = %#v", name, state, manager.Snapshot())
+	return AppStatus{}
 }

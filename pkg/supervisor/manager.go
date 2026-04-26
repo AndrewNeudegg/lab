@@ -141,7 +141,7 @@ func (m *Manager) Start(ctx context.Context) {
 		m.StopAll(context.Background())
 	}()
 	for _, app := range m.sortedApps() {
-		if app.AutoStart {
+		if app.AutoStart || m.appDesiredRunning(app.Name) {
 			if err := m.StartApp(ctx, app.Name); err != nil {
 				m.logger.Error("failed to autostart app", "app", app.Name, "error", err)
 			}
@@ -186,8 +186,24 @@ func (m *Manager) StartApp(ctx context.Context, name string) error {
 		return fmt.Errorf("unknown app %q", name)
 	}
 	if app.status.State == StateRunning || app.status.State == StateStarting {
+		if app.status.PID <= 0 || !processAlive(app.status.PID) {
+			app.status.State = StateFailed
+			app.status.PID = 0
+			app.status.Message = "recorded process is not running"
+			app.status.UpdatedAt = time.Now().UTC()
+			_ = m.saveStateLocked()
+		} else {
+			app.status.Desired = StateRunning
+			app.status.Message = "already running"
+			app.status.UpdatedAt = time.Now().UTC()
+			_ = m.saveStateLocked()
+			m.mu.Unlock()
+			return nil
+		}
+	}
+	if app.status.State == StateStarting {
 		app.status.Desired = StateRunning
-		app.status.Message = "already running"
+		app.status.Message = "already starting"
 		app.status.UpdatedAt = time.Now().UTC()
 		_ = m.saveStateLocked()
 		m.mu.Unlock()
@@ -521,7 +537,52 @@ func (m *Manager) healthCheckLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			m.reconcileDesiredState(ctx)
 			m.checkAppHealth(ctx)
+		}
+	}
+}
+
+func (m *Manager) appDesiredRunning(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	app := m.apps[name]
+	return app != nil && app.status.Desired == StateRunning
+}
+
+func (m *Manager) reconcileDesiredState(ctx context.Context) {
+	m.mu.Lock()
+	var toStart []string
+	for name, app := range m.apps {
+		if app.status.Desired != StateRunning {
+			continue
+		}
+		if (app.status.State == StateRunning || app.status.State == StateStarting) && app.status.PID > 0 && !processAlive(app.status.PID) {
+			app.status.State = StateFailed
+			app.status.PID = 0
+			app.status.Message = "recorded process is not running; restarting"
+			app.status.UpdatedAt = time.Now().UTC()
+		}
+		if app.status.State != StateStopped && app.status.State != StateFailed {
+			continue
+		}
+		if app.cfg.Restart == "never" {
+			continue
+		}
+		app.status.Restarts++
+		app.status.Message = "desired running; restarting"
+		app.status.UpdatedAt = time.Now().UTC()
+		toStart = append(toStart, name)
+	}
+	if len(toStart) > 0 {
+		_ = m.saveStateLocked()
+	}
+	m.mu.Unlock()
+
+	for _, name := range toStart {
+		m.logger.Warn("recovering app because desired state is running", "app", name)
+		if err := m.StartApp(ctx, name); err != nil {
+			m.logger.Error("desired state recovery failed", "app", name, "error", err)
 		}
 	}
 }
@@ -643,6 +704,19 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 		if app := m.apps[t.name]; app != nil {
 			app.status.LastHealth = status
 			app.status.UpdatedAt = time.Now().UTC()
+			if status == "unreachable" && app.status.Desired == StateRunning && app.status.State == StateRunning && app.cfg.Restart != "never" {
+				app.status.State = StateFailed
+				app.status.PID = 0
+				app.status.Message = "health check unreachable; restarting"
+				app.status.Restarts++
+				_ = m.saveStateLocked()
+				go func(name string) {
+					m.logger.Warn("recovering app because health check is unreachable", "app", name)
+					if err := m.StartApp(context.Background(), name); err != nil {
+						m.logger.Error("health recovery failed", "app", name, "error", err)
+					}
+				}(t.name)
+			}
 		}
 		m.mu.Unlock()
 	}

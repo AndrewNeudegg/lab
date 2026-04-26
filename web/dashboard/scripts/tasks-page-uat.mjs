@@ -228,16 +228,77 @@ const run = async () => {
     await sleep(200);
     const mobile = await evalJS(
       cdp,
-      `({
+      `(window.scrollTo(0, document.body.scrollHeight),
+        new Promise((resolve) => setTimeout(() => resolve({
         bodyWidth: document.body.scrollWidth,
         viewport: window.innerWidth,
+        scrollY: window.scrollY,
+        navbarTop: document.querySelector('.navbar')?.getBoundingClientRect().top ?? null,
         rows: document.querySelectorAll('.task-row').length,
+        queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
+        queueHeight: Math.round(document.querySelector('.task-pane')?.getBoundingClientRect().height || 0),
+        recordTop: Math.round(document.querySelector('.workbench')?.getBoundingClientRect().top || 0),
         queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
         panelButton: document.querySelector('.command-header-actions button')?.innerText || ''
-      })`
+      }), 100)))`
     );
     assert(mobile.rows > 0, 'mobile viewport rendered no task rows', mobile);
+    assert(mobile.queueCollapsed === false, 'mobile queue should remain visible by default', mobile);
+    assert(mobile.queueToggle.includes('Hide queue'), 'mobile queue toggle should offer to hide visible queue', mobile);
+    assert(mobile.queueHeight > 0, 'mobile queue has no visible height', mobile);
+    assert(mobile.queueHeight <= Math.round(844 * 0.56), 'mobile queue is not capped to the top of the viewport', mobile);
+    assert(mobile.recordTop >= mobile.queueHeight - 1, 'mobile selected task record did not stack below queue', mobile);
     assert(mobile.bodyWidth <= mobile.viewport + 2, 'mobile viewport has horizontal overflow', mobile);
+    assert(mobile.scrollY > 0, 'mobile viewport did not scroll for sticky navbar check', mobile);
+    assert(
+      Math.abs(mobile.navbarTop) <= 1,
+      'mobile navbar did not remain sticky at viewport top',
+      mobile
+    );
+
+    const mobileSelect = await evalJS(
+      cdp,
+      `(document.querySelector('.task-row')?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          rows: document.querySelectorAll('.task-row').length,
+          selected: document.querySelector('.task-row.selected')?.innerText || '',
+          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
+          queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
+          sidebarVisible: getComputedStyle(document.querySelector('.task-sidebar-content')).display !== 'none'
+        }), 100)))`
+    );
+    assert(mobileSelect.selected, 'mobile task tap did not select a queue row', mobileSelect);
+    assert(mobileSelect.rows > 0, 'mobile queue rows disappeared after task selection', mobileSelect);
+    assert(mobileSelect.queueCollapsed === false, 'mobile task selection hid the queue', mobileSelect);
+    assert(mobileSelect.sidebarVisible === true, 'mobile queue content is not visible after selection', mobileSelect);
+
+    const mobileCollapsed = await evalJS(
+      cdp,
+      `(document.querySelector('.queue-toggle')?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
+          queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
+          sidebarVisible: getComputedStyle(document.querySelector('.task-sidebar-content')).display !== 'none'
+        }), 100)))`
+    );
+    assert(mobileCollapsed.queueCollapsed === true, 'mobile queue did not collapse from toggle', mobileCollapsed);
+    assert(mobileCollapsed.queueToggle.includes('Show queue'), 'mobile collapsed queue did not show reopen control', mobileCollapsed);
+    assert(mobileCollapsed.sidebarVisible === false, 'mobile collapsed queue still showed queue content', mobileCollapsed);
+
+    const mobileReopened = await evalJS(
+      cdp,
+      `(document.querySelector('.queue-toggle')?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          rows: document.querySelectorAll('.task-row').length,
+          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
+          queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
+          sidebarVisible: getComputedStyle(document.querySelector('.task-sidebar-content')).display !== 'none'
+        }), 100)))`
+    );
+    assert(mobileReopened.queueCollapsed === false, 'mobile queue did not reopen from toggle', mobileReopened);
+    assert(mobileReopened.queueToggle.includes('Hide queue'), 'mobile reopened queue did not show hide control', mobileReopened);
+    assert(mobileReopened.sidebarVisible === true, 'mobile reopened queue content is not visible', mobileReopened);
+    assert(mobileReopened.rows > 0, 'mobile reopened queue rendered no task rows', mobileReopened);
 
     const typed = await evalJS(
       cdp,
@@ -270,6 +331,9 @@ const run = async () => {
           collapse,
           open,
           mobile,
+          mobileSelect,
+          mobileCollapsed,
+          mobileReopened,
           typed
         },
         null,

@@ -141,6 +141,7 @@
 	  :global(html[data-theme='dark'] .toolbar-actions span),
 	  :global(html[data-theme='dark'] .budget),
 	  :global(html[data-theme='dark'] .empty),
+	  :global(html[data-theme='dark'] .draft-preview),
 	  :global(html[data-theme='dark'] .composer),
 	  :global(html[data-theme='dark'] .triage button),
 	  :global(html[data-theme='dark'] .task-header button),
@@ -208,13 +209,41 @@
     color: var(--muted) !important;
   }
 
-  :global(html[data-theme='dark'] .message p),
+  :global(html[data-theme='dark'] .markdown),
+  :global(html[data-theme='dark'] .markdown p),
+  :global(html[data-theme='dark'] .markdown li),
   :global(html[data-theme='dark'] .task-result p),
   :global(html[data-theme='dark'] .workspace-path code),
   :global(html[data-theme='dark'] .activity li p),
   :global(html[data-theme='dark'] .next-step p),
   :global(html[data-theme='dark'] .empty-record p) {
     color: var(--text) !important;
+  }
+
+  :global(html[data-theme='dark'] .markdown h1),
+  :global(html[data-theme='dark'] .markdown h2),
+  :global(html[data-theme='dark'] .markdown h3),
+  :global(html[data-theme='dark'] .markdown h4),
+  :global(html[data-theme='dark'] .markdown h5),
+  :global(html[data-theme='dark'] .markdown h6),
+  :global(html[data-theme='dark'] .markdown strong) {
+    color: var(--text-strong) !important;
+  }
+
+  :global(html[data-theme='dark'] .markdown blockquote) {
+    color: var(--muted) !important;
+    border-color: var(--border-soft) !important;
+  }
+
+  :global(html[data-theme='dark'] .markdown code) {
+    color: #e2e8f0 !important;
+    background: #1f2937 !important;
+  }
+
+  :global(html[data-theme='dark'] .markdown pre) {
+    color: #e2e8f0 !important;
+    border-color: var(--border-soft) !important;
+    background: #020617 !important;
   }
 
 	  :global(html[data-theme='dark'] .message.user) {

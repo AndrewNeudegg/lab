@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
+    Markdown,
     Navbar,
     persistChatDraft,
     readStoredChatDraft,
@@ -246,7 +247,7 @@
             <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
             <time>{message.time}</time>
           </div>
-          <p>{message.content}</p>
+          <Markdown content={message.content} />
           {#if message.role === 'assistant' && message.actions?.length}
             <div class="message-actions">
               {#each message.actions as action}
@@ -296,6 +297,11 @@
         on:input={handleDraftInput}
         on:keydown={handleComposerKeydown}
       ></textarea>
+      {#if draft.trim()}
+        <div class="draft-preview" aria-label="Formatted draft">
+          <Markdown content={draft} />
+        </div>
+      {/if}
       <button type="submit" disabled={loading || !draft.trim()}>
         {loading ? 'Sending' : 'Send'}
       </button>
@@ -328,10 +334,6 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     height: 100dvh;
-  }
-
-  .message p {
-    margin: 0;
   }
 
   .message-actions,
@@ -408,13 +410,6 @@
     font-weight: 800;
   }
 
-  .message p {
-    color: #172033;
-    line-height: 1.48;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-
   .error {
     margin: 0;
     padding: 0.75rem 1rem;
@@ -473,6 +468,16 @@
   textarea:focus {
     border-color: #2563eb;
     outline: 3px solid rgb(37 99 235 / 0.14);
+  }
+
+  .draft-preview {
+    grid-column: 1 / -1;
+    max-height: 14rem;
+    overflow: auto;
+    padding: 0.8rem 0.9rem;
+    border: 1px solid #dbe3ef;
+    border-radius: 0.75rem;
+    background: #f8fafc;
   }
 
   .composer button[type='submit'] {

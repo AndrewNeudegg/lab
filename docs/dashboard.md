@@ -91,6 +91,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Task activity: event-log timeline filtered to the selected task. This is the task-scoped history equivalent to issue activity or incident timelines.
 - Original input: shown below task activity, preserving the full task goal text for reference after the timeline.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
+- Chat transcript messages and composer drafts render common markdown, including paragraphs, line breaks, lists, quotes, inline code, links, and fenced code blocks. The raw textarea remains editable markdown; the formatted draft preview shows what will be sent.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
 ## Status Semantics

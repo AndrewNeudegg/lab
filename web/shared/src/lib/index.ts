@@ -1,10 +1,12 @@
 export * from './types';
 export * from './client';
 export * from './chatDraft';
+export * from './markdown';
 export * from './tasks';
 export * from './theme';
 export { default as Counter } from './Counter.svelte';
 export { default as Header } from './Header.svelte';
+export { default as Markdown } from './Markdown.svelte';
 export { default as MessageList } from './MessageList.svelte';
 export { default as Navbar } from './Navbar.svelte';
 export { default as QuickActions } from './QuickActions.svelte';

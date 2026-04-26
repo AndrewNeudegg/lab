@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
+    Markdown,
     needsActionCount,
     Navbar,
     pendingActionableApprovals,
@@ -794,7 +795,7 @@
                 <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
                 <time>{message.time}</time>
               </div>
-              <p>{message.content}</p>
+              <Markdown content={message.content} />
               {#if message.role === 'assistant' && message.actions?.length}
                 <div class="message-actions">
                   {#each message.actions as action}
@@ -843,6 +844,11 @@
             rows="3"
             on:keydown={handleComposerKeydown}
           ></textarea>
+          {#if draft.trim()}
+            <div class="draft-preview" aria-label="Formatted draft">
+              <Markdown content={draft} />
+            </div>
+          {/if}
           <button type="submit" disabled={loading || !draft.trim()}>
             {loading ? 'Sending' : 'Send'}
           </button>
@@ -962,7 +968,6 @@
   .next-step p,
   .activity h3,
   .activity p,
-  .message p,
   .approval-list p,
   .empty,
   footer {
@@ -1622,13 +1627,6 @@
     font-weight: 800;
   }
 
-  .message p {
-    color: #172033;
-    line-height: 1.48;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-
   .error {
     margin: 0;
     padding: 0.75rem 1.25rem;
@@ -1678,6 +1676,16 @@
     color: #ffffff;
     background: #2563eb;
     font-weight: 850;
+  }
+
+  .draft-preview {
+    grid-column: 1 / -1;
+    max-height: 14rem;
+    overflow: auto;
+    padding: 0.8rem 0.9rem;
+    border: 1px solid #dbe3ef;
+    border-radius: 0.75rem;
+    background: #f8fafc;
   }
 
   .composer button[type='submit']:hover:not(:disabled) {

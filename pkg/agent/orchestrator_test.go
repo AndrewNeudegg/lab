@@ -1753,6 +1753,46 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	t.Fatal("delegate did not finish cleanly")
 }
 
+func TestWriteExternalRunArtifact(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	orch := &Orchestrator{cfg: cfg}
+
+	err := orch.writeExternalRunArtifact("delegate_test", "task_test", "codex", "/tmp/work", "completed", externalDelegateResult{
+		ID:        "delegate_test",
+		Backend:   "codex",
+		TaskID:    "task_test",
+		Workspace: "/tmp/work",
+		Command:   []string{"codex", "exec"},
+		Output:    "done",
+		Duration:  42,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(cfg.DataDir, "runs", "delegate_test.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"id":        "delegate_test",
+		"kind":      "external_agent",
+		"task_id":   "task_test",
+		"backend":   "codex",
+		"workspace": "/tmp/work",
+		"status":    "completed",
+		"output":    "done",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s = %v, want %q", key, got[key], want)
+		}
+	}
+}
+
 func TestStaleDelegateCompletionDoesNotChangeMergedOrDoneTask(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -2243,6 +2283,7 @@ func (agentDelegateStub) Risk() tool.RiskLevel { return tool.RiskMedium }
 func (s agentDelegateStub) Run(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	var req struct {
 		Backend   string `json:"backend"`
+		RunID     string `json:"run_id"`
 		TaskID    string `json:"task_id"`
 		Workspace string `json:"workspace"`
 	}
@@ -2257,7 +2298,7 @@ func (s agentDelegateStub) Run(ctx context.Context, raw json.RawMessage) (json.R
 		return nil, ctx.Err()
 	}
 	return json.Marshal(map[string]any{
-		"id":        "external_run_test",
+		"id":        req.RunID,
 		"backend":   req.Backend,
 		"task_id":   req.TaskID,
 		"workspace": req.Workspace,

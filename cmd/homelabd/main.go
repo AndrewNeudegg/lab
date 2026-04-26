@@ -22,6 +22,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	agentrunner "github.com/andrewneudegg/lab/pkg/externalagent"
 	"github.com/andrewneudegg/lab/pkg/healthd"
+	"github.com/andrewneudegg/lab/pkg/id"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
@@ -142,6 +143,7 @@ func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
 	registry := tool.NewRegistry()
 	timeout := time.Duration(cfg.Limits.MaxShellSeconds) * time.Second
 	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
+	events := eventlog.NewStore(filepath.Join(cfg.DataDir, "events"))
 	if err := repotools.Register(registry, repotools.Base{Root: cfg.Repo.Root, WorkspaceRoot: cfg.Repo.WorkspaceRoot, MaxFileBytes: cfg.Limits.MaxFileBytes}); err != nil {
 		return nil, err
 	}
@@ -166,10 +168,25 @@ func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
 	if err := tasktools.Register(registry, tasks); err != nil {
 		return nil, err
 	}
-	if err := externalagenttools.Register(registry, agentrunner.NewRunner(cfg.ExternalAgents)); err != nil {
+	runner := agentrunner.NewRunner(cfg.ExternalAgents, agentrunner.WithOutputHandler(func(ctx context.Context, chunk agentrunner.OutputChunk) {
+		_ = events.Append(ctx, eventlog.Event{
+			ID:     id.New("evt"),
+			Type:   "agent.delegate.output",
+			Actor:  chunk.Backend,
+			TaskID: chunk.TaskID,
+			Payload: eventlog.Payload(map[string]any{
+				"id":       chunk.RunID,
+				"backend":  chunk.Backend,
+				"stream":   chunk.Stream,
+				"text":     chunk.Text,
+				"sequence": chunk.Sequence,
+				"time":     chunk.Time,
+			}),
+		})
+	}))
+	if err := externalagenttools.Register(registry, runner); err != nil {
 		return nil, err
 	}
-	events := eventlog.NewStore(filepath.Join(cfg.DataDir, "events"))
 	approvals := approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals"))
 	provider, model, err := buildProvider(cfg)
 	if err != nil {

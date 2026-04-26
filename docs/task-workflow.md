@@ -60,3 +60,9 @@ Write workflow tools are available for explicit git operations:
 - `git.merge` merges a branch or commit into the current branch
 
 These write tools are high-risk and approval-gated by default. Task review still uses `git.merge_approved` for the normal reviewed-task merge path.
+
+## Shell Agent Tools
+
+`shell.run_limited` executes only allowlisted command arrays without shell expansion. Read-only or routine build/test commands remain low risk. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
+
+Review pending shell requests with `approvals`, then use `approve <approval_id>` or `deny <approval_id>`.

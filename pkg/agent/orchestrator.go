@@ -119,7 +119,7 @@ func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "user.message", Actor: from, Payload: eventlog.Payload(map[string]any{"message": message})})
 	reply, source, err := o.handleMessage(ctx, message)
 	if err != nil && isUserFacingCommandError(err) {
-		reply = "I couldn't match that to a task. Use `tasks` to see current task IDs, or click one of the suggested action buttons."
+		reply = userFacingCommandErrorReply(err)
 		source = "program"
 		err = nil
 	}
@@ -302,6 +302,17 @@ func isUserFacingCommandError(err error) bool {
 	return strings.HasPrefix(message, "no task matches ") ||
 		strings.HasPrefix(message, "task selector ") ||
 		strings.Contains(message, "task id or title is required")
+}
+
+func userFacingCommandErrorReply(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	if strings.HasPrefix(message, "task selector ") {
+		return "I found more than one matching task: " + message + ". Use the exact task ID from `tasks`, or click one of the suggested action buttons."
+	}
+	return "I couldn't match that to a task: " + message + ". Use `tasks` to see current task IDs, or click one of the suggested action buttons."
 }
 
 func isOperationalCommandError(err error) bool {
@@ -1459,22 +1470,41 @@ func (o *Orchestrator) resolveTaskID(selector string) (string, error) {
 		return "", err
 	}
 	needle := normalizeTaskSelector(selector)
-	var matches []taskstore.Task
+	var exactIDMatches []taskstore.Task
+	var exactTextMatches []taskstore.Task
+	var fuzzyMatches []taskstore.Task
 	for _, t := range tasks {
 		shortID := normalizeTaskSelector(taskShortID(t.ID))
 		fullID := normalizeTaskSelector(t.ID)
 		title := normalizeTaskSelector(t.Title)
 		goal := normalizeTaskSelector(t.Goal)
-		if fullID == needle || shortID == needle || title == needle || goal == needle {
-			matches = append(matches, t)
+		if fullID == needle || shortID == needle {
+			exactIDMatches = append(exactIDMatches, t)
+			continue
+		}
+		if title == needle || goal == needle {
+			exactTextMatches = append(exactTextMatches, t)
 			continue
 		}
 		if needle != "" && (strings.Contains(title, needle) || strings.Contains(goal, needle)) {
-			matches = append(matches, t)
+			fuzzyMatches = append(fuzzyMatches, t)
 		}
 	}
+	if taskID, ok, err := resolveTaskMatches(selector, exactIDMatches); ok || err != nil {
+		return taskID, err
+	}
+	if taskID, ok, err := resolveTaskMatches(selector, exactTextMatches); ok || err != nil {
+		return taskID, err
+	}
+	if taskID, ok, err := resolveTaskMatches(selector, fuzzyMatches); ok || err != nil {
+		return taskID, err
+	}
+	return "", fmt.Errorf("no task matches %q", selector)
+}
+
+func resolveTaskMatches(selector string, matches []taskstore.Task) (string, bool, error) {
 	if len(matches) == 1 {
-		return matches[0].ID, nil
+		return matches[0].ID, true, nil
 	}
 	if len(matches) > 1 {
 		sort.Slice(matches, func(i, j int) bool {
@@ -1484,16 +1514,16 @@ func (o *Orchestrator) resolveTaskID(selector string) (string, error) {
 			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
 		})
 		if !taskTerminal(matches[0].Status) && (len(matches) == 1 || taskTerminal(matches[1].Status)) {
-			return matches[0].ID, nil
+			return matches[0].ID, true, nil
 		}
 		var ids []string
 		for _, t := range matches {
 			ids = append(ids, taskShortID(t.ID)+"="+friendlyTaskTitle(t))
 		}
 		sort.Strings(ids)
-		return "", fmt.Errorf("task selector %q is ambiguous: %s", selector, strings.Join(ids, ", "))
+		return "", true, fmt.Errorf("task selector %q is ambiguous: %s", selector, strings.Join(ids, ", "))
 	}
-	return "", fmt.Errorf("no task matches %q", selector)
+	return "", false, nil
 }
 
 func (o *Orchestrator) latestActionableTask() (string, error) {

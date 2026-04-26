@@ -233,6 +233,49 @@ func TestTaskViewsIncludeClickableNextActions(t *testing.T) {
 	}
 }
 
+func TestResolveTaskIDExactShortIDBeatsFuzzyGoalMention(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	target := taskstore.Task{
+		ID:         "task_20260425_235939_a927493f",
+		Title:      "action reflection result into a new task",
+		Goal:       "action reflection result into a new task",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	mentioning := taskstore.Task{
+		ID:         "task_20260426_000306_09a4b60d",
+		Title:      "investigate failed review command",
+		Goal:       "review a927493f failed even though the task exists",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "codex",
+		CreatedAt:  now.Add(time.Minute),
+		UpdatedAt:  now.Add(time.Minute),
+	}
+	for _, task := range []taskstore.Task{target, mentioning} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	taskID, err := orch.resolveTaskID("a927493f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskID != target.ID {
+		t.Fatalf("taskID = %q, want %q", taskID, target.ID)
+	}
+	reply, err := orch.Handle(context.Background(), "test", "show a927493f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, target.ID) {
+		t.Fatalf("reply = %q, want exact short-id task", reply)
+	}
+}
+
 func TestAwaitingVerificationTaskShowsAcceptAction(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	task := taskstore.Task{
@@ -272,6 +315,38 @@ func TestBadTaskSelectorReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	}
 	if !strings.Contains(reply, "I couldn't match that to a task") {
 		t.Fatalf("reply = %q, want friendly task selector error", reply)
+	}
+}
+
+func TestAmbiguousTaskSelectorExplainsAmbiguity(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	for _, task := range []taskstore.Task{{
+		ID:        "task_20260425_174912_1db1c910",
+		Title:     "chat cleanup",
+		Goal:      "chat cleanup",
+		Status:    taskstore.StatusRunning,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, {
+		ID:        "task_20260425_213021_28493611",
+		Title:     "chat cleanup",
+		Goal:      "chat cleanup",
+		Status:    taskstore.StatusRunning,
+		CreatedAt: now.Add(time.Minute),
+		UpdatedAt: now.Add(time.Minute),
+	}} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "show chat cleanup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "more than one matching task") || !strings.Contains(reply, "1db1c910") || !strings.Contains(reply, "28493611") {
+		t.Fatalf("reply = %q, want actionable ambiguity detail", reply)
 	}
 }
 

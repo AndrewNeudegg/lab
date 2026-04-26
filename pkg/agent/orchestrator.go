@@ -166,6 +166,15 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		return programResult(help(), nil)
 	case "reflect":
 		return o.reflectOnInteraction(ctx, message)
+	case "deep":
+		if len(fields) >= 3 && strings.EqualFold(fields[1], "research") {
+			query := webSearchQueryFromCommand(fields[2:])
+			if query == "" {
+				return programResult("usage: deep research <query>", nil)
+			}
+			return programResult(o.researchInternet(ctx, query, internetSearchSource(message), "deep"))
+		}
+		return programResult("usage: deep research <query>", nil)
 	case "status":
 		return programResult(o.listInFlight())
 	case "new", "task":
@@ -199,7 +208,16 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		if query == "" {
 			return programResult("usage: web <query>", nil)
 		}
+		if isDeepResearchRequest(message) {
+			return programResult(o.researchInternet(ctx, query, internetSearchSource(message), researchDepth(message)))
+		}
 		return programResult(o.searchInternet(ctx, query, internetSearchSource(message)))
+	case "research":
+		query := webSearchQueryFromCommand(fields[1:])
+		if query == "" {
+			return programResult("usage: research <query>", nil)
+		}
+		return programResult(o.researchInternet(ctx, query, internetSearchSource(message), researchDepth(message)))
 	case "search":
 		if len(fields) < 2 {
 			return programResult("usage: search <text>", nil)
@@ -208,6 +226,9 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 			query := webSearchQueryFromCommand(fields[1:])
 			if query == "" {
 				return programResult("usage: search the web for <query>", nil)
+			}
+			if isDeepResearchRequest(message) {
+				return programResult(o.researchInternet(ctx, query, internetSearchSource(message), researchDepth(message)))
 			}
 			return programResult(o.searchInternet(ctx, query, internetSearchSource(message)))
 		}
@@ -538,6 +559,25 @@ func internetSearchSource(message string) string {
 		return "academic"
 	}
 	return "web"
+}
+
+func isDeepResearchRequest(message string) bool {
+	normalized := strings.ToLower(message)
+	return strings.Contains(normalized, "deep research") ||
+		strings.Contains(normalized, "research online") ||
+		strings.Contains(normalized, "research the web") ||
+		strings.HasPrefix(strings.TrimSpace(normalized), "research ")
+}
+
+func researchDepth(message string) string {
+	normalized := strings.ToLower(message)
+	if strings.Contains(normalized, "quick") || strings.Contains(normalized, "roughly") {
+		return "quick"
+	}
+	if strings.Contains(normalized, "deep") || strings.Contains(normalized, "comprehensive") || strings.Contains(normalized, "thorough") {
+		return "deep"
+	}
+	return "standard"
 }
 
 func isActiveTaskStatusRequest(message string) bool {
@@ -1105,6 +1145,8 @@ func help() string {
 		"  search <text>              search repo text",
 		"  web <query>                search the public web",
 		"  search web for <query>     search the public web",
+		"  research <query>           fan out web research and fetch sources",
+		"  deep research <query>      broader multi-query research bundle",
 		"  reflect [prompt]           reflect and suggest a new-task action",
 		"  patch <task_id> <file>     apply unified diff to task worktree",
 		"  test <task_id>             run project checks in worktree",
@@ -1346,6 +1388,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		`{"message":"short user-facing status","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"TODO"}}]}`,
 		`{"message":"final answer","done":true,"tool_calls":[]}`,
 		"Use tools for inspection before answering repo-specific questions.",
+		"Use internet.research for broad, current, multi-source questions before synthesizing advice.",
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
@@ -2416,6 +2459,95 @@ func (o *Orchestrator) searchInternet(ctx context.Context, query, source string)
 	return formatInternetSearchResult(raw), nil
 }
 
+func (o *Orchestrator) researchInternet(ctx context.Context, query, source, depth string) (string, error) {
+	if source == "" || source == "web" {
+		source = "all"
+	}
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.research", map[string]any{"query": query, "source": source, "depth": depth}, "")
+	if err != nil {
+		return "", err
+	}
+	return formatInternetResearchResult(raw), nil
+}
+
+func formatInternetResearchResult(raw json.RawMessage) string {
+	var out struct {
+		Query           string           `json:"query"`
+		Source          string           `json:"source"`
+		Depth           string           `json:"depth"`
+		Method          string           `json:"method"`
+		Provider        string           `json:"search_provider"`
+		Plan            []string         `json:"plan"`
+		Subqueries      []string         `json:"subqueries"`
+		Sources         []map[string]any `json:"sources"`
+		SearchErrors    []string         `json:"search_errors"`
+		FollowUpQueries []string         `json:"follow_up_queries"`
+		Notes           []string         `json:"notes"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return string(raw)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Research bundle (%s/%s): %s\n", firstNonEmptyString(out.Source, "all"), firstNonEmptyString(out.Depth, "standard"), firstNonEmptyString(out.Query, "query"))
+	if out.Provider != "" {
+		fmt.Fprintf(&b, "Search provider: %s\n", out.Provider)
+	}
+	if out.Method != "" {
+		fmt.Fprintf(&b, "Method: %s\n", out.Method)
+	}
+	if len(out.Subqueries) > 0 {
+		fmt.Fprintln(&b, "Fan-out queries:")
+		for i, query := range out.Subqueries {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, query)
+		}
+	}
+	if len(out.Sources) > 0 {
+		fmt.Fprintln(&b, "Sources:")
+		for i, source := range out.Sources {
+			title := firstNonEmptyString(stringFromAny(source["title"]), stringFromAny(source["url"]))
+			url := stringFromAny(source["url"])
+			domain := stringFromAny(source["domain"])
+			snippet := firstNonEmptyString(stringFromAny(source["snippet"]), stringFromAny(source["text"]))
+			fmt.Fprintf(&b, "%d. %s", i+1, title)
+			if domain != "" {
+				fmt.Fprintf(&b, " (%s)", domain)
+			}
+			if url != "" {
+				fmt.Fprintf(&b, " — %s", url)
+			}
+			if snippet != "" {
+				fmt.Fprintf(&b, "\n   %s", truncateString(snippet, 260))
+			}
+			fmt.Fprintln(&b)
+		}
+	}
+	if len(out.SearchErrors) > 0 {
+		fmt.Fprintln(&b, "Search errors:")
+		for _, err := range out.SearchErrors {
+			fmt.Fprintf(&b, "- %s\n", err)
+		}
+	}
+	if len(out.FollowUpQueries) > 0 {
+		fmt.Fprintln(&b, "Useful follow-up queries:")
+		for _, query := range out.FollowUpQueries {
+			fmt.Fprintf(&b, "- %s\n", query)
+		}
+	}
+	result := strings.TrimSpace(b.String())
+	if result == "" {
+		return string(raw)
+	}
+	return result
+}
+
+func truncateString(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= max {
+		return value
+	}
+	return strings.TrimSpace(value[:max]) + "..."
+}
+
 func formatInternetSearchResult(raw json.RawMessage) string {
 	var out struct {
 		Query       string           `json:"query"`
@@ -2972,6 +3104,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		mustJSON(t),
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
+		"- Use internet.research for broad, current, multi-source questions before implementation choices.",
 		"- Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"- Use internet.search with source academic for papers or source all when both web and scholarly context matter.",
 		"- Use internet.fetch on promising result URLs before relying on details; prefer official, primary, or scholarly sources.",
@@ -2984,7 +3117,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
-			"internet.search": true, "internet.fetch": true,
+			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
 			"go.fmt": true, "go.test": true, "go.build": true,

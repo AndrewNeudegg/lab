@@ -42,6 +42,16 @@ search internet for Bun workspace package.json docs
 
 Web search runs through the `internet.search` tool. Academic wording such as `academic`, `scholarly`, or `papers` searches scholarly sources.
 
+Use research when a quick search result is not enough and the agent needs a source bundle to reason from:
+
+```text
+research current SvelteKit adapter production guidance
+deep research local LLM agent web research architecture
+research academic papers on deep research agents
+```
+
+Research runs through `internet.research`. It creates fan-out queries, searches web and/or academic sources, deduplicates URLs, fetches bounded text from top public pages, and returns follow-up queries. If `BRAVE_SEARCH_API_KEY` or `TAVILY_API_KEY` is set, `internet.search` and `internet.research` use those stronger search backends before falling back to DuckDuckGo. `HOMELABD_SEARCH_PROVIDER=brave|tavily|duckduckgo` can force a provider.
+
 ## Task Worktree Recovery
 
 External coding agents can edit files in task worktrees, but the runtime owns git state. If a task branch becomes too stale to rebase cleanly, refresh it from chat:

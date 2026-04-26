@@ -144,6 +144,28 @@ func TestSearchTheWebUsesInternetTool(t *testing.T) {
 	}
 }
 
+func TestResearchCommandUsesInternetResearchTool(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	research := &internetResearchStub{}
+	if err := orch.registry.Register(research); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "deep research local LLM agent web research architecture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if research.query != "local LLM agent research architecture" {
+		t.Fatalf("query = %q, want cleaned research query", research.query)
+	}
+	if research.depth != "deep" {
+		t.Fatalf("depth = %q, want deep", research.depth)
+	}
+	if !strings.Contains(reply, "Research bundle") || !strings.Contains(reply, "Agent search architecture") {
+		t.Fatalf("reply = %q, want formatted research result", reply)
+	}
+}
+
 func TestPlainSearchStillUsesRepoSearch(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	search := &repoSearchStub{}
@@ -2142,6 +2164,41 @@ func (s *internetSearchStub) Run(_ context.Context, raw json.RawMessage) (json.R
 			"title":   "SvelteKit docs",
 			"url":     "https://svelte.dev/docs/kit/adapter-auto",
 			"snippet": "Adapter-auto detects supported production environments.",
+		}},
+	})
+}
+
+type internetResearchStub struct {
+	query string
+	depth string
+}
+
+func (internetResearchStub) Name() string        { return "internet.research" }
+func (internetResearchStub) Description() string { return "" }
+func (internetResearchStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (internetResearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *internetResearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Query string `json:"query"`
+		Depth string `json:"depth"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	s.query = req.Query
+	s.depth = req.Depth
+	return json.Marshal(map[string]any{
+		"query":           req.Query,
+		"source":          "all",
+		"depth":           req.Depth,
+		"method":          "plan -> fan-out search -> fetch",
+		"search_provider": "brave",
+		"subqueries":      []string{req.Query, req.Query + " official docs"},
+		"sources": []map[string]any{{
+			"title":   "Agent search architecture",
+			"url":     "https://example.com/agent-search",
+			"domain":  "example.com",
+			"snippet": "Fan-out search and fetched evidence.",
 		}},
 	})
 }

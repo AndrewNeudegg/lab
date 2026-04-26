@@ -91,7 +91,6 @@ If a component does not answer one of those questions, it should not be in the p
 - Task activity: event-log timeline filtered to the selected task. This is the task-scoped history equivalent to issue activity or incident timelines.
 - Original input: shown below task activity, preserving the full task goal text for reference after the timeline.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
-- Chat transcript messages and composer drafts render common markdown, including paragraphs, line breaks, lists, quotes, inline code, links, and fenced code blocks. The raw textarea remains editable markdown; the formatted draft preview shows what will be sent.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
 ## Status Semantics
@@ -120,11 +119,11 @@ Do not rely on color alone. Always show the status text next to the colored indi
 
 On compact screens `/tasks` stacks:
 
-1. A collapsible task queue first, capped to the top portion of the viewport when expanded.
+1. Task queue first, capped to the top portion of the viewport and collapsible from the queue header.
 2. Selected-task record below it.
 3. Global command panel below the selected-task record.
 
-The task queue can be reopened with the mobile queue button after selecting a task, so task navigation stays accessible without permanently occupying the compact viewport. The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read.
+The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. After a task is selected on mobile, collapse the queue so the selected-task record remains readable while the queue stays reachable through the `Show queue` control.
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
 

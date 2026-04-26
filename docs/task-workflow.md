@@ -42,6 +42,8 @@ Recovery decisions are written to the JSONL event log as `task.recovery.*` event
 
 When a task changes user-facing behavior, commands, UI, configuration, tools, or workflow, the worker should update relevant docs or help text in the same patch.
 
+When an external coding worker finishes, `homelabd` automatically runs the review gate. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, and only then creates a merge approval. A task branch that cannot merge cleanly is blocked or requeued to Codex for conflict resolution; approval is not created and the main repository must not be left in a conflicted state.
+
 Final task summaries should include:
 
 - changed files

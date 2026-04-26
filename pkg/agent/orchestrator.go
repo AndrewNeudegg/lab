@@ -1800,6 +1800,15 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 	t.Status = taskstore.StatusReadyForReview
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.completed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "result": out})})
+	o.clearTaskActive(taskID)
+	review, reviewErr := o.reviewTask(context.Background(), taskID)
+	payload := map[string]any{"id": runID, "backend": backend, "review": review}
+	if reviewErr != nil {
+		payload["error"] = reviewErr.Error()
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.failed", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(payload)})
+		return
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.completed", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(payload)})
 }
 
 func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (string, error) {
@@ -2106,6 +2115,25 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		_ = o.tasks.Save(t)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
 		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nNo approval created because checks failed.\nNext: `delegate %s to codex fix the failing tests`, `diff %s`, or `delete %s`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), shortID, shortID, shortID), nil
+	}
+	if _, ok := o.registry.Get("git.merge_check"); ok {
+		if _, err := o.runTool(ctx, "ReviewerAgent", "git.merge_check", map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root}, taskID); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = "ReviewerAgent premerge check failed: " + err.Error()
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+			instruction := strings.Join([]string{
+				"The task branch cannot be merged cleanly into the current main branch.",
+				"Bring the task worktree up to date, resolve conflicts in the task branch, remove all conflict markers, and rerun relevant tests.",
+				"Do not edit the main repository. Work only in the task workspace.",
+				"Premerge error: " + err.Error(),
+			}, "\n")
+			if delegateErr := o.startDelegationForTask(context.Background(), taskID, "codex", instruction); delegateErr == nil {
+				return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created. Requeued %s to codex to rebase/resolve conflicts before merge.", status, strings.TrimSpace(testOut), err.Error(), shortID), nil
+			}
+			return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created. Next: `delegate %s to codex rebase and resolve merge conflicts`, `diff %s`, or `delete %s`.", status, strings.TrimSpace(testOut), err.Error(), shortID, shortID, shortID), nil
+		}
 	}
 	approvalID := id.New("approval")
 	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})

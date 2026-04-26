@@ -28,6 +28,7 @@ func Register(reg *tool.Registry, base Base) error {
 		CommitTool{},
 		RevertTool{},
 		MergeTool{},
+		MergeCheckTool{repoRoot: base.RepoRoot},
 		WorktreeCreateTool{manager: workspace.Manager{RepoRoot: base.RepoRoot, WorkspaceRoot: base.WorkspaceRoot}},
 		WorktreeRemoveTool{manager: workspace.Manager{RepoRoot: base.RepoRoot, WorkspaceRoot: base.WorkspaceRoot}},
 		MergeApprovedTool{repoRoot: base.RepoRoot},
@@ -373,6 +374,33 @@ func (MergeTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessag
 	return runGit(ctx, req.Dir, args...)
 }
 
+type MergeCheckTool struct{ repoRoot string }
+
+func (MergeCheckTool) Name() string { return "git.merge_check" }
+func (MergeCheckTool) Description() string {
+	return "Check whether a branch can merge cleanly into the configured repository without modifying the worktree."
+}
+func (MergeCheckTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["branch","target"],"properties":{"branch":{"type":"string"},"target":{"type":"string"}}}`)
+}
+func (MergeCheckTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (t MergeCheckTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Branch string `json:"branch"`
+		Target string `json:"target"`
+	}
+	if err := json.Unmarshal(input, &req); err != nil {
+		return nil, err
+	}
+	if err := validateMergeTarget(t.repoRoot, req.Target, req.Branch); err != nil {
+		return nil, err
+	}
+	if err := checkMergeReady(ctx, t.repoRoot, req.Branch); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"mergeable": true, "branch": req.Branch})
+}
+
 type WorktreeCreateTool struct{ manager workspace.Manager }
 
 func (WorktreeCreateTool) Name() string { return "git.worktree_create" }
@@ -442,8 +470,8 @@ func (t MergeApprovedTool) Run(ctx context.Context, input json.RawMessage) (json
 	if req.Target == "" || req.Branch == "" {
 		return nil, fmt.Errorf("branch and target are required")
 	}
-	if filepath.Clean(req.Target) != filepath.Clean(t.repoRoot) {
-		return nil, fmt.Errorf("merge target does not match configured repo root")
+	if err := validateMergeTarget(t.repoRoot, req.Target, req.Branch); err != nil {
+		return nil, err
 	}
 	commitOutput := ""
 	if req.Workspace != "" {
@@ -453,11 +481,54 @@ func (t MergeApprovedTool) Run(ctx context.Context, input json.RawMessage) (json
 			return nil, err
 		}
 	}
+	if err := checkMergeReady(ctx, t.repoRoot, req.Branch); err != nil {
+		return nil, err
+	}
+	if err := ensureCleanWorktree(ctx, t.repoRoot); err != nil {
+		return nil, err
+	}
 	out, err := exec.CommandContext(ctx, "git", "-C", t.repoRoot, "merge", "--no-ff", req.Branch).CombinedOutput()
 	if err != nil {
+		_ = exec.CommandContext(context.Background(), "git", "-C", t.repoRoot, "merge", "--abort").Run()
 		return nil, fmt.Errorf("git merge: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return json.Marshal(map[string]any{"merged": req.Branch, "commit_output": commitOutput, "output": string(out)})
+}
+
+func validateMergeTarget(repoRoot, target, branch string) error {
+	if target == "" || branch == "" {
+		return fmt.Errorf("branch and target are required")
+	}
+	if filepath.Clean(target) != filepath.Clean(repoRoot) {
+		return fmt.Errorf("merge target does not match configured repo root")
+	}
+	return nil
+}
+
+func checkMergeReady(ctx context.Context, repoRoot, branch string) error {
+	if strings.TrimSpace(branch) == "" {
+		return fmt.Errorf("branch is required")
+	}
+	verifyOut, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--verify", branch+"^{commit}").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("premerge check failed: branch %q does not resolve to a commit: %w: %s", branch, err, strings.TrimSpace(string(verifyOut)))
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "merge-tree", "--write-tree", "HEAD", branch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("premerge check failed: branch %q must be rebased or conflict-resolved before merge: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func ensureCleanWorktree(ctx context.Context, repoRoot string) error {
+	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git status before merge: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return fmt.Errorf("merge target has uncommitted or conflicted changes; refusing merge: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func commitWorkspaceChanges(ctx context.Context, workspacePath, message string) (string, error) {

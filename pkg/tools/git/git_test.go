@@ -27,6 +27,7 @@ func TestRegisterIncludesFullWorkflowTools(t *testing.T) {
 		"git.commit",
 		"git.revert",
 		"git.merge",
+		"git.merge_check",
 		"git.worktree_create",
 		"git.worktree_remove",
 		"git.merge_approved",
@@ -137,6 +138,64 @@ func TestMergeAndRevertTools(t *testing.T) {
 	status := gitOutput(t, dir, "status", "--short")
 	if !strings.Contains(status, "M  app.txt") && !strings.Contains(status, "M app.txt") {
 		t.Fatalf("status = %q, want staged or modified app.txt", status)
+	}
+}
+
+func TestMergeCheckRejectsConflictsWithoutTouchingWorktree(t *testing.T) {
+	ctx := context.Background()
+	dir := initTestRepo(t)
+	writeFile(t, dir, "app.txt", "base\n")
+	gitRun(t, dir, "add", "app.txt")
+	gitRun(t, dir, "commit", "-m", "base")
+
+	gitRun(t, dir, "checkout", "-b", "feature")
+	writeFile(t, dir, "app.txt", "feature\n")
+	gitRun(t, dir, "commit", "-am", "feature")
+	gitRun(t, dir, "checkout", "main")
+	writeFile(t, dir, "app.txt", "main\n")
+	gitRun(t, dir, "commit", "-am", "main")
+
+	_, err := (MergeCheckTool{repoRoot: dir}).Run(ctx, mustRaw(t, map[string]any{
+		"target": dir,
+		"branch": "feature",
+	}))
+	if err == nil {
+		t.Fatal("merge check should reject conflicting branch")
+	}
+	if got := gitOutput(t, dir, "status", "--short"); strings.TrimSpace(got) != "" {
+		t.Fatalf("status = %q, want clean worktree after failed premerge check", got)
+	}
+	if got := readFile(t, dir, "app.txt"); got != "main\n" {
+		t.Fatalf("app.txt = %q, want main content without conflict markers", got)
+	}
+}
+
+func TestMergeApprovedRejectsConflictsWithoutLeavingMergeState(t *testing.T) {
+	ctx := context.Background()
+	dir := initTestRepo(t)
+	writeFile(t, dir, "app.txt", "base\n")
+	gitRun(t, dir, "add", "app.txt")
+	gitRun(t, dir, "commit", "-m", "base")
+
+	gitRun(t, dir, "checkout", "-b", "feature")
+	writeFile(t, dir, "app.txt", "feature\n")
+	gitRun(t, dir, "commit", "-am", "feature")
+	gitRun(t, dir, "checkout", "main")
+	writeFile(t, dir, "app.txt", "main\n")
+	gitRun(t, dir, "commit", "-am", "main")
+
+	_, err := (MergeApprovedTool{repoRoot: dir}).Run(ctx, mustRaw(t, map[string]any{
+		"target": dir,
+		"branch": "feature",
+	}))
+	if err == nil {
+		t.Fatal("approved merge should reject conflicting branch")
+	}
+	if got := gitOutput(t, dir, "status", "--short"); strings.TrimSpace(got) != "" {
+		t.Fatalf("status = %q, want clean worktree after rejected merge", got)
+	}
+	if got := readFile(t, dir, "app.txt"); got != "main\n" {
+		t.Fatalf("app.txt = %q, want main content without conflict markers", got)
 	}
 }
 

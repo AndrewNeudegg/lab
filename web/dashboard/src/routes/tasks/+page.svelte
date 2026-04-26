@@ -2,7 +2,6 @@
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
-    Markdown,
     needsActionCount,
     Navbar,
     pendingActionableApprovals,
@@ -72,8 +71,8 @@
   let taskFilter: TaskFilter = 'attention';
   let taskSearch = '';
   let selectedTaskId = '';
-  let taskNavigationOpen = true;
   let lastRefresh = '';
+  let taskQueueOpen = true;
   let commandPanelOpen = false;
   let inputEl: HTMLTextAreaElement | undefined;
   let messagesEl: HTMLElement | undefined;
@@ -538,9 +537,7 @@
 
   const selectTask = (id: string) => {
     selectedTaskId = id;
-    if (window.matchMedia('(max-width: 760px)').matches) {
-      taskNavigationOpen = false;
-    }
+    taskQueueOpen = false;
   };
 
   const handleComposerKeydown = (event: KeyboardEvent) => {
@@ -563,22 +560,22 @@
 <Navbar title="Tasks" subtitle="homelabd" current="/tasks" />
 
 <div class="shell">
-  <aside class="task-pane" aria-label="Tasks">
+  <aside class="task-pane" class:collapsed={!taskQueueOpen} aria-label="Tasks">
     <header class="task-header">
       <div>
         <p>Task queue</p>
         <h1>Task queue</h1>
         <span>Synced {lastRefresh || 'never'}</span>
       </div>
-      <nav aria-label="Task queue controls">
+      <nav aria-label="Dashboard views">
         <button
           type="button"
           class="queue-toggle"
-          aria-controls="task-navigation"
-          aria-expanded={taskNavigationOpen}
-          on:click={() => (taskNavigationOpen = !taskNavigationOpen)}
+          aria-controls="task-sidebar-content"
+          aria-expanded={taskQueueOpen}
+          on:click={() => (taskQueueOpen = !taskQueueOpen)}
         >
-          {taskNavigationOpen ? 'Hide queue' : `Show queue (${visibleTasks().length})`}
+          {taskQueueOpen ? 'Hide queue' : `Show queue (${visibleTasks().length})`}
         </button>
         <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
           {refreshing ? 'Syncing' : 'Sync'}
@@ -586,11 +583,7 @@
       </nav>
     </header>
 
-    <div
-      id="task-navigation"
-      class="task-navigation"
-      class:collapsed={!taskNavigationOpen}
-    >
+    <div id="task-sidebar-content" class="task-sidebar-content">
       <section class="triage" aria-label="Task filters">
         {#each [
           { id: 'attention', label: 'Needs action', count: needsActionCount(tasks, approvals) },
@@ -818,7 +811,7 @@
                 <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
                 <time>{message.time}</time>
               </div>
-              <Markdown content={message.content} />
+              <p>{message.content}</p>
               {#if message.role === 'assistant' && message.actions?.length}
                 <div class="message-actions">
                   {#each message.actions as action}
@@ -867,11 +860,6 @@
             rows="3"
             on:keydown={handleComposerKeydown}
           ></textarea>
-          {#if draft.trim()}
-            <div class="draft-preview" aria-label="Formatted draft">
-              <Markdown content={draft} />
-            </div>
-          {/if}
           <button type="submit" disabled={loading || !draft.trim()}>
             {loading ? 'Sending' : 'Send'}
           </button>
@@ -947,15 +935,18 @@
 
   .task-pane {
     display: grid;
-    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 0.75rem;
     padding: 1rem;
     border-right: 1px solid #dde4ef;
     background: #ffffff;
   }
 
-  .task-navigation {
-    display: contents;
+  .task-sidebar-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-height: 0;
   }
 
   .task-header,
@@ -978,15 +969,10 @@
   }
 
   .task-header nav {
-    flex-wrap: wrap;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 0.5rem;
-  }
-
-  .queue-toggle {
-    display: none;
   }
 
   .task-header p,
@@ -1000,6 +986,7 @@
   .next-step p,
   .activity h3,
   .activity p,
+  .message p,
   .approval-list p,
   .empty,
   footer {
@@ -1026,6 +1013,7 @@
   }
 
   .task-header button,
+  .queue-toggle,
   .triage button,
   .mini-actions button,
   .record-actions button,
@@ -1044,6 +1032,7 @@
   }
 
   .task-header button:hover:not(:disabled),
+  .queue-toggle:hover:not(:disabled),
   .triage button:hover,
   .mini-actions button:hover:not(:disabled),
   .record-actions button:hover:not(:disabled),
@@ -1056,6 +1045,10 @@
 
   .triage {
     gap: 0.5rem;
+  }
+
+  .queue-toggle {
+    display: none;
   }
 
   .triage button {
@@ -1175,6 +1168,7 @@
     display: grid;
     align-content: start;
     gap: 0.35rem;
+    flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     padding-right: 0.2rem;
@@ -1659,6 +1653,13 @@
     font-weight: 800;
   }
 
+  .message p {
+    color: #172033;
+    line-height: 1.48;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
   .error {
     margin: 0;
     padding: 0.75rem 1.25rem;
@@ -1710,16 +1711,6 @@
     font-weight: 850;
   }
 
-  .draft-preview {
-    grid-column: 1 / -1;
-    max-height: 14rem;
-    overflow: auto;
-    padding: 0.8rem 0.9rem;
-    border: 1px solid #dbe3ef;
-    border-radius: 0.75rem;
-    background: #f8fafc;
-  }
-
   .composer button[type='submit']:hover:not(:disabled) {
     background: #1d4ed8;
   }
@@ -1750,21 +1741,29 @@
 
     .task-pane {
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      max-height: 48dvh;
+      max-height: 64dvh;
       border-right: 0;
       border-bottom: 1px solid #dde4ef;
     }
 
-    .task-navigation {
-      display: grid;
-      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
-      gap: 0.75rem;
-      min-height: 0;
+    .task-header {
+      align-items: flex-start;
     }
 
-    .task-navigation.collapsed {
+    .task-header nav {
+      flex-wrap: wrap;
+    }
+
+    .task-pane.collapsed {
+      max-height: none;
+    }
+
+    .task-pane.collapsed .task-sidebar-content {
       display: none;
+    }
+
+    .task-sidebar-content {
+      overflow: hidden;
     }
 
     .queue-toggle {

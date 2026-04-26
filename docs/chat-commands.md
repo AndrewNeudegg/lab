@@ -2,6 +2,16 @@
 
 `homelabd` accepts short operational commands and natural development requests from chat.
 
+## Reflection
+
+Use reflection when you want one improvement from the recent interaction and a follow-up task you can action:
+
+```text
+reflect on our recent interaction and suggest one improvement
+```
+
+The reply includes a `new <goal>` command. In the dashboard this appears as a suggested action button, so you can create the follow-up task directly from the reflection result.
+
 ## Search
 
 Use repo search when you want to inspect local code:

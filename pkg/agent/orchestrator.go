@@ -1842,7 +1842,8 @@ func usageNotesFromResult(result string) string {
 		if strings.Contains(normalized, "how to use") ||
 			strings.Contains(normalized, "usage") ||
 			strings.Contains(normalized, "docs") ||
-			strings.Contains(normalized, "documentation") {
+			strings.Contains(normalized, "documentation") ||
+			strings.HasPrefix(normalized, "restart plan:") {
 			start := i
 			end := i + 4
 			if end > len(lines) {
@@ -1855,6 +1856,61 @@ func usageNotesFromResult(result string) string {
 		return "No explicit usage/docs notes were recorded. Reopen the task if this needs follow-up."
 	}
 	return strings.TrimSpace(strings.Join(selected, "\n"))
+}
+
+func restartPlanForDiff(diff string) string {
+	components := touchedRestartComponents(diffFileList(diff))
+	if len(components) == 0 {
+		return ""
+	}
+	return "restart " + strings.Join(components, ", ") + " after merge before final acceptance"
+}
+
+func restartPlanFromResult(result string) string {
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(line), "restart plan:") {
+			return strings.TrimSpace(line[len("Restart plan:"):])
+		}
+	}
+	return ""
+}
+
+func touchedRestartComponents(files []string) []string {
+	seen := make(map[string]bool)
+	var components []string
+	add := func(component string) {
+		if component == "" || seen[component] {
+			return
+		}
+		seen[component] = true
+		components = append(components, component)
+	}
+	for _, file := range files {
+		switch {
+		case strings.HasPrefix(file, "cmd/homelabd/"),
+			strings.HasPrefix(file, "pkg/agent/"),
+			strings.HasPrefix(file, "pkg/chat/"),
+			strings.HasPrefix(file, "pkg/config/"),
+			strings.HasPrefix(file, "pkg/control/"),
+			strings.HasPrefix(file, "pkg/eventlog/"),
+			strings.HasPrefix(file, "pkg/externalagent/"),
+			strings.HasPrefix(file, "pkg/llm/"),
+			strings.HasPrefix(file, "pkg/memory/"),
+			strings.HasPrefix(file, "pkg/task/"),
+			strings.HasPrefix(file, "pkg/tool/"),
+			strings.HasPrefix(file, "pkg/tools/"),
+			strings.HasPrefix(file, "pkg/workspace/"):
+			add("homelabd")
+		case strings.HasPrefix(file, "cmd/healthd/"), strings.HasPrefix(file, "pkg/healthd/"):
+			add("healthd")
+		case strings.HasPrefix(file, "cmd/supervisord/"), strings.HasPrefix(file, "pkg/supervisor/"):
+			add("supervisord")
+		case strings.HasPrefix(file, "web/"):
+			add("dashboard")
+		}
+	}
+	return components
 }
 
 func (o *Orchestrator) deleteTask(ctx context.Context, selector string) (string, error) {
@@ -2489,6 +2545,7 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created and no worker was restarted automatically.\nNext: `delegate %s to codex rebase and resolve merge conflicts`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, status, strings.TrimSpace(testOut), err.Error(), shortID, shortID, shortID), nil
 		}
 	}
+	restartPlan := restartPlanForDiff(diffOut)
 	approvalID := id.New("approval")
 	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
@@ -2498,9 +2555,16 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	t.Status = taskstore.StatusAwaitingApproval
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = "ReviewerAgent test status: " + status
+	if restartPlan != "" {
+		t.Result += "\nRestart plan: " + restartPlan
+	}
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(req)})
-	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\nAfter merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), approvalID, approvalID, shortID, shortID), nil
+	restartLine := "Restart impact: no supervised component restart detected."
+	if restartPlan != "" {
+		restartLine = "Restart impact: " + restartPlan
+	}
+	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\nAfter merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, shortID, shortID), nil
 }
 
 func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, workspace string) (string, error) {
@@ -2958,7 +3022,11 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			if req.Tool == "git.merge_approved" {
 				t.Status = taskstore.StatusAwaitingVerification
 				t.AssignedTo = "OrchestratorAgent"
+				restartPlan := restartPlanFromResult(t.Result)
 				t.Result = "merged after approval " + approvalID + "; awaiting human verification"
+				if restartPlan != "" {
+					t.Result += "\nRestart plan: " + restartPlan
+				}
 			} else {
 				t.Status = taskstore.StatusRunning
 				t.Result = "approved " + req.Tool + " via " + approvalID
@@ -2970,7 +3038,15 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 	if req.Tool == "git.merge_approved" {
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID})})
 		if req.TaskID != "" {
-			return fmt.Sprintf("Approved and merged %s.\nTask %s is awaiting verification.\nNext: check the running app, then `accept %s` or `reopen %s <reason>`.", approvalID, taskShortID(req.TaskID), taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
+			restartPlan := ""
+			if t, err := o.tasks.Load(req.TaskID); err == nil {
+				restartPlan = restartPlanFromResult(t.Result)
+			}
+			restartLine := ""
+			if restartPlan != "" {
+				restartLine = "\nRestart plan: " + restartPlan
+			}
+			return fmt.Sprintf("Approved and merged %s.\nTask %s is awaiting verification.%s\nNext: check the running app, then `accept %s` or `reopen %s <reason>`.", approvalID, taskShortID(req.TaskID), restartLine, taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
 		}
 	}
 	return "Approved and executed " + approvalID, nil

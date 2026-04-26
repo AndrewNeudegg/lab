@@ -73,3 +73,7 @@ These write tools are high-risk and approval-gated by default. Task review still
 `shell.run_limited` executes only allowlisted command arrays without shell expansion. Read-only or routine build/test commands remain low risk. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
 
 Review pending shell requests with `approvals`, then use `approve <approval_id>` or `deny <approval_id>`.
+
+## Restart impact
+
+Review now reports a restart impact line from the diff. Runtime, supervisor, healthd, and dashboard paths are mapped to their supervised components so the merge reply can carry a restart plan into final verification. Accept the task only after the named components have been restarted or verified as hot-reloaded.

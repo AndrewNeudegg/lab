@@ -80,6 +80,7 @@
   .markdown :global(pre) {
     box-sizing: border-box;
     min-width: 0;
+    min-inline-size: 0;
     width: 100%;
     max-width: 100%;
     margin: 0.6rem 0;

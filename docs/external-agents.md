@@ -59,3 +59,13 @@ the command, args, timeout, and description:
 - External CLIs may modify the task worktree, but they do not get approval to merge.
 - The human approval gate still controls merges through `review` and `approve`.
 - Configure exact CLI args per backend; provider-specific headless flags can differ.
+
+## Run Trace
+
+Each delegation has a stable run id. `homelabd` passes it to the worker as
+`HOMELABD_EXTERNAL_RUN_ID` and streams stdout/stderr chunks into task events as
+`agent.delegate.output` while the worker is still running.
+
+When the worker exits, `homelabd` writes a run artifact under `data/runs/<run_id>.json`
+with the backend, command, workspace, final output, error text, duration, and status. The
+task still moves through the normal ready-for-review, review, and approval flow.

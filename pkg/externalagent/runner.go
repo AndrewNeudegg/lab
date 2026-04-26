@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrewneudegg/lab/pkg/config"
@@ -15,7 +16,16 @@ import (
 )
 
 type Runner struct {
-	agents map[string]config.ExternalAgentConfig
+	agents   map[string]config.ExternalAgentConfig
+	onOutput func(context.Context, OutputChunk)
+}
+
+type Option func(*Runner)
+
+func WithOutputHandler(handler func(context.Context, OutputChunk)) Option {
+	return func(r *Runner) {
+		r.onOutput = handler
+	}
 }
 
 type Agent struct {
@@ -29,9 +39,20 @@ type Agent struct {
 
 type RunRequest struct {
 	Backend     string `json:"backend"`
+	RunID       string `json:"run_id,omitempty"`
 	TaskID      string `json:"task_id"`
 	Workspace   string `json:"workspace"`
 	Instruction string `json:"instruction"`
+}
+
+type OutputChunk struct {
+	RunID    string    `json:"run_id"`
+	Backend  string    `json:"backend"`
+	TaskID   string    `json:"task_id"`
+	Stream   string    `json:"stream"`
+	Text     string    `json:"text"`
+	Sequence int       `json:"sequence"`
+	Time     time.Time `json:"time"`
 }
 
 type RunResult struct {
@@ -47,8 +68,12 @@ type RunResult struct {
 	FinishedAt time.Time     `json:"finished_at"`
 }
 
-func NewRunner(agents map[string]config.ExternalAgentConfig) *Runner {
-	return &Runner{agents: agents}
+func NewRunner(agents map[string]config.ExternalAgentConfig, opts ...Option) *Runner {
+	r := &Runner{agents: agents}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 func (r *Runner) List() []Agent {
@@ -84,6 +109,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if strings.TrimSpace(req.Instruction) == "" {
 		return RunResult{}, fmt.Errorf("instruction is required")
 	}
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		runID = id.New("external_run")
+	}
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 15 * time.Minute
@@ -95,27 +124,34 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	cmd := exec.CommandContext(childCtx, cfg.Command, args...)
 	cmd.Dir = req.Workspace
 	cmd.Env = append(cmd.Environ(),
+		"HOMELABD_EXTERNAL_RUN_ID="+runID,
 		"HOMELABD_TASK_ID="+req.TaskID,
 		"HOMELABD_WORKSPACE="+req.Workspace,
 		"HOMELABD_BACKEND="+req.Backend,
 	)
 	cmd.Stdin = strings.NewReader(req.Instruction)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	result := RunResult{
+		ID:        runID,
+		Backend:   req.Backend,
+		TaskID:    req.TaskID,
+		Workspace: req.Workspace,
+		Command:   append([]string{cfg.Command}, redactArgs(args)...),
+		StartedAt: started,
+	}
+	trace := &outputTrace{
+		ctx:      ctx,
+		runID:    runID,
+		backend:  req.Backend,
+		taskID:   req.TaskID,
+		onOutput: r.onOutput,
+	}
+	cmd.Stdout = streamWriter{trace: trace, stream: "stdout"}
+	cmd.Stderr = streamWriter{trace: trace, stream: "stderr"}
 	err := cmd.Run()
 	finished := time.Now().UTC()
-	result := RunResult{
-		ID:         id.New("external_run"),
-		Backend:    req.Backend,
-		TaskID:     req.TaskID,
-		Workspace:  req.Workspace,
-		Command:    append([]string{cfg.Command}, redactArgs(args)...),
-		Output:     out.String(),
-		Duration:   finished.Sub(started),
-		StartedAt:  started,
-		FinishedAt: finished,
-	}
+	result.Output = trace.String()
+	result.Duration = finished.Sub(started)
+	result.FinishedAt = finished
 	if childCtx.Err() == context.DeadlineExceeded {
 		result.Error = "external agent timed out"
 		return result, childCtx.Err()
@@ -125,6 +161,58 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+type outputTrace struct {
+	mu       sync.Mutex
+	buffer   bytes.Buffer
+	sequence int
+
+	ctx      context.Context
+	runID    string
+	backend  string
+	taskID   string
+	onOutput func(context.Context, OutputChunk)
+}
+
+func (t *outputTrace) append(stream string, p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	text := string(p)
+	t.mu.Lock()
+	t.sequence++
+	sequence := t.sequence
+	_, _ = t.buffer.Write(p)
+	t.mu.Unlock()
+	if t.onOutput == nil {
+		return
+	}
+	t.onOutput(t.ctx, OutputChunk{
+		RunID:    t.runID,
+		Backend:  t.backend,
+		TaskID:   t.taskID,
+		Stream:   stream,
+		Text:     text,
+		Sequence: sequence,
+		Time:     time.Now().UTC(),
+	})
+}
+
+func (t *outputTrace) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.buffer.String()
+}
+
+type streamWriter struct {
+	trace  *outputTrace
+	stream string
+}
+
+func (w streamWriter) Write(p []byte) (int, error) {
+	w.trace.append(w.stream, p)
+	return len(p), nil
 }
 
 func (r *Runner) MarshalJSON() ([]byte, error) {

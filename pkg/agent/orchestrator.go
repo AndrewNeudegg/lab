@@ -2709,28 +2709,40 @@ type delegationRun struct {
 	Instruction string
 }
 
+type externalDelegateResult struct {
+	ID         string    `json:"id"`
+	Backend    string    `json:"backend"`
+	TaskID     string    `json:"task_id"`
+	Workspace  string    `json:"workspace"`
+	Command    []string  `json:"command"`
+	Output     string    `json:"output"`
+	Error      string    `json:"error"`
+	Duration   int64     `json:"duration"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+}
+
 func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend, workspace, instruction string) {
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "agent.delegate", map[string]any{
 		"backend":     backend,
+		"run_id":      runID,
 		"task_id":     taskID,
 		"workspace":   workspace,
 		"instruction": instruction,
 	}, taskID)
-	var out struct {
-		ID       string   `json:"id"`
-		Backend  string   `json:"backend"`
-		Command  []string `json:"command"`
-		Output   string   `json:"output"`
-		Error    string   `json:"error"`
-		Duration int64    `json:"duration"`
-	}
+	var out externalDelegateResult
 	_ = json.Unmarshal(raw, &out)
+	if out.ID == "" {
+		out.ID = runID
+	}
 	t, loadErr := o.tasks.Load(taskID)
 	if loadErr != nil {
+		_ = o.writeExternalRunArtifact(runID, taskID, backend, workspace, "failed", out, loadErr.Error())
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.failed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "error": loadErr.Error()})})
 		return
 	}
 	if shouldIgnoreStaleDelegationResult(t) {
+		_ = o.writeExternalRunArtifact(runID, taskID, backend, workspace, "ignored", out, "task state advanced while worker was running")
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.ignored", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "status": t.Status, "reason": "task state advanced while worker was running"})})
 		return
 	}
@@ -2745,6 +2757,7 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 			t.Result = err.Error()
 		}
 		_ = o.tasks.Save(t)
+		_ = o.writeExternalRunArtifact(runID, taskID, backend, workspace, "failed", out, err.Error())
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.failed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "error": err.Error(), "result": out})})
 		return
 	}
@@ -2755,6 +2768,7 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 	t.Result = "external agent finished; ready for review.\n" + t.Result
 	t.Status = taskstore.StatusReadyForReview
 	_ = o.tasks.Save(t)
+	_ = o.writeExternalRunArtifact(runID, taskID, backend, workspace, "completed", out, "")
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.completed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "result": out})})
 	o.clearTaskActive(taskID)
 	review, reviewErr := o.reviewTask(context.Background(), taskID)
@@ -3684,6 +3698,35 @@ func (o *Orchestrator) writeRunArtifact(taskID, status, summary string, results 
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, payload["id"].(string)+".json"), append(b, '\n'), 0o644)
+}
+
+func (o *Orchestrator) writeExternalRunArtifact(runID, taskID, backend, workspace, status string, result externalDelegateResult, errorText string) error {
+	dir := filepath.Join(o.cfg.DataDir, "runs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	runID = firstNonEmptyString(runID, result.ID, id.New("external_run"))
+	taskID = firstNonEmptyString(taskID, result.TaskID)
+	payload := map[string]any{
+		"id":          runID,
+		"kind":        "external_agent",
+		"task_id":     taskID,
+		"backend":     firstNonEmptyString(backend, result.Backend),
+		"workspace":   firstNonEmptyString(workspace, result.Workspace),
+		"status":      status,
+		"command":     result.Command,
+		"output":      result.Output,
+		"error":       firstNonEmptyString(errorText, result.Error),
+		"duration":    result.Duration,
+		"started_at":  result.StartedAt,
+		"finished_at": result.FinishedAt,
+		"time":        time.Now().UTC(),
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, runID+".json"), append(b, '\n'), 0o644)
 }
 
 func (o *Orchestrator) listApprovals() (string, error) {

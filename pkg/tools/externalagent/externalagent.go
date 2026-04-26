@@ -40,7 +40,7 @@ func (DelegateTool) Description() string {
 	return "Delegate explicit work to an external CLI agent in a task workspace."
 }
 func (DelegateTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","required":["backend","task_id","workspace","instruction"],"properties":{"backend":{"type":"string"},"task_id":{"type":"string"},"workspace":{"type":"string"},"instruction":{"type":"string"}}}`)
+	return json.RawMessage(`{"type":"object","required":["backend","task_id","workspace","instruction"],"properties":{"backend":{"type":"string"},"run_id":{"type":"string"},"task_id":{"type":"string"},"workspace":{"type":"string"},"instruction":{"type":"string"}}}`)
 }
 func (DelegateTool) Risk() tool.RiskLevel { return tool.RiskMedium }
 func (t DelegateTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {

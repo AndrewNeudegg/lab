@@ -2656,8 +2656,50 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.denied", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(req)})
 		return "Denied " + approvalID, nil
 	}
-	if _, err := o.runApprovedTool(ctx, req.Tool, req.Args, req.TaskID); err != nil {
+	task, hasTask, err := o.loadApprovalTask(req)
+	if err != nil {
 		return "", err
+	}
+	if req.Tool == "git.merge_approved" {
+		if !hasTask {
+			req.Status = approvalstore.StatusStale
+			req.Reason = appendApprovalReason(req.Reason, "stale: task record is missing")
+			if err := o.approvals.Save(req); err != nil {
+				return "", err
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "reason": "task record is missing"})})
+			return fmt.Sprintf("Approval %s is stale: task record %q is missing. No merge was attempted.", approvalID, req.TaskID), nil
+		}
+		if task.Status != taskstore.StatusAwaitingApproval {
+			req.Status = approvalstore.StatusStale
+			req.Reason = appendApprovalReason(req.Reason, fmt.Sprintf("stale: task is %s", task.Status))
+			if err := o.approvals.Save(req); err != nil {
+				return "", err
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "task_status": task.Status})})
+			return fmt.Sprintf("Approval %s is stale: task %s is %s, not %s. No merge was attempted.", approvalID, taskShortID(req.TaskID), task.Status, taskstore.StatusAwaitingApproval), nil
+		}
+	}
+	if _, err := o.runApprovedTool(ctx, req.Tool, req.Args, req.TaskID); err != nil {
+		req.Status = approvalstore.StatusFailed
+		req.Reason = appendApprovalReason(req.Reason, "failed: "+err.Error())
+		if saveErr := o.approvals.Save(req); saveErr != nil {
+			return "", saveErr
+		}
+		if req.Tool == "git.merge_approved" && hasTask && !taskTerminal(task.Status) {
+			task.Status = taskstore.StatusBlocked
+			task.AssignedTo = "OrchestratorAgent"
+			task.Result = "Approved merge failed: " + err.Error()
+			if saveErr := o.tasks.Save(task); saveErr != nil {
+				return "", saveErr
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "reason": task.Result})})
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": err.Error()})})
+		if req.Tool == "git.merge_approved" && req.TaskID != "" {
+			return fmt.Sprintf("Approval %s failed while merging task %s.\nReason: %s\nTask moved to blocked; no merge was applied.\nNext: `delegate %s to codex rebase and resolve merge conflicts`, `review %s`, or `delete %s`.", approvalID, taskShortID(req.TaskID), err.Error(), taskShortID(req.TaskID), taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
+		}
+		return fmt.Sprintf("Approval %s failed while executing %s.\nReason: %s", approvalID, req.Tool, err.Error()), nil
 	}
 	req.Status = approvalstore.StatusGranted
 	if err := o.approvals.Save(req); err != nil {
@@ -2684,6 +2726,32 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 		}
 	}
 	return "Approved and executed " + approvalID, nil
+}
+
+func (o *Orchestrator) loadApprovalTask(req approvalstore.Request) (taskstore.Task, bool, error) {
+	if req.TaskID == "" {
+		return taskstore.Task{}, false, nil
+	}
+	task, err := o.tasks.Load(req.TaskID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return taskstore.Task{}, false, nil
+		}
+		return taskstore.Task{}, false, err
+	}
+	return task, true, nil
+}
+
+func appendApprovalReason(reason, suffix string) string {
+	reason = strings.TrimSpace(reason)
+	suffix = strings.TrimSpace(suffix)
+	if reason == "" {
+		return suffix
+	}
+	if suffix == "" || strings.Contains(reason, suffix) {
+		return reason
+	}
+	return reason + "; " + suffix
 }
 
 func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, call proposedToolCall, fallbackTaskID string) toolExecution {

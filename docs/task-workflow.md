@@ -19,6 +19,8 @@ Task records include run lifecycle timestamps. `started_at` is set when a task e
 
 The review gate must not silently restart a worker. If checks, diff validation, or premerge fail, the task stays `blocked` with the failure reason in the task result and task activity. A human or orchestrator command must explicitly choose the next action.
 
+Approvals are single-use decisions tied to the task state at the time they were requested. A merge approval for a task that is no longer `awaiting_approval` is stale and must not run. If an approved merge fails because the branch has become unmergeable, the approval is marked `failed`, the task moves to `blocked`, and the operator gets rework actions instead of a raw HTTP error.
+
 ## Verification Commands
 
 Use `accept <task_id>` after checking that the merged change works.

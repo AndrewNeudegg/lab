@@ -13,6 +13,8 @@ const (
 	StatusPending = "pending"
 	StatusGranted = "granted"
 	StatusDenied  = "denied"
+	StatusFailed  = "failed"
+	StatusStale   = "stale"
 )
 
 type Request struct {

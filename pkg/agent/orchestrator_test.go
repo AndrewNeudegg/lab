@@ -754,15 +754,114 @@ func TestApprovalMergeFailureReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "error: git merge:") {
-		t.Fatalf("reply = %q, want git merge error", reply)
+	if !strings.Contains(reply, "Approval approval_20260425_214114_a300d8be failed while merging task 28493611") {
+		t.Fatalf("reply = %q, want approval failure explanation", reply)
+	}
+	if !strings.Contains(reply, "Task moved to blocked") {
+		t.Fatalf("reply = %q, want blocked transition explanation", reply)
 	}
 	updatedApproval, err := orch.approvals.Load(req.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updatedApproval.Status != approvalstore.StatusPending {
-		t.Fatalf("approval status = %q, want pending", updatedApproval.Status)
+	if updatedApproval.Status != approvalstore.StatusFailed {
+		t.Fatalf("approval status = %q, want failed", updatedApproval.Status)
+	}
+	updatedTask, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTask.Status != taskstore.StatusBlocked {
+		t.Fatalf("task status = %q, want blocked", updatedTask.Status)
+	}
+	if !strings.Contains(updatedTask.Result, "Approved merge failed") {
+		t.Fatalf("task result = %q, want merge failure context", updatedTask.Result)
+	}
+}
+
+func TestStaleMergeApprovalDoesNotRunForDoneTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260425_225253_6eb67bb4",
+		Title:      "add theme toggle",
+		Goal:       "add theme toggle",
+		Status:     taskstore.StatusDone,
+		AssignedTo: "OrchestratorAgent",
+		Result:     "accepted by human",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260425_230054_037ea577",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260425_225253_6eb67bb4"}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.ResolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "is stale") || !strings.Contains(reply, "No merge was attempted") {
+		t.Fatalf("reply = %q, want stale approval explanation", reply)
+	}
+	updatedApproval, err := orch.approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusStale {
+		t.Fatalf("approval status = %q, want stale", updatedApproval.Status)
+	}
+	updatedTask, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTask.Status != taskstore.StatusDone {
+		t.Fatalf("task status = %q, want done", updatedTask.Status)
+	}
+}
+
+func TestStaleMergeApprovalDoesNotRunForMissingTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260426_103333_deadbeef",
+		TaskID: "task_20260426_000000_missing",
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260426_000000_missing"}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.ResolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "task record") || !strings.Contains(reply, "No merge was attempted") {
+		t.Fatalf("reply = %q, want missing task explanation", reply)
+	}
+	updatedApproval, err := orch.approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusStale {
+		t.Fatalf("approval status = %q, want stale", updatedApproval.Status)
 	}
 }
 

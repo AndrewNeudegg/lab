@@ -228,16 +228,25 @@ const run = async () => {
     await sleep(200);
     const mobile = await evalJS(
       cdp,
-      `({
+      `(window.scrollTo(0, document.body.scrollHeight),
+        new Promise((resolve) => setTimeout(() => resolve({
         bodyWidth: document.body.scrollWidth,
         viewport: window.innerWidth,
+        scrollY: window.scrollY,
+        navbarTop: document.querySelector('.navbar')?.getBoundingClientRect().top ?? null,
         rows: document.querySelectorAll('.task-row').length,
         queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
         panelButton: document.querySelector('.command-header-actions button')?.innerText || ''
-      })`
+      }), 100)))`
     );
     assert(mobile.rows > 0, 'mobile viewport rendered no task rows', mobile);
     assert(mobile.bodyWidth <= mobile.viewport + 2, 'mobile viewport has horizontal overflow', mobile);
+    assert(mobile.scrollY > 0, 'mobile viewport did not scroll for sticky navbar check', mobile);
+    assert(
+      Math.abs(mobile.navbarTop) <= 1,
+      'mobile navbar did not remain sticky at viewport top',
+      mobile
+    );
 
     const typed = await evalJS(
       cdp,

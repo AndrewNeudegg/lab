@@ -50,3 +50,17 @@ test('tasks mobile keeps command text while changing queue selection', async ({ 
   }));
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 });
+
+test('tasks mobile keeps navbar sticky while scrolling', async ({ page }) => {
+  await page.goto('/tasks');
+  await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
+
+  const beforeScroll = await page.locator('.navbar').boundingBox();
+  expect(beforeScroll?.y ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(100);
+
+  const afterScroll = await page.locator('.navbar').boundingBox();
+  expect(afterScroll?.y ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+});

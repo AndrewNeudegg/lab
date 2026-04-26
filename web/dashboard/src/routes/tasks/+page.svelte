@@ -1804,6 +1804,11 @@
       overflow: visible;
     }
 
+    .tasks-page {
+      height: auto;
+      min-height: 100dvh;
+    }
+
     .task-pane {
       display: grid;
       max-height: 64dvh;

@@ -30,4 +30,20 @@ type Task struct {
 	ContextIDs []string   `json:"context_ids,omitempty"`
 	Workspace  string     `json:"workspace,omitempty"`
 	Result     string     `json:"result,omitempty"`
+	Plan       *TaskPlan  `json:"plan,omitempty"`
+}
+
+type TaskPlan struct {
+	Status     string         `json:"status"`
+	Summary    string         `json:"summary"`
+	Steps      []TaskPlanStep `json:"steps"`
+	Risks      []string       `json:"risks,omitempty"`
+	Review     string         `json:"review,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+	ReviewedAt *time.Time     `json:"reviewed_at,omitempty"`
+}
+
+type TaskPlanStep struct {
+	Title  string `json:"title"`
+	Detail string `json:"detail,omitempty"`
 }

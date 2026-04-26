@@ -33,7 +33,7 @@ const taskMatchesSearch = (task: HomelabdTask, search: string) => {
   if (!query) {
     return true;
   }
-  return [task.id, task.title, task.goal, task.status, task.assigned_to]
+  return [task.id, task.title, task.goal, task.status, task.assigned_to, task.plan?.summary]
     .join(' ')
     .toLowerCase()
     .includes(query);

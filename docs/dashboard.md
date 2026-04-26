@@ -90,6 +90,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
 - Result block: shown only when a task has a stored result.
 - Task activity: event-log timeline filtered to the selected task. This is the task-scoped history equivalent to issue activity or incident timelines.
+- Reviewed plan: shown directly above the original input so the operator can see the intended execution path before rereading the full prompt.
 - Original input: shown below task activity, preserving the full task goal text for reference after the timeline.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.

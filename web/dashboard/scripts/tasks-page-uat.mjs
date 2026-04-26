@@ -135,13 +135,24 @@ const run = async () => {
     let afterAll = await evalJS(
       cdp,
       `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          active: document.querySelector('.triage button.active')?.innerText || '',
-          rows: document.querySelectorAll('.task-row').length,
-          selected: document.querySelector('.task-row.selected')?.innerText || '',
-          workflowState: document.querySelector('.state-machine')?.innerText || '',
-          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null
-        }), 100)))`
+        new Promise((resolve) => {
+          const started = Date.now();
+          const sample = () => {
+            const rows = document.querySelectorAll('.task-row').length;
+            if (rows > 0 || Date.now() - started > 2000) {
+              resolve({
+                active: document.querySelector('.triage button.active')?.innerText || '',
+                rows,
+                selected: document.querySelector('.task-row.selected')?.innerText || '',
+                workflowState: document.querySelector('.state-machine')?.innerText || '',
+                queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null
+              });
+              return;
+            }
+            setTimeout(sample, 100);
+          };
+          setTimeout(sample, 100);
+        }))`
     );
     assert(afterAll.active.includes('All'), 'All filter did not become active', afterAll);
     assert(afterAll.rows > 0, 'All queue rendered no task rows', afterAll);
@@ -228,7 +239,7 @@ const run = async () => {
     await sleep(200);
     const mobile = await evalJS(
       cdp,
-      `(window.scrollTo(0, document.body.scrollHeight),
+      `(window.scrollTo(0, 0),
         new Promise((resolve) => setTimeout(() => resolve({
         bodyWidth: document.body.scrollWidth,
         viewport: window.innerWidth,
@@ -237,6 +248,7 @@ const run = async () => {
         rows: document.querySelectorAll('.task-row').length,
         queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
         queueHeight: Math.round(document.querySelector('.task-pane')?.getBoundingClientRect().height || 0),
+        queueBottom: Math.round(document.querySelector('.task-pane')?.getBoundingClientRect().bottom || 0),
         recordTop: Math.round(document.querySelector('.workbench')?.getBoundingClientRect().top || 0),
         queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
         panelButton: document.querySelector('.command-header-actions button')?.innerText || ''
@@ -247,13 +259,22 @@ const run = async () => {
     assert(mobile.queueToggle.includes('Hide queue'), 'mobile queue toggle should offer to hide visible queue', mobile);
     assert(mobile.queueHeight > 0, 'mobile queue has no visible height', mobile);
     assert(mobile.queueHeight <= Math.round(844 * 0.56), 'mobile queue is not capped to the top of the viewport', mobile);
-    assert(mobile.recordTop >= mobile.queueHeight - 1, 'mobile selected task record did not stack below queue', mobile);
+    assert(mobile.recordTop >= mobile.queueBottom - 1, 'mobile selected task record did not stack below queue', mobile);
     assert(mobile.bodyWidth <= mobile.viewport + 2, 'mobile viewport has horizontal overflow', mobile);
-    assert(mobile.scrollY > 0, 'mobile viewport did not scroll for sticky navbar check', mobile);
+
+    const mobileScroll = await evalJS(
+      cdp,
+      `(window.scrollTo(0, document.body.scrollHeight),
+        new Promise((resolve) => setTimeout(() => resolve({
+        scrollY: window.scrollY,
+        navbarTop: document.querySelector('.navbar')?.getBoundingClientRect().top ?? null
+      }), 100)))`
+    );
+    assert(mobileScroll.scrollY > 0, 'mobile viewport did not scroll for sticky navbar check', mobileScroll);
     assert(
-      Math.abs(mobile.navbarTop) <= 1,
+      Math.abs(mobileScroll.navbarTop) <= 1,
       'mobile navbar did not remain sticky at viewport top',
-      mobile
+      mobileScroll
     );
 
     const mobileSelect = await evalJS(

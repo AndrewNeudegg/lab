@@ -305,6 +305,8 @@
 
   const eventLabel = (event: HomelabdEvent) => event.type.replaceAll('.', ' ');
 
+  const planStatusLabel = (status = '') => status.replaceAll('_', ' ') || 'planned';
+
   const eventDetail = (event: HomelabdEvent) => {
     if (!event.payload) {
       return '';
@@ -792,6 +794,43 @@
             </ol>
           {/if}
         </section>
+
+        {#if currentTask?.plan}
+          <section class="task-plan" aria-label="Task plan">
+            <header>
+              <div>
+                <p>Reviewed plan</p>
+                <h3>{currentTask.plan.summary}</h3>
+              </div>
+              <span>{planStatusLabel(currentTask.plan.status)}</span>
+            </header>
+            {#if currentTask.plan.steps?.length}
+              <ol>
+                {#each currentTask.plan.steps as step}
+                  <li>
+                    <strong>{step.title}</strong>
+                    {#if step.detail}
+                      <p>{step.detail}</p>
+                    {/if}
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+            {#if currentTask.plan.risks?.length}
+              <div class="plan-risks">
+                <strong>Risks</strong>
+                <ul>
+                  {#each currentTask.plan.risks as risk}
+                    <li>{risk}</li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+            {#if currentTask.plan.review}
+              <p class="plan-review">{currentTask.plan.review}</p>
+            {/if}
+          </section>
+        {/if}
 
         <section class="task-input" aria-label="Original task input">
           <h3>Original input</h3>
@@ -1448,6 +1487,7 @@
 
   .workspace-path,
   .task-result,
+  .task-plan,
   .task-input,
   .state-machine,
   .activity,
@@ -1508,6 +1548,95 @@
     max-height: 10rem;
     overflow-y: auto;
     padding: 0.8rem;
+  }
+
+  .task-plan {
+    overflow: hidden;
+  }
+
+  .task-plan header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.85rem;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .task-plan header p,
+  .task-plan h3,
+  .task-plan ol,
+  .task-plan ul,
+  .task-plan li,
+  .task-plan .plan-review {
+    margin: 0;
+  }
+
+  .task-plan header p,
+  .task-plan header span,
+  .plan-risks > strong {
+    color: #64748b;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .task-plan header span {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #dbeafe;
+    color: #1d4ed8;
+    padding: 0.22rem 0.5rem;
+  }
+
+  .task-plan h3 {
+    margin-top: 0.15rem;
+    color: #111827;
+    font-size: 0.95rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .task-plan ol {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0.85rem 0.85rem 0.85rem 2rem;
+  }
+
+  .task-plan li {
+    color: #475569;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .task-plan li strong {
+    display: block;
+    color: #111827;
+    font-size: 0.9rem;
+  }
+
+  .task-plan li p,
+  .plan-risks li,
+  .plan-review {
+    color: #475569;
+    font-size: 0.86rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .plan-risks,
+  .plan-review {
+    border-top: 1px solid #e2e8f0;
+    padding: 0.85rem;
+  }
+
+  .plan-risks ul {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+    padding-left: 1rem;
   }
 
   .task-result h3,
@@ -1797,6 +1926,14 @@
       height: auto;
       min-height: 100dvh;
       grid-template-rows: auto auto;
+      padding-top: 3.75rem;
+    }
+
+    :global(.navbar) {
+      position: fixed !important;
+      top: 0 !important;
+      right: 0;
+      left: 0;
     }
 
     .shell {

@@ -13,6 +13,22 @@ const task = (id: string, status: string, updatedMinute: string): HomelabdTask =
   updated_at: `2026-04-26T00:${updatedMinute}:00Z`
 });
 
+const plannedTask = (
+  id: string,
+  status: string,
+  updatedMinute: string,
+  planSummary: string
+): HomelabdTask => ({
+  ...task(id, status, updatedMinute),
+  plan: {
+    status: 'reviewed',
+    summary: planSummary,
+    steps: [{ title: 'Inspect scope', detail: 'Read relevant files before editing.' }],
+    created_at: `2026-04-26T00:${updatedMinute}:00Z`,
+    reviewed_at: `2026-04-26T00:${updatedMinute}:00Z`
+  }
+});
+
 const approval = (id: string, taskID?: string): HomelabdApproval => ({
   id,
   task_id: taskID,
@@ -88,6 +104,23 @@ describe('task queue view model', () => {
   test('search narrows queue selection and clears it when no task is visible', () => {
     expect(view('all', 'task_running', 'review').selectedTaskId).toBe('task_review');
     expect(view('all', 'task_running', 'does-not-exist').currentTask).toBeUndefined();
+  });
+
+  test('search matches reviewed plan summaries', () => {
+    const result = createTaskQueueView({
+      tasks: [
+        task('task_running', 'running', '03'),
+        plannedTask('task_planned', 'queued', '04', 'Plan to update the terminal transcript')
+      ],
+      approvals: [],
+      events: [],
+      taskFilter: 'all',
+      taskSearch: 'terminal transcript',
+      selectedTaskId: ''
+    });
+
+    expect(result.visibleTaskItems.map((item) => item.id)).toEqual(['task_planned']);
+    expect(result.currentTask?.id).toBe('task_planned');
   });
 
   test('includes pending approvals in needs-action queue only while they are actionable', () => {

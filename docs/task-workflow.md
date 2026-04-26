@@ -13,6 +13,17 @@
 - `done`: the human accepted the merged result. Terminal state.
 - `cancelled`: work was intentionally stopped. Terminal state.
 
+## Planning Gate
+
+Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is also visible in the `/tasks` selected-task pane above the original input. The default planning gate records:
+
+- a concise plan summary
+- ordered execution steps covering inspection, minimal workspace change, validation, and handoff
+- known risks before inspection completes
+- a reviewer note confirming the plan contains the required execution stages
+
+`homelabd` writes `task.plan.created` and `task.plan.reviewed` events to the JSONL event log. If an older task has no reviewed plan, `run` or `delegate` creates and reviews one before assigning the worker.
+
 Reviewing a task with no workspace diff moves it to `blocked` instead of leaving it `running`; the next action should be to rerun, delegate with clearer instructions, or delete the task.
 
 Task records include run lifecycle timestamps. `started_at` is set when a task enters `running`, and `stopped_at` is set when it leaves `running` for review, approval, verification, blocked, failed, done, or cancelled states. Reopening or rerunning a task starts a new run and clears the previous `stopped_at`.
@@ -31,7 +42,7 @@ Use `reopen <task_id> <reason>` when the merged change needs more work, for exam
 reopen 28493611 needs rework
 ```
 
-Reopening moves the task back to `running` and preserves the reason in the task result.
+Reopening moves the task back to `queued` and preserves the reason in the task result.
 
 ## Restart Recovery
 

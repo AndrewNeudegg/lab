@@ -454,12 +454,78 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	if tasks[0].Status != taskstore.StatusQueued {
 		t.Fatalf("status = %q, want queued", tasks[0].Status)
 	}
+	if tasks[0].Plan == nil {
+		t.Fatal("task plan is nil, want reviewed plan")
+	}
+	if tasks[0].Plan.Status != "reviewed" {
+		t.Fatalf("plan status = %q, want reviewed", tasks[0].Plan.Status)
+	}
+	if len(tasks[0].Plan.Steps) != 4 {
+		t.Fatalf("plan step count = %d, want 4", len(tasks[0].Plan.Steps))
+	}
+	if !strings.Contains(reply, "Plan created and reviewed before execution") {
+		t.Fatalf("reply = %q, want plan creation note", reply)
+	}
 	want := "Next:\n```\nstatus\nrun " + tasks[0].ID + "\ndelegate " + tasks[0].ID + " <agent> <instruction>\n```"
 	if !strings.Contains(reply, want) {
 		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
 	}
 	if strings.Contains(reply, "`run ") {
 		t.Fatalf("reply = %q, should not inline command suggestions", reply)
+	}
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawCreated, sawReviewed bool
+	for _, event := range events {
+		if event.TaskID != tasks[0].ID {
+			continue
+		}
+		switch event.Type {
+		case "task.plan.created":
+			sawCreated = true
+		case "task.plan.reviewed":
+			sawReviewed = true
+		}
+	}
+	if !sawCreated || !sawReviewed {
+		t.Fatalf("plan events created=%v reviewed=%v, want both", sawCreated, sawReviewed)
+	}
+}
+
+func TestDelegationCreatesReviewedPlanBeforeExecution(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_20260426_220000_deadbeef",
+		Title:      "add planner",
+		Goal:       "add planner",
+		Status:     taskstore.StatusQueued,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := orch.prepareDelegationForTask(context.Background(), task.ID, "codex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(run.Instruction, "Reviewed task plan:") || !strings.Contains(run.Instruction, "Inspect scope") {
+		t.Fatalf("instruction = %q, want reviewed plan context", run.Instruction)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning {
+		t.Fatalf("status = %q, want running", updated.Status)
+	}
+	if updated.Plan == nil || updated.Plan.Status != "reviewed" {
+		t.Fatalf("plan = %#v, want reviewed plan", updated.Plan)
 	}
 }
 

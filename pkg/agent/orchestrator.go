@@ -1485,7 +1485,7 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 		return "usage: new <goal>", nil
 	}
 	t := created.Task
-	return fmt.Sprintf("Created queued task %s.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
+	return fmt.Sprintf("Created queued task %s.\nPlan created and reviewed before execution.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
 		"status",
 		"run "+t.ID,
 		"delegate "+t.ID+" <agent> <instruction>",
@@ -1507,6 +1507,7 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 	}
 	now := time.Now().UTC()
 	t := taskstore.Task{ID: id.New("task"), Title: firstLine(goal), Goal: goal, Status: taskstore.StatusQueued, AssignedTo: "OrchestratorAgent", Priority: 5, CreatedAt: now, UpdatedAt: now, Result: "queued for task supervisor"}
+	o.ensureTaskPlan(ctx, &t)
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_create", map[string]any{"task_id": t.ID}, t.ID)
 	if err != nil {
 		t.Status = taskstore.StatusFailed
@@ -1525,6 +1526,47 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(t)})
 	return createdTask{Task: t, Branch: out.Branch}, nil
+}
+
+func (o *Orchestrator) ensureTaskPlan(ctx context.Context, t *taskstore.Task) bool {
+	if taskPlanReviewed(t.Plan) {
+		return false
+	}
+	now := time.Now().UTC()
+	plan := defaultTaskPlan(t.Goal, now)
+	t.Plan = &plan
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.plan.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(plan)})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.plan.reviewed", Actor: "ReviewerAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"status": plan.Status, "review": plan.Review})})
+	return true
+}
+
+func taskPlanReviewed(plan *taskstore.TaskPlan) bool {
+	return plan != nil && strings.TrimSpace(plan.Summary) != "" && len(plan.Steps) > 0 && strings.EqualFold(plan.Status, "reviewed")
+}
+
+func defaultTaskPlan(goal string, now time.Time) taskstore.TaskPlan {
+	reviewedAt := now
+	summary := "Plan to satisfy the task goal safely in an isolated workspace."
+	if strings.TrimSpace(goal) != "" {
+		summary = "Plan to satisfy: " + firstLine(goal)
+	}
+	return taskstore.TaskPlan{
+		Status:  "reviewed",
+		Summary: summary,
+		Steps: []taskstore.TaskPlanStep{
+			{Title: "Inspect scope", Detail: "Read the task goal, relevant repo files, current task state, and recent context before editing."},
+			{Title: "Make a minimal workspace change", Detail: "Apply the smallest practical patch inside the isolated task worktree; do not edit the live repo."},
+			{Title: "Validate the change", Detail: "Run targeted formatting, build, tests, or browser checks that match the files touched."},
+			{Title: "Summarize and hand off", Detail: "Report changed files, validation results, how to use the change, docs updates, and remaining risks before merge approval."},
+		},
+		Risks: []string{
+			"Affected files and components are unknown until inspection finishes.",
+			"The task must stay inside its workspace until review and approval gates pass.",
+		},
+		Review:     "OrchestratorAgent generated this default plan and ReviewerAgent checked it includes inspect, change, validate, and handoff stages before execution.",
+		CreatedAt:  now,
+		ReviewedAt: &reviewedAt,
+	}
 }
 
 func (o *Orchestrator) listTasks() (string, error) {
@@ -1670,6 +1712,9 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 	}
 	if t.Workspace != "" {
 		fmt.Fprintf(&b, "workspace: %s\n", t.Workspace)
+	}
+	if t.Plan != nil {
+		fmt.Fprintf(&b, "plan: %s - %s\n", t.Plan.Status, t.Plan.Summary)
 	}
 	if strings.TrimSpace(t.Result) != "" {
 		fmt.Fprintf(&b, "result: %s\n", strings.TrimSpace(t.Result))
@@ -2268,6 +2313,11 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 	if t.Workspace == "" {
 		return delegationRun{}, fmt.Errorf("task %s has no workspace", taskID)
 	}
+	if o.ensureTaskPlan(ctx, &t) {
+		if err := o.tasks.Save(t); err != nil {
+			return delegationRun{}, err
+		}
+	}
 	if strings.TrimSpace(instruction) == "" {
 		instruction = defaultDelegationInstruction(t)
 	}
@@ -2286,13 +2336,39 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 func defaultDelegationInstruction(t taskstore.Task) string {
 	return strings.Join([]string{
 		"Work this task to completion if possible.",
+		"Follow the reviewed task plan before executing; if the plan is wrong, explain the mismatch in the final summary.",
 		"Inspect the task workspace before editing.",
 		"Make a minimal patch that satisfies the task goal.",
 		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"Run relevant formatting and tests when available.",
 		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
+		"Reviewed task plan: " + formatTaskPlanForPrompt(t.Plan),
 		"Task goal: " + t.Goal,
 	}, " ")
+}
+
+func formatTaskPlanForPrompt(plan *taskstore.TaskPlan) string {
+	if plan == nil {
+		return "none"
+	}
+	var b strings.Builder
+	if strings.TrimSpace(plan.Summary) != "" {
+		fmt.Fprintf(&b, "%s. ", strings.TrimSpace(plan.Summary))
+	}
+	for i, step := range plan.Steps {
+		if strings.TrimSpace(step.Title) == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%d) %s", i+1, strings.TrimSpace(step.Title))
+		if strings.TrimSpace(step.Detail) != "" {
+			fmt.Fprintf(&b, " - %s", strings.TrimSpace(step.Detail))
+		}
+		b.WriteString(". ")
+	}
+	if strings.TrimSpace(plan.Review) != "" {
+		fmt.Fprintf(&b, "Review: %s.", strings.TrimSpace(plan.Review))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (o *Orchestrator) readRepo(ctx context.Context, path string) (string, error) {
@@ -2787,6 +2863,7 @@ func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (strin
 	if o.provider == nil || o.model == "" {
 		return "", fmt.Errorf("no LLM provider configured")
 	}
+	o.ensureTaskPlan(ctx, &t)
 	t.Status = taskstore.StatusRunning
 	t.AssignedTo = "CoderAgent"
 	if err := o.tasks.Save(t); err != nil {

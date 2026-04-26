@@ -54,6 +54,16 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('A worker currently owns this task.');
   });
 
+  test('renders the reviewed task plan above the original input', () => {
+    const planIndex = pageSource.indexOf('aria-label="Task plan"');
+    const inputIndex = pageSource.indexOf('aria-label="Original task input"');
+
+    expect(planIndex).toBeGreaterThan(0);
+    expect(inputIndex).toBeGreaterThan(planIndex);
+    expect(pageSource).toContain('Reviewed plan');
+    expect(pageSource).toContain('{#each currentTask.plan.steps as step}');
+  });
+
   test('caps the mobile queue above the selected task record', () => {
     expect(pageSource).toContain('height: auto;');
     expect(pageSource).toContain('max-height: min(54dvh, 28rem);');

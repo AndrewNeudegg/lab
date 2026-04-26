@@ -5,6 +5,18 @@ const typedMessage = 'mobile input must keep every typed character 12345';
 
 const mockTaskApi = async (page: Page) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
+  const plan = {
+    status: 'reviewed',
+    summary: 'Plan to keep the task queue visible on mobile.',
+    steps: [
+      { title: 'Inspect mobile layout', detail: 'Check task queue and selected record behavior.' },
+      { title: 'Validate in browser', detail: 'Run a mobile viewport check after changes.' }
+    ],
+    risks: ['Mobile layout can regress when queue state changes.'],
+    review: 'Plan includes inspect and browser validation stages.',
+    created_at: now,
+    reviewed_at: now
+  };
   const tasks = [
     {
       id: 'task_20260426_150000_11111111',
@@ -15,7 +27,8 @@ const mockTaskApi = async (page: Page) => {
       priority: 5,
       created_at: now,
       updated_at: now,
-      result: 'waiting for approval'
+      result: 'waiting for approval',
+      plan
     },
     {
       id: 'task_20260426_150100_22222222',
@@ -90,6 +103,10 @@ test('tasks mobile keeps the queue visible after task selection', async ({ page 
   await expect(queue).not.toHaveClass(/collapsed/);
   await expect(rows).toHaveCount(1);
   await expect(page.getByRole('button', { name: /Hide queue/ })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Task plan' })).toContainText('Reviewed plan');
+  await expect(page.getByRole('region', { name: 'Task plan' })).toContainText(
+    'Inspect mobile layout'
+  );
 
   await page.getByRole('button', { name: /Hide queue/ }).click();
   await expect(queue).toHaveClass(/collapsed/);

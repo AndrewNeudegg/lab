@@ -63,6 +63,22 @@ export interface HomelabdTask {
   context_ids?: string[];
   workspace?: string;
   result?: string;
+  plan?: HomelabdTaskPlan;
+}
+
+export interface HomelabdTaskPlan {
+  status: string;
+  summary: string;
+  steps: HomelabdTaskPlanStep[];
+  risks?: string[];
+  review?: string;
+  created_at: string;
+  reviewed_at?: string;
+}
+
+export interface HomelabdTaskPlanStep {
+  title: string;
+  detail?: string;
 }
 
 export interface HomelabdTasksResponse {

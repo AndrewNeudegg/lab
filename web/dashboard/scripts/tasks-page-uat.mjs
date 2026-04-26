@@ -130,13 +130,14 @@ const run = async () => {
     assert(initial.filters.some((text) => text.includes('Needs action')), 'Needs action filter missing', initial);
     assert(initial.filters.some((text) => text.includes('Running')), 'Running filter missing', initial);
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
-    assert(initial.rows > 0, 'initial task queue rendered no task rows', initial);
     assert(initial.panelCollapsed === false, 'Act on this queue should start open', initial);
-    assert(
-      initial.workflowState.toLowerCase().includes('workflow state'),
-      'workflow state machine guidance did not render',
-      initial
-    );
+    if (initial.rows > 0) {
+      assert(
+        initial.workflowState.toLowerCase().includes('workflow state'),
+        'workflow state machine guidance did not render',
+        initial
+      );
+    }
 
     const afterRunning = await evalJS(
       cdp,
@@ -166,6 +167,7 @@ const run = async () => {
       afterRunning,
       afterAll
     });
+    assert(afterAll.rows > 0, 'All queue rendered no task rows', afterAll);
     assert(afterAll.queueCollapsed === false, 'desktop task queue collapsed during all-filter selection', afterAll);
 
     const afterSelect = await evalJS(

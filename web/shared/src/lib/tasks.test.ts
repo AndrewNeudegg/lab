@@ -45,6 +45,7 @@ const approval = (
 describe('task queue attention logic', () => {
   test('classifies task statuses by operator action needed', () => {
     expect(taskNeedsAttention(task('blocked', 'blocked'))).toBe(true);
+    expect(taskNeedsAttention(task('conflict', 'conflict_resolution'))).toBe(true);
     expect(taskNeedsAttention(task('review', 'ready_for_review'))).toBe(true);
     expect(taskNeedsAttention(task('running', 'running'))).toBe(false);
     expect(taskIsActive(task('queued', 'queued'))).toBe(true);
@@ -131,7 +132,10 @@ describe('task queue attention logic', () => {
 
   test('explains workflow states and valid next transitions', () => {
     expect(taskStateDescription('ready_for_review')).toContain('review gate');
-    expect(taskStateTransitions('ready_for_review')).toBe('ready for review → awaiting approval or blocked');
+    expect(taskStateTransitions('ready_for_review')).toContain('conflict resolution');
+    expect(taskStateDescription('conflict_resolution')).toContain('conflicts');
+    expect(taskStateTransitions('conflict_resolution')).toContain('ready for review');
+    expect(taskStateTransitions('awaiting_approval')).toContain('conflict resolution');
     expect(taskStateDescription('running')).toContain('worker owns');
     expect(taskStateTransitions('blocked')).toBe('blocked → running, cancelled, or deleted');
   });

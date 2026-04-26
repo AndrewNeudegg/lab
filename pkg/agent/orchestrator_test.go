@@ -888,6 +888,162 @@ func TestApprovalMergeFailureReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestApprovalAutoReconcilesTaskBranchWithCurrentMain(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspace := filepath.Join(tempDir, "workspaces", "task_20260426_184630_f03ee9d3")
+	orch.cfg.Repo.Root = root
+	orch.cfg.Repo.WorkspaceRoot = filepath.Join(tempDir, "workspaces")
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "base")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_20260426_184630_f03ee9d3", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "task.txt"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, workspace, "add", ".")
+	gitTestRun(t, workspace, "commit", "-m", "task change")
+	if err := os.WriteFile(filepath.Join(root, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "main change")
+	if err := orch.registry.Register(mergeObservesWorkspaceStub{workspace: workspace, path: "main.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260426_184630_f03ee9d3",
+		Title:      "approve with fresh main",
+		Goal:       "approve with fresh main",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260426_184630_c0ffee00",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260426_184630_f03ee9d3","target":"` + root + `","workspace":"` + workspace + `"}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Approved and merged") {
+		t.Fatalf("reply = %q, want successful approval", reply)
+	}
+	if got := readTestFile(t, filepath.Join(workspace, "main.txt")); got != "main\n" {
+		t.Fatalf("main.txt = %q, want main content reconciled into task branch", got)
+	}
+	status := gitTestOutput(t, workspace, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("workspace status = %q, want clean reconciled branch", status)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusAwaitingVerification {
+		t.Fatalf("status = %q, want awaiting_verification", updated.Status)
+	}
+}
+
+func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspace := filepath.Join(tempDir, "workspaces", "task_20260426_184630_badf00d")
+	orch.cfg.Repo.Root = root
+	orch.cfg.Repo.WorkspaceRoot = filepath.Join(tempDir, "workspaces")
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "base")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_20260426_184630_badf00d", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, workspace, "commit", "-am", "task conflict")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "commit", "-am", "main conflict")
+	if err := orch.registry.Register(mergeShouldNotRunStub{}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260426_184630_badf00d",
+		Title:      "approve conflict",
+		Goal:       "approve conflict",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260426_184630_badf00d0",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260426_184630_badf00d","target":"` + root + `","workspace":"` + workspace + `"}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "could not auto-rebase") || !strings.Contains(reply, taskstore.StatusConflictResolution) {
+		t.Fatalf("reply = %q, want auto-rebase conflict guidance", reply)
+	}
+	updatedApproval, err := orch.approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusFailed {
+		t.Fatalf("approval status = %q, want failed", updatedApproval.Status)
+	}
+	updatedTask, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTask.Status != taskstore.StatusConflictResolution {
+		t.Fatalf("task status = %q, want conflict_resolution", updatedTask.Status)
+	}
+	status := gitTestOutput(t, workspace, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("workspace status = %q, want merge aborted and clean", status)
+	}
+}
+
 func TestStaleMergeApprovalDoesNotRunForDoneTask(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
@@ -2045,6 +2201,36 @@ func (mergeApprovedStub) Schema() json.RawMessage {
 func (mergeApprovedStub) Risk() tool.RiskLevel { return tool.RiskHigh }
 func (mergeApprovedStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(map[string]any{"merged": true})
+}
+
+type mergeObservesWorkspaceStub struct {
+	workspace string
+	path      string
+}
+
+func (mergeObservesWorkspaceStub) Name() string        { return "git.merge_approved" }
+func (mergeObservesWorkspaceStub) Description() string { return "" }
+func (mergeObservesWorkspaceStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (mergeObservesWorkspaceStub) Risk() tool.RiskLevel { return tool.RiskHigh }
+func (s mergeObservesWorkspaceStub) Run(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	if _, err := os.Stat(filepath.Join(s.workspace, s.path)); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"merged": true})
+}
+
+type mergeShouldNotRunStub struct{}
+
+func (mergeShouldNotRunStub) Name() string        { return "git.merge_approved" }
+func (mergeShouldNotRunStub) Description() string { return "" }
+func (mergeShouldNotRunStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (mergeShouldNotRunStub) Risk() tool.RiskLevel { return tool.RiskHigh }
+func (mergeShouldNotRunStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return nil, fmt.Errorf("merge tool should not run after auto-rebase conflict")
 }
 
 type mergeCheckFailStub struct{}

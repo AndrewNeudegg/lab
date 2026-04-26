@@ -1122,7 +1122,7 @@ func help() string {
 		"  codex|claude|gemini <task_id> <instruction>",
 		"                             shortcut for delegate <task_id> <agent> ...",
 		"  approvals                  list approval requests",
-		"  approve <approval_id>      execute approved action",
+		"  approve <approval_id>      execute approved action; merge approvals auto-reconcile with main first",
 		"  deny <approval_id>         deny approved action",
 	}, "\n")
 }
@@ -1617,6 +1617,8 @@ func nextActionForTask(t taskstore.Task) string {
 		return fmt.Sprintf("accept %s", shortID)
 	case taskstore.StatusReadyForReview:
 		return fmt.Sprintf("review %s", shortID)
+	case taskstore.StatusConflictResolution:
+		return fmt.Sprintf("delegate %s to codex resolve the main-branch conflict", shortID)
 	case taskstore.StatusBlocked:
 		result := strings.ToLower(t.Result)
 		if strings.Contains(result, "external agent returned") || strings.Contains(result, "finished") || strings.Contains(result, "diff") {
@@ -1653,6 +1655,8 @@ func taskStateDescription(status string) string {
 		return "a worker owns this task; wait for completion or inspect progress"
 	case taskstore.StatusReadyForReview:
 		return "worker finished; review gate has not passed yet"
+	case taskstore.StatusConflictResolution:
+		return "task branch conflicts with current main; manual conflict resolution is required"
 	case taskstore.StatusBlocked:
 		return "review or execution stopped; a human or worker must choose the next action"
 	case taskstore.StatusAwaitingApproval:
@@ -1677,11 +1681,13 @@ func taskStateTransitions(status string) string {
 	case taskstore.StatusRunning:
 		return "running -> ready_for_review or blocked"
 	case taskstore.StatusReadyForReview:
-		return "ready_for_review -> awaiting_approval or blocked"
+		return "ready_for_review -> awaiting_approval, conflict_resolution, or blocked"
+	case taskstore.StatusConflictResolution:
+		return "conflict_resolution -> running, ready_for_review, cancelled, or deleted"
 	case taskstore.StatusBlocked:
 		return "blocked -> running, cancelled, or deleted"
 	case taskstore.StatusAwaitingApproval:
-		return "awaiting_approval -> awaiting_verification or blocked"
+		return "awaiting_approval -> awaiting_verification, conflict_resolution, or blocked"
 	case taskstore.StatusAwaitingVerification:
 		return "awaiting_verification -> done or queued"
 	case taskstore.StatusDone, taskstore.StatusCancelled:
@@ -2585,12 +2591,12 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review commit: fail\n%s\nNo approval created.\nNext: `delegate %s to codex fix the workspace git state`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
 		}
 		if mergeOut, err := o.reconcileTaskWorkspaceWithMain(ctx, t.Workspace); err != nil {
-			t.Status = taskstore.StatusBlocked
+			t.Status = taskstore.StatusConflictResolution
 			t.AssignedTo = "OrchestratorAgent"
 			t.Result = "ReviewerAgent could not reconcile task branch with current main before checks: " + err.Error()
 			_ = o.tasks.Save(t)
-			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result, "from_status": taskstore.StatusReadyForReview, "to_status": taskstore.StatusBlocked})})
-			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review rebase: fail\n%s\nNo checks or approval created.\nNext: `delegate %s to codex resolve the main-branch conflict`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.conflict_resolution", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result, "from_status": taskstore.StatusReadyForReview, "to_status": taskstore.StatusConflictResolution})})
+			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review rebase: fail\n%s\nNo checks or approval created.\nNext: `delegate %s to codex resolve the main-branch conflict`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusConflictResolution, err.Error(), shortID, shortID, shortID), nil
 		} else if strings.TrimSpace(mergeOut) != "" {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.reconciled", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"output": strings.TrimSpace(mergeOut)})})
 		}
@@ -3081,6 +3087,25 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "task_status": task.Status})})
 			return fmt.Sprintf("Approval %s is stale: task %s is %s, not %s. No merge was attempted.", approvalID, taskShortID(req.TaskID), task.Status, taskstore.StatusAwaitingApproval), nil
 		}
+		if reconcileOut, err := o.reconcileApprovedTaskBranch(ctx, task); err != nil {
+			req.Status = approvalstore.StatusFailed
+			req.Reason = appendApprovalReason(req.Reason, "auto-rebase failed: "+err.Error())
+			if saveErr := o.approvals.Save(req); saveErr != nil {
+				return "", saveErr
+			}
+			task.Status = taskstore.StatusConflictResolution
+			task.AssignedTo = "OrchestratorAgent"
+			task.Result = "Approval auto-rebase failed; manual conflict resolution required: " + err.Error()
+			if saveErr := o.tasks.Save(task); saveErr != nil {
+				return "", saveErr
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.conflict_resolution", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "reason": task.Result, "from_status": taskstore.StatusAwaitingApproval, "to_status": taskstore.StatusConflictResolution})})
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": err.Error()})})
+			shortID := taskShortID(req.TaskID)
+			return fmt.Sprintf("Approval %s could not auto-rebase task %s onto current main.\nReason: %s\nTask moved to %s; no merge was applied.\nNext: `delegate %s to codex resolve the main-branch conflict`, `review %s`, or `delete %s`.", approvalID, shortID, err.Error(), taskstore.StatusConflictResolution, shortID, shortID, shortID), nil
+		} else if strings.TrimSpace(reconcileOut) != "" {
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.reconciled", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "output": strings.TrimSpace(reconcileOut)})})
+		}
 	}
 	if _, err := o.runApprovedTool(ctx, req.Tool, req.Args, req.TaskID); err != nil {
 		req.Status = approvalstore.StatusFailed
@@ -3154,6 +3179,21 @@ func (o *Orchestrator) loadApprovalTask(req approvalstore.Request) (taskstore.Ta
 		return taskstore.Task{}, false, err
 	}
 	return task, true, nil
+}
+
+func (o *Orchestrator) reconcileApprovedTaskBranch(ctx context.Context, task taskstore.Task) (string, error) {
+	if !workspaceHasGit(task.Workspace) {
+		return "", nil
+	}
+	commitOut, err := commitReviewWorkspaceChanges(ctx, task.Workspace, task.ID)
+	if err != nil {
+		return "", err
+	}
+	mergeOut, err := o.reconcileTaskWorkspaceWithMain(ctx, task.Workspace)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(strings.Join([]string{strings.TrimSpace(commitOut), strings.TrimSpace(mergeOut)}, "\n")), nil
 }
 
 func appendApprovalReason(reason, suffix string) string {

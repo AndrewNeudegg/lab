@@ -99,7 +99,7 @@ If a component does not answer one of those questions, it should not be in the p
 
 - Queued: the task exists with an isolated worktree and is waiting for the task supervisor to assign a worker.
 - Running: an in-memory worker is active, or homelabd recovered a persisted running task and restarted a worker.
-- Red: failed or blocked. Needs intervention.
+- Red: failed, blocked, or conflict resolution. Needs intervention.
 - Amber: ready for review, awaiting approval, or awaiting verification. Needs a human decision.
 - Blue: queued or running. Work is active.
 - Green: done. No action required unless the result is wrong.

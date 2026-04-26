@@ -328,7 +328,7 @@
   };
 
   const taskTone = (task: HomelabdTask) => {
-    if (task.status === 'blocked' || task.status === 'failed') {
+    if (task.status === 'blocked' || task.status === 'failed' || task.status === 'conflict_resolution') {
       return 'red';
     }
     if (
@@ -375,6 +375,12 @@
           label: 'Delegate fix',
           command: `delegate ${id} to codex fix or finish this task`,
           reason: 'This task cannot complete cleanly without rework from a stronger coding agent.'
+        };
+      case 'conflict_resolution':
+        return {
+          label: 'Resolve conflict',
+          command: `delegate ${id} to codex resolve the main-branch conflict`,
+          reason: 'The task branch did not reconcile with current main and needs manual conflict resolution.'
         };
       case 'awaiting_approval':
         return {

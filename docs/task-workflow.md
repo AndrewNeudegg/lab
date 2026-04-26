@@ -6,9 +6,10 @@
 
 - `queued`: task exists and is waiting for the supervisor to assign a worker. Next transition: `queued -> running`.
 - `running`: an agent or external worker owns the task. Next transition: `running -> ready_for_review` when it finishes, or `running -> blocked` when it fails.
-- `ready_for_review`: work is staged in the task worktree, but the review gate has not passed. Next transition: `ready_for_review -> awaiting_approval` when checks and premerge pass, or `ready_for_review -> blocked` when they fail.
+- `ready_for_review`: work is staged in the task worktree, but the review gate has not passed. Next transition: `ready_for_review -> awaiting_approval` when checks and premerge pass, `ready_for_review -> conflict_resolution` when the task branch cannot reconcile with current `main`, or `ready_for_review -> blocked` for other failures.
+- `conflict_resolution`: the task branch conflicts with current `main` and needs manual fixes in the task worktree. Next transition: `conflict_resolution -> running` after delegation, `conflict_resolution -> ready_for_review` after manual resolution, or deletion/cancellation.
 - `blocked`: review or execution stopped and no worker should be running automatically. Next transition: `blocked -> running` only after an explicit `delegate`, `run`, or `reopen`.
-- `awaiting_approval`: checks and premerge passed and a merge approval exists. Next transition: `awaiting_approval -> awaiting_verification` after approved merge, or `awaiting_approval -> blocked` if merge fails.
+- `awaiting_approval`: checks and premerge passed and a merge approval exists. When approval is triggered, the Orchestrator first tries to reconcile the task branch with current `main`. Next transition: `awaiting_approval -> awaiting_verification` after approved merge, `awaiting_approval -> conflict_resolution` if auto-rebase fails, or `awaiting_approval -> blocked` for other merge failures.
 - `awaiting_verification`: the merge has landed in the main repo, but the human has not verified the result in the running app yet. Next transition: `awaiting_verification -> done` via `accept`, or `awaiting_verification -> queued` via `reopen`.
 - `done`: the human accepted the merged result. Terminal state.
 - `cancelled`: work was intentionally stopped. Terminal state.
@@ -28,9 +29,9 @@ Reviewing a task with no workspace diff moves it to `blocked` instead of leaving
 
 Task records include run lifecycle timestamps. `started_at` is set when a task enters `running`, and `stopped_at` is set when it leaves `running` for review, approval, verification, blocked, failed, done, or cancelled states. Reopening or rerunning a task starts a new run and clears the previous `stopped_at`.
 
-The review gate must not silently restart a worker. If checks, diff validation, or premerge fail, the task stays `blocked` with the failure reason in the task result and task activity. A human or orchestrator command must explicitly choose the next action.
+The review gate must not silently restart a worker. If checks or diff validation fail, the task stays `blocked`; if branch reconciliation fails, it moves to `conflict_resolution`. In either case, the failure reason is stored in the task result and task activity. A human or orchestrator command must explicitly choose the next action.
 
-Approvals are single-use decisions tied to the task state at the time they were requested. A merge approval for a task that is no longer `awaiting_approval` is stale and must not run. If an approved merge fails because the branch has become unmergeable, the approval is marked `failed`, the task moves to `blocked`, and the operator gets rework actions instead of a raw HTTP error.
+Approvals are single-use decisions tied to the task state at the time they were requested. A merge approval for a task that is no longer `awaiting_approval` is stale and must not run. When a merge approval is approved, the Orchestrator automatically merges current `main` into the task worktree before executing the approved merge. If that reconciliation conflicts, the approval is marked `failed`, the task moves to `conflict_resolution`, and the operator gets conflict-resolution actions instead of a raw HTTP error.
 
 ## Verification Commands
 
@@ -58,7 +59,7 @@ Recovery decisions are written to the JSONL event log as `task.recovery.*` event
 
 When a task changes user-facing behavior, commands, UI, configuration, tools, or workflow, the worker should update relevant docs or help text in the same patch.
 
-When an external coding worker finishes, `homelabd` automatically runs the review gate. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, and only then creates a merge approval. A task branch that cannot merge cleanly is blocked with an explicit premerge failure; approval is not created, no worker is restarted implicitly, and the main repository must not be left in a conflicted state.
+When an external coding worker finishes, `homelabd` automatically runs the review gate. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, and only then creates a merge approval. A task branch that cannot merge cleanly moves to `conflict_resolution` with an explicit premerge failure; approval is not created, no worker is restarted implicitly, and the main repository must not be left in a conflicted state.
 
 External worker completions are ignored once the task has advanced to merge approval, merged verification, done, or cancelled. This prevents a stale background worker from moving an already merged or accepted task back to review.
 

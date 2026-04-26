@@ -252,13 +252,67 @@ func runStdio(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) 
 
 func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) {
 	transcript := newChatTranscript(cfg)
-	errCh := make(chan error, 1)
-	go func() {
+	go runHTTPSidecar(ctx, cfg, orch)
+	runMatrixLoop(ctx, cfg, orch, transcript)
+}
+
+func runHTTPSidecar(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) {
+	backoff := 2 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat")}
 		logLine("http listening on %s", cfg.HTTP.Addr)
-		errCh <- server.Listen(ctx)
-	}()
-	adapter := chat.NewMatrix(chat.MatrixConfig{
+		if err := server.Listen(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("homelabd http sidecar stopped; retrying", "error", err, "backoff", backoff)
+			if !sleepContext(ctx, backoff) {
+				return
+			}
+			backoff = minDuration(backoff*2, 30*time.Second)
+			continue
+		}
+		return
+	}
+}
+
+func runMatrixLoop(ctx context.Context, cfg config.Config, orch *agent.Orchestrator, transcript *chatTranscript) {
+	backoff := 2 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		adapter := newMatrixAdapter(cfg)
+		msgs, err := adapter.Receive(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Error("matrix adapter failed; retrying", "error", err, "backoff", backoff)
+			if !sleepContext(ctx, backoff) {
+				return
+			}
+			backoff = minDuration(backoff*2, 60*time.Second)
+			continue
+		}
+		backoff = 2 * time.Second
+		logLine("matrix listening for room %q (%s)", cfg.Matrix.RoomName, adapter.RoomID())
+		if !handleMatrixMessages(ctx, cfg, orch, transcript, adapter, msgs) {
+			return
+		}
+		slog.Warn("matrix message stream closed; reconnecting", "backoff", backoff)
+		if !sleepContext(ctx, backoff) {
+			return
+		}
+	}
+}
+
+func newMatrixAdapter(cfg config.Config) *chat.Matrix {
+	return chat.NewMatrix(chat.MatrixConfig{
 		Homeserver:    cfg.Matrix.Homeserver,
 		User:          cfg.Matrix.User,
 		Password:      cfg.Matrix.Password,
@@ -268,20 +322,16 @@ func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator)
 		RoomName:      cfg.Matrix.RoomName,
 		SyncTimeoutMS: cfg.Matrix.SyncTimeoutMS,
 	})
-	msgs, err := adapter.Receive(ctx)
-	if err != nil {
-		fatal(err)
-	}
-	logLine("matrix listening for room %q (%s)", cfg.Matrix.RoomName, adapter.RoomID())
+}
+
+func handleMatrixMessages(ctx context.Context, cfg config.Config, orch *agent.Orchestrator, transcript *chatTranscript, adapter *chat.Matrix, msgs <-chan chat.ChatMessage) bool {
 	for {
 		select {
-		case err := <-errCh:
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "homelabd http sidecar:", err)
-			}
+		case <-ctx.Done():
+			return false
 		case msg, ok := <-msgs:
 			if !ok {
-				return
+				return true
 			}
 			logLine("matrix received from %s: %s", msg.From, msg.Content)
 			_ = transcript.Append("matrix", "in", msg.From, "homelabd", msg.Content, false)
@@ -308,6 +358,24 @@ func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator)
 			}
 		}
 	}
+}
+
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func matrixAddressedContent(cfg config.Config, content string) (string, bool) {

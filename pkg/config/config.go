@@ -269,7 +269,7 @@ func Default() Config {
 					StartOrder:         20,
 					AutoStart:          false,
 					Restart:            "always",
-					HealthURL:          "http://127.0.0.1:18080/events",
+					HealthURL:          "http://127.0.0.1:18080/healthz",
 					ShutdownTimeoutSec: 15,
 				},
 				{

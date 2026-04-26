@@ -1368,6 +1368,79 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	t.Fatal("delegate did not finish cleanly")
 }
 
+func TestStaleDelegateCompletionDoesNotChangeMergedOrDoneTask(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		result string
+	}{
+		{
+			name:   "merged awaiting verification",
+			status: taskstore.StatusAwaitingVerification,
+			result: "merged after approval approval_test; awaiting human verification",
+		},
+		{
+			name:   "accepted done",
+			status: taskstore.StatusDone,
+			result: "accepted by human",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			delegateStarted := make(chan struct{}, 1)
+			releaseDelegate := make(chan struct{})
+			orch := newTestOrchestrator(t, &delegateStub{
+				started: delegateStarted,
+				release: releaseDelegate,
+			})
+
+			reply, err := orch.Handle(context.Background(), "test", "implement the stale worker guard")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(reply, "started codex") {
+				t.Fatalf("reply = %q, want started codex", reply)
+			}
+			select {
+			case <-delegateStarted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("delegate did not start")
+			}
+			tasks, err := orch.tasks.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tasks) != 1 {
+				t.Fatalf("task count = %d, want 1", len(tasks))
+			}
+			task := tasks[0]
+			task.Status = tt.status
+			task.AssignedTo = "OrchestratorAgent"
+			task.Result = tt.result
+			if err := orch.tasks.Save(task); err != nil {
+				t.Fatal(err)
+			}
+
+			close(releaseDelegate)
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				updated, err := orch.tasks.Load(task.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !orch.taskActive(task.ID) {
+					if updated.Status != tt.status || updated.Result != tt.result {
+						t.Fatalf("updated task = %#v, want stale completion ignored", updated)
+					}
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatal("delegate did not finish")
+		})
+	}
+}
+
 func TestRecoverRunningTasksRestartsExternalWorker(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})

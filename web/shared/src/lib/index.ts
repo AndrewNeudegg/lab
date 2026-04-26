@@ -1,5 +1,6 @@
 export * from './types';
 export * from './client';
+export * from './chatDraft';
 export * from './tasks';
 export * from './theme';
 export { default as Counter } from './Counter.svelte';

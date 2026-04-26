@@ -12,6 +12,8 @@
   .markdown {
     color: #172033;
     line-height: 1.5;
+    min-width: 0;
+    max-width: 100%;
     overflow-wrap: anywhere;
   }
 
@@ -76,6 +78,9 @@
   }
 
   .markdown :global(pre) {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
     max-width: 100%;
     margin: 0.6rem 0;
     overflow-x: auto;
@@ -99,6 +104,8 @@
 
   .markdown :global(pre code) {
     display: block;
+    min-width: 100%;
+    width: max-content;
     padding: 0;
     background: transparent;
     color: inherit;

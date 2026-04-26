@@ -19,6 +19,34 @@ export const taskIsActive = (task: Pick<HomelabdTask, 'status'>) => activeStatus
 export const taskIsTerminal = (task: Pick<HomelabdTask, 'status'>) =>
   terminalStatuses.has(task.status);
 
+const parseTime = (value?: string) => {
+  if (!value) {
+    return undefined;
+  }
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? undefined : time;
+};
+
+export const taskStartedAt = (
+  task: Pick<HomelabdTask, 'created_at' | 'started_at'>
+) => task.started_at || task.created_at;
+
+export const taskRuntimeMs = (
+  task: Pick<HomelabdTask, 'created_at' | 'updated_at' | 'started_at' | 'stopped_at' | 'status'>,
+  now = new Date()
+) => {
+  const started = parseTime(taskStartedAt(task));
+  if (started === undefined) {
+    return undefined;
+  }
+  const fallbackEnd = taskIsActive(task) ? now.getTime() : parseTime(task.updated_at);
+  const ended = parseTime(task.stopped_at) ?? fallbackEnd;
+  if (ended === undefined || ended < started) {
+    return undefined;
+  }
+  return ended - started;
+};
+
 export const pendingActionableApprovals = (
   approvals: HomelabdApproval[],
   tasks: Pick<HomelabdTask, 'id' | 'status'>[]

@@ -5,10 +5,12 @@
     needsActionCount,
     Navbar,
     pendingActionableApprovals,
+    taskRuntimeMs,
     taskIsActive,
     taskIsTerminal,
     taskNeedsAttention,
     taskNeedsQueueAction,
+    taskStartedAt,
     type ChatRole,
     type ChatTranscriptMessage,
     type HomelabdApproval,
@@ -99,6 +101,27 @@
       return value;
     }
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const compactDuration = (milliseconds?: number) => {
+    if (milliseconds === undefined) {
+      return 'unknown';
+    }
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days > 0) {
+      return `${days}d ${hours}h`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${seconds}s`;
+    }
+    return `${seconds}s`;
   };
 
   const truncate = (value = '', max = 120) => {
@@ -639,6 +662,14 @@
           <div>
             <span>Owner</span>
             <strong>{selectedTask()?.assigned_to || 'unassigned'}</strong>
+          </div>
+          <div>
+            <span>Started</span>
+            <strong>{compactTime(taskStartedAt(selectedTask() as HomelabdTask))}</strong>
+          </div>
+          <div>
+            <span>Runtime</span>
+            <strong>{compactDuration(taskRuntimeMs(selectedTask() as HomelabdTask))}</strong>
           </div>
           <div>
             <span>Updated</span>

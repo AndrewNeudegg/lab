@@ -80,7 +80,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Decision block: pending approvals appear before the task list because they are human-blocked work.
 - Task rows: colored dot plus text status. Color gives scan speed; text keeps it accessible and unambiguous.
 - Right pane: selected task record. It is not a chat transcript. Selecting a different task changes the record, summary, result, and activity timeline.
-- Task summary: ID, status, owner, and update time. This answers what object is selected before asking the operator to act.
+- Task summary: ID, status, owner, started time, runtime, and update time. This answers what object is selected and how long it has been running before asking the operator to act.
 - Primary action: one emphasized button derived from task state. The UI should not make the operator infer the next command from raw status.
 - Secondary actions: show, delegate, delete, or reopen. These are useful but lower priority than the primary action.
 - Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.

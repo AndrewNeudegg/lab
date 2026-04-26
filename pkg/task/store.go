@@ -21,13 +21,19 @@ func NewStore(dir string) *Store {
 func (s *Store) Save(t Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t.CreatedAt.IsZero() {
-		t.CreatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	previous, hasPrevious, err := s.loadIfExistsLocked(t.ID)
+	if err != nil {
+		return err
 	}
-	t.UpdatedAt = time.Now().UTC()
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now
+	}
 	if t.Status == "" {
 		t.Status = StatusQueued
 	}
+	t = applyRunTimestamps(t, previous, hasPrevious, now)
+	t.UpdatedAt = now
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
@@ -54,6 +60,71 @@ func (s *Store) loadLocked(id string) (Task, error) {
 		return Task{}, err
 	}
 	return t, nil
+}
+
+func (s *Store) loadIfExistsLocked(id string) (Task, bool, error) {
+	if id == "" {
+		return Task{}, false, nil
+	}
+	t, err := s.loadLocked(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Task{}, false, nil
+		}
+		return Task{}, false, err
+	}
+	return t, true, nil
+}
+
+func applyRunTimestamps(t, previous Task, hasPrevious bool, now time.Time) Task {
+	if hasPrevious {
+		if t.StartedAt == nil {
+			t.StartedAt = cloneTime(previous.StartedAt)
+		}
+		if t.StoppedAt == nil && t.Status != StatusRunning {
+			t.StoppedAt = cloneTime(previous.StoppedAt)
+		}
+	}
+
+	if t.Status == StatusRunning {
+		if !hasPrevious || previous.Status != StatusRunning || t.StartedAt == nil {
+			started := now
+			t.StartedAt = &started
+		}
+		t.StoppedAt = nil
+		return t
+	}
+
+	if t.Status == StatusQueued {
+		return t
+	}
+
+	if t.StartedAt == nil && hasPrevious {
+		switch {
+		case previous.StartedAt != nil:
+			t.StartedAt = cloneTime(previous.StartedAt)
+		case previous.Status == StatusRunning && !previous.UpdatedAt.IsZero():
+			started := previous.UpdatedAt
+			t.StartedAt = &started
+		case previous.Status == StatusRunning && !previous.CreatedAt.IsZero():
+			started := previous.CreatedAt
+			t.StartedAt = &started
+		}
+	}
+
+	if t.StartedAt != nil && t.StoppedAt == nil && (!hasPrevious || previous.Status == StatusRunning) {
+		stopped := now
+		t.StoppedAt = &stopped
+	}
+	return t
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func (s *Store) Delete(id string) error {

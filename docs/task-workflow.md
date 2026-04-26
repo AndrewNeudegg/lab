@@ -49,6 +49,8 @@ When a task changes user-facing behavior, commands, UI, configuration, tools, or
 
 When an external coding worker finishes, `homelabd` automatically runs the review gate. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, and only then creates a merge approval. A task branch that cannot merge cleanly is blocked with an explicit premerge failure; approval is not created, no worker is restarted implicitly, and the main repository must not be left in a conflicted state.
 
+External worker completions are ignored once the task has advanced to merge approval, merged verification, done, or cancelled. This prevents a stale background worker from moving an already merged or accepted task back to review.
+
 Final task summaries should include:
 
 - changed files

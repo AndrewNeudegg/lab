@@ -2170,6 +2170,10 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.failed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "error": loadErr.Error()})})
 		return
 	}
+	if shouldIgnoreStaleDelegationResult(t) {
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.ignored", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "status": t.Status, "reason": "task state advanced while worker was running"})})
+		return
+	}
 	t.AssignedTo = "OrchestratorAgent"
 	output := strings.TrimSpace(out.Output)
 	t.Result = output
@@ -2201,6 +2205,15 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 		return
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.completed", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(payload)})
+}
+
+func shouldIgnoreStaleDelegationResult(t taskstore.Task) bool {
+	switch t.Status {
+	case taskstore.StatusAwaitingApproval, taskstore.StatusAwaitingVerification, taskstore.StatusDone, taskstore.StatusCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (string, error) {

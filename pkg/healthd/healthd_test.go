@@ -47,3 +47,25 @@ func TestOverallStatusPrioritizesCritical(t *testing.T) {
 		t.Fatalf("expected critical, got %q", status)
 	}
 }
+
+func TestProcessHeartbeatBecomesCriticalWhenStale(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	monitor := New(config.HealthdConfig{ProcessTimeoutSeconds: 10})
+	_, err := monitor.RecordHeartbeat(now, ProcessHeartbeat{
+		Name:       "homelabd",
+		Type:       "daemon",
+		Time:       now,
+		TTLSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+
+	checks := monitor.processChecks(now.Add(11 * time.Second))
+	if len(checks) != 1 {
+		t.Fatalf("expected one process check, got %d", len(checks))
+	}
+	if checks[0].Status != StatusCritical {
+		t.Fatalf("expected stale process to be critical, got %q", checks[0].Status)
+	}
+}

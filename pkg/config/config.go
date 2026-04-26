@@ -53,14 +53,16 @@ type HTTPConfig struct {
 }
 
 type HealthdConfig struct {
-	Addr                  string                     `json:"addr"`
-	Enabled               *bool                      `json:"enabled"`
-	SampleIntervalSeconds int                        `json:"sample_interval_seconds"`
-	RetentionSeconds      int                        `json:"retention_seconds"`
-	RequestTimeoutSeconds int                        `json:"request_timeout_seconds"`
-	Checks                []HealthCheckConfig        `json:"checks,omitempty"`
-	SLOs                  []HealthSLOConfig          `json:"slos,omitempty"`
-	Notifications         []HealthNotificationConfig `json:"notifications,omitempty"`
+	Addr                            string                     `json:"addr"`
+	Enabled                         *bool                      `json:"enabled"`
+	SampleIntervalSeconds           int                        `json:"sample_interval_seconds"`
+	RetentionSeconds                int                        `json:"retention_seconds"`
+	RequestTimeoutSeconds           int                        `json:"request_timeout_seconds"`
+	ProcessHeartbeatIntervalSeconds int                        `json:"process_heartbeat_interval_seconds"`
+	ProcessTimeoutSeconds           int                        `json:"process_timeout_seconds"`
+	Checks                          []HealthCheckConfig        `json:"checks,omitempty"`
+	SLOs                            []HealthSLOConfig          `json:"slos,omitempty"`
+	Notifications                   []HealthNotificationConfig `json:"notifications,omitempty"`
 }
 
 type HealthCheckConfig struct {
@@ -190,11 +192,13 @@ func Default() Config {
 		DataDir: "data",
 		HTTP:    HTTPConfig{Addr: "127.0.0.1:18080"},
 		Healthd: HealthdConfig{
-			Addr:                  "127.0.0.1:18081",
-			Enabled:               boolPtr(true),
-			SampleIntervalSeconds: 5,
-			RetentionSeconds:      300,
-			RequestTimeoutSeconds: 2,
+			Addr:                            "127.0.0.1:18081",
+			Enabled:                         boolPtr(true),
+			SampleIntervalSeconds:           5,
+			RetentionSeconds:                300,
+			RequestTimeoutSeconds:           2,
+			ProcessHeartbeatIntervalSeconds: 5,
+			ProcessTimeoutSeconds:           15,
 			SLOs: []HealthSLOConfig{
 				{
 					Name:            "availability",
@@ -326,6 +330,12 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Healthd.RequestTimeoutSeconds == 0 {
 		c.Healthd.RequestTimeoutSeconds = d.Healthd.RequestTimeoutSeconds
+	}
+	if c.Healthd.ProcessHeartbeatIntervalSeconds == 0 {
+		c.Healthd.ProcessHeartbeatIntervalSeconds = d.Healthd.ProcessHeartbeatIntervalSeconds
+	}
+	if c.Healthd.ProcessTimeoutSeconds == 0 {
+		c.Healthd.ProcessTimeoutSeconds = d.Healthd.ProcessTimeoutSeconds
 	}
 	if c.Healthd.SLOs == nil {
 		c.Healthd.SLOs = d.Healthd.SLOs

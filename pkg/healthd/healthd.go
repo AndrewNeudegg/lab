@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type Monitor struct {
 	mu            sync.Mutex
 	samples       []Sample
 	checks        []CheckResult
+	processes     map[string]ProcessStatus
 	notifications []Notification
 	previousCPU   cpuCounters
 	lastStatus    string
@@ -67,6 +69,30 @@ type CheckResult struct {
 	LastChecked         time.Time `json:"last_checked"`
 }
 
+type ProcessHeartbeat struct {
+	Name       string            `json:"name"`
+	Type       string            `json:"type,omitempty"`
+	PID        int               `json:"pid,omitempty"`
+	Addr       string            `json:"addr,omitempty"`
+	StartedAt  time.Time         `json:"started_at,omitempty"`
+	Time       time.Time         `json:"time,omitempty"`
+	TTLSeconds int               `json:"ttl_seconds,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+type ProcessStatus struct {
+	Name       string            `json:"name"`
+	Type       string            `json:"type"`
+	Status     string            `json:"status"`
+	Message    string            `json:"message"`
+	PID        int               `json:"pid,omitempty"`
+	Addr       string            `json:"addr,omitempty"`
+	StartedAt  time.Time         `json:"started_at,omitempty"`
+	LastSeen   time.Time         `json:"last_seen"`
+	TTLSeconds int               `json:"ttl_seconds"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
 type SLOReport struct {
 	Name                        string   `json:"name"`
 	TargetPercent               float64  `json:"target_percent"`
@@ -91,15 +117,16 @@ type Notification struct {
 }
 
 type Snapshot struct {
-	Status        string         `json:"status"`
-	StartedAt     time.Time      `json:"started_at"`
-	UptimeSeconds float64        `json:"uptime_seconds"`
-	WindowSeconds int            `json:"window_seconds"`
-	Current       Sample         `json:"current"`
-	Samples       []Sample       `json:"samples"`
-	Checks        []CheckResult  `json:"checks"`
-	SLOs          []SLOReport    `json:"slos"`
-	Notifications []Notification `json:"notifications"`
+	Status        string          `json:"status"`
+	StartedAt     time.Time       `json:"started_at"`
+	UptimeSeconds float64         `json:"uptime_seconds"`
+	WindowSeconds int             `json:"window_seconds"`
+	Current       Sample          `json:"current"`
+	Samples       []Sample        `json:"samples"`
+	Checks        []CheckResult   `json:"checks"`
+	Processes     []ProcessStatus `json:"processes"`
+	SLOs          []SLOReport     `json:"slos"`
+	Notifications []Notification  `json:"notifications"`
 }
 
 func New(cfg config.HealthdConfig) *Monitor {
@@ -111,6 +138,12 @@ func New(cfg config.HealthdConfig) *Monitor {
 	}
 	if cfg.RequestTimeoutSeconds <= 0 {
 		cfg.RequestTimeoutSeconds = 2
+	}
+	if cfg.ProcessHeartbeatIntervalSeconds <= 0 {
+		cfg.ProcessHeartbeatIntervalSeconds = 5
+	}
+	if cfg.ProcessTimeoutSeconds <= 0 {
+		cfg.ProcessTimeoutSeconds = 15
 	}
 	if cfg.SLOs == nil {
 		cfg.SLOs = []config.HealthSLOConfig{{
@@ -125,6 +158,7 @@ func New(cfg config.HealthdConfig) *Monitor {
 		cfg:           cfg,
 		startedAt:     time.Now().UTC(),
 		client:        &http.Client{Timeout: time.Duration(cfg.RequestTimeoutSeconds) * time.Second},
+		processes:     make(map[string]ProcessStatus),
 		lastStatus:    StatusHealthy,
 		lastSLOStatus: make(map[string]string),
 	}
@@ -155,23 +189,28 @@ func (m *Monitor) Snapshot(window time.Duration) Snapshot {
 	if window <= 0 {
 		window = 5 * time.Minute
 	}
+	now := time.Now().UTC()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cutoff := time.Now().UTC().Add(-window)
+	cutoff := now.Add(-window)
 	samples := samplesSince(m.samples, cutoff)
-	current := Sample{Time: time.Now().UTC(), ProcessUptimeSeconds: time.Since(m.startedAt).Seconds(), Goroutines: runtime.NumGoroutine()}
+	current := Sample{Time: now, ProcessUptimeSeconds: time.Since(m.startedAt).Seconds(), Goroutines: runtime.NumGoroutine()}
 	if len(m.samples) > 0 {
 		current = m.samples[len(m.samples)-1]
 	}
-	checks := append([]CheckResult(nil), m.checks...)
-	slos := evaluateSLOs(m.cfg.SLOs, m.samples, time.Now().UTC())
+	processes := processSnapshot(m.processes, now)
+	checks := mergeProcessChecks(append([]CheckResult(nil), m.checks...), processes, now)
+	slos := evaluateSLOs(m.cfg.SLOs, m.samples, now)
 	notifications := append([]Notification(nil), m.notifications...)
 	if samples == nil {
 		samples = []Sample{}
 	}
 	if checks == nil {
 		checks = []CheckResult{}
+	}
+	if processes == nil {
+		processes = []ProcessStatus{}
 	}
 	if slos == nil {
 		slos = []SLOReport{}
@@ -183,14 +222,43 @@ func (m *Monitor) Snapshot(window time.Duration) Snapshot {
 	return Snapshot{
 		Status:        status,
 		StartedAt:     m.startedAt,
-		UptimeSeconds: time.Since(m.startedAt).Seconds(),
+		UptimeSeconds: now.Sub(m.startedAt).Seconds(),
 		WindowSeconds: int(window.Seconds()),
 		Current:       current,
 		Samples:       samples,
 		Checks:        checks,
+		Processes:     processes,
 		SLOs:          slos,
 		Notifications: notifications,
 	}
+}
+
+func (m *Monitor) RecordHeartbeat(now time.Time, heartbeat ProcessHeartbeat) (ProcessStatus, error) {
+	if heartbeat.Name == "" {
+		return ProcessStatus{}, errors.New("process name is required")
+	}
+	if heartbeat.Type == "" {
+		heartbeat.Type = "process"
+	}
+	if heartbeat.TTLSeconds <= 0 {
+		heartbeat.TTLSeconds = m.cfg.ProcessTimeoutSeconds
+	}
+	status := ProcessStatus{
+		Name:       heartbeat.Name,
+		Type:       heartbeat.Type,
+		Status:     StatusHealthy,
+		Message:    "heartbeat received",
+		PID:        heartbeat.PID,
+		Addr:       heartbeat.Addr,
+		StartedAt:  heartbeat.StartedAt,
+		LastSeen:   now,
+		TTLSeconds: heartbeat.TTLSeconds,
+		Metadata:   copyStringMap(heartbeat.Metadata),
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.processes[status.Name] = status
+	return status, nil
 }
 
 func (m *Monitor) collect(ctx context.Context) {
@@ -228,20 +296,21 @@ func (m *Monitor) collect(ctx context.Context) {
 }
 
 func (m *Monitor) runChecks(ctx context.Context, now time.Time) []CheckResult {
+	results := make([]CheckResult, 0, len(m.cfg.Checks)+1)
 	if len(m.cfg.Checks) == 0 {
-		return []CheckResult{{
+		results = append(results, CheckResult{
 			Name:        "healthd",
 			Type:        "internal",
 			Status:      StatusHealthy,
 			Message:     "monitor loop is running",
 			LastChecked: now,
-		}}
+		})
+	} else {
+		for _, check := range m.cfg.Checks {
+			results = append(results, m.runCheck(ctx, check, now))
+		}
 	}
-	results := make([]CheckResult, 0, len(m.cfg.Checks))
-	for _, check := range m.cfg.Checks {
-		results = append(results, m.runCheck(ctx, check, now))
-	}
-	return results
+	return append(results, m.processChecks(now)...)
 }
 
 func (m *Monitor) runCheck(ctx context.Context, check config.HealthCheckConfig, now time.Time) CheckResult {
@@ -687,6 +756,68 @@ func checksHealthy(checks []CheckResult) bool {
 		}
 	}
 	return true
+}
+
+func (m *Monitor) processChecks(now time.Time) []CheckResult {
+	m.mu.Lock()
+	processes := processSnapshot(m.processes, now)
+	m.mu.Unlock()
+	return processCheckResults(processes, now)
+}
+
+func mergeProcessChecks(checks []CheckResult, processes []ProcessStatus, now time.Time) []CheckResult {
+	out := make([]CheckResult, 0, len(checks)+len(processes))
+	for _, check := range checks {
+		if check.Type != "process" {
+			out = append(out, check)
+		}
+	}
+	return append(out, processCheckResults(processes, now)...)
+}
+
+func processCheckResults(processes []ProcessStatus, now time.Time) []CheckResult {
+	results := make([]CheckResult, 0, len(processes))
+	for _, process := range processes {
+		results = append(results, CheckResult{
+			Name:        "process:" + process.Name,
+			Type:        "process",
+			Status:      process.Status,
+			Message:     process.Message,
+			LastChecked: now,
+		})
+	}
+	return results
+}
+
+func processSnapshot(processes map[string]ProcessStatus, now time.Time) []ProcessStatus {
+	out := make([]ProcessStatus, 0, len(processes))
+	for _, process := range processes {
+		process.Metadata = copyStringMap(process.Metadata)
+		age := now.Sub(process.LastSeen)
+		if age <= time.Duration(process.TTLSeconds)*time.Second {
+			process.Status = StatusHealthy
+			process.Message = fmt.Sprintf("last heartbeat %.0fs ago", age.Seconds())
+		} else {
+			process.Status = StatusCritical
+			process.Message = fmt.Sprintf("last heartbeat %.0fs ago exceeds %ds timeout", age.Seconds(), process.TTLSeconds)
+		}
+		out = append(out, process)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func overallStatus(checks []CheckResult, slos []SLOReport) string {

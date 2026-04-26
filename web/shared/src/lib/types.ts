@@ -124,6 +124,19 @@ export interface HealthdCheckResult {
   last_checked: string;
 }
 
+export interface HealthdProcessStatus {
+  name: string;
+  type: string;
+  status: 'healthy' | 'warning' | 'critical' | string;
+  message: string;
+  pid?: number;
+  addr?: string;
+  started_at?: string;
+  last_seen: string;
+  ttl_seconds: number;
+  metadata?: Record<string, string>;
+}
+
 export interface HealthdSLOReport {
   name: string;
   target_percent: number;
@@ -155,6 +168,7 @@ export interface HealthdSnapshot {
   current: HealthdSample;
   samples: HealthdSample[];
   checks: HealthdCheckResult[];
+  processes: HealthdProcessStatus[];
   slos: HealthdSLOReport[];
   notifications: HealthdNotification[];
 }

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/control"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	agentrunner "github.com/andrewneudegg/lab/pkg/externalagent"
+	"github.com/andrewneudegg/lab/pkg/healthd"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
@@ -59,6 +61,8 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	startedAt := time.Now().UTC()
+	startHealthdHeartbeat(ctx, cfg, *mode, startedAt)
 	orch, err := buildRuntime(cfg)
 	if err != nil {
 		fatal(err)
@@ -87,6 +91,51 @@ func main() {
 	default:
 		fatal(fmt.Errorf("unknown mode %q", *mode))
 	}
+}
+
+func startHealthdHeartbeat(ctx context.Context, cfg config.Config, mode string, startedAt time.Time) {
+	if cfg.Healthd.Enabled != nil && !*cfg.Healthd.Enabled {
+		return
+	}
+	interval := time.Duration(cfg.Healthd.ProcessHeartbeatIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	timeout := time.Duration(cfg.Healthd.RequestTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	send := func() {
+		heartbeat := healthd.ProcessHeartbeat{
+			Name:       "homelabd",
+			Type:       "daemon",
+			PID:        os.Getpid(),
+			Addr:       cfg.HTTP.Addr,
+			StartedAt:  startedAt,
+			TTLSeconds: cfg.Healthd.ProcessTimeoutSeconds,
+			Metadata: map[string]string{
+				"mode":  mode,
+				"agent": cfg.AgentName,
+			},
+		}
+		if err := healthd.PushHeartbeat(ctx, client, cfg.Healthd.Addr, heartbeat); err != nil {
+			slog.Warn("healthd heartbeat failed", "error", err)
+		}
+	}
+	go func() {
+		send()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				send()
+			}
+		}
+	}()
 }
 
 func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {

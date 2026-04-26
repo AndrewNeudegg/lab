@@ -33,6 +33,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthd", s.withCORS(s.handleSnapshot))
 	mux.HandleFunc("/healthd/samples", s.withCORS(s.handleSamples))
 	mux.HandleFunc("/healthd/notifications", s.withCORS(s.handleNotifications))
+	mux.HandleFunc("/healthd/processes", s.withCORS(s.handleProcesses))
+	mux.HandleFunc("/healthd/processes/heartbeat", s.withCORS(s.handleProcessHeartbeat))
 	mux.HandleFunc("/healthd/checks/run", s.withCORS(s.handleRunChecks))
 }
 
@@ -88,6 +90,41 @@ func (s *Server) handleNotifications(rw http.ResponseWriter, req *http.Request) 
 	}
 	snapshot := s.Monitor.Snapshot(parseWindow(req, 5*time.Minute))
 	writeJSON(rw, http.StatusOK, map[string]any{"notifications": snapshot.Notifications})
+}
+
+func (s *Server) handleProcesses(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Monitor == nil {
+		writeError(rw, http.StatusServiceUnavailable, "healthd monitor is not configured")
+		return
+	}
+	snapshot := s.Monitor.Snapshot(parseWindow(req, 5*time.Minute))
+	writeJSON(rw, http.StatusOK, map[string]any{"processes": snapshot.Processes})
+}
+
+func (s *Server) handleProcessHeartbeat(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Monitor == nil {
+		writeError(rw, http.StatusServiceUnavailable, "healthd monitor is not configured")
+		return
+	}
+	var heartbeat ProcessHeartbeat
+	if err := json.NewDecoder(req.Body).Decode(&heartbeat); err != nil {
+		writeError(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	status, err := s.Monitor.RecordHeartbeat(time.Now().UTC(), heartbeat)
+	if err != nil {
+		writeError(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusAccepted, status)
 }
 
 func (s *Server) handleRunChecks(rw http.ResponseWriter, req *http.Request) {

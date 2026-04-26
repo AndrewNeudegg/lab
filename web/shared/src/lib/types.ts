@@ -65,10 +65,20 @@ export interface HomelabdTask {
   depends_on?: string[];
   blocked_by?: string[];
   graph_phase?: string;
+  target?: HomelabdTaskTarget;
   acceptance_criteria?: HomelabdAcceptanceCriterion[];
   workspace?: string;
   result?: string;
   plan?: HomelabdTaskPlan;
+}
+
+export interface HomelabdTaskTarget {
+  mode?: string;
+  agent_id?: string;
+  machine?: string;
+  workdir_id?: string;
+  workdir?: string;
+  backend?: string;
 }
 
 export interface HomelabdAcceptanceCriterion {
@@ -94,6 +104,39 @@ export interface HomelabdTaskPlanStep {
 
 export interface HomelabdTasksResponse {
   tasks: HomelabdTask[];
+}
+
+export interface HomelabdCreateTaskRequest {
+  goal: string;
+  target?: HomelabdTaskTarget;
+}
+
+export interface HomelabdCreateTaskResponse {
+  reply: string;
+}
+
+export interface HomelabdRemoteAgentWorkdir {
+  id: string;
+  path: string;
+  label?: string;
+}
+
+export interface HomelabdRemoteAgent {
+  id: string;
+  name: string;
+  machine: string;
+  version?: string;
+  status: 'online' | 'offline' | string;
+  last_seen: string;
+  started_at?: string;
+  capabilities?: string[];
+  workdirs?: HomelabdRemoteAgentWorkdir[];
+  current_task_id?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface HomelabdAgentsResponse {
+  agents: HomelabdRemoteAgent[];
 }
 
 export interface HomelabdTaskActionResponse {
@@ -272,7 +315,9 @@ export interface SupervisorSnapshot {
 
 export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
+  createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;
+  listAgents(): Promise<HomelabdAgentsResponse>;
   listApprovals(): Promise<HomelabdApprovalsResponse>;
   listEvents(options?: { date?: string; limit?: number }): Promise<HomelabdEventsResponse>;
   listTaskRuns(taskId: string): Promise<HomelabdTaskRunsResponse>;

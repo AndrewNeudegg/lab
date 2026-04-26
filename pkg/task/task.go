@@ -32,10 +32,20 @@ type Task struct {
 	DependsOn          []string              `json:"depends_on,omitempty"`
 	BlockedBy          []string              `json:"blocked_by,omitempty"`
 	GraphPhase         string                `json:"graph_phase,omitempty"`
+	Target             *ExecutionTarget      `json:"target,omitempty"`
 	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria,omitempty"`
 	Workspace          string                `json:"workspace,omitempty"`
 	Result             string                `json:"result,omitempty"`
 	Plan               *TaskPlan             `json:"plan,omitempty"`
+}
+
+type ExecutionTarget struct {
+	Mode      string `json:"mode,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	Machine   string `json:"machine,omitempty"`
+	WorkdirID string `json:"workdir_id,omitempty"`
+	Workdir   string `json:"workdir,omitempty"`
+	Backend   string `json:"backend,omitempty"`
 }
 
 type AcceptanceCriterion struct {

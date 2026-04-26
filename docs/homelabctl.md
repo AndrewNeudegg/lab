@@ -8,7 +8,7 @@ Start `homelabd` in HTTP mode before using the CLI:
 go run ./cmd/homelabd -mode http -config config.json
 ```
 
-The default API address is `http://127.0.0.1:8080`. Override it with `-addr` or `HOMELABD_ADDR`:
+The default API address is `http://127.0.0.1:18080`. Override it with `-addr` or `HOMELABD_ADDR`:
 
 ```bash
 go run ./cmd/homelabctl -addr http://127.0.0.1:18080 health
@@ -59,6 +59,7 @@ Direct task commands use the typed HTTP endpoints and print pretty JSON:
 
 ```bash
 go run ./cmd/homelabctl task new "Add dashboard regression tests"
+go run ./cmd/homelabctl task new --agent workstation --workdir repo "Update this checkout"
 go run ./cmd/homelabctl task list
 go run ./cmd/homelabctl task show task_123
 go run ./cmd/homelabctl task runs task_123
@@ -69,6 +70,8 @@ go run ./cmd/homelabctl task reopen task_123 "needs rework"
 go run ./cmd/homelabctl task cancel task_123
 go run ./cmd/homelabctl task retry task_123 codex "retry from the current workspace state"
 ```
+
+The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
 
 Top-level aliases are available for common task actions:
 
@@ -91,6 +94,17 @@ go run ./cmd/homelabctl refresh task_123
 go run ./cmd/homelabctl diff task_123
 go run ./cmd/homelabctl delete task_123
 ```
+
+## Remote Agent Commands
+
+Remote machines use the `/agents` inventory. This is separate from the chat command `agents`, which lists external local worker backends such as `codex`, `claude`, and `gemini`.
+
+```bash
+go run ./cmd/homelabctl agent list
+go run ./cmd/homelabctl agent show workstation
+```
+
+See `docs/remote-agents.md` for remote agent setup and polling details.
 
 ## Approval Commands
 
@@ -164,7 +178,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `GET /healthz`
 - `POST /message`
 - `GET /tasks`
-- `POST /tasks`
+- `POST /tasks`, including optional remote `target`
 - `GET /tasks/{id}`
 - `GET /tasks/{id}/runs`
 - `POST /tasks/{id}/run`
@@ -173,6 +187,8 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks/{id}/reopen`
 - `POST /tasks/{id}/cancel`
 - `POST /tasks/{id}/retry`
+- `GET /agents`
+- `GET /agents/{id}`
 - `GET /approvals`
 - `POST /approvals/{id}/approve`
 - `POST /approvals/{id}/deny`

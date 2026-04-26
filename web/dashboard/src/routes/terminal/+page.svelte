@@ -1,13 +1,16 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
   import { Navbar } from '@homelab/shared';
+  import type { HomelabdAgentsResponse, HomelabdRemoteAgent } from '@homelab/shared';
   import '@xterm/xterm/css/xterm.css';
   import {
+    buildTerminalTargets,
     clampTerminalGeometry,
     defaultTerminalGeometry,
     endpoint,
     terminalStatusLabel,
     websocketEndpoint,
+    type TerminalTarget,
     type TerminalGeometry
   } from './terminal-client';
 
@@ -42,41 +45,65 @@
     value: string;
   };
 
+  type TerminalEvent = {
+    type: string;
+    data?: string;
+    code?: number;
+  };
+
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const controls: ControlButton[] = [
     { label: 'Ctrl-C', hint: 'Interrupt foreground job', value: '\u0003' },
     { label: 'Ctrl-D', hint: 'Send EOF', value: '\u0004' },
     { label: 'Ctrl-Z', hint: 'Suspend foreground job', value: '\u001a' },
     { label: 'Tab', hint: 'Complete command', value: '\t' },
-    { label: 'Esc', hint: 'Escape', value: '\u001b' }
+    { label: 'Esc', hint: 'Escape', value: '\u001b' },
+    { label: '←', hint: 'Left arrow', value: '\u001b[D' },
+    { label: '→', hint: 'Right arrow', value: '\u001b[C' },
+    { label: '↑', hint: 'Up arrow', value: '\u001b[A' },
+    { label: '↓', hint: 'Down arrow', value: '\u001b[B' }
   ];
 
   let session: TerminalSession | undefined;
   let socket: WebSocket | undefined;
+  let eventSource: EventSource | undefined;
   let terminalHost: HTMLElement | undefined;
   let terminal: XtermTerminal | undefined;
   let fitAddon: FitAddonLike | undefined;
   let resizeObserver: ResizeObserver | undefined;
+  let agents: HomelabdRemoteAgent[] = [];
+  let selectedTargetId = 'local';
+  let activeTarget: TerminalTarget | undefined;
   let loading = true;
   let connected = false;
   let error = '';
   let lastResize = '';
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  let socketFallbackTimer: ReturnType<typeof setTimeout> | undefined;
 
   $: statusLabel = terminalStatusLabel(connected, loading);
+  $: terminalTargets = buildTerminalTargets(agents, apiBase);
+  $: selectedTarget = terminalTargets.find((target) => target.id === selectedTargetId) || terminalTargets[0];
+  $: if (terminalTargets.length > 0 && !terminalTargets.some((target) => target.id === selectedTargetId)) {
+    selectedTargetId = terminalTargets[0].id;
+  }
 
-  async function request<T>(path: string, init: RequestInit = {}) {
+  async function requestFrom<T>(base: string, path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
     if (init.body && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
     }
-    const response = await fetch(endpoint(apiBase, path), { ...init, headers });
+    const response = await fetch(endpoint(base, path), { ...init, headers });
     if (!response.ok) {
       const details = await response.text();
       throw new Error(details || `Request failed with ${response.status}`);
     }
     return (await response.json()) as T;
   }
+
+  const request = <T,>(path: string, init: RequestInit = {}) => requestFrom<T>(apiBase, path, init);
+  const terminalRequest = <T,>(path: string, init: RequestInit = {}) =>
+    requestFrom<T>(activeTarget?.apiBase || selectedTarget?.apiBase || apiBase, path, init);
 
   const currentGeometry = () =>
     clampTerminalGeometry({
@@ -100,7 +127,7 @@
     lastResize = key;
     window.clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => {
-      void request(`/terminal/sessions/${encodeURIComponent(session!.id)}/resize`, {
+      void terminalRequest(`/terminal/sessions/${encodeURIComponent(session!.id)}/resize`, {
         method: 'POST',
         body: JSON.stringify(size)
       }).catch((err) => {
@@ -122,35 +149,108 @@
       socket.send(data);
       return;
     }
-    writeNotice('[terminal is not connected]');
+    if (eventSource && session) {
+      void terminalRequest(`/terminal/sessions/${encodeURIComponent(session.id)}/input`, {
+        method: 'POST',
+        body: JSON.stringify({ data })
+      }).catch((err) => {
+        error = err instanceof Error ? err.message : 'Unable to send terminal input.';
+      });
+      return;
+    }
+    writeNotice('[terminal is connecting]');
   };
 
   const closeSocket = () => {
+    if (typeof window !== 'undefined') {
+      window.clearTimeout(socketFallbackTimer);
+    }
     socket?.close();
     socket = undefined;
+  };
+
+  const closeEventSource = () => {
+    eventSource?.close();
+    eventSource = undefined;
+  };
+
+  const disconnectTransport = () => {
+    closeSocket();
+    closeEventSource();
     connected = false;
   };
 
   const closeSession = async () => {
-    closeSocket();
+    disconnectTransport();
     if (!session) {
       return;
     }
     const closing = session.id;
     session = undefined;
     try {
-      await request(`/terminal/sessions/${encodeURIComponent(closing)}`, { method: 'DELETE' });
+      await terminalRequest(`/terminal/sessions/${encodeURIComponent(closing)}`, { method: 'DELETE' });
     } catch {
       // The shell may already have exited.
     }
   };
 
+  const handleTerminalEvent = (event: TerminalEvent) => {
+    switch (event.type) {
+      case 'output':
+        if (event.data) {
+          terminal?.write(event.data);
+        }
+        break;
+      case 'exit':
+        terminal?.write(`\r\n[process exited ${event.code ?? 0}]\r\n`);
+        disconnectTransport();
+        break;
+      case 'error':
+        if (event.data) {
+          terminal?.write(`\r\n[terminal error: ${event.data}]\r\n`);
+        }
+        break;
+    }
+  };
+
+  const connectEventStream = (nextSession: TerminalSession) => {
+    closeSocket();
+    closeEventSource();
+    eventSource = new EventSource(endpoint(activeTarget?.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/events`));
+    eventSource.onopen = () => {
+      connected = true;
+      error = '';
+      terminal?.focus();
+      fitTerminal();
+    };
+    eventSource.onerror = () => {
+      connected = false;
+      error = 'Terminal event stream disconnected.';
+    };
+    for (const eventType of ['output', 'exit', 'error']) {
+      eventSource.addEventListener(eventType, (message) => {
+        try {
+          handleTerminalEvent(JSON.parse((message as MessageEvent).data) as TerminalEvent);
+        } catch {
+          error = 'Terminal event stream returned invalid data.';
+        }
+      });
+    }
+  };
+
   const connectSocket = (nextSession: TerminalSession) => {
     closeSocket();
-    const url = websocketEndpoint(apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/ws`, window.location);
+    closeEventSource();
+    const url = websocketEndpoint(activeTarget?.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/ws`, window.location);
     socket = new WebSocket(url);
     socket.binaryType = 'arraybuffer';
+    socketFallbackTimer = window.setTimeout(() => {
+      if (socket?.readyState !== WebSocket.OPEN) {
+        connectEventStream(nextSession);
+      }
+    }, 1000);
     socket.onopen = () => {
+      window.clearTimeout(socketFallbackTimer);
       connected = true;
       error = '';
       terminal?.focus();
@@ -166,10 +266,12 @@
       }
     };
     socket.onerror = () => {
-      error = 'Terminal websocket disconnected.';
+      connectEventStream(nextSession);
     };
     socket.onclose = () => {
-      connected = false;
+      if (!eventSource) {
+        connected = false;
+      }
     };
   };
 
@@ -181,12 +283,13 @@
       terminal?.clear();
       fitAddon?.fit();
       const geometry = currentGeometry();
-      session = await request<TerminalSession>('/terminal/sessions', {
+      activeTarget = selectedTarget;
+      session = await terminalRequest<TerminalSession>('/terminal/sessions', {
         method: 'POST',
         body: JSON.stringify(geometry)
       });
       lastResize = `${geometry.cols}x${geometry.rows}`;
-      terminal?.writeln(`\x1b[90mConnected to ${session.shell} in ${session.cwd}\x1b[0m`);
+      terminal?.writeln(`\x1b[90mConnected to ${session.shell} in ${session.cwd} on ${activeTarget?.label || 'homelabd local'}\x1b[0m`);
       connectSocket(session);
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to start terminal.';
@@ -194,6 +297,15 @@
     } finally {
       loading = false;
       terminal?.focus();
+    }
+  };
+
+  const loadAgents = async () => {
+    try {
+      const response = await request<HomelabdAgentsResponse>('/agents');
+      agents = response.agents || [];
+    } catch {
+      agents = [];
     }
   };
 
@@ -248,7 +360,7 @@
   };
 
   onMount(() => {
-    void initialiseTerminal().then(startSession).catch((err) => {
+    void Promise.all([initialiseTerminal(), loadAgents()]).then(startSession).catch((err) => {
       loading = false;
       error = err instanceof Error ? err.message : 'Unable to initialise terminal.';
     });
@@ -257,11 +369,12 @@
   onDestroy(() => {
     if (typeof window !== 'undefined') {
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(socketFallbackTimer);
       window.removeEventListener('resize', fitTerminal);
+      void closeSession();
     }
     resizeObserver?.disconnect();
     terminal?.dispose();
-    void closeSession();
   });
 </script>
 
@@ -282,6 +395,14 @@
       </div>
       <div class="terminal-actions">
         <span class:connected class="status-pill">{statusLabel}</span>
+        <label class="target-picker">
+          <span>Session target</span>
+          <select bind:value={selectedTargetId} disabled={loading}>
+            {#each terminalTargets as target}
+              <option value={target.id}>{target.label} — {target.detail}</option>
+            {/each}
+          </select>
+        </label>
         <button type="button" on:click={() => terminal?.clear()}>Clear</button>
         <button type="button" on:click={() => void startSession()} disabled={loading}>New session</button>
       </div>
@@ -311,7 +432,6 @@
           }}
         >
           <strong>{control.label}</strong>
-          <span>{control.hint}</span>
         </button>
       {/each}
     </section>
@@ -431,6 +551,34 @@
     padding: 0 0.75rem;
   }
 
+  .target-picker {
+    display: grid;
+    gap: 0.15rem;
+    color: #475569;
+    font-size: 0.68rem;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .target-picker select {
+    max-width: min(34rem, 44vw);
+    min-height: 2.5rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.5rem;
+    color: #243047;
+    background: #ffffff;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 800;
+    text-transform: none;
+  }
+
+  :global(html[data-theme='dark'] .target-picker select) {
+    color: #e2e8f0;
+    border-color: #334155;
+    background: #111827;
+  }
+
   .status-pill {
     display: inline-flex;
     align-items: center;
@@ -502,18 +650,12 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.4rem;
-    min-width: 7rem;
+    min-width: 4.5rem;
     min-height: 2.5rem;
     padding: 0 0.65rem;
     color: #e2e8f0;
     border-color: #334155;
     background: #1f2937;
-  }
-
-  .terminal-controls button span {
-    color: #94a3b8;
-    font-size: 0.72rem;
   }
 
   button:disabled {
@@ -549,6 +691,12 @@
       justify-content: space-between;
     }
 
+    .target-picker,
+    .target-picker select {
+      width: 100%;
+      max-width: none;
+    }
+
     .terminal-actions button {
       min-height: 2.75rem;
       padding: 0 0.7rem;
@@ -575,16 +723,10 @@
 
     .terminal-controls button {
       flex: 0 0 auto;
-      min-width: 5.6rem;
+      min-width: 3.75rem;
       min-height: 2.75rem;
       padding: 0 0.45rem;
       font-size: 0.78rem;
-      flex-direction: column;
-      gap: 0.1rem;
-    }
-
-    .terminal-controls button span {
-      font-size: 0.66rem;
     }
   }
 </style>

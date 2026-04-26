@@ -86,6 +86,26 @@ POST /supervisord/apps/<name>/adopt  {"pid":1234}
 
 The dashboard uses these endpoints through `/supervisord`.
 
+## Remote Agent App
+
+The default config includes a `homelab-agent` app with `type: "agent"` and `auto_start: false`. This is a template for machines that should run remote work:
+
+```json
+{
+  "name": "homelab-agent",
+  "type": "agent",
+  "command": "go",
+  "args": ["run", "./cmd/homelab-agent"],
+  "working_dir": ".",
+  "auto_start": false,
+  "restart": "always"
+}
+```
+
+Enable it only on machines that should accept remote tasks. Set the machine's `remote_agent.workdirs` to the exact directories that may receive work, set `HOMELABD_AGENT_TOKEN`, and then change `auto_start` to `true`. Leave it disabled on the control-plane machine unless that machine should also execute remote-targeted tasks.
+
+The agent template intentionally has no `health_url`. Its health signal is the remote-agent heartbeat accepted by `homelabd` and forwarded to healthd as `remote-agent:<agent_id>`. If the agent process is supervised on a different machine, make sure that machine can reach the control-plane `http.addr` and that the token environment matches `control_plane.agent_token_env`.
+
 Before self-restart or stop, `supervisord` writes `state_path`. On boot it reloads that state and adopts still-running child PIDs, so managed applications continue running across supervisor replacement and remain stoppable or restartable from the UI. Existing unmanaged processes can be adopted explicitly by PID; `./run.sh stack-start` uses this during development to bring already-running `healthd`, `homelabd`, and dashboard processes under supervisor control.
 
 ## Graceful Shutdown Contract

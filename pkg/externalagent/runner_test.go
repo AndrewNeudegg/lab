@@ -2,6 +2,8 @@ package externalagent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +11,86 @@ import (
 
 	"github.com/andrewneudegg/lab/pkg/config"
 )
+
+func TestRunnerExecutesInRequestedWorkspaceWithTaskEnvironment(t *testing.T) {
+	workspace := t.TempDir()
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"codex": {
+			Enabled: true,
+			Command: "sh",
+			Args: []string{
+				"-c",
+				"pwd; printf '%s\\n' \"$HOMELABD_TASK_ID\" \"$HOMELABD_WORKSPACE\" \"$HOMELABD_BACKEND\"",
+			},
+			TimeoutSeconds: 5,
+		},
+	})
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Backend:     "codex",
+		TaskID:      "task_1",
+		Workspace:   workspace,
+		Instruction: "do work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(result.Output), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("output = %q, want pwd and three env lines", result.Output)
+	}
+	gotWorkspace, err := filepath.EvalSymlinks(lines[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotWorkspace != wantWorkspace {
+		t.Fatalf("pwd = %q, want workspace %q", gotWorkspace, wantWorkspace)
+	}
+	if lines[1] != "task_1" || lines[2] != workspace || lines[3] != "codex" {
+		t.Fatalf("env lines = %#v", lines[1:])
+	}
+}
+
+func TestRunnerRejectsMissingWorkspaceBeforeExecuting(t *testing.T) {
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"codex": {Enabled: true, Command: "sh", Args: []string{"-c", "exit 99"}},
+	})
+
+	if _, err := runner.Run(context.Background(), RunRequest{
+		Backend:     "codex",
+		TaskID:      "task_1",
+		Instruction: "do work",
+	}); err == nil || !strings.Contains(err.Error(), "workspace is required") {
+		t.Fatalf("error = %v, want workspace required", err)
+	}
+}
+
+func TestRunnerReturnsProcessFailureAndOutput(t *testing.T) {
+	workspace := t.TempDir()
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"codex": {Enabled: true, Command: "sh", Args: []string{"-c", "echo failed; exit 7"}},
+	})
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Backend:     "codex",
+		TaskID:      "task_1",
+		Workspace:   workspace,
+		Instruction: "do work",
+	})
+	if err == nil {
+		t.Fatal("Run succeeded, want process error")
+	}
+	if !strings.Contains(result.Output, "failed") || result.Error == "" {
+		t.Fatalf("result = %#v, want output and error", result)
+	}
+	if _, statErr := os.Stat(workspace); statErr != nil {
+		t.Fatalf("workspace should remain present: %v", statErr)
+	}
+}
 
 func TestRunnerStreamsOutputChunks(t *testing.T) {
 	var mu sync.Mutex

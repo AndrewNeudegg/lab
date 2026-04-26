@@ -1,8 +1,7 @@
 # External Agent Backends
 
 `homelabd` can delegate a task to a headless CLI worker such as Codex, Claude, or Gemini.
-The CLI runs inside the task worktree, so any file edits stay isolated until the normal
-`review` and `approve` merge flow.
+For local tasks, the CLI runs inside the task worktree, so any file edits stay isolated until the normal `review` and `approve` merge flow. For remote tasks, `homelab-agent` runs the same backend command in the selected advertised remote directory; the control plane records the result but does not create a local worktree or merge approval.
 
 ## Commands
 
@@ -25,6 +24,8 @@ diff task_20260424_001
 review task_20260424_001
 approve approval_...
 ```
+
+The `agents` command lists external backend definitions, not remote machines. Remote machines are listed with `homelabctl agent list` or on the dashboard Tasks page.
 
 ## Configuration
 
@@ -55,9 +56,10 @@ the command, args, timeout, and description:
 ## Safety Model
 
 - `agent.list` is read-only.
-- `agent.delegate` is medium risk and must be scoped to a task workspace.
-- External CLIs may modify the task worktree, but they do not get approval to merge.
-- The human approval gate still controls merges through `review` and `approve`.
+- `agent.delegate` is medium risk and must be scoped to a local task workspace.
+- External CLIs may modify the local task worktree, but they do not get approval to merge.
+- The human approval gate still controls local merges through `review` and `approve`.
+- Remote agents use these backend commands in their selected remote workdir. Remote review acknowledges the reported result and moves the task to verification; it does not compare or merge the remote checkout with the control-plane repo.
 - Configure exact CLI args per backend; provider-specific headless flags can differ.
 
 ## Run Trace

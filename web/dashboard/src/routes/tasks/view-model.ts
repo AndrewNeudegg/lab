@@ -11,12 +11,14 @@ import type {
 } from '@homelab/shared';
 
 export type TaskFilter = 'attention' | 'active' | 'all';
+export type TaskQueueFilter = 'all' | 'local' | `agent:${string}`;
 
 export interface TaskQueueViewInput {
   tasks: HomelabdTask[];
   approvals: HomelabdApproval[];
   events: HomelabdEvent[];
   taskFilter: TaskFilter;
+  queueFilter: TaskQueueFilter;
   taskSearch: string;
   selectedTaskId: string;
 }
@@ -52,24 +54,48 @@ const taskMatchesSearch = (task: HomelabdTask, search: string) => {
   if (!query) {
     return true;
   }
-  return [task.id, task.title, task.goal, task.status, task.assigned_to, task.plan?.summary]
+  return [
+    task.id,
+    task.title,
+    task.goal,
+    task.status,
+    task.assigned_to,
+    task.target?.agent_id,
+    task.target?.machine,
+    task.target?.workdir,
+    task.plan?.summary
+  ]
     .join(' ')
     .toLowerCase()
     .includes(query);
+};
+
+const taskMatchesQueue = (task: HomelabdTask, queueFilter: TaskQueueFilter) => {
+  if (queueFilter === 'all') {
+    return true;
+  }
+  const mode = task.target?.mode || 'local';
+  if (queueFilter === 'local') {
+    return mode !== 'remote';
+  }
+  const agentID = queueFilter.slice('agent:'.length);
+  return mode === 'remote' && task.target?.agent_id === agentID;
 };
 
 const visibleTasksForFilter = (
   tasks: HomelabdTask[],
   approvals: HomelabdApproval[],
   taskFilter: TaskFilter,
+  queueFilter: TaskQueueFilter,
   taskSearch: string
 ) => {
+  const queueTasks = tasks.filter((task) => taskMatchesQueue(task, queueFilter));
   const filtered =
     taskFilter === 'attention'
-      ? tasks.filter((task) => taskNeedsQueueAction(task, approvals))
+      ? queueTasks.filter((task) => taskNeedsQueueAction(task, approvals))
       : taskFilter === 'active'
-        ? tasks.filter(taskIsActive)
-        : tasks;
+        ? queueTasks.filter(taskIsActive)
+        : queueTasks;
 
   return filtered.filter((task) => taskMatchesSearch(task, taskSearch));
 };
@@ -179,10 +205,11 @@ export const selectTaskForQueue = (
   tasks: HomelabdTask[],
   approvals: HomelabdApproval[],
   taskFilter: TaskFilter,
+  queueFilter: TaskQueueFilter,
   taskSearch: string,
   selectedTaskId: string
 ) => {
-  const visibleTaskItems = visibleTasksForFilter(tasks, approvals, taskFilter, taskSearch);
+  const visibleTaskItems = visibleTasksForFilter(tasks, approvals, taskFilter, queueFilter, taskSearch);
   if (selectedTaskId && visibleTaskItems.some((task) => task.id === selectedTaskId)) {
     return selectedTaskId;
   }
@@ -194,17 +221,19 @@ export const createTaskQueueView = ({
   approvals,
   events,
   taskFilter,
+  queueFilter,
   taskSearch,
   selectedTaskId
 }: TaskQueueViewInput): TaskQueueView => {
   const pendingApprovalItems = pendingActionableApprovals(approvals, tasks);
   const attentionTaskItems = tasks.filter((task) => taskNeedsQueueAction(task, approvals));
   const activeTaskItems = tasks.filter(taskIsActive);
-  const visibleTaskItems = visibleTasksForFilter(tasks, approvals, taskFilter, taskSearch);
+  const visibleTaskItems = visibleTasksForFilter(tasks, approvals, taskFilter, queueFilter, taskSearch);
   const normalizedSelectedTaskId = selectTaskForQueue(
     tasks,
     approvals,
     taskFilter,
+    queueFilter,
     taskSearch,
     selectedTaskId
   );

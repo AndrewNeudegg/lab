@@ -18,23 +18,30 @@ import (
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
 	"github.com/andrewneudegg/lab/pkg/llm"
+	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
 )
 
 type Orchestrator struct {
-	cfg       config.Config
-	events    *eventlog.Store
-	tasks     *taskstore.Store
-	approvals *approvalstore.Store
-	registry  *tool.Registry
-	policy    tool.Policy
-	provider  llm.Provider
-	model     string
-	logger    *slog.Logger
-	activeMu  sync.Mutex
-	active    map[string]activeTaskRun
+	cfg          config.Config
+	events       *eventlog.Store
+	tasks        *taskstore.Store
+	approvals    *approvalstore.Store
+	registry     *tool.Registry
+	policy       tool.Policy
+	provider     llm.Provider
+	model        string
+	remoteAgents *remoteagent.Store
+	logger       *slog.Logger
+	activeMu     sync.Mutex
+	active       map[string]activeTaskRun
+}
+
+func (o *Orchestrator) WithRemoteAgents(store *remoteagent.Store) *Orchestrator {
+	o.remoteAgents = store
+	return o
 }
 
 type activeTaskRun struct {
@@ -871,6 +878,23 @@ func (o *Orchestrator) CreateTask(ctx context.Context, goal string) (string, err
 	return o.createTask(ctx, goal)
 }
 
+func (o *Orchestrator) CreateTaskWithTarget(ctx context.Context, goal string, target *taskstore.ExecutionTarget) (string, error) {
+	if target == nil || strings.TrimSpace(target.Mode) == "" || strings.EqualFold(target.Mode, "local") {
+		return o.createTask(ctx, goal)
+	}
+	if !strings.EqualFold(target.Mode, "remote") {
+		return "", fmt.Errorf("unsupported task target mode %q", target.Mode)
+	}
+	task, err := o.createRemoteTaskRecord(ctx, goal, *target)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Created remote task %s for %s on %s.\nThe remote agent will claim it on its next poll.\nNext:\n%s", task.ID, task.Target.AgentID, task.Target.Workdir, commandBlock(
+		"status",
+		"show "+task.ID,
+	)), nil
+}
+
 func (o *Orchestrator) ListTasks() ([]taskstore.Task, error) {
 	tasks, err := o.tasks.List()
 	if err != nil {
@@ -903,6 +927,64 @@ func (o *Orchestrator) ReopenTask(ctx context.Context, taskID, reason string) (s
 	return o.reopenTask(ctx, taskID, reason)
 }
 
+func (o *Orchestrator) AssignTaskTarget(ctx context.Context, selector string, target *taskstore.ExecutionTarget) (string, error) {
+	if target == nil {
+		return "", fmt.Errorf("target is required")
+	}
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if taskTerminal(t.Status) {
+		return "", fmt.Errorf("task %s is %s and cannot be reassigned", taskShortID(taskID), t.Status)
+	}
+	if !strings.EqualFold(target.Mode, "remote") {
+		return "", fmt.Errorf("only remote assignment is supported")
+	}
+	target.AgentID = strings.TrimSpace(target.AgentID)
+	target.WorkdirID = strings.TrimSpace(target.WorkdirID)
+	target.Workdir = strings.TrimSpace(target.Workdir)
+	target.Backend = strings.TrimSpace(target.Backend)
+	if target.AgentID == "" {
+		return "", fmt.Errorf("remote agent id is required")
+	}
+	if o.remoteAgents != nil {
+		agent, err := o.remoteAgents.Load(target.AgentID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("remote agent %q is not registered", target.AgentID)
+			}
+			return "", err
+		}
+		if err := resolveAdvertisedWorkdir(agent, target); err != nil {
+			return "", err
+		}
+	}
+	if target.Workdir == "" {
+		return "", fmt.Errorf("remote working directory is required")
+	}
+	target.Mode = "remote"
+	t.Target = target
+	t.Workspace = ""
+	t.Status = taskstore.StatusQueued
+	t.AssignedTo = "remote:" + target.AgentID
+	t.Result = "queued for remote agent " + target.AgentID
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.assigned", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{
+		"agent_id": target.AgentID,
+		"machine":  target.Machine,
+		"workdir":  target.Workdir,
+		"backend":  target.Backend,
+	})})
+	return fmt.Sprintf("Assigned %s to remote agent %s in %s.", taskShortID(taskID), target.AgentID, target.Workdir), nil
+}
+
 func (o *Orchestrator) CancelTask(ctx context.Context, taskID string) (string, error) {
 	return o.cancelTask(ctx, taskID)
 }
@@ -929,6 +1011,102 @@ func (o *Orchestrator) ResolveApproval(ctx context.Context, approvalID string, g
 
 func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
 	return o.events.ReadDay(day)
+}
+
+func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Agent, backend string) (*remoteagent.Assignment, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].Priority != tasks[j].Priority {
+			return tasks[i].Priority < tasks[j].Priority
+		}
+		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+	})
+	for _, t := range tasks {
+		if !remoteTaskForAgent(t, agent.ID) || t.Status != taskstore.StatusQueued {
+			continue
+		}
+		target := *t.Target
+		if err := resolveAdvertisedWorkdir(agent, &target); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = err.Error()
+			_ = o.tasks.Save(t)
+			return nil, fmt.Errorf("remote task %s target is invalid: %w", t.ID, err)
+		}
+		if backend == "" {
+			backend = firstNonEmptyString(target.Backend, "codex")
+		}
+		t.Status = taskstore.StatusRunning
+		t.AssignedTo = agent.ID
+		target.Backend = backend
+		t.Target = &target
+		t.Result = "claimed by remote agent " + agent.ID
+		if err := o.tasks.Save(t); err != nil {
+			return nil, err
+		}
+		if o.remoteAgents != nil {
+			_ = o.remoteAgents.SetCurrentTask(agent.ID, t.ID)
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.claimed", Actor: agent.ID, TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"agent_id": agent.ID,
+			"machine":  agent.Machine,
+			"workdir":  target.Workdir,
+			"backend":  backend,
+		})})
+		return &remoteagent.Assignment{
+			TaskID:      t.ID,
+			Title:       t.Title,
+			Goal:        t.Goal,
+			Workdir:     target.Workdir,
+			WorkdirID:   target.WorkdirID,
+			Backend:     backend,
+			Instruction: defaultRemoteAgentInstruction(t, agent),
+		}, nil
+	}
+	return nil, nil
+}
+
+func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, result, status string) (string, error) {
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if !remoteTaskForAgent(t, agentID) {
+		return "", fmt.Errorf("task %s is not assigned to remote agent %s", taskID, agentID)
+	}
+	if t.Status != taskstore.StatusRunning {
+		return "", fmt.Errorf("task %s is %s, not running", taskID, t.Status)
+	}
+	status = strings.ToLower(strings.TrimSpace(status))
+	t.AssignedTo = "OrchestratorAgent"
+	t.Result = strings.TrimSpace(result)
+	if status == "failed" || status == "blocked" {
+		t.Status = taskstore.StatusBlocked
+		if t.Result == "" {
+			t.Result = "remote agent reported failure"
+		}
+	} else {
+		t.Status = taskstore.StatusReadyForReview
+		if t.Result == "" {
+			t.Result = "remote agent finished; ready for review"
+		} else {
+			t.Result = "remote agent finished; ready for review.\n" + t.Result
+		}
+	}
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	if o.remoteAgents != nil {
+		_ = o.remoteAgents.ClearCurrentTask(agentID, taskID)
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.completed", Actor: agentID, TaskID: taskID, Payload: eventlog.Payload(map[string]any{
+		"agent_id": agentID,
+		"status":   t.Status,
+	})})
+	return fmt.Sprintf("Recorded remote result for %s.", taskShortID(taskID)), nil
 }
 
 func (o *Orchestrator) ListTaskRuns(taskID string) ([]ExternalRunArtifact, error) {
@@ -1025,6 +1203,9 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 	now := time.Now().UTC()
 	for _, t := range tasks {
 		if taskTerminal(t.Status) || o.taskActive(t.ID) {
+			continue
+		}
+		if remoteTask(t) {
 			continue
 		}
 		if len(t.DependsOn) > 0 {
@@ -1765,6 +1946,65 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 	return createdTask{Task: parent, Branch: branch, Children: children}, nil
 }
 
+func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, target taskstore.ExecutionTarget) (taskstore.Task, error) {
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return taskstore.Task{}, fmt.Errorf("goal is required")
+	}
+	target.Mode = "remote"
+	target.AgentID = strings.TrimSpace(target.AgentID)
+	target.WorkdirID = strings.TrimSpace(target.WorkdirID)
+	target.Workdir = strings.TrimSpace(target.Workdir)
+	target.Backend = strings.TrimSpace(target.Backend)
+	if target.AgentID == "" {
+		return taskstore.Task{}, fmt.Errorf("remote agent id is required")
+	}
+	if o.remoteAgents != nil {
+		agent, err := o.remoteAgents.Load(target.AgentID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return taskstore.Task{}, fmt.Errorf("remote agent %q is not registered", target.AgentID)
+			}
+			return taskstore.Task{}, err
+		}
+		if agent.ID == "" {
+			return taskstore.Task{}, fmt.Errorf("remote agent %q is not registered", target.AgentID)
+		}
+		if err := resolveAdvertisedWorkdir(agent, &target); err != nil {
+			return taskstore.Task{}, err
+		}
+	}
+	if target.Workdir == "" {
+		return taskstore.Task{}, fmt.Errorf("remote working directory is required")
+	}
+	now := time.Now().UTC()
+	task := taskstore.Task{
+		ID:                 id.New("task"),
+		Title:              firstLine(goal),
+		Goal:               goal,
+		Status:             taskstore.StatusQueued,
+		AssignedTo:         "remote:" + target.AgentID,
+		Priority:           5,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		Target:             &target,
+		Result:             "queued for remote agent " + target.AgentID,
+		AcceptanceCriteria: remoteAcceptanceCriteria(target),
+	}
+	o.ensureTaskPlan(ctx, &task)
+	if err := o.tasks.Save(task); err != nil {
+		return taskstore.Task{}, err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: task.ID, Payload: eventlog.Payload(task)})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.queued", Actor: "OrchestratorAgent", TaskID: task.ID, Payload: eventlog.Payload(map[string]any{
+		"agent_id": target.AgentID,
+		"machine":  target.Machine,
+		"workdir":  target.Workdir,
+		"backend":  target.Backend,
+	})})
+	return task, nil
+}
+
 func (o *Orchestrator) createTaskGraphChildren(ctx context.Context, parent taskstore.Task, now time.Time) ([]taskstore.Task, string, error) {
 	phases := defaultTaskGraphPhases(parent.Goal)
 	children := make([]taskstore.Task, 0, len(phases))
@@ -1895,6 +2135,13 @@ func rootAcceptanceCriteria() []taskstore.AcceptanceCriterion {
 	)
 }
 
+func remoteAcceptanceCriteria(target taskstore.ExecutionTarget) []taskstore.AcceptanceCriterion {
+	return criteria(
+		"Remote agent runs in the selected directory and reports the commands or tools used.",
+		"Final result states changed files, validation performed, and any follow-up needed on "+firstNonEmptyString(target.Machine, target.AgentID)+".",
+	)
+}
+
 func criteria(descriptions ...string) []taskstore.AcceptanceCriterion {
 	out := make([]taskstore.AcceptanceCriterion, 0, len(descriptions))
 	for i, description := range descriptions {
@@ -1977,6 +2224,9 @@ func (o *Orchestrator) listTasks() (string, error) {
 	var b strings.Builder
 	for _, t := range tasks {
 		fmt.Fprintf(&b, "%s [%s] %s\n  id: %s\n  workspace: %s\n", taskShortID(t.ID), t.Status, friendlyTaskTitle(t), t.ID, t.Workspace)
+		if t.Target != nil && t.Target.Mode != "" {
+			fmt.Fprintf(&b, "  target: %s\n", formatTaskTarget(*t.Target))
+		}
 		if t.GraphPhase != "" {
 			fmt.Fprintf(&b, "  graph: %s%s\n", t.GraphPhase, graphRelationSummary(t))
 		}
@@ -2110,6 +2360,84 @@ func taskStateTransitions(status string) string {
 	}
 }
 
+func remoteTask(t taskstore.Task) bool {
+	return t.Target != nil && strings.EqualFold(t.Target.Mode, "remote")
+}
+
+func remoteTaskForAgent(t taskstore.Task, agentID string) bool {
+	return remoteTask(t) && strings.EqualFold(strings.TrimSpace(t.Target.AgentID), strings.TrimSpace(agentID))
+}
+
+func resolveAdvertisedWorkdir(agent remoteagent.Agent, target *taskstore.ExecutionTarget) error {
+	if target == nil {
+		return fmt.Errorf("remote target is required")
+	}
+	target.Machine = firstNonEmptyString(target.Machine, agent.Machine)
+	target.WorkdirID = strings.TrimSpace(target.WorkdirID)
+	target.Workdir = strings.TrimSpace(target.Workdir)
+	if target.WorkdirID == "" && target.Workdir == "" {
+		return fmt.Errorf("remote working directory is required")
+	}
+	if len(agent.Workdirs) == 0 {
+		return fmt.Errorf("remote working directory is required; remote agent %q has no advertised working directories", agent.ID)
+	}
+	var matched *remoteagent.Workdir
+	for _, workdir := range agent.Workdirs {
+		workdir.ID = strings.TrimSpace(workdir.ID)
+		workdir.Path = strings.TrimSpace(workdir.Path)
+		if workdir.Path == "" {
+			continue
+		}
+		if target.WorkdirID != "" && workdir.ID == target.WorkdirID {
+			copy := workdir
+			matched = &copy
+			break
+		}
+		if target.WorkdirID == "" && target.Workdir != "" && workdir.Path == target.Workdir {
+			copy := workdir
+			matched = &copy
+			break
+		}
+	}
+	if matched == nil {
+		value := firstNonEmptyString(target.WorkdirID, target.Workdir)
+		return fmt.Errorf("remote working directory %q is not advertised by agent %s", value, agent.ID)
+	}
+	if target.Workdir != "" && target.Workdir != matched.Path {
+		return fmt.Errorf("remote working directory %q does not match advertised path %q for agent %s", target.Workdir, matched.Path, agent.ID)
+	}
+	target.WorkdirID = matched.ID
+	target.Workdir = matched.Path
+	return nil
+}
+
+func formatTaskTarget(target taskstore.ExecutionTarget) string {
+	parts := []string{target.Mode}
+	if target.AgentID != "" {
+		parts = append(parts, "agent="+target.AgentID)
+	}
+	if target.Machine != "" {
+		parts = append(parts, "machine="+target.Machine)
+	}
+	if target.Workdir != "" {
+		parts = append(parts, "dir="+target.Workdir)
+	}
+	if target.Backend != "" {
+		parts = append(parts, "backend="+target.Backend)
+	}
+	return strings.Join(parts, " ")
+}
+
+func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) string {
+	return strings.Join([]string{
+		"Work this task in the selected remote directory.",
+		"Agent: " + agent.ID + " on " + firstNonEmptyString(agent.Machine, "unknown machine") + ".",
+		"Goal: " + t.Goal,
+		"",
+		"Inspect the directory first, make the smallest practical change, run relevant validation, and report changed files plus commands run.",
+	}, "\n")
+}
+
 func (o *Orchestrator) showTask(taskID string) (string, error) {
 	resolved, err := o.resolveTaskID(taskID)
 	if err != nil {
@@ -2129,6 +2457,9 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 	}
 	if t.Workspace != "" {
 		fmt.Fprintf(&b, "workspace: %s\n", t.Workspace)
+	}
+	if t.Target != nil && t.Target.Mode != "" {
+		fmt.Fprintf(&b, "target: %s\n", formatTaskTarget(*t.Target))
 	}
 	if t.Plan != nil {
 		fmt.Fprintf(&b, "plan: %s - %s\n", t.Plan.Status, t.Plan.Summary)
@@ -3352,6 +3683,9 @@ func (o *Orchestrator) testTask(ctx context.Context, selector string) (string, e
 	if err != nil {
 		return "", err
 	}
+	if remoteTask(t) {
+		return "Remote task checks run on the remote agent. Review the agent result and recorded validation instead of running local repo checks.", nil
+	}
 	return o.runProjectChecks(ctx, taskID, t.Workspace, "CoderAgent")
 }
 
@@ -3363,6 +3697,9 @@ func (o *Orchestrator) diffTask(ctx context.Context, selector string) (string, e
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
+	}
+	if remoteTask(t) {
+		return "Remote task diffs are not read from homelabd's repo. Inspect the remote agent result for changed files and validation.", nil
 	}
 	raw, err := o.runTool(ctx, "CoderAgent", "repo.current_diff", map[string]any{"workspace": t.Workspace}, taskID)
 	if err != nil {
@@ -3386,6 +3723,9 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
+	}
+	if remoteTask(t) {
+		return o.reviewRemoteTask(ctx, t)
 	}
 	shortID := taskShortID(taskID)
 	diffOut := ""
@@ -3468,6 +3808,28 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		restartLine = "Restart impact: " + restartPlan
 	}
 	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\nAfter merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, shortID, shortID), nil
+}
+
+func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (string, error) {
+	shortID := taskShortID(t.ID)
+	if t.Status == taskstore.StatusAwaitingVerification {
+		return fmt.Sprintf("Remote task %s is already awaiting verification.\nVerify the result on %s in %s, then use `accept %s` or `reopen %s <reason>`.", shortID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
+	}
+	if t.Status != taskstore.StatusReadyForReview {
+		return fmt.Sprintf("Remote task %s is %s. Wait for the agent to finish before review.", shortID, t.Status), nil
+	}
+	t.Status = taskstore.StatusAwaitingVerification
+	t.AssignedTo = "OrchestratorAgent"
+	t.Result = appendResultLine(t.Result, "ReviewerAgent acknowledged remote result; no local git merge was attempted.")
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.review.acknowledged", Actor: "ReviewerAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"agent_id": t.Target.AgentID,
+		"machine":  t.Target.Machine,
+		"workdir":  t.Target.Workdir,
+	})})
+	return fmt.Sprintf("ReviewerAgent:\nRemote result acknowledged for %s.\nNo local workspace, main-branch comparison, or merge approval was attempted.\nExecution context: %s on %s in %s.\nNext: verify that remote checkout, then use `accept %s` or `reopen %s <reason>`.", shortID, t.Target.AgentID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
 }
 
 func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, workspace string) (string, error) {

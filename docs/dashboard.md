@@ -93,6 +93,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Secondary actions: show, delegate, delete, or reopen. These are useful but lower priority than the primary action.
 - Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
+- Remote execution context: shown as a warning-colored block for remote tasks. It must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
 - Result block: shown only when a task has a stored result.
 - Worker trace: groups external worker output by run id, combines live `agent.delegate.output`
   events with completed artifacts from `data/runs`, and exposes direct stop/retry controls.
@@ -104,8 +105,8 @@ If a component does not answer one of those questions, it should not be in the p
 
 ## Status Semantics
 
-- Queued: the task exists with an isolated worktree and is waiting for the task supervisor to assign a worker.
-- Running: an in-memory worker is active, or homelabd recovered a persisted running task and restarted a worker.
+- Queued: the task exists and is waiting in its execution queue. Local tasks have isolated worktrees and wait for the local task supervisor; remote tasks wait for the selected `homelab-agent`.
+- Running: an in-memory local worker or a remote agent is active.
 - Red: failed, blocked, or conflict resolution. Needs intervention.
 - Amber: ready for review, awaiting approval, or awaiting verification. Needs a human decision.
 - Blue: queued or running. Work is active.
@@ -123,6 +124,21 @@ Do not rely on color alone. Always show the status text next to the colored indi
 - On boot, persisted `running` tasks are recovered because in-memory worker state cannot survive a process restart.
 - During normal operation, stale `running` tasks with no in-memory owner are retried after `limits.task_stale_seconds`.
 - Supervisor activity is logged with `slog` and appended to the event log using `task.supervisor.*` or `task.recovery.*` events.
+- Remote-targeted tasks are not picked up by the local task supervisor. They stay in the queue for the selected `homelab-agent`, and review does not compare the remote checkout against the control-plane repo.
+
+## Task Queues
+
+The Tasks page separates work by execution queue:
+
+- `All queues` shows every task.
+- `Local homelabd` shows tasks that run in local homelabd worktrees.
+- Each remote agent gets its own queue, named by agent display name and machine.
+
+Remote task creation is deliberately explicit. The "New task target" panel shows the selected agent, machine, and full directory path, and the create button remains disabled until the context confirmation checkbox is checked. Treat that checkbox as the final guard against running an agent in the wrong checkout. The API rejects unknown workdir ids or paths for registered agents, so a stale UI selection should fail instead of silently falling back.
+
+Remote task detail pages repeat the execution context in an amber "Remote execution context" block. Verify that machine and path before asking for follow-up work.
+
+Local tasks continue to use local task graph workspaces. Remote tasks do not create local worktrees and do not compare their repository state against the control-plane repo.
 
 ## Mobile Behavior
 
@@ -136,13 +152,15 @@ The split view is not forced into a narrow screen because that makes task names,
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
 
-On compact screens `/terminal` keeps the xterm viewport as the primary scroll area and places large control-key buttons below it. Include controls for keys commonly missing or awkward on Android keyboards, including `Ctrl-C`, `Ctrl-D`, `Ctrl-Z`, `Tab`, and `Esc`.
+On compact screens `/terminal` keeps the xterm viewport as the primary scroll area and places large control-key buttons below it. Include controls for keys commonly missing or awkward on Android keyboards, including `Ctrl-C`, `Ctrl-D`, `Ctrl-Z`, `Tab`, `Esc`, and arrow keys.
 
 ## Terminal Runtime
 
 The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts the user's shell in the homelabd working directory inside a Linux PTY. The browser renders the session with xterm.js, connects terminal bytes over `GET /terminal/sessions/{id}/ws`, and sends terminal resize updates with `POST /terminal/sessions/{id}/resize`.
 
 Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colors, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
+
+The Terminal page has a session target picker. `homelabd local` opens a PTY on the control plane. Online remote agents appear when their heartbeat metadata includes `terminal_base_url`; choosing one starts the session through that agent's browser-reachable terminal API.
 
 This is an operator shell. Run it only where the homelabd HTTP API is already trusted, because anyone who can reach the endpoint can execute commands as the homelabd process user.
 
@@ -158,3 +176,5 @@ Run healthd as its own process:
 The default healthd API address is `127.0.0.1:18081`. During dashboard development, Vite proxies `/healthd-api/*` to that process. A `500 Internal Server Error` from `/healthd` usually means the dashboard is running but `healthd` is not listening on `127.0.0.1:18081`.
 
 `homelabd` sends a heartbeat to `POST /healthd/processes/heartbeat` when healthd is enabled, then repeats every `healthd.process_heartbeat_interval_seconds`. Healthd lists announced processes in the `/healthd` snapshot and turns stale heartbeats into `process:<name>` check failures after `healthd.process_timeout_seconds`, so the Health page shows `homelabd` alongside configured HTTP checks and future monitored processes.
+
+Remote agents are also represented as healthd processes. `homelabd` forwards accepted remote-agent heartbeats as `remote-agent:<agent_id>` with type `remote_agent`, machine metadata, service instance identity, current task id, advertised workdir count, and a TTL based on `control_plane.agent_stale_seconds`.

@@ -4,7 +4,8 @@ import {
   buildWorkerTraceRuns,
   createTaskQueueView,
   selectTaskForQueue,
-  type TaskFilter
+  type TaskFilter,
+  type TaskQueueFilter
 } from './view-model';
 
 const task = (id: string, status: string, updatedMinute: string): HomelabdTask => ({
@@ -31,6 +32,24 @@ const plannedTask = (
     steps: [{ title: 'Inspect scope', detail: 'Read relevant files before editing.' }],
     created_at: `2026-04-26T00:${updatedMinute}:00Z`,
     reviewed_at: `2026-04-26T00:${updatedMinute}:00Z`
+  }
+});
+
+const remoteTask = (
+  id: string,
+  status: string,
+  updatedMinute: string,
+  agentID: string
+): HomelabdTask => ({
+  ...task(id, status, updatedMinute),
+  assigned_to: `remote:${agentID}`,
+  target: {
+    mode: 'remote',
+    agent_id: agentID,
+    machine: `${agentID}.local`,
+    workdir_id: 'repo',
+    workdir: `/srv/${agentID}/repo`,
+    backend: 'codex'
   }
 });
 
@@ -70,7 +89,8 @@ const view = (
   taskFilter: TaskFilter,
   selectedTaskId: string,
   taskSearch = '',
-  approvals: HomelabdApproval[] = []
+  approvals: HomelabdApproval[] = [],
+  queueFilter: TaskQueueFilter = 'all'
 ) => {
   const tasks = [
     task('task_running', 'running', '03'),
@@ -86,6 +106,7 @@ const view = (
       event('event_new', 'task_review', '06')
     ],
     taskFilter,
+    queueFilter,
     taskSearch,
     selectedTaskId
   });
@@ -134,6 +155,7 @@ describe('task queue view model', () => {
       approvals: [],
       events: [],
       taskFilter: 'all',
+      queueFilter: 'all',
       taskSearch: 'terminal transcript',
       selectedTaskId: ''
     });
@@ -157,14 +179,62 @@ describe('task queue view model', () => {
 
     expect(result.currentTaskEvents.map((item) => item.id)).toEqual(['event_new', 'event_old']);
   });
+
+  test('separates local and remote agent queues', () => {
+    const tasks = [
+      task('task_local', 'running', '03'),
+      remoteTask('task_desk', 'queued', '04', 'desk'),
+      remoteTask('task_nuc', 'ready_for_review', '05', 'nuc')
+    ];
+
+    const local = createTaskQueueView({
+      tasks,
+      approvals: [],
+      events: [],
+      taskFilter: 'all',
+      queueFilter: 'local',
+      taskSearch: '',
+      selectedTaskId: ''
+    });
+    expect(local.visibleTaskItems.map((item) => item.id)).toEqual(['task_local']);
+
+    const desk = createTaskQueueView({
+      tasks,
+      approvals: [],
+      events: [],
+      taskFilter: 'all',
+      queueFilter: 'agent:desk',
+      taskSearch: '',
+      selectedTaskId: ''
+    });
+    expect(desk.visibleTaskItems.map((item) => item.id)).toEqual(['task_desk']);
+  });
+
+  test('search matches remote execution context', () => {
+    const result = createTaskQueueView({
+      tasks: [
+        task('task_local', 'running', '03'),
+        remoteTask('task_desk', 'queued', '04', 'desk')
+      ],
+      approvals: [],
+      events: [],
+      taskFilter: 'all',
+      queueFilter: 'all',
+      taskSearch: '/srv/desk/repo',
+      selectedTaskId: ''
+    });
+
+    expect(result.visibleTaskItems.map((item) => item.id)).toEqual(['task_desk']);
+    expect(result.currentTask?.target?.agent_id).toBe('desk');
+  });
 });
 
 describe('task queue selection helper', () => {
   test('does not require a network refresh to choose the visible task for a new filter', () => {
     const tasks = [task('task_running', 'running', '03'), task('task_review', 'ready_for_review', '02')];
 
-    expect(selectTaskForQueue(tasks, [], 'active', '', 'task_review')).toBe('task_running');
-    expect(selectTaskForQueue(tasks, [], 'attention', '', 'task_running')).toBe('task_review');
+    expect(selectTaskForQueue(tasks, [], 'active', 'all', '', 'task_review')).toBe('task_running');
+    expect(selectTaskForQueue(tasks, [], 'attention', 'all', '', 'task_running')).toBe('task_review');
   });
 });
 

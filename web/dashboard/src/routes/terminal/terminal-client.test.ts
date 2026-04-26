@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'bun:test';
-import { clampTerminalGeometry, endpoint, terminalStatusLabel, websocketEndpoint } from './terminal-client';
+import {
+  buildTerminalTargets,
+  clampTerminalGeometry,
+  endpoint,
+  terminalBaseFromAgent,
+  terminalStatusLabel,
+  websocketEndpoint
+} from './terminal-client';
 
 describe('terminal client helpers', () => {
   it('clamps unsafe terminal geometry', () => {
@@ -34,5 +41,60 @@ describe('terminal client helpers', () => {
     expect(terminalStatusLabel(true, false)).toBe('Connected');
     expect(terminalStatusLabel(false, true)).toBe('Starting');
     expect(terminalStatusLabel(false, false)).toBe('Disconnected');
+  });
+
+  it('builds local and online remote terminal targets', () => {
+    const targets = buildTerminalTargets([
+      {
+        id: 'desk',
+        name: 'Desk',
+        machine: 'desk.local',
+        status: 'online',
+        metadata: { terminal_base_url: 'http://desk.local:18083/' }
+      },
+      {
+        id: 'stale',
+        name: 'Stale',
+        machine: 'stale.local',
+        status: 'offline',
+        metadata: { terminal_base_url: 'http://stale.local:18083' }
+      },
+      {
+        id: 'worker',
+        name: 'Worker',
+        machine: 'worker.local',
+        status: 'online',
+        metadata: {}
+      }
+    ]);
+
+    expect(targets).toEqual([
+      {
+        id: 'local',
+        label: 'homelabd local',
+        detail: 'Control plane shell',
+        apiBase: '/api',
+        status: 'online'
+      },
+      {
+        id: 'agent:desk',
+        label: 'Desk',
+        detail: 'desk.local · desk',
+        apiBase: 'http://desk.local:18083',
+        status: 'online'
+      }
+    ]);
+  });
+
+  it('supports the legacy terminal_url metadata key', () => {
+    expect(
+      terminalBaseFromAgent({
+        id: 'nuc',
+        name: 'Nuc',
+        machine: 'nuc.local',
+        status: 'online',
+        metadata: { terminal_url: 'http://nuc.local:18083/' }
+      })
+    ).toBe('http://nuc.local:18083');
   });
 });

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultAddr = "http://127.0.0.1:8080"
+	defaultAddr = "http://127.0.0.1:18080"
 	defaultFrom = "homelabctl"
 )
 
@@ -89,6 +89,8 @@ func (c cli) dispatch(args []string) error {
 		return c.shell()
 	case "task":
 		return c.task(args[1:])
+	case "agent":
+		return c.agent(args[1:])
 	case "tasks":
 		if len(args) == 1 {
 			return c.task([]string{"list"})
@@ -131,11 +133,16 @@ func (c cli) task(args []string) error {
 	action := commandWord(args[0])
 	switch action {
 	case "new", "create":
-		goal := strings.TrimSpace(strings.Join(args[1:], " "))
+		target, rest := parseTaskTargetArgs(args[1:])
+		goal := strings.TrimSpace(strings.Join(rest, " "))
 		if goal == "" {
-			return fmt.Errorf("usage: homelabctl task new <goal>")
+			return fmt.Errorf("usage: homelabctl task new [--agent <agent_id> --workdir <path_or_id>] <goal>")
 		}
-		return c.do(http.MethodPost, "/tasks", map[string]any{"goal": goal})
+		body := map[string]any{"goal": goal}
+		if target != nil {
+			body["target"] = target
+		}
+		return c.do(http.MethodPost, "/tasks", body)
 	case "list", "ls":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: homelabctl task list")
@@ -179,6 +186,69 @@ func (c cli) task(args []string) error {
 		return c.do(http.MethodPost, path("tasks", args[1], "retry"), map[string]any{"backend": backend, "instruction": instruction})
 	default:
 		return fmt.Errorf("unknown task command %q", args[0])
+	}
+}
+
+func parseTaskTargetArgs(args []string) (map[string]any, []string) {
+	target := map[string]any{"mode": "remote"}
+	used := false
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--agent":
+			if i+1 < len(args) {
+				target["agent_id"] = args[i+1]
+				used = true
+				i++
+				continue
+			}
+		case "--workdir":
+			if i+1 < len(args) {
+				target["workdir_id"] = args[i+1]
+				used = true
+				i++
+				continue
+			}
+		case "--workdir-path":
+			if i+1 < len(args) {
+				target["workdir"] = args[i+1]
+				used = true
+				i++
+				continue
+			}
+		case "--backend":
+			if i+1 < len(args) {
+				target["backend"] = args[i+1]
+				used = true
+				i++
+				continue
+			}
+		}
+		rest = append(rest, args[i])
+	}
+	if !used {
+		return nil, rest
+	}
+	return target, rest
+}
+
+func (c cli) agent(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl agent <list|show>")
+	}
+	switch commandWord(args[0]) {
+	case "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl agent list")
+		}
+		return c.do(http.MethodGet, "/agents", nil)
+	case "show":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl agent show <agent_id>")
+		}
+		return c.do(http.MethodGet, path("agents", args[1]), nil)
+	default:
+		return fmt.Errorf("unknown agent command %q", args[0])
 	}
 }
 
@@ -521,32 +591,35 @@ func envDefault(getenv func(string) string, key, fallback string) string {
 
 func usage(out io.Writer) {
 	fmt.Fprintln(out, `usage:
-  homelabctl [-addr http://127.0.0.1:8080] health
-  homelabctl [-addr http://127.0.0.1:8080] shell
-  homelabctl [-addr http://127.0.0.1:8080] message <text>
+  homelabctl [-addr http://127.0.0.1:18080] health
+  homelabctl [-addr http://127.0.0.1:18080] shell
+  homelabctl [-addr http://127.0.0.1:18080] message <text>
 
-  homelabctl [-addr http://127.0.0.1:8080] task new <goal>
-  homelabctl [-addr http://127.0.0.1:8080] task list
-  homelabctl [-addr http://127.0.0.1:8080] task show <task_id>
-  homelabctl [-addr http://127.0.0.1:8080] task runs <task_id>
-  homelabctl [-addr http://127.0.0.1:8080] task run <task_id>
-  homelabctl [-addr http://127.0.0.1:8080] task review <task_id>
-  homelabctl [-addr http://127.0.0.1:8080] task accept <task_id>
-  homelabctl [-addr http://127.0.0.1:8080] task reopen <task_id> [reason]
-  homelabctl [-addr http://127.0.0.1:8080] task cancel <task_id>
-  homelabctl [-addr http://127.0.0.1:8080] task retry <task_id> [codex|claude|gemini] [instruction]
+  homelabctl [-addr http://127.0.0.1:18080] task new [--agent <agent_id> --workdir <workdir_id>|--workdir-path <path> --backend <backend>] <goal>
+  homelabctl [-addr http://127.0.0.1:18080] task list
+  homelabctl [-addr http://127.0.0.1:18080] task show <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task runs <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task run <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task review <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task accept <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task reopen <task_id> [reason]
+  homelabctl [-addr http://127.0.0.1:18080] task cancel <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task retry <task_id> [codex|claude|gemini] [instruction]
 
-  homelabctl [-addr http://127.0.0.1:8080] approval list
-  homelabctl [-addr http://127.0.0.1:8080] approval approve <approval_id>
-  homelabctl [-addr http://127.0.0.1:8080] approval deny <approval_id>
-  homelabctl [-addr http://127.0.0.1:8080] events [-limit N] [YYYY-MM-DD]
+  homelabctl [-addr http://127.0.0.1:18080] agent list
+  homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>
 
-  homelabctl [-addr http://127.0.0.1:8080] terminal start [cwd]
-  homelabctl [-addr http://127.0.0.1:8080] terminal stream <session_id>
-  homelabctl [-addr http://127.0.0.1:8080] terminal send <session_id> <text>
-  homelabctl [-addr http://127.0.0.1:8080] terminal input <session_id> <text>
-  homelabctl [-addr http://127.0.0.1:8080] terminal signal <session_id> <interrupt|suspend|terminate>
-  homelabctl [-addr http://127.0.0.1:8080] terminal close <session_id>
+  homelabctl [-addr http://127.0.0.1:18080] approval list
+  homelabctl [-addr http://127.0.0.1:18080] approval approve <approval_id>
+  homelabctl [-addr http://127.0.0.1:18080] approval deny <approval_id>
+  homelabctl [-addr http://127.0.0.1:18080] events [-limit N] [YYYY-MM-DD]
+
+  homelabctl [-addr http://127.0.0.1:18080] terminal start [cwd]
+  homelabctl [-addr http://127.0.0.1:18080] terminal stream <session_id>
+  homelabctl [-addr http://127.0.0.1:18080] terminal send <session_id> <text>
+  homelabctl [-addr http://127.0.0.1:18080] terminal input <session_id> <text>
+  homelabctl [-addr http://127.0.0.1:18080] terminal signal <session_id> <interrupt|suspend|terminate>
+  homelabctl [-addr http://127.0.0.1:18080] terminal close <session_id>
 
 Top-level shortcuts:
   homelabctl new <goal>

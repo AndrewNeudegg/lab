@@ -2,8 +2,11 @@ import type {
   FetchClient,
   FetchClientOptions,
   HomelabdApprovalsResponse,
+  HomelabdAgentsResponse,
   HomelabdClient,
   HomelabdClientOptions,
+  HomelabdCreateTaskRequest,
+  HomelabdCreateTaskResponse,
   HomelabdEventsResponse,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
@@ -58,8 +61,22 @@ export const createHomelabdClient = (
         body: JSON.stringify(request)
       });
     },
+    createTask(request: HomelabdCreateTaskRequest) {
+      return apiFetch<HomelabdCreateTaskResponse>('/tasks', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
     listTasks() {
       return apiFetch<HomelabdTasksResponse>('/tasks', {
+        baseUrl,
+        fetcher
+      });
+    },
+    listAgents() {
+      return apiFetch<HomelabdAgentsResponse>('/agents', {
         baseUrl,
         fetcher
       });

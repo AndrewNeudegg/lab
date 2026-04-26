@@ -123,7 +123,9 @@ const run = async () => {
         panelCollapsed: document.querySelector('.command-panel')?.classList.contains('collapsed') ?? null,
         panelButton: document.querySelector('.command-header-actions button')?.innerText || '',
         queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
-        workflowState: document.querySelector('.state-machine')?.innerText || ''
+        workflowState: document.querySelector('.state-machine')?.innerText || '',
+        targetCreate: document.querySelector('.target-create')?.innerText || '',
+        createDisabled: document.querySelector('.target-create button[type="submit"]')?.disabled ?? null
       })`
     );
     assert(initial.filters.length === 3, 'task filters did not render', initial);
@@ -131,6 +133,19 @@ const run = async () => {
     assert(initial.filters.some((text) => text.includes('Running')), 'Running filter missing', initial);
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
     assert(initial.panelCollapsed === false, 'Act on this queue should start open', initial);
+    assert(initial.targetCreate.includes('New task target'), 'remote/local task target creator missing', initial);
+    assert(initial.createDisabled === true, 'empty target task creator should start disabled', initial);
+
+    const afterTargetDraft = await evalJS(
+      cdp,
+      `(document.querySelector('#new-task-goal').value = 'Inspect remote agent targeting',
+        document.querySelector('#new-task-goal').dispatchEvent(new Event('input', { bubbles: true })),
+        new Promise((resolve) => setTimeout(() => resolve({
+          disabled: document.querySelector('.target-create button[type="submit"]')?.disabled ?? null,
+          label: document.querySelector('.target-create button[type="submit"]')?.innerText || ''
+        }), 100)))`
+    );
+    assert(afterTargetDraft.disabled === false, 'target task creator did not enable after entering a goal', afterTargetDraft);
 
     let afterAll = await evalJS(
       cdp,

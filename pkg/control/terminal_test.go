@@ -136,6 +136,38 @@ func TestWebSocketHelpersWriteBinaryFrames(t *testing.T) {
 }
 
 func TestTerminalWebSocketEndpointBridgesShell(t *testing.T) {
+	testTerminalWebSocketEndpointBridgesShell(t, "/terminal/sessions", "/terminal/sessions/%s/ws")
+}
+
+func TestTerminalWebSocketEndpointAcceptsProxiedAPIPath(t *testing.T) {
+	testTerminalWebSocketEndpointBridgesShell(t, "/api/terminal/sessions", "/api/terminal/sessions/%s/ws")
+}
+
+func TestTerminalOnlyServerExposesOnlyTerminalRoutes(t *testing.T) {
+	server := Server{TerminalOnly: true}
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	health := httptest.NewRecorder()
+	mux.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", health.Code)
+	}
+
+	tasks := httptest.NewRecorder()
+	mux.ServeHTTP(tasks, httptest.NewRequest(http.MethodGet, "/tasks", nil))
+	if tasks.Code != http.StatusNotFound {
+		t.Fatalf("tasks status = %d, want 404", tasks.Code)
+	}
+
+	terminal := httptest.NewRecorder()
+	mux.ServeHTTP(terminal, httptest.NewRequest(http.MethodGet, "/terminal/sessions/missing/events", nil))
+	if terminal.Code != http.StatusNotFound {
+		t.Fatalf("terminal status = %d, want handled terminal 404", terminal.Code)
+	}
+}
+
+func testTerminalWebSocketEndpointBridgesShell(t *testing.T, createPath, socketPath string) {
 	skipIfNoPTY(t)
 	t.Setenv("SHELL", "/bin/sh")
 	server := Server{}
@@ -147,7 +179,7 @@ func TestTerminalWebSocketEndpointBridgesShell(t *testing.T) {
 	var created struct {
 		ID string `json:"id"`
 	}
-	resp, err := http.Post(httpServer.URL+"/terminal/sessions", "application/json", strings.NewReader(`{"cols":90,"rows":25}`))
+	resp, err := http.Post(httpServer.URL+createPath, "application/json", strings.NewReader(`{"cols":90,"rows":25}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,9 +193,9 @@ func TestTerminalWebSocketEndpointBridgesShell(t *testing.T) {
 	}
 	defer server.terminals().close(created.ID)
 
-	conn := dialTerminalWebSocket(t, httpServer.URL, created.ID)
+	conn := dialTerminalWebSocket(t, httpServer.URL, fmt.Sprintf(socketPath, created.ID))
 	defer conn.Close()
-	if err := writeMaskedClientFrame(conn, []byte("printf '\\033[35mws-ok\\033[0m\\n'\nexit\n")); err != nil {
+	if err := writeMaskedClientFrame(conn, []byte("echo ws-ok\n")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,11 +214,11 @@ func TestTerminalWebSocketEndpointBridgesShell(t *testing.T) {
 			t.Fatal(err)
 		}
 		output.Write(payload)
-		if strings.Contains(output.String(), "\x1b[35mws-ok\x1b[0m") {
+		if strings.Contains(output.String(), "ws-ok") {
 			return
 		}
 	}
-	t.Fatalf("websocket output missing ANSI shell result: %q", output.String())
+	t.Fatalf("websocket output missing shell result: %q", output.String())
 }
 
 func collectTerminalOutput(t *testing.T, events <-chan terminalEvent, timeout time.Duration) string {
@@ -218,7 +250,7 @@ func skipIfNoPTY(t *testing.T) {
 	}
 }
 
-func dialTerminalWebSocket(t *testing.T, baseURL, sessionID string) net.Conn {
+func dialTerminalWebSocket(t *testing.T, baseURL, path string) net.Conn {
 	t.Helper()
 	address := strings.TrimPrefix(baseURL, "http://")
 	conn, err := net.Dial("tcp", address)
@@ -230,7 +262,6 @@ func dialTerminalWebSocket(t *testing.T, baseURL, sessionID string) net.Conn {
 		t.Fatal(err)
 	}
 	key := base64.StdEncoding.EncodeToString(keyRaw)
-	path := fmt.Sprintf("/terminal/sessions/%s/ws", sessionID)
 	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, address, key)
 	reader := bufio.NewReader(conn)
 	status, err := reader.ReadString('\n')

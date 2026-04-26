@@ -34,6 +34,20 @@ inspect -> design -> implement -> test -> docs -> review
 
 Use `show <root_task_id>` to see the graph. Use `accept <child_task_id>` after verifying a child phase; accepting it releases the next phase when its dependencies are satisfied. `run` or `delegate` refuses a child phase while `blocked_by` contains unresolved dependencies.
 
+## Remote Agent Tasks
+
+Remote machines are managed outside chat through the task API, dashboard, or `homelabctl`:
+
+```text
+homelabctl -addr http://127.0.0.1:18080 agent list
+homelabctl -addr http://127.0.0.1:18080 agent show workstation
+homelabctl -addr http://127.0.0.1:18080 task new --agent workstation --workdir repo "Update this checkout"
+```
+
+`--workdir` names an advertised workdir id. `--workdir-path` may be used for a full advertised path. Unknown workdir ids or paths are rejected so remote tasks do not silently run in a different checkout.
+
+The chat command `agents` lists external CLI backends such as `codex`, `claude`, and `gemini`; it is not the remote-machine inventory. Use the dashboard task queue filters or `homelabctl agent list` for remote agents.
+
 ## Search
 
 Use repo search when you want to inspect local code:
@@ -64,7 +78,7 @@ Research runs through `internet.research`. It creates fan-out queries, searches 
 
 ## Task Worktree Recovery
 
-External coding agents can edit files in task worktrees, but the runtime owns git state. If a task branch becomes too stale to rebase cleanly, refresh it from chat:
+External coding agents can edit files in local task worktrees, but the runtime owns git state. If a local task branch becomes too stale to rebase cleanly, refresh it from chat:
 
 ```text
 refresh 793f04ec
@@ -74,3 +88,5 @@ delegate 793f04ec to codex implement the task again from current main
 `refresh <task_id>` resets the task worktree branch to the current repository `main` commit and leaves the task blocked for explicit redelegation. Use it when repeated review or approval attempts report premerge conflicts from old branch state.
 
 `approve <approval_id>` still executes a pending approval. For merge approvals, the Orchestrator first attempts to reconcile the task branch with current `main`; conflicts move the task to `conflict_resolution` for manual fixes and no merge is applied.
+
+Remote tasks do not have a control-plane task worktree; use `reopen <task_id> <reason>` to queue follow-up work for the same remote target.

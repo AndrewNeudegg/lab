@@ -17,6 +17,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/llm"
+	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
@@ -544,6 +545,233 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	}
 	if !sawCreated || !sawReviewed {
 		t.Fatalf("plan events created=%v reviewed=%v, want both", sawCreated, sawReviewed)
+	}
+}
+
+func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Name:    "Workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:    "repo",
+			Path:  "/home/me/project",
+			Label: "Project",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.CreateTaskWithTarget(context.Background(), "fix the remote service", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created remote task") {
+		t.Fatalf("reply = %q, want remote task creation", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1 remote task", len(tasks))
+	}
+	task := tasks[0]
+	if task.Target == nil || task.Target.AgentID != "workstation" || task.Target.Workdir != "/home/me/project" {
+		t.Fatalf("target = %#v, want registered remote target", task.Target)
+	}
+
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil {
+		t.Fatal("assignment is nil, want queued task")
+	}
+	if assignment.TaskID != task.ID || assignment.Workdir != "/home/me/project" {
+		t.Fatalf("assignment = %#v, want task in remote workdir", assignment)
+	}
+	running, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.Status != taskstore.StatusRunning || running.AssignedTo != "workstation" {
+		t.Fatalf("running task = %#v, want running assigned to remote agent", running)
+	}
+
+	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", task.ID, "changed files: service.go", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != taskstore.StatusReadyForReview {
+		t.Fatalf("status = %q, want ready_for_review", completed.Status)
+	}
+	if !strings.Contains(completed.Result, "changed files") {
+		t.Fatalf("result = %q, want remote result", completed.Result)
+	}
+
+	review, err := orch.reviewTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(review, "Merge approval requested") {
+		t.Fatalf("review = %q, remote review must not request local merge approval", review)
+	}
+	if !strings.Contains(review, "No local workspace, main-branch comparison, or merge approval was attempted") {
+		t.Fatalf("review = %q, want explicit remote review semantics", review)
+	}
+	verified, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.Status != taskstore.StatusAwaitingVerification {
+		t.Fatalf("status = %q, want awaiting_verification", verified.Status)
+	}
+}
+
+func TestCreateRemoteTaskRequiresRegisteredAgentAndWorkdir(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "bad remote task", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "missing",
+		WorkdirID: "repo",
+	}); err == nil || !strings.Contains(err.Error(), "remote agent") {
+		t.Fatalf("missing agent error = %v, want remote agent error", err)
+	}
+
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{ID: "desk", Workdirs: []remoteagent.Workdir{}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "bad remote task", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "desk",
+		WorkdirID: "repo",
+	}); err == nil || !strings.Contains(err.Error(), "remote working directory") {
+		t.Fatalf("missing workdir error = %v, want remote working directory error", err)
+	}
+
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{ID: "desk", Workdirs: []remoteagent.Workdir{{ID: "repo", Path: "/srv/desk/repo"}}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "bad remote task", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "desk",
+		WorkdirID: "wrong-repo",
+	}); err == nil || !strings.Contains(err.Error(), "not advertised") {
+		t.Fatalf("unknown workdir id error = %v, want advertised workdir error", err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "bad remote task", &taskstore.ExecutionTarget{
+		Mode:    "remote",
+		AgentID: "desk",
+		Workdir: "/tmp/wrong-repo",
+	}); err == nil || !strings.Contains(err.Error(), "not advertised") {
+		t.Fatalf("unknown workdir path error = %v, want advertised workdir error", err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "bad remote task", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "desk",
+		WorkdirID: "repo",
+		Workdir:   "/tmp/wrong-repo",
+	}); err == nil || !strings.Contains(err.Error(), "does not match advertised path") {
+		t.Fatalf("mismatched workdir error = %v, want mismatch error", err)
+	}
+}
+
+func TestRemoteQueuedTaskIsSkippedByLocalTaskSupervisor(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:       "desk",
+		Workdirs: []remoteagent.Workdir{{ID: "repo", Path: "/srv/desk/repo"}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "remote task must not be locally started", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "desk",
+		WorkdirID: "repo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+
+	reconciled, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled != 0 {
+		t.Fatalf("reconciled = %d, want 0 because remote task waits for remote claim", reconciled)
+	}
+	queued, err := orch.tasks.Load(tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Status != taskstore.StatusQueued || queued.AssignedTo != "remote:desk" || queued.Workspace != "" {
+		t.Fatalf("queued task = %#v, want untouched remote queue item", queued)
+	}
+}
+
+func TestRemoteClaimOnlyReturnsTasksForMatchingAgent(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	desk, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:       "desk",
+		Workdirs: []remoteagent.Workdir{{ID: "repo", Path: "/srv/desk/repo"}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nuc, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:       "nuc",
+		Workdirs: []remoteagent.Workdir{{ID: "repo", Path: "/srv/nuc/repo"}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "desk only", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "desk",
+		WorkdirID: "repo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assignment, err := orch.ClaimRemoteTask(context.Background(), nuc, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment != nil {
+		t.Fatalf("nuc claimed desk task: %#v", assignment)
+	}
+	assignment, err = orch.ClaimRemoteTask(context.Background(), desk, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil || assignment.Workdir != "/srv/desk/repo" {
+		t.Fatalf("desk assignment = %#v", assignment)
 	}
 }
 

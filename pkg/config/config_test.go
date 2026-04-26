@@ -1,0 +1,57 @@
+package config
+
+import "testing"
+
+func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
+	cfg := Default()
+
+	if cfg.ControlPlane.AgentTokenEnv != "HOMELABD_AGENT_TOKEN" {
+		t.Fatalf("control plane token env = %q", cfg.ControlPlane.AgentTokenEnv)
+	}
+	if cfg.ControlPlane.AgentStaleSeconds != 30 {
+		t.Fatalf("agent stale seconds = %d", cfg.ControlPlane.AgentStaleSeconds)
+	}
+	if cfg.RemoteAgent.APIBase == "" || cfg.RemoteAgent.Backend != "codex" {
+		t.Fatalf("remote agent config = %#v", cfg.RemoteAgent)
+	}
+}
+
+func TestDefaultSupervisorIncludesDisabledRemoteAgentTemplate(t *testing.T) {
+	cfg := Default()
+	var agentApp *SupervisorAppConfig
+	for i := range cfg.Supervisord.Apps {
+		if cfg.Supervisord.Apps[i].Name == "homelab-agent" {
+			agentApp = &cfg.Supervisord.Apps[i]
+			break
+		}
+	}
+	if agentApp == nil {
+		t.Fatal("default supervisor apps missing homelab-agent template")
+	}
+	if agentApp.Type != "agent" || agentApp.AutoStart {
+		t.Fatalf("agent app = %#v, want type agent and autostart false", *agentApp)
+	}
+	if agentApp.Restart != "always" {
+		t.Fatalf("agent app restart = %q, want always", agentApp.Restart)
+	}
+}
+
+func TestWithDefaultsPreservesRemoteAgentWorkdirsAndFillsIntervals(t *testing.T) {
+	cfg := Config{
+		RemoteAgent: RemoteAgentConfig{
+			ID:       "desk",
+			Workdirs: []RemoteAgentWorkdirConfig{{ID: "repo", Path: "/srv/repo"}},
+		},
+	}
+	got := cfg.WithDefaults()
+
+	if got.RemoteAgent.ID != "desk" || len(got.RemoteAgent.Workdirs) != 1 {
+		t.Fatalf("remote agent identity/workdirs = %#v", got.RemoteAgent)
+	}
+	if got.RemoteAgent.APIBase == "" || got.RemoteAgent.Backend != "codex" {
+		t.Fatalf("remote agent defaults = %#v", got.RemoteAgent)
+	}
+	if got.RemoteAgent.HeartbeatIntervalSeconds == 0 || got.RemoteAgent.PollIntervalSeconds == 0 {
+		t.Fatalf("remote agent intervals not defaulted: %#v", got.RemoteAgent)
+	}
+}

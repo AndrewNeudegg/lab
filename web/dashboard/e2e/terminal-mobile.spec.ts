@@ -69,6 +69,33 @@ const installTerminalMocks = async (page) => {
   await page.route('**/api/terminal/sessions/term_test', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"closed":true}' });
   });
+
+  await page.route('**/api/agents', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        agents: [
+          {
+            id: 'desk',
+            name: 'Desk',
+            machine: 'desk.local',
+            status: 'online',
+            last_seen: '2026-04-26T00:00:00Z',
+            metadata: { terminal_base_url: 'http://desk.local:18083' }
+          },
+          {
+            id: 'offline',
+            name: 'Offline',
+            machine: 'offline.local',
+            status: 'offline',
+            last_seen: '2026-04-26T00:00:00Z',
+            metadata: { terminal_base_url: 'http://offline.local:18083' }
+          }
+        ]
+      })
+    });
+  });
 };
 
 test('terminal mobile accepts direct typing and control keys without horizontal overflow', async ({ page }) => {
@@ -79,12 +106,19 @@ test('terminal mobile accepts direct typing and control keys without horizontal 
   await expect(page.locator('.xterm')).toBeVisible();
 
   await page.locator('.xterm').click();
+  await expect(page.getByLabel('Session target')).toContainText('homelabd local');
+  await expect(page.getByLabel('Session target')).toContainText('Desk');
+  await expect(page.getByLabel('Session target')).not.toContainText('Offline');
   await page.keyboard.type('pwd');
   await page.keyboard.press('Enter');
   await page.getByRole('button', { name: /Ctrl-C/ }).click();
   await page.getByRole('button', { name: /Ctrl-D/ }).click();
   await page.getByRole('button', { name: /Ctrl-Z/ }).click();
   await page.getByRole('button', { name: /Tab/ }).click();
+  await page.getByRole('button', { name: '←' }).click();
+  await page.getByRole('button', { name: '→' }).click();
+  await page.getByRole('button', { name: '↑' }).click();
+  await page.getByRole('button', { name: '↓' }).click();
 
   await expect.poll(async () => page.evaluate(() => window.__terminalSent.join(''))).toContain('pwd');
   const sent = await page.evaluate(() => window.__terminalSent);
@@ -92,6 +126,11 @@ test('terminal mobile accepts direct typing and control keys without horizontal 
   expect(sent).toContain('\u0004');
   expect(sent).toContain('\u001a');
   expect(sent).toContain('\t');
+  expect(sent).toContain('\u001b[D');
+  expect(sent).toContain('\u001b[C');
+  expect(sent).toContain('\u001b[A');
+  expect(sent).toContain('\u001b[B');
+  await expect(page.getByText('Interrupt foreground job')).toHaveCount(0);
 
   const layout = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,

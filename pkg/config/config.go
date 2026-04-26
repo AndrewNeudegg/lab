@@ -17,6 +17,8 @@ type Config struct {
 	Limits          LimitsConfig                   `json:"limits"`
 	DataDir         string                         `json:"data_dir"`
 	HTTP            HTTPConfig                     `json:"http"`
+	ControlPlane    ControlPlaneConfig             `json:"control_plane"`
+	RemoteAgent     RemoteAgentConfig              `json:"remote_agent"`
 	Healthd         HealthdConfig                  `json:"healthd"`
 	Supervisord     SupervisordConfig              `json:"supervisord"`
 	Matrix          MatrixConfig                   `json:"matrix"`
@@ -51,6 +53,33 @@ type LimitsConfig struct {
 
 type HTTPConfig struct {
 	Addr string `json:"addr"`
+}
+
+type ControlPlaneConfig struct {
+	AgentToken        string `json:"agent_token,omitempty"`
+	AgentTokenEnv     string `json:"agent_token_env,omitempty"`
+	AgentStaleSeconds int    `json:"agent_stale_seconds"`
+}
+
+type RemoteAgentConfig struct {
+	ID                       string                     `json:"id,omitempty"`
+	Name                     string                     `json:"name,omitempty"`
+	Machine                  string                     `json:"machine,omitempty"`
+	APIBase                  string                     `json:"api_base,omitempty"`
+	Token                    string                     `json:"token,omitempty"`
+	TokenEnv                 string                     `json:"token_env,omitempty"`
+	Backend                  string                     `json:"backend,omitempty"`
+	TerminalAddr             string                     `json:"terminal_addr,omitempty"`
+	TerminalPublicURL        string                     `json:"terminal_public_url,omitempty"`
+	HeartbeatIntervalSeconds int                        `json:"heartbeat_interval_seconds"`
+	PollIntervalSeconds      int                        `json:"poll_interval_seconds"`
+	Workdirs                 []RemoteAgentWorkdirConfig `json:"workdirs,omitempty"`
+}
+
+type RemoteAgentWorkdirConfig struct {
+	ID    string `json:"id,omitempty"`
+	Path  string `json:"path"`
+	Label string `json:"label,omitempty"`
 }
 
 type HealthdConfig struct {
@@ -220,6 +249,17 @@ func Default() Config {
 		},
 		DataDir: "data",
 		HTTP:    HTTPConfig{Addr: "127.0.0.1:18080"},
+		ControlPlane: ControlPlaneConfig{
+			AgentTokenEnv:     "HOMELABD_AGENT_TOKEN",
+			AgentStaleSeconds: 30,
+		},
+		RemoteAgent: RemoteAgentConfig{
+			APIBase:                  "http://127.0.0.1:18080",
+			TokenEnv:                 "HOMELABD_AGENT_TOKEN",
+			Backend:                  "codex",
+			HeartbeatIntervalSeconds: 10,
+			PollIntervalSeconds:      5,
+		},
 		Healthd: HealthdConfig{
 			Addr:                            "127.0.0.1:18081",
 			Enabled:                         boolPtr(true),
@@ -283,6 +323,17 @@ func Default() Config {
 					Restart:            "on_failure",
 					HealthURL:          "http://127.0.0.1:5173/chat",
 					ShutdownTimeoutSec: 10,
+				},
+				{
+					Name:               "homelab-agent",
+					Type:               "agent",
+					Command:            "go",
+					Args:               []string{"run", "./cmd/homelab-agent"},
+					WorkingDir:         ".",
+					StartOrder:         40,
+					AutoStart:          false,
+					Restart:            "always",
+					ShutdownTimeoutSec: 15,
 				},
 			},
 		},
@@ -392,6 +443,36 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.HTTP.Addr == "" {
 		c.HTTP.Addr = d.HTTP.Addr
+	}
+	if c.ControlPlane.AgentTokenEnv == "" {
+		c.ControlPlane.AgentTokenEnv = d.ControlPlane.AgentTokenEnv
+	}
+	if c.ControlPlane.AgentToken == "" && c.ControlPlane.AgentTokenEnv != "" {
+		c.ControlPlane.AgentToken = os.Getenv(c.ControlPlane.AgentTokenEnv)
+	}
+	if c.ControlPlane.AgentStaleSeconds == 0 {
+		c.ControlPlane.AgentStaleSeconds = d.ControlPlane.AgentStaleSeconds
+	}
+	if c.RemoteAgent.APIBase == "" {
+		c.RemoteAgent.APIBase = d.RemoteAgent.APIBase
+	}
+	if c.RemoteAgent.TokenEnv == "" {
+		c.RemoteAgent.TokenEnv = d.RemoteAgent.TokenEnv
+	}
+	if c.RemoteAgent.Token == "" && c.RemoteAgent.TokenEnv != "" {
+		c.RemoteAgent.Token = os.Getenv(c.RemoteAgent.TokenEnv)
+	}
+	if c.RemoteAgent.Backend == "" {
+		c.RemoteAgent.Backend = d.RemoteAgent.Backend
+	}
+	if c.RemoteAgent.TerminalAddr == "" {
+		c.RemoteAgent.TerminalAddr = d.RemoteAgent.TerminalAddr
+	}
+	if c.RemoteAgent.HeartbeatIntervalSeconds == 0 {
+		c.RemoteAgent.HeartbeatIntervalSeconds = d.RemoteAgent.HeartbeatIntervalSeconds
+	}
+	if c.RemoteAgent.PollIntervalSeconds == 0 {
+		c.RemoteAgent.PollIntervalSeconds = d.RemoteAgent.PollIntervalSeconds
 	}
 	if c.Healthd.Enabled == nil {
 		c.Healthd.Enabled = d.Healthd.Enabled

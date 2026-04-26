@@ -25,6 +25,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/id"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
+	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
@@ -64,31 +65,39 @@ func main() {
 	}
 	startedAt := time.Now().UTC()
 	startHealthdHeartbeat(ctx, cfg, *mode, startedAt)
-	orch, err := buildRuntime(cfg)
+	runtime, err := buildRuntime(cfg)
 	if err != nil {
 		fatal(err)
 	}
-	if _, err := orch.RecoverRunningTasks(ctx); err != nil {
+	if _, err := runtime.Orchestrator.RecoverRunningTasks(ctx); err != nil {
 		fatal(err)
 	}
-	orch.StartTaskSupervisor(ctx)
+	runtime.Orchestrator.StartTaskSupervisor(ctx)
 	switch *mode {
 	case "stdio":
-		runStdio(ctx, cfg, orch)
+		runStdio(ctx, cfg, runtime.Orchestrator)
 	case "webhook":
-		adapter := chat.Webhook{Addr: cfg.HTTP.Addr, Handle: control.ChatHandler(orch)}
+		adapter := chat.Webhook{Addr: cfg.HTTP.Addr, Handle: control.ChatHandler(runtime.Orchestrator)}
 		fmt.Fprintf(os.Stdout, "homelabd webhook listening on %s\n", cfg.HTTP.Addr)
 		if err := adapter.Listen(ctx); err != nil {
 			fatal(err)
 		}
 	case "http":
-		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat")}
+		server := control.Server{
+			Addr:            cfg.HTTP.Addr,
+			Orchestrator:    runtime.Orchestrator,
+			ChatLogDir:      filepath.Join(cfg.DataDir, "chat"),
+			RemoteAgents:    runtime.RemoteAgents,
+			AgentToken:      cfg.ControlPlane.AgentToken,
+			AgentStaleAfter: time.Duration(cfg.ControlPlane.AgentStaleSeconds) * time.Second,
+			HealthdURL:      cfg.Healthd.Addr,
+		}
 		fmt.Fprintf(os.Stdout, "homelabd http listening on %s\n", cfg.HTTP.Addr)
 		if err := server.Listen(ctx); err != nil {
 			fatal(err)
 		}
 	case "matrix":
-		runMatrix(ctx, cfg, orch)
+		runMatrix(ctx, cfg, runtime)
 	default:
 		fatal(fmt.Errorf("unknown mode %q", *mode))
 	}
@@ -139,34 +148,39 @@ func startHealthdHeartbeat(ctx context.Context, cfg config.Config, mode string, 
 	}()
 }
 
-func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
+type runtimeServices struct {
+	Orchestrator *agent.Orchestrator
+	RemoteAgents *remoteagent.Store
+}
+
+func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	registry := tool.NewRegistry()
 	timeout := time.Duration(cfg.Limits.MaxShellSeconds) * time.Second
 	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
 	events := eventlog.NewStore(filepath.Join(cfg.DataDir, "events"))
 	if err := repotools.Register(registry, repotools.Base{Root: cfg.Repo.Root, WorkspaceRoot: cfg.Repo.WorkspaceRoot, MaxFileBytes: cfg.Limits.MaxFileBytes}); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := gittools.Register(registry, gittools.Base{RepoRoot: cfg.Repo.Root, WorkspaceRoot: cfg.Repo.WorkspaceRoot}); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := testtools.Register(registry, testtools.Base{Timeout: timeout, RepoRoot: cfg.Repo.Root}); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := shelltools.Register(registry, shelltools.Base{Timeout: timeout}); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := internettools.Register(registry, internettools.Base{}); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := memtools.Register(registry, memstore.NewStore("memory")); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := supervisortools.Register(registry); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := tasktools.Register(registry, tasks); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	runner := agentrunner.NewRunner(cfg.ExternalAgents, agentrunner.WithOutputHandler(func(ctx context.Context, chunk agentrunner.OutputChunk) {
 		_ = events.Append(ctx, eventlog.Event{
@@ -185,14 +199,18 @@ func buildRuntime(cfg config.Config) (*agent.Orchestrator, error) {
 		})
 	}))
 	if err := externalagenttools.Register(registry, runner); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	approvals := approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals"))
 	provider, model, err := buildProvider(cfg)
 	if err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
-	return agent.NewOrchestrator(cfg, events, tasks, approvals, registry, tool.NewPolicy(cfg.Policy.RequireApprovalFor), provider, model).WithLogger(slog.Default()), nil
+	remoteAgents := remoteagent.NewStore(filepath.Join(cfg.DataDir, "remote_agents"))
+	orch := agent.NewOrchestrator(cfg, events, tasks, approvals, registry, tool.NewPolicy(cfg.Policy.RequireApprovalFor), provider, model).
+		WithLogger(slog.Default()).
+		WithRemoteAgents(remoteAgents)
+	return runtimeServices{Orchestrator: orch, RemoteAgents: remoteAgents}, nil
 }
 
 func buildProvider(cfg config.Config) (llm.Provider, string, error) {
@@ -267,13 +285,13 @@ func runStdio(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) 
 	}
 }
 
-func runMatrix(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) {
+func runMatrix(ctx context.Context, cfg config.Config, runtime runtimeServices) {
 	transcript := newChatTranscript(cfg)
-	go runHTTPSidecar(ctx, cfg, orch)
-	runMatrixLoop(ctx, cfg, orch, transcript)
+	go runHTTPSidecar(ctx, cfg, runtime)
+	runMatrixLoop(ctx, cfg, runtime.Orchestrator, transcript)
 }
 
-func runHTTPSidecar(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) {
+func runHTTPSidecar(ctx context.Context, cfg config.Config, runtime runtimeServices) {
 	backoff := 2 * time.Second
 	for {
 		select {
@@ -281,7 +299,15 @@ func runHTTPSidecar(ctx context.Context, cfg config.Config, orch *agent.Orchestr
 			return
 		default:
 		}
-		server := control.Server{Addr: cfg.HTTP.Addr, Orchestrator: orch, ChatLogDir: filepath.Join(cfg.DataDir, "chat")}
+		server := control.Server{
+			Addr:            cfg.HTTP.Addr,
+			Orchestrator:    runtime.Orchestrator,
+			ChatLogDir:      filepath.Join(cfg.DataDir, "chat"),
+			RemoteAgents:    runtime.RemoteAgents,
+			AgentToken:      cfg.ControlPlane.AgentToken,
+			AgentStaleAfter: time.Duration(cfg.ControlPlane.AgentStaleSeconds) * time.Second,
+			HealthdURL:      cfg.Healthd.Addr,
+		}
 		logLine("http listening on %s", cfg.HTTP.Addr)
 		if err := server.Listen(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("homelabd http sidecar stopped; retrying", "error", err, "backoff", backoff)

@@ -48,6 +48,29 @@
   "http": {
     "addr": "127.0.0.1:18080"
   },
+  "control_plane": {
+    "agent_token_env": "HOMELABD_AGENT_TOKEN",
+    "agent_stale_seconds": 30
+  },
+  "remote_agent": {
+    "id": "workstation",
+    "name": "Workstation",
+    "machine": "workstation.local",
+    "api_base": "http://homelab:18080",
+    "token_env": "HOMELABD_AGENT_TOKEN",
+    "backend": "codex",
+    "terminal_addr": "0.0.0.0:18083",
+    "terminal_public_url": "http://workstation.local:18083",
+    "heartbeat_interval_seconds": 10,
+    "poll_interval_seconds": 5,
+    "workdirs": [
+      {
+        "id": "repo",
+        "path": "/home/me/project",
+        "label": "Project repo"
+      }
+    ]
+  },
   "healthd": {
     "addr": "127.0.0.1:18081",
     "enabled": true,
@@ -127,6 +150,17 @@
         "restart": "on_failure",
         "health_url": "http://127.0.0.1:5173/chat",
         "shutdown_timeout_seconds": 10
+      },
+      {
+        "name": "homelab-agent",
+        "type": "agent",
+        "command": "go",
+        "args": ["run", "./cmd/homelab-agent"],
+        "working_dir": ".",
+        "start_order": 40,
+        "auto_start": false,
+        "restart": "always",
+        "shutdown_timeout_seconds": 15
       }
     ]
   },

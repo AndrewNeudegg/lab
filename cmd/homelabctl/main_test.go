@@ -41,6 +41,21 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantPath:   "/tasks/task_123/runs",
 		},
 		{
+			name:       "remote task target",
+			args:       []string{"task", "new", "--agent", "desk", "--workdir", "repo", "--backend", "codex", "do", "work"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/tasks",
+			wantBody: map[string]any{
+				"goal": "do work",
+				"target": map[string]any{
+					"mode":       "remote",
+					"agent_id":   "desk",
+					"workdir_id": "repo",
+					"backend":    "codex",
+				},
+			},
+		},
+		{
 			name:       "task cancel",
 			args:       []string{"cancel", "task_123"},
 			wantMethod: http.MethodPost,
@@ -87,6 +102,33 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			}
 			if !strings.Contains(stdout, `"ok": true`) {
 				t.Fatalf("stdout did not contain pretty JSON response: %q", stdout)
+			}
+		})
+	}
+}
+
+func TestAgentCommandsUseAgentEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMethod string
+		wantPath   string
+	}{
+		{name: "list", args: []string{"agent", "list"}, wantMethod: http.MethodGet, wantPath: "/agents"},
+		{name: "show", args: []string{"agent", "show", "desk"}, wantMethod: http.MethodGet, wantPath: "/agents/desk"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var observed observedRequest
+			_, stderr, code := runAgainstServer(t, tt.args, "", func(rw http.ResponseWriter, req *http.Request) {
+				observed = observeRequest(t, req)
+				writeTestJSON(t, rw, http.StatusOK, map[string]any{"ok": true})
+			})
+			if code != 0 {
+				t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+			}
+			if observed.Method != tt.wantMethod || observed.Path != tt.wantPath {
+				t.Fatalf("request = %s %s, want %s %s", observed.Method, observed.Path, tt.wantMethod, tt.wantPath)
 			}
 		})
 	}
@@ -257,6 +299,10 @@ func TestFullWorkflowIntegration(t *testing.T) {
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "ok"})
 		case "/tasks/task_1/runs":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"runs": []any{}})
+		case "/agents":
+			writeTestJSON(t, rw, http.StatusOK, map[string]any{"agents": []map[string]any{{"id": "desk"}}})
+		case "/agents/desk":
+			writeTestJSON(t, rw, http.StatusOK, map[string]any{"id": "desk"})
 		case "/approvals":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"approvals": []map[string]any{{"id": "app_1"}}})
 		case "/approvals/app_1/approve":
@@ -280,6 +326,8 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		{"accept", "task_1"},
 		{"reopen", "task_1", "needs", "work"},
 		{"cancel", "task_1"},
+		{"agent", "list"},
+		{"agent", "show", "desk"},
 		{"approvals"},
 		{"approve", "app_1"},
 		{"events", "-limit", "1"},
@@ -301,6 +349,8 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		"POST /tasks/task_1/accept",
 		"POST /tasks/task_1/reopen",
 		"POST /tasks/task_1/cancel",
+		"GET /agents",
+		"GET /agents/desk",
 		"GET /approvals",
 		"POST /approvals/app_1/approve",
 		"GET /events?limit=1",

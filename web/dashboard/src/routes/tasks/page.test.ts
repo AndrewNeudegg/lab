@@ -24,8 +24,10 @@ describe('tasks page selection rendering', () => {
 
   test('changes queue filters through explicit selection normalization', () => {
     expect(pageSource).toContain('const setTaskFilter = (filter: TaskFilter) =>');
+    expect(pageSource).toContain('const setQueueFilter = (filter: TaskQueueFilter) =>');
     expect(pageSource).toContain('selectedTaskId = selectTaskForQueue');
     expect(pageSource).toContain('on:click={() => setTaskFilter(filter.id as TaskFilter)}');
+    expect(pageSource).toContain('on:click={() => setQueueFilter(option.id)}');
     expect(pageSource).not.toContain('on:click={() => (taskFilter = filter.id as TaskFilter)}');
   });
 
@@ -62,6 +64,15 @@ describe('tasks page selection rendering', () => {
     expect(inputIndex).toBeGreaterThan(planIndex);
     expect(pageSource).toContain('Reviewed plan');
     expect(pageSource).toContain('{#each currentTask.plan.steps as step}');
+  });
+
+  test('requires explicit remote execution context confirmation', () => {
+    expect(pageSource).toContain('aria-label="Execution queues"');
+    expect(pageSource).toContain('Run exactly on');
+    expect(pageSource).toContain('bind:checked={contextAcknowledged}');
+    expect(pageSource).toContain('Boolean(selectedAgent && (!selectedWorkdir || !contextAcknowledged))');
+    expect(pageSource).toContain('aria-label="Execution context"');
+    expect(pageSource).toContain('Remote execution context');
   });
 
   test('renders worker trace runs with direct stop and retry controls', () => {

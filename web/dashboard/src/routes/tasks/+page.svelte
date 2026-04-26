@@ -15,6 +15,8 @@
     type ChatTranscriptMessage,
     type HomelabdApproval,
     type HomelabdEvent,
+    type HomelabdRemoteAgent,
+    type HomelabdRemoteAgentWorkdir,
     type HomelabdRunArtifact,
     type HomelabdTask
   } from '@homelab/shared';
@@ -23,6 +25,7 @@
     createTaskQueueView,
     selectTaskForQueue,
     type TaskFilter,
+    type TaskQueueFilter,
     type TaskQueueView,
     type WorkerTraceRun
   } from './view-model';
@@ -70,12 +73,16 @@
   };
 
   let draft = '';
+  let newTaskDraft = '';
   let loading = false;
+  let creatingTask = false;
+  let contextAcknowledged = false;
   let refreshing = false;
   let error = '';
   let taskActionLoading = '';
   let messageId = 0;
   let taskFilter: TaskFilter = 'attention';
+  let queueFilter: TaskQueueFilter = 'all';
   let taskSearch = '';
   let selectedTaskId = '';
   let lastRefresh = '';
@@ -85,6 +92,7 @@
   let messagesEl: HTMLElement | undefined;
   let messages: ChatTranscriptMessage[] = [welcomeMessage];
   let tasks: HomelabdTask[] = [];
+  let agents: HomelabdRemoteAgent[] = [];
   let approvals: HomelabdApproval[] = [];
   let events: HomelabdEvent[] = [];
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
@@ -93,6 +101,7 @@
     approvals,
     events,
     taskFilter,
+    queueFilter,
     taskSearch,
     selectedTaskId
   });
@@ -104,6 +113,14 @@
   let currentTaskEvents: HomelabdEvent[] = [];
   let currentTaskRuns: WorkerTraceRun[] = [];
   let needsActionTotal = 0;
+  let selectedAgentId = '';
+  let selectedWorkdirId = '';
+  let onlineAgentItems: HomelabdRemoteAgent[] = [];
+  let selectedAgent: HomelabdRemoteAgent | undefined;
+  let selectedWorkdirs: HomelabdRemoteAgentWorkdir[] = [];
+  let selectedWorkdir: HomelabdRemoteAgentWorkdir | undefined;
+  let queueOptions: { id: TaskQueueFilter; label: string; count: number; detail: string }[] = [];
+  let selectedContextLabel = 'Local homelabd workspace';
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -118,6 +135,22 @@
   };
 
   const statusLabel = (status = '') => status.replaceAll('_', ' ');
+
+  const workdirLabel = (workdir?: HomelabdRemoteAgentWorkdir) => {
+    if (!workdir) {
+      return 'No directory';
+    }
+    return workdir.label || workdir.id || workdir.path;
+  };
+
+  const targetLabel = (task: HomelabdTask) => {
+    if (!task.target || task.target.mode !== 'remote') {
+      return task.workspace ? 'Local workspace' : 'Local';
+    }
+    const machine = task.target.machine || task.target.agent_id || 'remote';
+    const dir = task.target.workdir || task.target.workdir_id || 'directory';
+    return `${machine} · ${dir}`;
+  };
 
   const compactTime = (value?: string) => {
     if (!value) {
@@ -297,6 +330,7 @@
     approvals,
     events,
     taskFilter,
+    queueFilter,
     taskSearch,
     selectedTaskId
   });
@@ -311,6 +345,41 @@
     : [];
   $: needsActionTotal =
     attentionTaskItems.length + pendingApprovalItems.filter((approval) => !approval.task_id).length;
+  $: onlineAgentItems = agents.filter((agent) => agent.status !== 'offline');
+  $: if (!selectedAgentId && onlineAgentItems[0]) {
+    selectedAgentId = onlineAgentItems[0].id;
+  }
+  $: selectedAgent =
+    agents.find((agent) => agent.id === selectedAgentId) || onlineAgentItems[0] || agents[0];
+  $: selectedWorkdirs = selectedAgent?.workdirs || [];
+  $: if (
+    selectedWorkdirs.length &&
+    !selectedWorkdirs.some((workdir) => workdir.id === selectedWorkdirId)
+  ) {
+    selectedWorkdirId = selectedWorkdirs[0].id;
+  }
+  $: selectedWorkdir =
+    selectedWorkdirs.find((workdir) => workdir.id === selectedWorkdirId) || selectedWorkdirs[0];
+  $: queueOptions = [
+    { id: 'all', label: 'All queues', count: tasks.length, detail: 'Every local and remote target' },
+    {
+      id: 'local',
+      label: 'Local homelabd',
+      count: tasks.filter((task) => task.target?.mode !== 'remote').length,
+      detail: 'Runs in homelabd workspaces'
+    },
+    ...agents.map((agent) => ({
+      id: `agent:${agent.id}` as TaskQueueFilter,
+      label: agent.name || agent.id,
+      count: tasks.filter((task) => task.target?.mode === 'remote' && task.target?.agent_id === agent.id)
+        .length,
+      detail: `${agent.machine || 'unknown machine'} · ${agent.status}`
+    }))
+  ];
+  $: selectedContextLabel =
+    selectedAgent && selectedWorkdir
+      ? `${selectedAgent.name || selectedAgent.id} on ${selectedAgent.machine || 'unknown machine'} in ${selectedWorkdir.path}`
+      : 'Local homelabd workspace';
 
   const eventLabel = (event: HomelabdEvent) => event.type.replaceAll('.', ' ');
 
@@ -503,10 +572,11 @@
   const refreshState = async () => {
     refreshing = true;
     try {
-      const [taskResult, approvalResult, eventResult] = await Promise.allSettled([
+      const [taskResult, approvalResult, eventResult, agentResult] = await Promise.allSettled([
         client.listTasks(),
         client.listApprovals(),
-        client.listEvents({ limit: 500 })
+        client.listEvents({ limit: 500 }),
+        client.listAgents()
       ]);
 
       if (taskResult.status === 'fulfilled') {
@@ -530,6 +600,10 @@
 
       if (eventResult.status === 'fulfilled') {
         events = eventResult.value.events;
+      }
+
+      if (agentResult.status === 'fulfilled') {
+        agents = agentResult.value.agents;
       }
 
       lastRefresh = timeLabel();
@@ -588,6 +662,37 @@
     void sendMessage(command);
   };
 
+  const createTargetedTask = async () => {
+    const goal = newTaskDraft.trim();
+    if (!goal || creatingTask) {
+      return;
+    }
+    creatingTask = true;
+    error = '';
+    try {
+      const target =
+        selectedAgent && selectedWorkdir
+          ? {
+              mode: 'remote',
+              agent_id: selectedAgent.id,
+              machine: selectedAgent.machine,
+              workdir_id: selectedWorkdir.id,
+              workdir: selectedWorkdir.path,
+              backend: selectedAgent.capabilities?.includes('codex') ? 'codex' : undefined
+            }
+          : undefined;
+      const response = await client.createTask({ goal, target });
+      newTaskDraft = '';
+      contextAcknowledged = false;
+      addMessage('assistant', response.reply || 'Task created.', 'program');
+      await refreshState();
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to create task.';
+    } finally {
+      creatingTask = false;
+    }
+  };
+
   const selectTask = (id: string) => {
     selectedTaskId = id;
     void refreshTaskRuns(id);
@@ -617,7 +722,30 @@
 
   const setTaskFilter = (filter: TaskFilter) => {
     taskFilter = filter;
-    selectedTaskId = selectTaskForQueue(tasks, approvals, filter, taskSearch, selectedTaskId);
+    selectedTaskId = selectTaskForQueue(
+      tasks,
+      approvals,
+      filter,
+      queueFilter,
+      taskSearch,
+      selectedTaskId
+    );
+  };
+
+  const setQueueFilter = (filter: TaskQueueFilter) => {
+    queueFilter = filter;
+    selectedTaskId = selectTaskForQueue(
+      tasks,
+      approvals,
+      taskFilter,
+      filter,
+      taskSearch,
+      selectedTaskId
+    );
+  };
+
+  const handleAgentChange = () => {
+    contextAcknowledged = false;
   };
 
   const setCommandPanelOpen = (open: boolean) => {
@@ -692,8 +820,77 @@
         {/each}
       </section>
 
+      <section class="queue-groups" aria-label="Execution queues">
+        <h2>Execution queues</h2>
+        {#each queueOptions as option}
+          <button
+            type="button"
+            class:active={queueFilter === option.id}
+            on:click={() => setQueueFilter(option.id)}
+          >
+            <strong>{option.label}</strong>
+            <span>{option.count} task{option.count === 1 ? '' : 's'} · {option.detail}</span>
+          </button>
+        {/each}
+      </section>
+
       <label class="hidden" for="task-search">Search tasks</label>
       <input id="task-search" bind:value={taskSearch} placeholder="Search tasks…" />
+
+      <section class="target-create" aria-label="Create targeted task">
+        <header>
+          <div>
+            <p>New task target</p>
+            <h2>{selectedAgent ? selectedAgent.name || selectedAgent.id : 'Local homelabd'}</h2>
+          </div>
+          <span>{onlineAgentItems.length} online</span>
+        </header>
+        {#if agents.length}
+          <label class="hidden" for="agent-select">Remote agent</label>
+          <select id="agent-select" bind:value={selectedAgentId} on:change={handleAgentChange}>
+            {#each agents as agent}
+              <option value={agent.id}>
+                {agent.name || agent.id} · {agent.machine || 'unknown'} · {agent.status}
+              </option>
+            {/each}
+          </select>
+          <label class="hidden" for="workdir-select">Remote directory</label>
+          <select
+            id="workdir-select"
+            bind:value={selectedWorkdirId}
+            disabled={!selectedWorkdirs.length}
+            on:change={handleAgentChange}
+          >
+            {#each selectedWorkdirs as workdir}
+              <option value={workdir.id}>{workdirLabel(workdir)} · {workdir.path}</option>
+            {/each}
+          </select>
+        {:else}
+          <p class="target-empty">No remote agents have checked in. Creating a task here uses the local graph.</p>
+        {/if}
+        <form on:submit|preventDefault={createTargetedTask}>
+          <label class="hidden" for="new-task-goal">New task goal</label>
+          <textarea
+            id="new-task-goal"
+            bind:value={newTaskDraft}
+            rows="3"
+            placeholder={selectedAgent ? 'Describe work for the selected machine and directory.' : 'Describe local homelabd work.'}
+            disabled={creatingTask}
+          ></textarea>
+          <label class="context-confirm">
+            <input type="checkbox" bind:checked={contextAcknowledged} disabled={!selectedAgent} />
+            <span>Run exactly on <strong>{selectedContextLabel}</strong></span>
+          </label>
+          <button
+            type="submit"
+            disabled={creatingTask ||
+              !newTaskDraft.trim() ||
+              Boolean(selectedAgent && (!selectedWorkdir || !contextAcknowledged))}
+          >
+            {creatingTask ? 'Creating' : selectedAgent ? 'Create remote task' : 'Create local task'}
+          </button>
+        </form>
+      </section>
 
       {#if pendingApprovalItems.length}
         <section class="approval-list" aria-label="Pending approvals">
@@ -737,6 +934,9 @@
                   <span>{shortID(task.id)} · updated {compactTime(task.updated_at)}</span>
                   <span class={`status ${taskTone(task)}`}>{statusLabel(task.status)}</span>
                 </small>
+                {#if task.target?.mode === 'remote'}
+                  <em>{targetLabel(task)}</em>
+                {/if}
               </span>
             </button>
           {/each}
@@ -776,6 +976,10 @@
           <div>
             <span>Owner</span>
             <strong>{currentTask?.assigned_to || 'unassigned'}</strong>
+          </div>
+          <div>
+            <span>Target</span>
+            <strong>{targetLabel(currentTask)}</strong>
           </div>
           <div>
             <span>Started</span>
@@ -828,6 +1032,15 @@
           <section class="workspace-path" aria-label="Workspace path">
             <span>Workspace</span>
             <code>{currentTask?.workspace}</code>
+          </section>
+        {/if}
+
+        {#if currentTask?.target?.mode === 'remote'}
+          <section class="execution-context" aria-label="Execution context">
+            <span>Remote execution context</span>
+            <strong>{currentTask.target.machine || currentTask.target.agent_id}</strong>
+            <code>{currentTask.target.workdir}</code>
+            <small>Agent {currentTask.target.agent_id} · backend {currentTask.target.backend || 'default'}</small>
           </section>
         {/if}
 
@@ -1091,6 +1304,7 @@
 
   button,
   input,
+  select,
   textarea {
     font: inherit;
   }
@@ -1289,6 +1503,7 @@
   }
 
   input,
+  select,
   textarea {
     box-sizing: border-box;
     width: 100%;
@@ -1303,6 +1518,11 @@
     padding: 0 0.75rem;
   }
 
+  select {
+    min-height: 2.35rem;
+    padding: 0 0.6rem;
+  }
+
   textarea {
     min-height: 4.3rem;
     max-height: 11rem;
@@ -1312,6 +1532,7 @@
   }
 
   input:focus,
+  select:focus,
   textarea:focus {
     border-color: #2563eb;
     outline: 3px solid rgb(37 99 235 / 0.14);
@@ -1320,6 +1541,125 @@
   .approval-list {
     display: grid;
     gap: 0.5rem;
+  }
+
+  .queue-groups {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .queue-groups h2 {
+    margin: 0;
+    color: #374151;
+    font-size: 0.82rem;
+  }
+
+  .queue-groups button {
+    display: grid;
+    gap: 0.15rem;
+    width: 100%;
+    min-height: 2.8rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.65rem;
+    color: #243047;
+    background: #ffffff;
+    text-align: left;
+  }
+
+  .queue-groups button.active {
+    border-color: #2563eb;
+    background: #eff6ff;
+  }
+
+  .queue-groups strong {
+    color: #111827;
+    font-size: 0.83rem;
+  }
+
+  .queue-groups span {
+    color: #64748b;
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+
+  .target-create {
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.75rem;
+    border: 1px solid #dbe7f5;
+    border-radius: 0.8rem;
+    background: #f8fbff;
+  }
+
+  .target-create header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.7rem;
+  }
+
+  .target-create header p,
+  .target-create header h2,
+  .target-create header span,
+  .target-empty {
+    margin: 0;
+  }
+
+  .target-create header p,
+  .target-create header span {
+    color: #64748b;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .target-create header h2 {
+    color: #111827;
+    font-size: 0.95rem;
+    line-height: 1.2;
+  }
+
+  .target-create form {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .target-create button {
+    min-height: 2.3rem;
+    border: 1px solid #1d4ed8;
+    border-radius: 0.55rem;
+    color: #ffffff;
+    background: #2563eb;
+    font-weight: 800;
+  }
+
+  .context-confirm {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 0.5rem;
+    padding: 0.55rem;
+    border: 1px solid #f59e0b;
+    border-radius: 0.55rem;
+    color: #713f12;
+    background: #fffbeb;
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+
+  .context-confirm input {
+    width: 1rem;
+    min-height: 1rem;
+    margin: 0.1rem 0 0;
+    accent-color: #b45309;
+  }
+
+  .target-empty {
+    color: #64748b;
+    font-size: 0.8rem;
+    line-height: 1.35;
   }
 
   .approval-list h2 {
@@ -1405,6 +1745,15 @@
     min-width: 0;
     color: #64748b;
     font-size: 0.76rem;
+  }
+
+  .task-copy em {
+    overflow: hidden;
+    color: #475569;
+    font-size: 0.73rem;
+    font-style: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .task-copy small > span:first-child {
@@ -1616,6 +1965,7 @@
   }
 
   .workspace-path,
+  .execution-context,
   .task-result,
   .task-plan,
   .task-input,
@@ -1631,6 +1981,37 @@
 
   .workspace-path {
     padding: 0.8rem;
+  }
+
+  .execution-context {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.8rem;
+    border-width: 2px;
+    border-color: #f59e0b;
+    background: #fffbeb;
+  }
+
+  .execution-context span {
+    color: #92400e;
+    font-size: 0.72rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .execution-context strong {
+    color: #713f12;
+  }
+
+  .execution-context code {
+    overflow-wrap: anywhere;
+    color: #111827;
+    font-size: 0.86rem;
+  }
+
+  .execution-context small {
+    color: #92400e;
   }
 
   .state-machine {

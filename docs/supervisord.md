@@ -26,6 +26,8 @@ For the local development stack, prefer the wrapper commands:
 
 `stack-start` starts `supervisord`, adopts any already-running `healthd`, `homelabd`, or dashboard process, then starts any missing apps. `stack-restart` gracefully stops apps in reverse order, restarts `supervisord`, then starts apps in dependency order. `stack-stop` gracefully stops the apps and then stops `supervisord`.
 
+If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`.
+
 ## Configuration
 
 Add supervised apps under `supervisord.apps` in `config.json`:

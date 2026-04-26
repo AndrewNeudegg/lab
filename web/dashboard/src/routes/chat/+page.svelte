@@ -3,6 +3,8 @@
   import {
     createHomelabdClient,
     Navbar,
+    persistChatDraft,
+    readStoredChatDraft,
     type ChatRole,
     type ChatTranscriptMessage
   } from '@homelab/shared';
@@ -173,6 +175,7 @@
 
   onMount(() => {
     messages = loadStoredMessages();
+    draft = readStoredChatDraft();
     messageId = messages.length;
     scrollMessages();
     focusInput();
@@ -185,6 +188,7 @@
     }
 
     draft = '';
+    persistChatDraft(draft);
     error = '';
     addMessage('user', trimmed);
     loading = true;
@@ -212,6 +216,11 @@
       event.preventDefault();
       void sendMessage();
     }
+  };
+
+  const handleDraftInput = (event: Event) => {
+    draft = (event.currentTarget as HTMLTextAreaElement).value;
+    persistChatDraft(draft);
   };
 </script>
 
@@ -278,6 +287,7 @@
         placeholder="Tell homelabd what you want done. Use Tasks for queue state."
         disabled={loading}
         rows="3"
+        on:input={handleDraftInput}
         on:keydown={handleComposerKeydown}
       ></textarea>
       <button type="submit" disabled={loading || !draft.trim()}>

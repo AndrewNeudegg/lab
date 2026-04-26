@@ -131,6 +131,7 @@
 	  :global(html[data-theme='dark'] .metric),
 	  :global(html[data-theme='dark'] .chart-panel),
 	  :global(html[data-theme='dark'] .slo),
+	  :global(html[data-theme='dark'] .process),
 	  :global(html[data-theme='dark'] .check),
 	  :global(html[data-theme='dark'] .notification),
 	  :global(html[data-theme='dark'] .notifications),
@@ -151,6 +152,8 @@
   :global(html[data-theme='dark'] .prompt-actions button),
   :global(html[data-theme='dark'] .command-header-actions button),
   :global(html[data-theme='dark'] .terminal-panel),
+  :global(html[data-theme='dark'] .terminal-header),
+  :global(html[data-theme='dark'] .terminal-notice),
   :global(html[data-theme='dark'] .terminal-composer),
   :global(html[data-theme='dark'] .terminal-actions button),
   :global(html[data-theme='dark'] input),
@@ -186,7 +189,9 @@
 	  :global(html[data-theme='dark'] .metric strong),
 	  :global(html[data-theme='dark'] .panel-title h2),
 	  :global(html[data-theme='dark'] .slo h3),
+	  :global(html[data-theme='dark'] .process h3),
 	  :global(html[data-theme='dark'] .check h3),
+  :global(html[data-theme='dark'] .terminal-header h1),
   :global(html[data-theme='dark'] .notification h3) {
     color: var(--text-strong) !important;
   }
@@ -210,9 +215,14 @@
   :global(html[data-theme='dark'] .chart-panel p),
   :global(html[data-theme='dark'] .slo p),
   :global(html[data-theme='dark'] .slo-stats span),
+  :global(html[data-theme='dark'] .process p),
+  :global(html[data-theme='dark'] .process small),
   :global(html[data-theme='dark'] .check p),
   :global(html[data-theme='dark'] .check small),
   :global(html[data-theme='dark'] .notification time),
+  :global(html[data-theme='dark'] .terminal-header p),
+  :global(html[data-theme='dark'] .terminal-header .shell-meta),
+  :global(html[data-theme='dark'] .terminal-notice),
   :global(html[data-theme='dark'] .muted) {
     color: var(--muted) !important;
   }
@@ -277,6 +287,30 @@
 	    color: var(--muted) !important;
 	    background: transparent !important;
 	  }
+
+  :global(html[data-theme='dark'] .task-row:hover),
+  :global(html[data-theme='dark'] .task-row.selected) {
+    border-color: var(--border) !important;
+    background: var(--surface-hover) !important;
+  }
+
+  :global(html[data-theme='dark'] .status-pill) {
+    color: #fed7aa !important;
+    border-color: #854d0e !important;
+    background: #33270d !important;
+  }
+
+  :global(html[data-theme='dark'] .status-pill.connected) {
+    color: #bbf7d0 !important;
+    border-color: var(--success-border) !important;
+    background: var(--success-bg) !important;
+  }
+
+  :global(html[data-theme='dark'] .notice) {
+    color: #bbf7d0 !important;
+    border-color: var(--success-border) !important;
+    background: var(--success-bg) !important;
+  }
 
 	  :global(html[data-theme='dark'] .error) {
 	    color: var(--danger-text) !important;

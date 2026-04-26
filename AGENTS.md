@@ -6,3 +6,8 @@
 - If the app is served by `supervisord`, restart the affected app before browser UAT so the test is hitting the new bundle.
 - Add automated regression coverage for fixed bugs. Prefer extracting pure view/state logic into testable modules instead of only adding source-string assertions.
 - A final handoff for UI changes must say which browser/UAT command ran and what interaction it verified.
+
+## homelabctl
+
+- Use `homelabctl` for interactive `homelabd` operation instead of ad hoc HTTP calls. See `docs/homelabctl.md`.
+- Keep `docs/homelabctl.md`, `cmd/homelabctl`, and the `homelabd` HTTP API in sync. If `homelabctl` is not useful enough for a new chat, task, approval, event, or terminal workflow, extend it and add regression tests rather than bypassing it.

@@ -68,6 +68,20 @@ reopen 28493611 needs rework
 
 Reopening moves the task back to `queued` and preserves the reason in the task result.
 
+For command-line operation, use `homelabctl` rather than raw HTTP calls:
+
+```bash
+go run ./cmd/homelabctl status
+go run ./cmd/homelabctl task show <task_id>
+go run ./cmd/homelabctl task runs <task_id>
+go run ./cmd/homelabctl task review <task_id>
+go run ./cmd/homelabctl approve <approval_id>
+go run ./cmd/homelabctl task accept <task_id>
+go run ./cmd/homelabctl task reopen <task_id> "needs rework"
+```
+
+See `docs/homelabctl.md` for the full CLI command surface and the rule that new operator workflows must keep the CLI up to date.
+
 ## Restart Recovery
 
 On startup, `homelabd` scans durable task records. Any task still marked `running` is treated as interrupted in-memory work and is automatically resumed:

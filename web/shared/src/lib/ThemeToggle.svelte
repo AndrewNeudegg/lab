@@ -12,11 +12,13 @@
   export let compact = false;
 
   let mode: ThemeMode = 'light';
+  let ready = false;
 
   onMount(() => {
     mode = readStoredTheme();
     themeMode.set(mode);
     applyTheme(mode);
+    ready = true;
 
     const unsubscribe = themeMode.subscribe((value) => {
       mode = value;
@@ -36,6 +38,7 @@
   type="button"
   class:compact
   class="theme-toggle"
+  data-theme-toggle-ready={ready ? 'true' : 'false'}
   aria-label={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}
   aria-pressed={mode === 'dark'}
   on:click={toggle}

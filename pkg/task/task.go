@@ -23,6 +23,8 @@ type Task struct {
 	Priority   int        `json:"priority"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	StoppedAt  *time.Time `json:"stopped_at,omitempty"`
 	DueAt      *time.Time `json:"due_at,omitempty"`
 	ParentID   string     `json:"parent_id,omitempty"`
 	ContextIDs []string   `json:"context_ids,omitempty"`

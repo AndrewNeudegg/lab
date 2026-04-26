@@ -56,6 +56,8 @@ export interface HomelabdTask {
   priority: number;
   created_at: string;
   updated_at: string;
+  started_at?: string;
+  stopped_at?: string;
   due_at?: string;
   parent_id?: string;
   context_ids?: string[];

@@ -23,7 +23,6 @@ type Config struct {
 	RemoteAgent     RemoteAgentConfig              `json:"remote_agent"`
 	Healthd         HealthdConfig                  `json:"healthd"`
 	Supervisord     SupervisordConfig              `json:"supervisord"`
-	Matrix          MatrixConfig                   `json:"matrix"`
 	ExternalAgents  map[string]ExternalAgentConfig `json:"external_agents"`
 }
 
@@ -145,19 +144,6 @@ type SupervisorAppConfig struct {
 	Restart            string            `json:"restart,omitempty"`
 	HealthURL          string            `json:"health_url,omitempty"`
 	ShutdownTimeoutSec int               `json:"shutdown_timeout_seconds,omitempty"`
-}
-
-type MatrixConfig struct {
-	Homeserver    string `json:"homeserver"`
-	User          string `json:"user"`
-	Password      string `json:"password,omitempty"`
-	AccessToken   string `json:"access_token,omitempty"`
-	RoomID        string `json:"room_id,omitempty"`
-	RoomAlias     string `json:"room_alias,omitempty"`
-	RoomName      string `json:"room_name,omitempty"`
-	RequirePrefix bool   `json:"require_prefix"`
-	Prefix        string `json:"prefix,omitempty"`
-	SyncTimeoutMS int    `json:"sync_timeout_ms"`
 }
 
 type ExternalAgentConfig struct {
@@ -306,7 +292,7 @@ func Default() Config {
 					Name:               "homelabd",
 					Type:               "daemon",
 					Command:            "go",
-					Args:               []string{"run", "./cmd/homelabd", "-mode", "matrix"},
+					Args:               []string{"run", "./cmd/homelabd", "-mode", "http"},
 					WorkingDir:         ".",
 					StartOrder:         20,
 					AutoStart:          false,
@@ -338,18 +324,6 @@ func Default() Config {
 					ShutdownTimeoutSec: 15,
 				},
 			},
-		},
-		Matrix: MatrixConfig{
-			Homeserver:    getenvAny("MATRIX_HOMESERVER", "ELEMENT_HOMESERVER"),
-			User:          getenvAny("MATRIX_USER", "ELEMENT_BOT_USERNAME"),
-			Password:      getenvAny("MATRIX_PASSWORD", "ELEMENT_BOT_PASSWORD"),
-			AccessToken:   getenvAny("MATRIX_ACCESS_TOKEN", "ELEMENT_BOT_ACCESS_TOKEN"),
-			RoomID:        getenvAny("MATRIX_ROOM_ID", "ELEMENT_ROOM_ID"),
-			RoomAlias:     getenvAny("MATRIX_ROOM_ALIAS", "ELEMENT_ROOM_ALIAS"),
-			RoomName:      getenvAny("MATRIX_ROOM_NAME", "ELEMENT_ROOM_NAME"),
-			RequirePrefix: true,
-			Prefix:        getenvAny("MATRIX_PREFIX", "ELEMENT_BOT_PREFIX"),
-			SyncTimeoutMS: 30000,
 		},
 		ExternalAgents: map[string]ExternalAgentConfig{
 			"codex": {
@@ -554,33 +528,6 @@ func (c Config) WithDefaults() Config {
 			app.ShutdownTimeoutSec = c.Supervisord.ShutdownTimeoutSeconds
 		}
 		c.Supervisord.Apps[i] = app
-	}
-	if c.Matrix.Homeserver == "" {
-		c.Matrix.Homeserver = "http://lab:8008"
-	}
-	if c.Matrix.User == "" {
-		c.Matrix.User = d.Matrix.User
-	}
-	if c.Matrix.Password == "" {
-		c.Matrix.Password = d.Matrix.Password
-	}
-	if c.Matrix.AccessToken == "" {
-		c.Matrix.AccessToken = d.Matrix.AccessToken
-	}
-	if c.Matrix.RoomID == "" {
-		c.Matrix.RoomID = d.Matrix.RoomID
-	}
-	if c.Matrix.RoomAlias == "" {
-		c.Matrix.RoomAlias = d.Matrix.RoomAlias
-	}
-	if c.Matrix.RoomName == "" {
-		c.Matrix.RoomName = "first"
-	}
-	if c.Matrix.Prefix == "" {
-		c.Matrix.Prefix = "!agent"
-	}
-	if c.Matrix.SyncTimeoutMS == 0 {
-		c.Matrix.SyncTimeoutMS = d.Matrix.SyncTimeoutMS
 	}
 	if c.ExternalAgents == nil {
 		c.ExternalAgents = d.ExternalAgents

@@ -42,7 +42,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.json", "configuration file")
-	mode := flag.String("mode", "stdio", "adapter mode: stdio, webhook, http, or matrix")
+	mode := flag.String("mode", "stdio", "adapter mode: stdio, webhook, or http")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -96,8 +96,6 @@ func main() {
 		if err := server.Listen(ctx); err != nil {
 			fatal(err)
 		}
-	case "matrix":
-		runMatrix(ctx, cfg, runtime)
 	default:
 		fatal(fmt.Errorf("unknown mode %q", *mode))
 	}
@@ -285,177 +283,6 @@ func runStdio(ctx context.Context, cfg config.Config, orch *agent.Orchestrator) 
 	}
 }
 
-func runMatrix(ctx context.Context, cfg config.Config, runtime runtimeServices) {
-	transcript := newChatTranscript(cfg)
-	go runHTTPSidecar(ctx, cfg, runtime)
-	runMatrixLoop(ctx, cfg, runtime.Orchestrator, transcript)
-}
-
-func runHTTPSidecar(ctx context.Context, cfg config.Config, runtime runtimeServices) {
-	backoff := 2 * time.Second
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		server := control.Server{
-			Addr:            cfg.HTTP.Addr,
-			Orchestrator:    runtime.Orchestrator,
-			ChatLogDir:      filepath.Join(cfg.DataDir, "chat"),
-			RemoteAgents:    runtime.RemoteAgents,
-			AgentToken:      cfg.ControlPlane.AgentToken,
-			AgentStaleAfter: time.Duration(cfg.ControlPlane.AgentStaleSeconds) * time.Second,
-			HealthdURL:      cfg.Healthd.Addr,
-		}
-		logLine("http listening on %s", cfg.HTTP.Addr)
-		if err := server.Listen(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("homelabd http sidecar stopped; retrying", "error", err, "backoff", backoff)
-			if !sleepContext(ctx, backoff) {
-				return
-			}
-			backoff = minDuration(backoff*2, 30*time.Second)
-			continue
-		}
-		return
-	}
-}
-
-func runMatrixLoop(ctx context.Context, cfg config.Config, orch *agent.Orchestrator, transcript *chatTranscript) {
-	backoff := 2 * time.Second
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		adapter := newMatrixAdapter(cfg)
-		msgs, err := adapter.Receive(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Error("matrix adapter failed; retrying", "error", err, "backoff", backoff)
-			if !sleepContext(ctx, backoff) {
-				return
-			}
-			backoff = minDuration(backoff*2, 60*time.Second)
-			continue
-		}
-		backoff = 2 * time.Second
-		logLine("matrix listening for room %q (%s)", cfg.Matrix.RoomName, adapter.RoomID())
-		if !handleMatrixMessages(ctx, cfg, orch, transcript, adapter, msgs) {
-			return
-		}
-		slog.Warn("matrix message stream closed; reconnecting", "backoff", backoff)
-		if !sleepContext(ctx, backoff) {
-			return
-		}
-	}
-}
-
-func newMatrixAdapter(cfg config.Config) *chat.Matrix {
-	return chat.NewMatrix(chat.MatrixConfig{
-		Homeserver:    cfg.Matrix.Homeserver,
-		User:          cfg.Matrix.User,
-		Password:      cfg.Matrix.Password,
-		AccessToken:   cfg.Matrix.AccessToken,
-		RoomID:        cfg.Matrix.RoomID,
-		RoomAlias:     cfg.Matrix.RoomAlias,
-		RoomName:      cfg.Matrix.RoomName,
-		SyncTimeoutMS: cfg.Matrix.SyncTimeoutMS,
-	})
-}
-
-func handleMatrixMessages(ctx context.Context, cfg config.Config, orch *agent.Orchestrator, transcript *chatTranscript, adapter *chat.Matrix, msgs <-chan chat.ChatMessage) bool {
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case msg, ok := <-msgs:
-			if !ok {
-				return true
-			}
-			logLine("matrix received from %s: %s", msg.From, msg.Content)
-			_ = transcript.Append("matrix", "in", msg.From, "homelabd", msg.Content, false)
-			content, addressed := matrixAddressedContent(cfg, msg.Content)
-			logLine("matrix addressed=%t content=%q", addressed, content)
-			if !addressed {
-				continue
-			}
-			if shouldAck(content) {
-				ack := "ack: working on " + quoteForAck(content)
-				_ = transcript.Append("matrix", "out", "homelabd", msg.From, ack, true)
-				if err := adapter.Send(ctx, chat.OutboundMessage{Content: ack}); err != nil {
-					fmt.Fprintln(os.Stderr, "homelabd matrix ack send:", err)
-				}
-			}
-			reply, err := orch.Handle(ctx, msg.From, content)
-			if err != nil {
-				reply = "error: " + err.Error()
-			}
-			logLine("matrix reply to %s: %s", msg.From, oneLine(reply))
-			_ = transcript.Append("matrix", "out", "homelabd", msg.From, reply, true)
-			if err := adapter.Send(ctx, chat.OutboundMessage{Content: reply}); err != nil {
-				fmt.Fprintln(os.Stderr, "homelabd matrix send:", err)
-			}
-		}
-	}
-}
-
-func sleepContext(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func matrixAddressedContent(cfg config.Config, content string) (string, bool) {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		return "", false
-	}
-	if !cfg.Matrix.RequirePrefix {
-		return trimmed, true
-	}
-	prefixes := []string{cfg.Matrix.Prefix}
-	if cfg.Matrix.User != "" {
-		prefixes = append(prefixes, cfg.Matrix.User, strings.TrimPrefix(cfg.Matrix.User, "@"))
-	}
-	prefixes = append(prefixes, "element-bot")
-	for _, prefix := range prefixes {
-		prefix = strings.TrimSpace(prefix)
-		if prefix == "" {
-			continue
-		}
-		if strings.EqualFold(trimmed, prefix) {
-			return "help", true
-		}
-		for _, sep := range []string{" ", ":", ","} {
-			candidate := prefix + sep
-			if len(trimmed) >= len(candidate) && strings.EqualFold(trimmed[:len(candidate)], candidate) {
-				rest := strings.TrimSpace(trimmed[len(candidate):])
-				if rest == "" {
-					rest = "help"
-				}
-				return rest, true
-			}
-		}
-	}
-	return "", false
-}
-
 type chatTranscript struct {
 	dir string
 	mu  sync.Mutex
@@ -504,32 +331,6 @@ func oneLine(s string) string {
 		return s[:240] + "..."
 	}
 	return s
-}
-
-func shouldAck(content string) bool {
-	fields := strings.Fields(strings.ToLower(content))
-	if len(fields) == 0 {
-		return false
-	}
-	switch fields[0] {
-	case "new", "task", "run", "work", "start", "delegate", "escalate", "codex", "claude", "gemini", "ux", "review", "approve", "delete", "remove", "cancel", "refresh", "rebase", "sync":
-		return true
-	default:
-		return false
-	}
-}
-
-func quoteForAck(content string) string {
-	content = strings.TrimSpace(content)
-	if len(content) > 80 {
-		content = content[:80] + "..."
-	}
-	return strconvQuote(content)
-}
-
-func strconvQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
 }
 
 func fatal(err error) {

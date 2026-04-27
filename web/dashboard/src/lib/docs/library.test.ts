@@ -14,14 +14,14 @@ describe('docs library', () => {
       content: '# Task Workflow\n\nHow tasks move through review.\n\n## States\n\n- queued\n\n## States\n\nrepeat'
     },
     {
-      path: '../../../../../docs/matrix.md',
-      content: '# Matrix / Element Adapter\n\nConnect Matrix and Element.'
+      path: '../../../../../docs/chat-commands.md',
+      content: '# Chat Commands\n\nOperate the built-in chat app.\n\n## Messages\n\nreflect on our recent interaction'
     }
   ]);
 
   test('builds stable slugs and metadata from docs paths', () => {
     expect(docsSlugFromPath('../../../../../docs/chat-commands.md')).toBe('chat-commands');
-    expect(docs.map((doc) => doc.slug)).toEqual(['matrix', 'task-workflow']);
+    expect(docs.map((doc) => doc.slug)).toEqual(['chat-commands', 'task-workflow']);
     expect(docs.find((doc) => doc.slug === 'task-workflow')?.summary).toBe(
       'How tasks move through review.'
     );
@@ -36,9 +36,12 @@ describe('docs library', () => {
   });
 
   test('filters across titles, summaries, paths, and content', () => {
-    expect(filterDocs(docs, 'element').map((doc) => doc.slug)).toEqual(['matrix']);
+    expect(filterDocs(docs, 'reflect').map((doc) => doc.slug)).toEqual(['chat-commands']);
     expect(filterDocs(docs, 'review').map((doc) => doc.slug)).toEqual(['task-workflow']);
-    expect(filterDocs(docs, '').map((doc) => doc.slug)).toEqual(['matrix', 'task-workflow']);
+    expect(filterDocs(docs, '').map((doc) => doc.slug)).toEqual([
+      'chat-commands',
+      'task-workflow'
+    ]);
   });
 
   test('finds documents by nested-safe slug', () => {

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
 	cfg := Default()
@@ -46,6 +49,24 @@ func TestDefaultSupervisorIncludesDisabledRemoteAgentTemplate(t *testing.T) {
 	}
 	if agentApp.Restart != "always" {
 		t.Fatalf("agent app restart = %q, want always", agentApp.Restart)
+	}
+}
+
+func TestDefaultSupervisorRunsHomelabdHTTPMode(t *testing.T) {
+	cfg := Default()
+	var homelabdApp *SupervisorAppConfig
+	for i := range cfg.Supervisord.Apps {
+		if cfg.Supervisord.Apps[i].Name == "homelabd" {
+			homelabdApp = &cfg.Supervisord.Apps[i]
+			break
+		}
+	}
+	if homelabdApp == nil {
+		t.Fatal("default supervisor apps missing homelabd")
+	}
+	got := strings.Join(homelabdApp.Args, " ")
+	if got != "run ./cmd/homelabd -mode http" {
+		t.Fatalf("homelabd args = %q, want http mode", got)
 	}
 }
 

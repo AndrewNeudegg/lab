@@ -387,7 +387,7 @@ func (o *Orchestrator) appendChatReply(ctx context.Context, to, message string) 
 func isCasualMessage(message string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(strings.Trim(message, ".,!?")))
 	switch normalized {
-	case "hi", "hello", "hey", "yo", "andrew", "element-bot", "eelement-bot", "ping":
+	case "hi", "hello", "hey", "yo", "andrew", "ping":
 		return true
 	default:
 		return false

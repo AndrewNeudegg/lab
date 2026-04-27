@@ -36,9 +36,9 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   await toc.getByRole('link', { name: 'States' }).click();
   await expect(page).toHaveURL(/#states$/);
 
-  await page.getByRole('searchbox', { name: 'Search documentation' }).fill('matrix');
+  await page.getByRole('searchbox', { name: 'Search documentation' }).fill('operator interface');
   await expect(page.locator('#docs-list a')).toHaveCount(1);
-  await expect(page.locator('#docs-list a')).toContainText('Matrix / Element Adapter');
+  await expect(page.locator('#docs-list a')).toContainText('homelabctl');
   await expectNoHorizontalOverflow(page);
 });
 
@@ -55,8 +55,8 @@ test('docs library remains usable on mobile', async ({ page }) => {
   ).toHaveAttribute('aria-current', 'page');
   await page.getByRole('button', { name: 'Menu' }).click();
 
-  await page.getByRole('searchbox', { name: 'Search documentation' }).fill('matrix');
+  await page.getByRole('searchbox', { name: 'Search documentation' }).fill('operator interface');
   await expect(page.locator('#docs-list a')).toHaveCount(1);
-  await expect(page.locator('#docs-list a')).toContainText('Matrix / Element Adapter');
+  await expect(page.locator('#docs-list a')).toContainText('homelabctl');
   await expectNoHorizontalOverflow(page);
 });

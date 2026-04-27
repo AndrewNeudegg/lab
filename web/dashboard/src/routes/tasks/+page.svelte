@@ -113,6 +113,7 @@
   let events: HomelabdEvent[] = [];
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
+  let refreshStatePromise: Promise<void> | undefined;
   let taskQueueView: TaskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -665,9 +666,13 @@
     scrollMessages();
   };
 
-  const refreshState = async () => {
+  const refreshState = () => {
+    if (refreshStatePromise) {
+      return refreshStatePromise;
+    }
+
     refreshing = true;
-    try {
+    refreshStatePromise = (async () => {
       const [taskResult, approvalResult, eventResult, agentResult] = await Promise.allSettled([
         client.listTasks(),
         client.listApprovals(),
@@ -713,9 +718,12 @@
           await refreshTaskDiff(selectedTaskId);
         }
       }
-    } finally {
+    })().finally(() => {
       refreshing = false;
-    }
+      refreshStatePromise = undefined;
+    });
+
+    return refreshStatePromise;
   };
 
   onMount(() => {

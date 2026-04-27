@@ -123,6 +123,12 @@ If a component does not answer one of those questions, it should not be in the p
 
 Do not rely on color alone. Always show the status text next to the colored indicator.
 
+## Network Resilience
+
+Dashboard API reads are retry-tolerant for commute-grade connections. The shared web client retries safe `GET` and `HEAD` requests after transient fetch failures, `408`, `429`, and `5xx` responses, with a short backoff. Unsafe writes such as chat commands, task creation, cancellation, and retries are not automatically replayed because they can change server state.
+
+The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the next manual or scheduled sync waits for the same result instead of starting another batch. Keep existing task data visible during a failed refresh so operators can continue reading the last known state.
+
 ## Task Supervisor
 
 `homelabd` owns task liveness; the UI should not make the operator babysit worker state.

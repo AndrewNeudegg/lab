@@ -156,11 +156,11 @@ func TestRunnerStreamsOutputChunks(t *testing.T) {
 	}
 }
 
-func TestRunTimeoutDefaultsToFiveHoursAndAllowsOverrides(t *testing.T) {
-	if got := runTimeout(config.ExternalAgentConfig{}); got != 5*time.Hour {
+func TestTimeoutForConfigDefaultsToFiveHoursAndAllowsOverrides(t *testing.T) {
+	if got := timeoutForConfig(config.ExternalAgentConfig{}); got != 5*time.Hour {
 		t.Fatalf("default timeout = %s, want 5h", got)
 	}
-	if got := runTimeout(config.ExternalAgentConfig{TimeoutSeconds: 7}); got != 7*time.Second {
+	if got := timeoutForConfig(config.ExternalAgentConfig{TimeoutSeconds: 7}); got != 7*time.Second {
 		t.Fatalf("explicit timeout = %s, want 7s", got)
 	}
 }

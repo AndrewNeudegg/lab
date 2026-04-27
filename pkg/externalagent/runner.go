@@ -113,7 +113,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if runID == "" {
 		runID = id.New("external_run")
 	}
-	timeout := runTimeout(cfg)
+	timeout := timeoutForConfig(cfg)
 	childCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	started := time.Now().UTC()
@@ -160,12 +160,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return result, nil
 }
 
-func runTimeout(cfg config.ExternalAgentConfig) time.Duration {
+func timeoutForConfig(cfg config.ExternalAgentConfig) time.Duration {
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = time.Duration(config.DefaultExternalAgentTimeoutSeconds) * time.Second
+	if timeout > 0 {
+		return timeout
 	}
-	return timeout
+	return time.Duration(config.DefaultExternalAgentTimeoutSeconds) * time.Second
 }
 
 type outputTrace struct {

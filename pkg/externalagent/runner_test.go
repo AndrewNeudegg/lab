@@ -163,6 +163,15 @@ func TestRunnerStreamsOutputChunks(t *testing.T) {
 	}
 }
 
+func TestTimeoutForConfigDefaultsToFiveHoursAndAllowsOverrides(t *testing.T) {
+	if got := timeoutForConfig(config.ExternalAgentConfig{}); got != 5*time.Hour {
+		t.Fatalf("default timeout = %s, want 5h", got)
+	}
+	if got := timeoutForConfig(config.ExternalAgentConfig{TimeoutSeconds: 7}); got != 7*time.Second {
+		t.Fatalf("explicit timeout = %s, want 7s", got)
+	}
+}
+
 func TestRunnerCancelsRunningProcess(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once

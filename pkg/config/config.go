@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const DefaultExternalAgentTimeoutSeconds = 5 * 60 * 60
+
 type Config struct {
 	AgentName       string                         `json:"agent_name"`
 	DefaultProvider string                         `json:"default_provider"`
@@ -165,8 +167,6 @@ type ExternalAgentConfig struct {
 	TimeoutSeconds int      `json:"timeout_seconds"`
 	Description    string   `json:"description,omitempty"`
 }
-
-const DefaultExternalAgentTimeoutSeconds = 5 * 60 * 60
 
 func Load(path string) (Config, error) {
 	cfg := Default()

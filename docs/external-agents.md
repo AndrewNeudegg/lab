@@ -54,11 +54,14 @@ the command, args, timeout, and description:
       "enabled": true,
       "command": "codex",
       "args": ["exec", "--skip-git-repo-check"],
-      "timeout_seconds": 900
+      "timeout_seconds": 18000
     }
   }
 }
 ```
+
+The default external-agent timeout is `18000` seconds, or five hours. Set
+`timeout_seconds` per backend to shorten or extend a specific CLI worker.
 
 ## Safety Model
 

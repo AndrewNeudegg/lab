@@ -25,20 +25,38 @@ describe('tasks page selection rendering', () => {
   test('changes queue filters through explicit selection normalization', () => {
     expect(pageSource).toContain('const setTaskFilter = (filter: TaskFilter) =>');
     expect(pageSource).toContain('const setQueueFilter = (filter: TaskQueueFilter) =>');
-    expect(pageSource).toContain('selectedTaskId = selectTaskForQueue');
+    expect(pageSource).toContain('const nextTaskId = selectTaskForQueue');
+    expect(pageSource).toContain('selectedTaskId = nextTaskId');
     expect(pageSource).toContain('resolveTaskSyncSelection');
     expect(pageSource).toContain('selectedTaskId = syncSelection.selectedTaskId');
-    expect(pageSource).toContain('taskQueueView.selectedTaskId !== selectedTaskId');
     expect(pageSource).toContain('on:click={() => setTaskFilter(filter.id as TaskFilter)}');
     expect(pageSource).toContain('on:click={() => setQueueFilter(option.id)}');
     expect(pageSource).not.toContain('on:click={() => (taskFilter = filter.id as TaskFilter)}');
   });
 
+  test('does not write selected task state from the derived queue view', () => {
+    expect(pageSource).not.toContain('taskQueueView.selectedTaskId !== selectedTaskId');
+    expect(pageSource).not.toContain('selectedTaskId = taskQueueView.selectedTaskId');
+  });
+
   test('keeps manual sync responsive while refreshing selected task details', () => {
+    expect(pageSource).toContain("let taskFilter: TaskFilter = 'all'");
     expect(pageSource).toContain('let refreshStateSequence = 0');
+    expect(pageSource).toContain('const withRefreshTimeout');
+    expect(pageSource).toContain("const taskRequest = withRefreshTimeout('Tasks', client.listTasks())");
+    expect(pageSource).toContain("collectionFromResponse<HomelabdTask>('Tasks', 'tasks'");
+    expect(pageSource).toContain('let taskLoadError =');
+    expect(pageSource).toContain('void applySecondaryRefresh');
     expect(pageSource).toContain('void refreshSelectedTaskDetails(syncSelection.selectedTaskId');
     expect(pageSource).toContain('if (sequence === refreshStateSequence)');
     expect(pageSource).toContain('lastRefresh = syncTimeLabel();');
+  });
+
+  test('shows task sync failures in the queue pane instead of only the command panel', () => {
+    expect(pageSource).toContain('aria-label="Task sync status"');
+    expect(pageSource).toContain('Task sync failed');
+    expect(pageSource).toContain('{emptyTaskListMessage}');
+    expect(pageSource).toContain('taskListEmptyMessage');
   });
 
   test('does not hide the queue when a task is selected', () => {

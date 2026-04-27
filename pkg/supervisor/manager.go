@@ -209,6 +209,14 @@ func (m *Manager) StartApp(ctx context.Context, name string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	if app.status.State == StateStopping {
+		app.status.Desired = StateRunning
+		app.status.Message = "already stopping"
+		app.status.UpdatedAt = time.Now().UTC()
+		_ = m.saveStateLocked()
+		m.mu.Unlock()
+		return nil
+	}
 	if app.cfg.Command == "" {
 		m.mu.Unlock()
 		return fmt.Errorf("app %q has no command", name)
@@ -307,7 +315,7 @@ func (m *Manager) stopApp(ctx context.Context, name, desired string) error {
 		return fmt.Errorf("unknown app %q", name)
 	}
 	app.status.Desired = desired
-	if app.status.State == StateStopped || app.status.State == StateFailed {
+	if (app.status.State == StateStopped || app.status.State == StateFailed) && app.status.PID <= 0 {
 		app.status.State = StateStopped
 		app.status.Message = "stopped"
 		app.status.UpdatedAt = time.Now().UTC()
@@ -324,7 +332,12 @@ func (m *Manager) stopApp(ctx context.Context, name, desired string) error {
 	m.mu.Unlock()
 
 	if cmd == nil || cmd.Process == nil {
-		return m.stopAdoptedProcess(ctx, app.status.PID, stopped, timeout)
+		pid := app.status.PID
+		if err := m.stopAdoptedProcess(ctx, pid, stopped, timeout); err != nil {
+			return err
+		}
+		m.markAppStopped(name, pid, "stopped")
+		return nil
 	}
 	pgid, err := syscall.Getpgid(cmd.Process.Pid)
 	if err == nil {
@@ -348,6 +361,29 @@ func (m *Manager) stopApp(ctx context.Context, name, desired string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (m *Manager) markAppStopped(name string, pid int, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	app := m.apps[name]
+	if app == nil {
+		return
+	}
+	if pid > 0 && app.status.PID != pid {
+		return
+	}
+	stoppedAt := time.Now().UTC()
+	app.status.State = StateStopped
+	app.status.PID = 0
+	app.status.Message = message
+	app.status.StoppedAt = &stoppedAt
+	app.status.UpdatedAt = stoppedAt
+	if app.stopped != nil {
+		close(app.stopped)
+		app.stopped = nil
+	}
+	_ = m.saveStateLocked()
 }
 
 func (m *Manager) stopAdoptedProcess(ctx context.Context, pid int, stopped <-chan struct{}, timeout time.Duration) error {
@@ -685,6 +721,7 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 		url  string
 	}
 	var targets []target
+	var toRestart []string
 	for name, app := range m.apps {
 		if app.status.State == StateRunning && app.cfg.HealthURL != "" {
 			targets = append(targets, target{name: name, url: app.cfg.HealthURL})
@@ -704,21 +741,27 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 		if app := m.apps[t.name]; app != nil {
 			app.status.LastHealth = status
 			app.status.UpdatedAt = time.Now().UTC()
-			if status == "unreachable" && app.status.Desired == StateRunning && app.status.State == StateRunning && app.cfg.Restart != "never" {
-				app.status.State = StateFailed
-				app.status.PID = 0
-				app.status.Message = "health check unreachable; restarting"
+			if status == "unreachable" &&
+				app.status.Desired == StateRunning &&
+				app.status.State == StateRunning &&
+				app.status.PID > 0 &&
+				app.cfg.Restart != "never" {
+				app.status.State = StateStopping
+				app.status.Message = "health check unreachable; restarting tracked process"
 				app.status.Restarts++
 				_ = m.saveStateLocked()
-				go func(name string) {
-					m.logger.Warn("recovering app because health check is unreachable", "app", name)
-					if err := m.StartApp(context.Background(), name); err != nil {
-						m.logger.Error("health recovery failed", "app", name, "error", err)
-					}
-				}(t.name)
+				toRestart = append(toRestart, t.name)
 			}
 		}
 		m.mu.Unlock()
+	}
+	for _, name := range toRestart {
+		go func(name string) {
+			m.logger.Warn("restarting app because health check is unreachable", "app", name)
+			if err := m.RestartApp(context.Background(), name); err != nil {
+				m.logger.Error("health recovery failed", "app", name, "error", err)
+			}
+		}(name)
 	}
 }
 

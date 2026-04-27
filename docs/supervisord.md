@@ -24,9 +24,9 @@ For the local development stack, prefer the wrapper commands:
 ./run.sh stack-stop
 ```
 
-`stack-start` starts `supervisord`, adopts any already-running `healthd`, `homelabd`, or dashboard process, then starts any missing apps. `stack-restart` gracefully stops apps in reverse order, restarts `supervisord`, then starts apps in dependency order. `stack-stop` gracefully stops the apps and then stops `supervisord`.
+`stack-start` starts `supervisord`, adopts any already-running `healthd`, `homelabd`, or dashboard process, then starts any missing apps. Dashboard adoption first looks for the process listening on port `5173`, which lets a running UI be brought back under supervisor control without stopping the terminal page. `stack-restart` gracefully stops apps in reverse order, restarts `supervisord`, then starts apps in dependency order. `stack-stop` gracefully stops the apps and then stops `supervisord`.
 
-If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`.
+If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app fails its health check, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
 
 ## Configuration
 
@@ -48,7 +48,7 @@ Add supervised apps under `supervisord.apps` in `config.json`:
         "name": "dashboard",
         "type": "web",
         "command": "bun",
-        "args": ["run", "dev", "--", "--host", "0.0.0.0"],
+        "args": ["run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"],
         "working_dir": "web/dashboard",
         "start_order": 30,
         "auto_start": true,
@@ -70,6 +70,8 @@ Restart policies:
 - `never`: do not restart after exit.
 - `on_failure`: restart when the app exits non-zero.
 - `always`: restart after any unexpected exit while desired state is `running`.
+
+The dashboard dev server must use Vite `--strictPort` on port `5173`. If that port is already held by an orphaned process, the supervised dashboard should fail fast instead of silently starting on `5174` or another fallback port that the health check and browser do not use.
 
 ## API
 

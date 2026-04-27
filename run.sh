@@ -65,12 +65,31 @@ post_supervisord() {
     -d "$body" >/dev/null
 }
 
+port_pid() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n 1
+    return
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -n 1
+  fi
+}
+
 process_pid() {
   local name="$1"
+  if [ "$name" = "dashboard" ]; then
+    local pid
+    pid="$(port_pid 5173 || true)"
+    if [ -n "$pid" ]; then
+      echo "$pid"
+      return
+    fi
+  fi
   ps -eo pid=,args= | awk -v name="$name" '
     name == "healthd" && ($0 ~ /\.\/\.bin\/healthd/ || $0 ~ /go run \.\/cmd\/healthd/ || $0 ~ /\/exe\/healthd/) { print $1; exit }
     name == "homelabd" && ($0 ~ /\.\/\.bin\/homelabd/ || $0 ~ /go run \.\/cmd\/homelabd/ || $0 ~ /\/exe\/homelabd/) { print $1; exit }
-    name == "dashboard" && $0 ~ /bun run dev -- --host 0\.0\.0\.0/ { print $1; exit }
+    name == "dashboard" && ($0 ~ /bun run dev -- --host 0\.0\.0\.0/ || $0 ~ /vite dev .*--host[ =]?0\.0\.0\.0/) { print $1; exit }
   '
 }
 

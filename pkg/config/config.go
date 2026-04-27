@@ -318,7 +318,7 @@ func Default() Config {
 					Name:               "dashboard",
 					Type:               "web",
 					Command:            "bun",
-					Args:               []string{"run", "dev", "--", "--host", "0.0.0.0"},
+					Args:               []string{"run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"},
 					WorkingDir:         "web/dashboard",
 					StartOrder:         30,
 					AutoStart:          false,

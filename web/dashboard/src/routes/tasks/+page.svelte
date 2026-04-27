@@ -40,6 +40,7 @@
     type TaskQueueView,
     type WorkerTraceRun
   } from './view-model';
+  import { collectionFromResponse, errorMessage, taskListEmptyMessage } from './sync-model';
 
   type PromptAction = {
     label: string;
@@ -96,11 +97,12 @@
   let contextAcknowledged = false;
   let refreshing = false;
   let error = '';
+  let taskLoadError = '';
   let diffError = '';
   let taskActionLoading = '';
   let diffLoadingTaskId = '';
   let messageId = 0;
-  let taskFilter: TaskFilter = 'attention';
+  let taskFilter: TaskFilter = 'all';
   let queueFilter: TaskQueueFilter = 'all';
   let taskSearch = '';
   let selectedTaskId = '';
@@ -149,7 +151,9 @@
   let selectedWorkdir: HomelabdRemoteAgentWorkdir | undefined;
   let queueOptions: { id: TaskQueueFilter; label: string; count: number; detail: string }[] = [];
   let selectedContextLabel = 'Local homelabd workspace';
+  let emptyTaskListMessage = '';
   let refreshStateSequence = 0;
+  const refreshTimeoutMs = 7000;
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -364,6 +368,24 @@
     return [...commands].slice(0, 5);
   };
 
+  const withRefreshTimeout = async <T,>(label: string, request: Promise<T>): Promise<T> =>
+    new Promise((resolve, reject) => {
+      const timer = window.setTimeout(
+        () => reject(new Error(`${label} timed out after ${refreshTimeoutMs / 1000}s.`)),
+        refreshTimeoutMs
+      );
+      request.then(
+        (value) => {
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          window.clearTimeout(timer);
+          reject(err);
+        }
+      );
+    });
+
   $: taskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -373,9 +395,6 @@
     taskSearch,
     selectedTaskId
   });
-  $: if (taskQueueView.selectedTaskId !== selectedTaskId) {
-    selectedTaskId = taskQueueView.selectedTaskId;
-  }
   $: pendingApprovalItems = taskQueueView.pendingApprovalItems;
   $: activeTaskItems = taskQueueView.activeTaskItems;
   $: attentionTaskItems = taskQueueView.attentionTaskItems;
@@ -395,12 +414,12 @@
   }
   $: currentDiffFile = currentDiffFiles.find((file) => diffFileKey(file) === selectedDiffFilePath);
   $: currentSplitRows = buildSplitRows(currentDiffFile);
-  $: if (currentTask?.id && currentTask.id !== loadedRunsTaskId) {
-    void refreshSelectedTaskDetails(currentTask.id, {
-      resetDiffSelection: true,
-      task: currentTask
-    });
-  }
+  $: emptyTaskListMessage = taskListEmptyMessage({
+    apiBase,
+    refreshing,
+    taskLoadError,
+    totalTasks: tasks.length
+  });
   $: if (!currentTask?.id && (loadedRunsTaskId || loadedDiffTaskId || selectedDiffFilePath)) {
     loadedRunsTaskId = '';
     loadedDiffTaskId = '';
@@ -530,10 +549,10 @@
     diffLoadingTaskId = taskId;
     diffError = '';
     try {
-      const result = await client.getTaskDiff(taskId);
+      const result = await withRefreshTimeout('Task diff', client.getTaskDiff(taskId));
       taskDiffs = { ...taskDiffs, [taskId]: result };
     } catch (err) {
-      diffError = err instanceof Error ? err.message : 'Unable to load task diff.';
+      diffError = errorMessage(err, 'Unable to load task diff.');
     } finally {
       if (diffLoadingTaskId === taskId) {
         diffLoadingTaskId = '';
@@ -546,10 +565,10 @@
       return;
     }
     try {
-      const result = await client.listTaskRuns(taskId);
+      const result = await withRefreshTimeout('Worker runs', client.listTaskRuns(taskId));
       taskRuns = { ...taskRuns, [taskId]: result.runs };
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to load worker runs.';
+      error = errorMessage(err, 'Unable to load worker runs.');
     }
   };
 
@@ -578,6 +597,77 @@
     }
 
     await Promise.allSettled(detailTasks);
+  };
+
+  const applySecondaryRefresh = async (
+    sequence: number,
+    requests: {
+      approvals: Promise<unknown>;
+      events: Promise<unknown>;
+      agents: Promise<unknown>;
+    },
+    baseTasks: HomelabdTask[],
+    initialErrors: string[] = []
+  ) => {
+    const refreshErrors = [...initialErrors];
+    let nextApprovals = approvals;
+    const [approvalResult, eventResult, agentResult] = await Promise.allSettled([
+      requests.approvals,
+      requests.events,
+      requests.agents
+    ]);
+    if (sequence !== refreshStateSequence) {
+      return;
+    }
+
+    if (approvalResult.status === 'fulfilled') {
+      try {
+        const approvalItems = collectionFromResponse<HomelabdApproval>(
+          'Approvals',
+          'approvals',
+          approvalResult.value
+        );
+        nextApprovals = [...approvalItems].sort(
+          (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+        );
+        approvals = nextApprovals;
+      } catch (err) {
+        refreshErrors.push(errorMessage(err, 'Unable to load approvals.'));
+      }
+    } else {
+      refreshErrors.push(errorMessage(approvalResult.reason, 'Unable to load approvals.'));
+    }
+
+    if (eventResult.status === 'fulfilled') {
+      try {
+        events = collectionFromResponse<HomelabdEvent>('Events', 'events', eventResult.value);
+      } catch (err) {
+        refreshErrors.push(errorMessage(err, 'Unable to load events.'));
+      }
+    } else {
+      refreshErrors.push(errorMessage(eventResult.reason, 'Unable to load events.'));
+    }
+
+    if (agentResult.status === 'fulfilled') {
+      try {
+        agents = collectionFromResponse<HomelabdRemoteAgent>('Agents', 'agents', agentResult.value);
+      } catch (err) {
+        refreshErrors.push(errorMessage(err, 'Unable to load agents.'));
+      }
+    } else {
+      refreshErrors.push(errorMessage(agentResult.reason, 'Unable to load agents.'));
+    }
+
+    const syncSelection = resolveTaskSyncSelection({
+      tasks: baseTasks,
+      approvals: nextApprovals,
+      taskFilter,
+      queueFilter,
+      taskSearch,
+      selectedTaskId
+    });
+    selectedTaskId = syncSelection.selectedTaskId;
+    error = refreshErrors.join(' ');
   };
 
   const taskTone = (task: HomelabdTask) => {
@@ -719,63 +809,41 @@
   const refreshState = async () => {
     const sequence = (refreshStateSequence += 1);
     refreshing = true;
+    const refreshErrors: string[] = [];
+    let nextTasks = tasks;
+    const taskRequest = withRefreshTimeout('Tasks', client.listTasks());
+    const approvalRequest = withRefreshTimeout('Approvals', client.listApprovals());
+    const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
+    const agentRequest = withRefreshTimeout('Agents', client.listAgents());
     try {
-      const [taskResult, approvalResult, eventResult, agentResult] = await Promise.allSettled([
-        client.listTasks(),
-        client.listApprovals(),
-        client.listEvents({ limit: 500 }),
-        client.listAgents()
-      ]);
+      const taskResult = await Promise.resolve(taskRequest).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason) => ({ status: 'rejected' as const, reason })
+      );
       if (sequence !== refreshStateSequence) {
+        void Promise.allSettled([approvalRequest, eventRequest, agentRequest]);
         return;
       }
 
-      const refreshErrors: string[] = [];
-      let nextTasks = tasks;
-      let nextApprovals = approvals;
       if (taskResult.status === 'fulfilled') {
-        nextTasks = [...taskResult.value.tasks].sort(
-          (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
-        );
-        tasks = nextTasks;
+        try {
+          nextTasks = collectionFromResponse<HomelabdTask>('Tasks', 'tasks', taskResult.value).sort(
+            (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+          );
+          tasks = nextTasks;
+          taskLoadError = '';
+        } catch (err) {
+          taskLoadError = errorMessage(err, 'Unable to load tasks.');
+          refreshErrors.push(taskLoadError);
+        }
       } else {
-        refreshErrors.push(
-          taskResult.reason instanceof Error ? taskResult.reason.message : 'Unable to load tasks.'
-        );
-      }
-
-      if (approvalResult.status === 'fulfilled') {
-        nextApprovals = [...approvalResult.value.approvals].sort(
-          (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
-        );
-        approvals = nextApprovals;
-      } else {
-        refreshErrors.push(
-          approvalResult.reason instanceof Error
-            ? approvalResult.reason.message
-            : 'Unable to load approvals.'
-        );
-      }
-
-      if (eventResult.status === 'fulfilled') {
-        events = eventResult.value.events;
-      } else {
-        refreshErrors.push(
-          eventResult.reason instanceof Error ? eventResult.reason.message : 'Unable to load events.'
-        );
-      }
-
-      if (agentResult.status === 'fulfilled') {
-        agents = agentResult.value.agents;
-      } else {
-        refreshErrors.push(
-          agentResult.reason instanceof Error ? agentResult.reason.message : 'Unable to load agents.'
-        );
+        taskLoadError = errorMessage(taskResult.reason, 'Unable to load tasks.');
+        refreshErrors.push(taskLoadError);
       }
 
       const syncSelection = resolveTaskSyncSelection({
         tasks: nextTasks,
-        approvals: nextApprovals,
+        approvals,
         taskFilter,
         queueFilter,
         taskSearch,
@@ -789,6 +857,16 @@
       }
       error = refreshErrors.join(' ');
       lastRefresh = syncTimeLabel();
+      void applySecondaryRefresh(
+        sequence,
+        {
+          approvals: approvalRequest,
+          events: eventRequest,
+          agents: agentRequest
+        },
+        nextTasks,
+        refreshErrors
+      );
       if (syncSelection.shouldLoadRuns) {
         void refreshSelectedTaskDetails(syncSelection.selectedTaskId, {
           force: true,
@@ -832,7 +910,7 @@
       addMessage('assistant', response.reply || 'No reply returned.', response.source || 'program');
       await refreshState();
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to reach homelabd.';
+      error = errorMessage(err, 'Unable to reach homelabd.');
     } finally {
       loading = false;
       if (commandPanelOpen) {
@@ -871,7 +949,7 @@
       addMessage('assistant', response.reply || 'Task created.', 'program');
       await refreshState();
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to create task.';
+      error = errorMessage(err, 'Unable to create task.');
     } finally {
       creatingTask = false;
     }
@@ -886,6 +964,28 @@
       force: true,
       resetDiffSelection: true,
       task: tasks.find((task) => task.id === id)
+    });
+  };
+
+  const syncSelectionForCurrentFilters = () => {
+    const nextTaskId = selectTaskForQueue(
+      tasks,
+      approvals,
+      taskFilter,
+      queueFilter,
+      taskSearch,
+      selectedTaskId
+    );
+    selectedTaskId = nextTaskId;
+    if (!nextTaskId) {
+      loadedRunsTaskId = '';
+      loadedDiffTaskId = '';
+      selectedDiffFilePath = '';
+      return;
+    }
+    void refreshSelectedTaskDetails(nextTaskId, {
+      resetDiffSelection: true,
+      task: tasks.find((task) => task.id === nextTaskId)
     });
   };
 
@@ -908,7 +1008,7 @@
         task: tasks.find((task) => task.id === taskId)
       });
     } catch (err) {
-      error = err instanceof Error ? err.message : `Unable to ${action} task.`;
+      error = errorMessage(err, `Unable to ${action} task.`);
     } finally {
       taskActionLoading = '';
     }
@@ -916,26 +1016,17 @@
 
   const setTaskFilter = (filter: TaskFilter) => {
     taskFilter = filter;
-    selectedTaskId = selectTaskForQueue(
-      tasks,
-      approvals,
-      filter,
-      queueFilter,
-      taskSearch,
-      selectedTaskId
-    );
+    syncSelectionForCurrentFilters();
   };
 
   const setQueueFilter = (filter: TaskQueueFilter) => {
     queueFilter = filter;
-    selectedTaskId = selectTaskForQueue(
-      tasks,
-      approvals,
-      taskFilter,
-      filter,
-      taskSearch,
-      selectedTaskId
-    );
+    syncSelectionForCurrentFilters();
+  };
+
+  const handleTaskSearchInput = (event: Event) => {
+    taskSearch = (event.currentTarget as HTMLInputElement).value;
+    syncSelectionForCurrentFilters();
   };
 
   const handleAgentChange = () => {
@@ -1029,7 +1120,7 @@
       </section>
 
       <label class="hidden" for="task-search">Search tasks</label>
-      <input id="task-search" bind:value={taskSearch} placeholder="Search tasks…" />
+      <input id="task-search" bind:value={taskSearch} placeholder="Search tasks…" on:input={handleTaskSearchInput} />
 
       <section class="target-create" aria-label="Create targeted task">
         <header>
@@ -1110,9 +1201,16 @@
         </section>
       {/if}
 
+      {#if taskLoadError}
+        <section class="sync-alert" role="alert" aria-label="Task sync status">
+          <strong>Task sync failed</strong>
+          <span>{taskLoadError}</span>
+        </section>
+      {/if}
+
       <section class="task-list" aria-label="Task list">
         {#if visibleTaskItems.length === 0}
-          <p class="empty">No matching tasks.</p>
+          <p class="empty">{emptyTaskListMessage}</p>
         {:else}
           {#each visibleTaskItems as task}
             <button
@@ -2048,6 +2146,26 @@
     margin: 0.2rem 0 0.5rem;
     color: #92400e;
     font-size: 0.78rem;
+    line-height: 1.35;
+  }
+
+  .sync-alert {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.7rem;
+    border: 1px solid #fecaca;
+    border-radius: 0.65rem;
+    color: #7f1d1d;
+    background: #fef2f2;
+  }
+
+  .sync-alert strong {
+    font-size: 0.82rem;
+  }
+
+  .sync-alert span {
+    overflow-wrap: anywhere;
+    font-size: 0.76rem;
     line-height: 1.35;
   }
 

@@ -3,8 +3,8 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -13,6 +13,12 @@ import (
 
 	"github.com/andrewneudegg/lab/pkg/config"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestManagerStartsStopsAndRestartsApp(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "app.sh")
@@ -55,20 +61,23 @@ func TestManagerStartsStopsAndRestartsApp(t *testing.T) {
 
 func TestManagerPushesHealthdHeartbeat(t *testing.T) {
 	heartbeat := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+	manager := NewManager(config.SupervisordConfig{
+		HealthdURL:               "http://healthd.test",
+		HeartbeatIntervalSeconds: 1,
+	}, nil)
+	manager.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/healthd/processes/heartbeat" {
 			t.Fatalf("path = %q", req.URL.Path)
 		}
 		heartbeat <- struct{}{}
-		rw.WriteHeader(http.StatusAccepted)
-	}))
-	defer server.Close()
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Status:     "202 Accepted",
+			Body:       http.NoBody,
+		}, nil
+	})}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manager := NewManager(config.SupervisordConfig{
-		HealthdURL:               server.URL,
-		HeartbeatIntervalSeconds: 1,
-	}, nil)
 
 	manager.Start(ctx)
 	select {
@@ -278,6 +287,77 @@ func TestManagerAdoptsExistingProcessByPID(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("pid %d should be stopped", process.Pid)
+	}
+}
+
+func TestManagerHealthRecoveryRestartsTrackedProcessGroup(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'sleep 1; exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		ShutdownTimeoutSeconds: 2,
+		Apps: []config.SupervisorAppConfig{{
+			Name:               "dashboard",
+			Type:               "web",
+			Command:            script,
+			Restart:            "on_failure",
+			HealthURL:          "http://dashboard.test/chat",
+			ShutdownTimeoutSec: 2,
+		}},
+	}, nil)
+	manager.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("health check failed")
+	})}
+
+	if err := manager.StartApp(context.Background(), "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	first := waitForAppState(t, manager, "dashboard", StateRunning)
+	if first.PID == 0 {
+		t.Fatal("dashboard did not start")
+	}
+
+	manager.checkAppHealth(context.Background())
+	restarting := manager.Snapshot().Apps[0]
+	if restarting.State != StateStopping || restarting.PID != first.PID {
+		t.Fatalf("status = %#v, want health recovery to keep tracked pid while stopping", restarting)
+	}
+	recovered := waitForAppState(t, manager, "dashboard", StateRunning)
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "dashboard") })
+	if recovered.PID == 0 || recovered.PID == first.PID {
+		t.Fatalf("status = %#v, want restarted dashboard with a new pid", recovered)
+	}
+	if processAlive(first.PID) {
+		t.Fatalf("old dashboard pid %d should have been stopped before restart", first.PID)
+	}
+}
+
+func TestManagerStartAppDoesNotLaunchSecondProcessWhileStopping(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		Apps: []config.SupervisorAppConfig{{
+			Name:    "dashboard",
+			Type:    "web",
+			Command: script,
+			Restart: "on_failure",
+		}},
+	}, nil)
+	manager.mu.Lock()
+	manager.apps["dashboard"].status.State = StateStopping
+	manager.apps["dashboard"].status.Desired = StateRunning
+	manager.apps["dashboard"].status.PID = 12345
+	manager.mu.Unlock()
+
+	if err := manager.StartApp(context.Background(), "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	status := manager.Snapshot().Apps[0]
+	if status.State != StateStopping || status.PID != 12345 || status.Message != "already stopping" {
+		t.Fatalf("status = %#v, want no second process while stopping", status)
 	}
 }
 

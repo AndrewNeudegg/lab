@@ -69,6 +69,13 @@ func TestRunnerRejectsMissingWorkspaceBeforeExecuting(t *testing.T) {
 	}
 }
 
+func TestRunnerDefaultsUnsetTimeoutToFiveHours(t *testing.T) {
+	got := timeoutForConfig(config.ExternalAgentConfig{})
+	if got != 5*time.Hour {
+		t.Fatalf("timeout = %s, want 5h", got)
+	}
+}
+
 func TestRunnerReturnsProcessFailureAndOutput(t *testing.T) {
 	workspace := t.TempDir()
 	runner := NewRunner(map[string]config.ExternalAgentConfig{

@@ -53,6 +53,21 @@ const remoteTask = (
   }
 });
 
+const graphTask = (
+  id: string,
+  status: string,
+  updatedMinute: string,
+  phase: string,
+  parentID = '',
+  blockedBy: string[] = []
+): HomelabdTask => ({
+  ...task(id, status, updatedMinute),
+  graph_phase: phase,
+  parent_id: parentID || undefined,
+  blocked_by: blockedBy.length ? blockedBy : undefined,
+  depends_on: blockedBy.length ? blockedBy : undefined
+});
+
 const approval = (id: string, taskID?: string): HomelabdApproval => ({
   id,
   task_id: taskID,
@@ -226,6 +241,43 @@ describe('task queue view model', () => {
 
     expect(result.visibleTaskItems.map((item) => item.id)).toEqual(['task_desk']);
     expect(result.currentTask?.target?.agent_id).toBe('desk');
+  });
+
+  test('leaves waiting task graph phases out of the needs-action queue', () => {
+    const root = graphTask('task_root', 'blocked', '06', 'root');
+    const inspect = graphTask('task_inspect', 'queued', '05', 'inspect', root.id);
+    const design = graphTask('task_design', 'blocked', '04', 'design', root.id, [inspect.id]);
+    const blockedFailure = graphTask('task_failed', 'blocked', '03', 'implement', root.id);
+
+    const attention = createTaskQueueView({
+      tasks: [root, inspect, design, blockedFailure],
+      approvals: [],
+      events: [],
+      taskFilter: 'attention',
+      queueFilter: 'all',
+      taskSearch: '',
+      selectedTaskId: ''
+    });
+
+    expect(attention.attentionTaskItems.map((item) => item.id)).toEqual(['task_failed']);
+    expect(attention.visibleTaskItems.map((item) => item.id)).toEqual(['task_failed']);
+
+    const all = createTaskQueueView({
+      tasks: [root, inspect, design, blockedFailure],
+      approvals: [],
+      events: [],
+      taskFilter: 'all',
+      queueFilter: 'all',
+      taskSearch: '',
+      selectedTaskId: ''
+    });
+
+    expect(all.visibleTaskItems.map((item) => item.id)).toEqual([
+      'task_root',
+      'task_inspect',
+      'task_design',
+      'task_failed'
+    ]);
   });
 });
 

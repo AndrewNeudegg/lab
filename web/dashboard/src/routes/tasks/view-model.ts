@@ -1,5 +1,6 @@
 import {
   pendingActionableApprovals,
+  taskHasActionableApproval,
   taskIsActive,
   taskNeedsQueueAction
 } from '@homelab/shared';
@@ -82,6 +83,24 @@ const taskMatchesQueue = (task: HomelabdTask, queueFilter: TaskQueueFilter) => {
   return mode === 'remote' && task.target?.agent_id === agentID;
 };
 
+const taskIsGraphParent = (task: HomelabdTask) => task.graph_phase === 'root' && !task.parent_id;
+
+const taskIsBlockedByGraphDependency = (task: HomelabdTask) =>
+  task.status === 'blocked' &&
+  Boolean(task.parent_id) &&
+  Boolean(task.graph_phase) &&
+  Boolean(task.blocked_by?.length);
+
+const taskNeedsDashboardAttention = (task: HomelabdTask, approvals: HomelabdApproval[]) => {
+  if (taskHasActionableApproval(task, approvals)) {
+    return true;
+  }
+  if (taskIsGraphParent(task) || taskIsBlockedByGraphDependency(task)) {
+    return false;
+  }
+  return taskNeedsQueueAction(task, approvals);
+};
+
 const visibleTasksForFilter = (
   tasks: HomelabdTask[],
   approvals: HomelabdApproval[],
@@ -92,7 +111,7 @@ const visibleTasksForFilter = (
   const queueTasks = tasks.filter((task) => taskMatchesQueue(task, queueFilter));
   const filtered =
     taskFilter === 'attention'
-      ? queueTasks.filter((task) => taskNeedsQueueAction(task, approvals))
+      ? queueTasks.filter((task) => taskNeedsDashboardAttention(task, approvals))
       : taskFilter === 'active'
         ? queueTasks.filter(taskIsActive)
         : queueTasks;
@@ -226,7 +245,7 @@ export const createTaskQueueView = ({
   selectedTaskId
 }: TaskQueueViewInput): TaskQueueView => {
   const pendingApprovalItems = pendingActionableApprovals(approvals, tasks);
-  const attentionTaskItems = tasks.filter((task) => taskNeedsQueueAction(task, approvals));
+  const attentionTaskItems = tasks.filter((task) => taskNeedsDashboardAttention(task, approvals));
   const activeTaskItems = tasks.filter(taskIsActive);
   const visibleTaskItems = visibleTasksForFilter(tasks, approvals, taskFilter, queueFilter, taskSearch);
   const normalizedSelectedTaskId = selectTaskForQueue(

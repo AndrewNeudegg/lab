@@ -2482,7 +2482,8 @@
 
   .split-diff,
   .unified-diff {
-    min-width: 46rem;
+    width: 100%;
+    min-width: 0;
     color: var(--diff-text);
     font-family:
       "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
@@ -2491,7 +2492,7 @@
   }
 
   .split-diff {
-    min-width: 62rem;
+    min-width: 0;
   }
 
   .split-row,
@@ -2522,7 +2523,6 @@
   .diff-row code {
     min-width: 0;
     padding: 0.18rem 0.55rem;
-    white-space: pre;
   }
 
   .line-no {
@@ -2530,11 +2530,14 @@
     background: var(--diff-bg-muted);
     text-align: right;
     user-select: none;
+    white-space: nowrap;
   }
 
   .split-row code,
   .diff-row code {
     overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
   }
 
   .split-row code.blank {

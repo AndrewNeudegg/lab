@@ -101,7 +101,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
 - Remote execution context: shown as a warning-colored block for remote tasks. It must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
-- Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, and inline changed-text highlights. Use this before review, conflict-resolution delegation, or approval.
+- Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. Use this before review, conflict-resolution delegation, or approval.
 - Result block: shown only when a task has a stored result.
 - Worker trace: groups external worker output by run id, combines live `agent.delegate.output`
   events with completed artifacts from `data/runs`, and exposes direct stop/retry controls.

@@ -18,4 +18,10 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain("localStorage.setItem('homelabd.dashboard.theme', 'dark')");
     expect(scriptSource).toContain('diff panel kept light-mode backgrounds in dark mode');
   });
+
+  test('checks split diff line wrapping in the browser', () => {
+    expect(scriptSource).toContain('split diff code cells do not preserve and wrap whitespace');
+    expect(scriptSource).toContain('long split diff line did not wrap to multiple visual lines');
+    expect(scriptSource).toContain('split diff still creates horizontal overflow');
+  });
 });

@@ -350,6 +350,46 @@ const run = async () => {
       diffSplit
     );
 
+    const diffWrap = await evalJS(
+      cdp,
+      `(() => {
+        const scroll = document.querySelector('.diff-scroll[data-mode="split"]');
+        const diff = document.querySelector('[aria-label="Split diff"]');
+        const code = document.querySelector('[aria-label="Split diff"] .split-row:not(.full) code:not(.blank)');
+        if (!scroll || !diff || !code) {
+          return { available: false };
+        }
+        const original = code.innerHTML;
+        code.textContent = '+' + 'const_wrapped_diff_line_'.repeat(18);
+        return new Promise((resolve) => requestAnimationFrame(() => {
+          const style = getComputedStyle(code);
+          const diffStyle = getComputedStyle(diff);
+          const codeHeight = code.getBoundingClientRect().height;
+          const lineHeight = Number.parseFloat(style.lineHeight);
+          const result = {
+            available: true,
+            whiteSpace: style.whiteSpace,
+            overflowWrap: style.overflowWrap,
+            diffMinWidth: diffStyle.minWidth,
+            codeHeight,
+            lineHeight,
+            scrollWidth: Math.round(scroll.scrollWidth),
+            clientWidth: Math.round(scroll.clientWidth)
+          };
+          code.innerHTML = original;
+          resolve(result);
+        }));
+      })()`
+    );
+    if (diffInitial.fileButtons.length > 0) {
+      assert(diffWrap.available === true, 'split diff code cell was unavailable for wrap check', diffWrap);
+      assert(diffWrap.whiteSpace === 'pre-wrap', 'split diff code cells do not preserve and wrap whitespace', diffWrap);
+      assert(diffWrap.overflowWrap === 'anywhere', 'split diff code cells do not break long tokens', diffWrap);
+      assert(diffWrap.diffMinWidth === '0px', 'split diff keeps a fixed minimum width', diffWrap);
+      assert(diffWrap.codeHeight > diffWrap.lineHeight * 1.8, 'long split diff line did not wrap to multiple visual lines', diffWrap);
+      assert(diffWrap.scrollWidth <= diffWrap.clientWidth + 2, 'split diff still creates horizontal overflow', diffWrap);
+    }
+
     const diffDark = await evalJS(
       cdp,
       `(localStorage.setItem('homelabd.dashboard.theme', 'dark'),

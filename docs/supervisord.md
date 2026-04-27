@@ -28,6 +28,8 @@ For the local development stack, prefer the wrapper commands:
 
 If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app fails its health check, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
 
+Start, stop, and restart requests are serialised per app. Repeated API calls while an app is starting, stopping, or restarting update the desired state but do not launch a second copy of the same app.
+
 ## Configuration
 
 Add supervised apps under `supervisord.apps` in `config.json`:
@@ -114,4 +116,8 @@ Before self-restart or stop, `supervisord` writes `state_path`. On boot it reloa
 
 Apps should handle `SIGTERM` and exit promptly. `supervisord` sends `SIGTERM` to the app process group, waits the configured shutdown timeout, then sends `SIGKILL` if the app is still running.
 
-This gives daemons time to flush logs, close listeners, persist state, and release work before restart or stop.
+For managed apps, `supervisord` also tracks descendants discovered under the app PID and the app process group. If the launcher exits but a child process keeps running, `supervisord` force-kills the remaining tracked children before it reports the app stopped or starts a replacement. This prevents stale dashboard dev-server children from keeping port `5173` bound across restarts.
+
+Adopted apps are stopped by PID and tracked descendants rather than by the caller's whole process group, so adopting an existing listener does not kill unrelated shell jobs that happen to share a terminal process group.
+
+This gives daemons time to flush logs, close listeners, persist state, and release work before restart or stop, while still ensuring a restart does not race the old process for the same port.

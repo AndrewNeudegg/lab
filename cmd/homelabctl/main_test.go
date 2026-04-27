@@ -62,6 +62,12 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantPath:   "/tasks/task_123/cancel",
 		},
 		{
+			name:       "task delete",
+			args:       []string{"delete", "task_123"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/tasks/task_123/delete",
+		},
+		{
 			name:       "task retry with backend",
 			args:       []string{"retry", "task_123", "codex", "inspect", "again"},
 			wantMethod: http.MethodPost,
@@ -376,7 +382,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"tasks": []map[string]any{{"id": "task_1", "status": "queued"}}})
 		case "/tasks/task_1":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"id": "task_1", "status": "queued"})
-		case "/tasks/task_1/run", "/tasks/task_1/review", "/tasks/task_1/accept", "/tasks/task_1/reopen", "/tasks/task_1/cancel":
+		case "/tasks/task_1/run", "/tasks/task_1/review", "/tasks/task_1/accept", "/tasks/task_1/reopen", "/tasks/task_1/cancel", "/tasks/task_1/delete":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "ok"})
 		case "/tasks/task_1/runs":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"runs": []any{}})
@@ -414,6 +420,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		{"accept", "task_1"},
 		{"reopen", "task_1", "needs", "work"},
 		{"cancel", "task_1"},
+		{"delete", "task_1"},
 		{"agent", "list"},
 		{"agent", "show", "desk"},
 		{"approvals"},
@@ -438,6 +445,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		"POST /tasks/task_1/accept",
 		"POST /tasks/task_1/reopen",
 		"POST /tasks/task_1/cancel",
+		"POST /tasks/task_1/delete",
 		"GET /agents",
 		"GET /agents/desk",
 		"GET /approvals",

@@ -71,6 +71,7 @@ go run ./cmd/homelabctl task accept task_123
 go run ./cmd/homelabctl task reopen task_123 "needs rework"
 go run ./cmd/homelabctl task cancel task_123
 go run ./cmd/homelabctl task retry task_123 codex "retry from the current workspace state"
+go run ./cmd/homelabctl task delete task_123
 ```
 
 The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
@@ -86,19 +87,19 @@ go run ./cmd/homelabctl accept task_123
 go run ./cmd/homelabctl reopen task_123 "needs mobile UAT"
 go run ./cmd/homelabctl cancel task_123
 go run ./cmd/homelabctl retry task_123
+go run ./cmd/homelabctl delete task_123
 go run ./cmd/homelabctl runs task_123
 go run ./cmd/homelabctl diff task_123
 ```
 
 `task diff` and its top-level `diff` alias call `GET /tasks/{task_id}/diff`. Plain output starts with a compact file/addition/deletion summary and then prints the raw patch. Add `-json` to inspect the structured response used by the dashboard diff viewer.
 
-Some orchestrator actions, such as `delegate`, `ux`, `refresh`, `test`, and `delete`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
+Some orchestrator actions, such as `delegate`, `ux`, `refresh`, and `test`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
 
 ```bash
 go run ./cmd/homelabctl delegate task_123 to codex "finish docs and tests"
 go run ./cmd/homelabctl ux task_123 "run a UX pass with research, regression tests, and browser UAT"
 go run ./cmd/homelabctl refresh task_123
-go run ./cmd/homelabctl delete task_123
 ```
 
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
@@ -202,6 +203,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks/{id}/reopen`
 - `POST /tasks/{id}/cancel`
 - `POST /tasks/{id}/retry`
+- `POST /tasks/{id}/delete`
 - `GET /agents`
 - `GET /agents/{id}`
 - `GET /approvals`

@@ -119,68 +119,56 @@ const run = async () => {
       cdp,
       `({
         filters: [...document.querySelectorAll('.triage button')].map((button) => button.innerText),
-        rows: document.querySelectorAll('.task-row').length,
-        panelCollapsed: document.querySelector('.command-panel')?.classList.contains('collapsed') ?? null,
-        panelButton: document.querySelector('.command-header-actions button')?.innerText || '',
-        queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
-        workflowState: document.querySelector('.state-machine')?.innerText || '',
-        targetCreate: document.querySelector('.target-create')?.innerText || '',
-        createDisabled: document.querySelector('.target-create button[type="submit"]')?.disabled ?? null
+        commandPanelCount: document.querySelectorAll('.command-panel').length,
+        composerCount: document.querySelectorAll('.composer, #message').length,
+        taskActionText: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
+        syncText: document.querySelector('.task-header button')?.innerText || '',
+        createSummary: document.querySelector('.target-create summary')?.innerText || '',
+        mobileTabsDisplay: getComputedStyle(document.querySelector('.mobile-tabs')).display
       })`
     );
     assert(initial.filters.length === 3, 'task filters did not render', initial);
     assert(initial.filters.some((text) => text.includes('Needs action')), 'Needs action filter missing', initial);
     assert(initial.filters.some((text) => text.includes('Running')), 'Running filter missing', initial);
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
-    assert(initial.panelCollapsed === false, 'Act on this queue should start open', initial);
-    assert(
-      initial.targetCreate.toLowerCase().includes('new task target'),
-      'remote/local task target creator missing',
-      initial
-    );
-    assert(initial.createDisabled === true, 'empty target task creator should start disabled', initial);
+    assert(initial.commandPanelCount === 0, 'old chat command panel still rendered', initial);
+    assert(initial.composerCount === 0, 'chat composer still rendered on tasks page', initial);
+    assert(initial.syncText.includes('Sync'), 'manual Sync button missing', initial);
+    assert(initial.createSummary.includes('New task'), 'new task details control missing', initial);
+    assert(initial.mobileTabsDisplay === 'none', 'mobile tabs should not display on desktop', initial);
 
-    const afterTargetDraft = await evalJS(
-      cdp,
-      `(document.querySelector('#new-task-goal').value = 'Inspect remote agent targeting',
-        document.querySelector('#new-task-goal').dispatchEvent(new Event('input', { bubbles: true })),
-        new Promise((resolve) => setTimeout(() => resolve({
-          disabled: document.querySelector('.target-create button[type="submit"]')?.disabled ?? null,
-          label: document.querySelector('.target-create button[type="submit"]')?.innerText || ''
-        }), 100)))`
-    );
-    assert(afterTargetDraft.disabled === false, 'target task creator did not enable after entering a goal', afterTargetDraft);
-
-    let afterAll = await evalJS(
+    const afterAll = await evalJS(
       cdp,
       `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
         new Promise((resolve) => {
           const started = Date.now();
           const sample = () => {
             const rows = document.querySelectorAll('.task-row').length;
-            if (rows > 0 || Date.now() - started > 2000) {
+            const active = document.querySelector('.triage button.active')?.innerText || '';
+            if ((rows > 0 && active.includes('All')) || Date.now() - started > 2500) {
               resolve({
-                active: document.querySelector('.triage button.active')?.innerText || '',
+                active,
                 rows,
                 selected: document.querySelector('.task-row.selected')?.innerText || '',
-                workflowState: document.querySelector('.state-machine')?.innerText || '',
-                queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null
+                actionText: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
+                workflowState: document.querySelector('.state-machine')?.innerText || ''
               });
               return;
             }
             setTimeout(sample, 100);
           };
-          setTimeout(sample, 100);
+          sample();
         }))`
     );
     assert(afterAll.active.includes('All'), 'All filter did not become active', afterAll);
     assert(afterAll.rows > 0, 'All queue rendered no task rows', afterAll);
+    assert(afterAll.selected, 'All queue did not leave a selected task', afterAll);
+    assert(afterAll.actionText.length > 0, 'direct task action panel did not render', afterAll);
     assert(
       afterAll.workflowState.toLowerCase().includes('workflow state'),
-      'workflow state machine guidance did not render',
+      'workflow state did not render',
       afterAll
     );
-    assert(afterAll.queueCollapsed === false, 'desktop task queue collapsed during all-filter selection', afterAll);
 
     const manualSync = await evalJS(
       cdp,
@@ -201,68 +189,40 @@ const run = async () => {
           }
           return counts;
         };
-        const findSyncButton = () =>
-          [...document.querySelectorAll('.task-header nav button')]
-            .find((button) => button.innerText.includes('Sync'));
         return new Promise((resolve) => {
+          const button = document.querySelector('.task-header button');
+          const before = countResources();
+          const syncedBefore = document.querySelector('.task-header span')?.innerText || '';
+          button?.click();
           const started = Date.now();
-          const waitForEnabled = () => {
-            const button = findSyncButton();
-            if (!button || button.disabled) {
-              if (Date.now() - started > 5000) {
-                resolve({
-                  clicked: false,
-                  reason: button ? 'sync button stayed disabled' : 'sync button missing',
-                  buttonText: button?.innerText || '',
-                  before: countResources()
-                });
-                return;
-              }
-              setTimeout(waitForEnabled, 100);
+          const sample = () => {
+            const after = countResources();
+            const completed =
+              Boolean(button) &&
+              !button.disabled &&
+              after.tasks > before.tasks &&
+              after.approvals > before.approvals &&
+              after.events > before.events &&
+              after.agents > before.agents;
+            if (completed || Date.now() - started > 8000) {
+              resolve({
+                completed,
+                before,
+                after,
+                syncedBefore,
+                syncedAfter: document.querySelector('.task-header span')?.innerText || '',
+                rows: document.querySelectorAll('.task-row').length,
+                selected: document.querySelector('.task-row.selected')?.innerText || ''
+              });
               return;
             }
-            const before = countResources();
-            const syncedBefore = document.querySelector('.task-header span')?.innerText || '';
-            button.click();
-            const sample = () => {
-              const after = countResources();
-              const currentButton = findSyncButton();
-              const completed =
-                Boolean(currentButton) &&
-                !currentButton.disabled &&
-                after.tasks > before.tasks &&
-                after.approvals > before.approvals &&
-                after.events > before.events &&
-                after.agents > before.agents;
-              if (completed || Date.now() - started > 8000) {
-                resolve({
-                  clicked: true,
-                  completed,
-                  before,
-                  after,
-                  buttonText: currentButton?.innerText || '',
-                  syncedBefore,
-                  syncedAfter: document.querySelector('.task-header span')?.innerText || '',
-                  rows: document.querySelectorAll('.task-row').length,
-                  selected: document.querySelector('.task-row.selected')?.innerText || '',
-                  workerTrace: document.querySelector('[aria-label="Worker runs"]')?.innerText || ''
-                });
-                return;
-              }
-              setTimeout(sample, 100);
-            };
             setTimeout(sample, 100);
           };
-          waitForEnabled();
+          setTimeout(sample, 100);
         });
       })()`
     );
-    assert(manualSync.clicked === true, 'manual Sync button was unavailable', manualSync);
     assert(manualSync.completed === true, 'manual Sync did not reload all task pane data sources', manualSync);
-    assert(manualSync.after.tasks > manualSync.before.tasks, 'manual Sync did not reload the task list', manualSync);
-    assert(manualSync.after.approvals > manualSync.before.approvals, 'manual Sync did not reload approvals', manualSync);
-    assert(manualSync.after.events > manualSync.before.events, 'manual Sync did not reload events', manualSync);
-    assert(manualSync.after.agents > manualSync.before.agents, 'manual Sync did not reload agents', manualSync);
     assert(manualSync.rows > 0, 'manual Sync left the task queue empty', manualSync);
     assert(manualSync.selected, 'manual Sync did not leave a selected visible task', manualSync);
     assert(
@@ -274,69 +234,77 @@ const run = async () => {
     const afterRunning = await evalJS(
       cdp,
       `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('Running'))?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          active: document.querySelector('.triage button.active')?.innerText || '',
-          rows: document.querySelectorAll('.task-row').length,
-          selected: document.querySelector('.task-row.selected')?.innerText || '',
-          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null
-        }), 100)))`
+        new Promise((resolve) => {
+          const started = Date.now();
+          const sample = () => {
+            const active = document.querySelector('.triage button.active')?.innerText || '';
+            if (active.includes('Running') || Date.now() - started > 2500) {
+              resolve({
+                active,
+                rows: document.querySelectorAll('.task-row').length
+              });
+              return;
+            }
+            setTimeout(sample, 100);
+          };
+          sample();
+        }))`
     );
     assert(afterRunning.active.includes('Running'), 'Running filter did not become active', afterRunning);
-    assert(afterRunning.queueCollapsed === false, 'desktop task queue collapsed during filter change', afterRunning);
-
-    afterAll = await evalJS(
-      cdp,
-      `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          active: document.querySelector('.triage button.active')?.innerText || '',
-          rows: document.querySelectorAll('.task-row').length,
-          selected: document.querySelector('.task-row.selected')?.innerText || '',
-          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null
-        }), 100)))`
-    );
-    assert(afterAll.active.includes('All'), 'All filter did not become active', afterAll);
-    assert(afterAll.rows >= afterRunning.rows, 'All queue has fewer rows than Running queue', {
-      afterRunning,
-      afterAll
-    });
-    assert(afterAll.rows > 0, 'All queue rendered no task rows', afterAll);
-    assert(afterAll.queueCollapsed === false, 'desktop task queue collapsed during all-filter selection', afterAll);
 
     const afterSelect = await evalJS(
       cdp,
-      `(document.querySelector('.task-row')?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
-          selected: document.querySelector('.task-row.selected')?.innerText || '',
-          rows: document.querySelectorAll('.task-row').length,
-          workerTrace: document.querySelector('[aria-label="Worker runs"]')?.innerText || '',
-          stopDisabled: [...document.querySelectorAll('[aria-label="Worker runs"] button')]
-            .find((button) => button.innerText.includes('Stop'))?.disabled ?? null,
-          retryDisabled: [...document.querySelectorAll('[aria-label="Worker runs"] button')]
-            .find((button) => button.innerText.includes('Retry'))?.disabled ?? null,
-          recordActions: [...document.querySelectorAll('[aria-label="Task actions"] button')]
-            .map((button) => button.innerText)
-        }), 100)))`
+      `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
+        new Promise((resolve) => {
+          const started = Date.now();
+          const waitForAll = () => {
+            const active = document.querySelector('.triage button.active')?.innerText || '';
+            const rows = [...document.querySelectorAll('.task-row')];
+            if ((active.includes('All') && rows.length > 0) || Date.now() - started > 2500) {
+              rows[Math.min(1, rows.length - 1)]?.click();
+              setTimeout(() => resolve({
+                rows: document.querySelectorAll('.task-row').length,
+                selected: document.querySelector('.task-row.selected')?.innerText || '',
+                actionButtons: [...document.querySelectorAll('[aria-label="Task actions"] button, [aria-label="Secondary task actions"] button')]
+                  .map((button) => ({ text: button.innerText, disabled: button.disabled })),
+                retrySettings: document.querySelector('[aria-label="Retry settings"]')?.innerText || '',
+                reopenReason: document.querySelector('[aria-label="Reopen reason"]')?.innerText || '',
+                workerTrace: document.querySelector('[aria-label="Worker runs"]')?.innerText || '',
+                hasComposer: document.querySelector('#message, .composer') !== null
+              }), 250);
+              return;
+            }
+            setTimeout(waitForAll, 100);
+          };
+          waitForAll();
+        }))`
     );
-    assert(afterSelect.queueCollapsed === false, 'desktop task queue collapsed after selecting a task', afterSelect);
     assert(afterSelect.rows > 0, 'task rows disappeared after selecting a task', afterSelect);
+    assert(afterSelect.selected, 'task click did not select a row', afterSelect);
+    assert(afterSelect.actionButtons.length > 0, 'no direct action buttons rendered for selected task', afterSelect);
+    assert(afterSelect.hasComposer === false, 'task detail rendered a chat composer after selection', afterSelect);
     assert(
       afterSelect.workerTrace.toLowerCase().includes('worker trace'),
       'worker trace panel did not render',
       afterSelect
     );
-    assert(afterSelect.stopDisabled !== null, 'worker Stop control did not render', afterSelect);
-    assert(afterSelect.retryDisabled !== null, 'worker Retry control did not render', afterSelect);
-    assert(
-      afterSelect.stopDisabled !== afterSelect.retryDisabled,
-      'worker Stop/Retry controls did not reflect active versus retryable state',
-      afterSelect
+
+    const createForm = await evalJS(
+      cdp,
+      `(document.querySelector('.target-create summary')?.click(),
+        new Promise((resolve) => setTimeout(() => {
+          const goal = document.querySelector('#new-task-goal');
+          goal.value = 'Inspect button driven task page flow';
+          goal.dispatchEvent(new Event('input', { bubbles: true }));
+          setTimeout(() => resolve({
+            open: document.querySelector('.target-create')?.open ?? false,
+            disabled: document.querySelector('.target-create button[type="submit"]')?.disabled ?? null,
+            label: document.querySelector('.target-create button[type="submit"]')?.innerText || ''
+          }), 100);
+        }, 100)))`
     );
-    assert(
-      afterSelect.recordActions.some((text) => /^ux\s+/i.test(text)),
-      'task actions did not expose UXAgent command',
-      afterSelect
-    );
+    assert(createForm.open === true, 'new task details did not open', createForm);
+    assert(createForm.disabled === false, 'new task button did not enable after entering a goal', createForm);
 
     const diffInitial = await evalJS(
       cdp,
@@ -408,8 +376,7 @@ const run = async () => {
             text: button.innerText,
             active: button.classList.contains('active')
           })),
-          unifiedRows: document.querySelectorAll('[aria-label="Unified diff"] .diff-row').length,
-          splitRows: document.querySelectorAll('[aria-label="Split diff"] .split-row').length
+          unifiedRows: document.querySelectorAll('[aria-label="Unified diff"] .diff-row').length
         }), 150)))`
     );
     assert(
@@ -429,8 +396,7 @@ const run = async () => {
           controls: [...document.querySelectorAll('[aria-label="Diff controls"] button')].map((button) => ({
             text: button.innerText,
             active: button.classList.contains('active')
-          })),
-          selectedFile: document.querySelector('[aria-label="Changed files"] button.selected')?.innerText || ''
+          }))
         }), 150)))`
     );
     assert(
@@ -488,7 +454,6 @@ const run = async () => {
           const panel = document.querySelector('[aria-label="Task diff"]');
           const selected = document.querySelector('[aria-label="Changed files"] button.selected');
           const label = selected?.querySelector('span');
-          const code = document.querySelector('[aria-label="Split diff"] .split-row code:not(.blank)');
           const styleFor = (element) => element ? {
             color: getComputedStyle(element).color,
             background: getComputedStyle(element).backgroundColor,
@@ -500,8 +465,7 @@ const run = async () => {
             theme: document.documentElement.dataset.theme,
             panel: styleFor(panel),
             selected: styleFor(selected),
-            label: styleFor(label),
-            code: styleFor(code)
+            label: styleFor(label)
           });
         })))`
     );
@@ -517,61 +481,84 @@ const run = async () => {
       );
     }
 
-    const collapse = await evalJS(
-      cdp,
-      `(document.querySelector('.command-header-actions button')?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          collapsed: document.querySelector('.command-panel')?.classList.contains('collapsed') ?? null,
-          text: document.querySelector('.command-header-actions button')?.innerText || '',
-          messagesVisible: document.querySelector('.messages') !== null
-        }), 100)))`
-    );
-    assert(collapse.collapsed === true, 'Act on this queue did not collapse', collapse);
-    assert(collapse.messagesVisible === false, 'collapsed command panel still rendered messages', collapse);
-
-    const open = await evalJS(
-      cdp,
-      `(document.querySelector('.command-header-actions button')?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          collapsed: document.querySelector('.command-panel')?.classList.contains('collapsed') ?? null,
-          text: document.querySelector('.command-header-actions button')?.innerText || '',
-          messagesVisible: document.querySelector('.messages') !== null
-        }), 100)))`
-    );
-    assert(open.collapsed === false, 'Act on this queue did not reopen', open);
-    assert(open.messagesVisible === true, 'reopened command panel did not render messages', open);
-
     await cdp.call('Emulation.setDeviceMetricsOverride', {
       width: 390,
       height: 844,
       deviceScaleFactor: 2,
       mobile: true
     });
-    await sleep(200);
-    const mobile = await evalJS(
+    await sleep(250);
+
+    const mobileStart = await evalJS(
       cdp,
-      `(window.scrollTo(0, 0),
-        new Promise((resolve) => setTimeout(() => resolve({
+      `new Promise((resolve) => requestAnimationFrame(() => resolve({
         bodyWidth: document.body.scrollWidth,
         viewport: window.innerWidth,
-        scrollY: window.scrollY,
-        navbarTop: document.querySelector('.navbar')?.getBoundingClientRect().top ?? null,
-        rows: document.querySelectorAll('.task-row').length,
-        queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
-        queueHeight: Math.round(document.querySelector('.task-pane')?.getBoundingClientRect().height || 0),
-        queueBottom: Math.round(document.querySelector('.task-pane')?.getBoundingClientRect().bottom || 0),
-        recordTop: Math.round(document.querySelector('.workbench')?.getBoundingClientRect().top || 0),
-        queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
-        panelButton: document.querySelector('.command-header-actions button')?.innerText || ''
-      }), 100)))`
+        tabs: [...document.querySelectorAll('.mobile-tabs button')].map((button) => ({
+          text: button.innerText,
+          active: button.classList.contains('active'),
+          disabled: button.disabled
+        })),
+        queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
+        detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
+        commandPanelCount: document.querySelectorAll('.command-panel, .composer, #message').length
+      })))`
     );
-    assert(mobile.rows > 0, 'mobile viewport rendered no task rows', mobile);
-    assert(mobile.queueCollapsed === false, 'mobile queue should remain visible by default', mobile);
-    assert(mobile.queueToggle.includes('Hide queue'), 'mobile queue toggle should offer to hide visible queue', mobile);
-    assert(mobile.queueHeight > 0, 'mobile queue has no visible height', mobile);
-    assert(mobile.queueHeight <= Math.round(844 * 0.56), 'mobile queue is not capped to the top of the viewport', mobile);
-    assert(mobile.recordTop >= mobile.queueBottom - 1, 'mobile selected task record did not stack below queue', mobile);
-    assert(mobile.bodyWidth <= mobile.viewport + 2, 'mobile viewport has horizontal overflow', mobile);
+    assert(mobileStart.bodyWidth <= mobileStart.viewport + 2, 'mobile viewport has horizontal overflow', mobileStart);
+    assert(mobileStart.tabs.length === 2, 'mobile Queue/Task tabs did not render', mobileStart);
+    assert(mobileStart.commandPanelCount === 0, 'mobile tasks page still renders chat command controls', mobileStart);
+
+    const mobileQueue = await evalJS(
+      cdp,
+      `([...document.querySelectorAll('.mobile-tabs button')].find((button) => button.innerText.includes('Queue'))?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          active: [...document.querySelectorAll('.mobile-tabs button')].find((button) => button.classList.contains('active'))?.innerText || '',
+          rows: document.querySelectorAll('.task-row').length,
+          queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
+          detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
+          bodyWidth: document.body.scrollWidth,
+          viewport: window.innerWidth
+        }), 150)))`
+    );
+    assert(mobileQueue.active.includes('Queue'), 'mobile Queue tab did not become active', mobileQueue);
+    assert(mobileQueue.rows > 0, 'mobile Queue tab rendered no task rows', mobileQueue);
+    assert(mobileQueue.queueDisplay !== 'none', 'mobile Queue tab did not show queue', mobileQueue);
+    assert(mobileQueue.detailDisplay === 'none', 'mobile Queue tab did not hide detail pane', mobileQueue);
+    assert(mobileQueue.bodyWidth <= mobileQueue.viewport + 2, 'mobile Queue tab has horizontal overflow', mobileQueue);
+
+    const mobileSelect = await evalJS(
+      cdp,
+      `(document.querySelector('.task-row')?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          active: [...document.querySelectorAll('.mobile-tabs button')].find((button) => button.classList.contains('active'))?.innerText || '',
+          selected: document.querySelector('.task-row.selected')?.innerText || '',
+          queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
+          detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
+          taskActions: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
+          bodyWidth: document.body.scrollWidth,
+          viewport: window.innerWidth
+        }), 200)))`
+    );
+    assert(mobileSelect.selected, 'mobile task tap did not select a queue row', mobileSelect);
+    assert(mobileSelect.active.includes('Task'), 'mobile task tap did not switch to Task tab', mobileSelect);
+    assert(mobileSelect.queueDisplay === 'none', 'mobile Task tab did not hide queue', mobileSelect);
+    assert(mobileSelect.detailDisplay !== 'none', 'mobile Task tab did not show selected detail', mobileSelect);
+    assert(mobileSelect.taskActions.length > 0, 'mobile selected task did not show action buttons', mobileSelect);
+    assert(mobileSelect.bodyWidth <= mobileSelect.viewport + 2, 'mobile selected detail has horizontal overflow', mobileSelect);
+
+    const mobileBack = await evalJS(
+      cdp,
+      `(document.querySelector('.back-to-queue')?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          active: [...document.querySelectorAll('.mobile-tabs button')].find((button) => button.classList.contains('active'))?.innerText || '',
+          rows: document.querySelectorAll('.task-row').length,
+          queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
+          detailDisplay: getComputedStyle(document.querySelector('.workbench')).display
+        }), 150)))`
+    );
+    assert(mobileBack.active.includes('Queue'), 'mobile Queue button in detail did not return to queue', mobileBack);
+    assert(mobileBack.rows > 0, 'mobile queue rows disappeared after returning from detail', mobileBack);
+    assert(mobileBack.queueDisplay !== 'none', 'mobile return did not show queue', mobileBack);
 
     const mobileScroll = await evalJS(
       cdp,
@@ -588,66 +575,6 @@ const run = async () => {
       mobileScroll
     );
 
-    const mobileSelect = await evalJS(
-      cdp,
-      `(document.querySelector('.task-row')?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          rows: document.querySelectorAll('.task-row').length,
-          selected: document.querySelector('.task-row.selected')?.innerText || '',
-          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
-          queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
-          sidebarVisible: getComputedStyle(document.querySelector('.task-sidebar-content')).display !== 'none'
-        }), 100)))`
-    );
-    assert(mobileSelect.selected, 'mobile task tap did not select a queue row', mobileSelect);
-    assert(mobileSelect.rows > 0, 'mobile queue rows disappeared after task selection', mobileSelect);
-    assert(mobileSelect.queueCollapsed === false, 'mobile task selection hid the queue', mobileSelect);
-    assert(mobileSelect.sidebarVisible === true, 'mobile queue content is not visible after selection', mobileSelect);
-
-    const mobileCollapsed = await evalJS(
-      cdp,
-      `(document.querySelector('.queue-toggle')?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
-          queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
-          sidebarVisible: getComputedStyle(document.querySelector('.task-sidebar-content')).display !== 'none'
-        }), 100)))`
-    );
-    assert(mobileCollapsed.queueCollapsed === true, 'mobile queue did not collapse from toggle', mobileCollapsed);
-    assert(mobileCollapsed.queueToggle.includes('Show queue'), 'mobile collapsed queue did not show reopen control', mobileCollapsed);
-    assert(mobileCollapsed.sidebarVisible === false, 'mobile collapsed queue still showed queue content', mobileCollapsed);
-
-    const mobileReopened = await evalJS(
-      cdp,
-      `(document.querySelector('.queue-toggle')?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          rows: document.querySelectorAll('.task-row').length,
-          queueCollapsed: document.querySelector('.task-pane')?.classList.contains('collapsed') ?? null,
-          queueToggle: document.querySelector('.queue-toggle')?.innerText || '',
-          sidebarVisible: getComputedStyle(document.querySelector('.task-sidebar-content')).display !== 'none'
-        }), 100)))`
-    );
-    assert(mobileReopened.queueCollapsed === false, 'mobile queue did not reopen from toggle', mobileReopened);
-    assert(mobileReopened.queueToggle.includes('Hide queue'), 'mobile reopened queue did not show hide control', mobileReopened);
-    assert(mobileReopened.sidebarVisible === true, 'mobile reopened queue content is not visible', mobileReopened);
-    assert(mobileReopened.rows > 0, 'mobile reopened queue rendered no task rows', mobileReopened);
-
-    const typed = await evalJS(
-      cdp,
-      `(document.querySelector('#message').focus(),
-        document.querySelector('#message').value = 'mobile typing should not echo below composer',
-        document.querySelector('#message').dispatchEvent(new Event('input', { bubbles: true })),
-        new Promise((resolve) => setTimeout(() => resolve({
-          draftPreviewCount: document.querySelectorAll('.draft-preview').length,
-          composerText: document.querySelector('#message')?.value || '',
-          echoedBelowComposer: [...document.querySelectorAll('.composer ~ *, .draft-preview')]
-            .some((element) => element.textContent.includes('mobile typing should not echo below composer'))
-        }), 100)))`
-    );
-    assert(typed.composerText.includes('mobile typing should not echo'), 'mobile composer did not retain typed text', typed);
-    assert(typed.draftPreviewCount === 0, 'mobile task command composer rendered a draft preview', typed);
-    assert(typed.echoedBelowComposer === false, 'mobile typed text echoed below the composer', typed);
-
     const errors = await evalJS(cdp, `window.__uatErrors || []`);
     assert(errors.length === 0, 'browser console reported runtime errors', errors);
 
@@ -657,20 +584,21 @@ const run = async () => {
           ok: true,
           dashboardURL,
           initial,
+          afterAll,
           manualSync,
           afterRunning,
-          afterAll,
           afterSelect,
+          createForm,
           diffInitial,
           diffUnified,
           diffSplit,
-          collapse,
-          open,
-          mobile,
+          diffWrap,
+          diffDark,
+          mobileStart,
+          mobileQueue,
           mobileSelect,
-          mobileCollapsed,
-          mobileReopened,
-          typed
+          mobileBack,
+          mobileScroll
         },
         null,
         2

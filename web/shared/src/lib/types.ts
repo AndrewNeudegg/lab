@@ -148,6 +148,10 @@ export interface HomelabdTaskRetryRequest {
   instruction?: string;
 }
 
+export interface HomelabdTaskReopenRequest {
+  reason?: string;
+}
+
 export interface HomelabdRunArtifact {
   id: string;
   kind: string;
@@ -350,11 +354,21 @@ export interface HomelabdClient {
   listEvents(options?: { date?: string; limit?: number }): Promise<HomelabdEventsResponse>;
   listTaskRuns(taskId: string): Promise<HomelabdTaskRunsResponse>;
   getTaskDiff(taskId: string): Promise<HomelabdTaskDiffResponse>;
+  runTask(taskId: string): Promise<HomelabdTaskActionResponse>;
+  reviewTask(taskId: string): Promise<HomelabdTaskActionResponse>;
+  acceptTask(taskId: string): Promise<HomelabdTaskActionResponse>;
+  reopenTask(
+    taskId: string,
+    request?: HomelabdTaskReopenRequest
+  ): Promise<HomelabdTaskActionResponse>;
   cancelTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   retryTask(
     taskId: string,
     request?: HomelabdTaskRetryRequest
   ): Promise<HomelabdTaskActionResponse>;
+  deleteTask(taskId: string): Promise<HomelabdTaskActionResponse>;
+  approveApproval(approvalId: string): Promise<HomelabdTaskActionResponse>;
+  denyApproval(approvalId: string): Promise<HomelabdTaskActionResponse>;
 }
 
 export interface HomelabdClientOptions {

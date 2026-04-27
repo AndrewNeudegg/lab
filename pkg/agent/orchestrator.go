@@ -1067,6 +1067,10 @@ func (o *Orchestrator) RetryTask(ctx context.Context, taskID, backend, instructi
 	return o.retryTask(ctx, taskID, backend, instruction)
 }
 
+func (o *Orchestrator) DeleteTask(ctx context.Context, taskID string) (string, error) {
+	return o.deleteTask(ctx, taskID)
+}
+
 func (o *Orchestrator) ListApprovals() ([]approvalstore.Request, error) {
 	requests, err := o.approvals.List()
 	if err != nil {

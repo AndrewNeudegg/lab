@@ -89,24 +89,24 @@ If a component does not answer one of those questions, it should not be in the p
 
 - `/tasks` left pane: task queue. It is the navigation model, because the operator supervises work by task rather than by chat transcript.
 - Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current. The `Synced` timestamp includes seconds so a manual reload is visible even when repeated within the same minute.
-- Triage buttons: `Needs action`, `Running`, and `All`. The page opens on `All` so a degraded or empty attention filter never hides the task queue. The buttons double as counts and filters so the operator can shift attention without extra controls.
+- Triage buttons: `Needs action`, `Running`, and `All`. The page opens on `Needs action` because this page is primarily an operator console; `All` remains one tap away for audit and search. The buttons double as counts and filters so the operator can shift attention without extra controls.
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
-- Decision block: pending approvals appear before the task list because they are human-blocked work.
+- Task list: appears immediately after search. Rows are the main navigation and must stay fast to scan even when approvals or remote queues are present.
+- Decision block: pending approvals use direct approve/deny buttons. Approval actions must call the typed approval endpoints, not route through chat.
 - Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous.
-- Right pane: selected task record. It is not a chat transcript. Selecting a different task changes the record, summary, result, and activity timeline.
+- Right pane: selected task record. It is not a chat transcript and has no task chat composer. Selecting a different task changes the record, summary, result, action buttons, diff, worker trace, and activity timeline.
 - Manual `Sync` refreshes tasks, approvals, events, and remote agents first, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current.
 - Task sync failures are shown inside the task pane. The queue must never make a failed `/api/tasks` request look like a real empty result.
 - Selected task title: use a compact summary derived from the task input so long prompts do not dominate the top of the record.
 - Task summary: ID, status, owner, started time, runtime, and update time. This answers what object is selected and how long it has been running before asking the operator to act.
 - Primary action: one emphasized button derived from task state. The UI should not make the operator infer the next command from raw status.
-- Secondary actions: show, `ux <task_id>`, delegate, delete, or reopen. Use the UX action when a task needs a researched UI/accessibility pass, automated regression coverage, and browser-level UAT.
-- Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
+- Secondary actions: direct task endpoint buttons such as retry, reopen, stop, delete, or deny approval. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
+- Retry and reopen forms: short, task-scoped inputs for optional retry instruction or reopen reason. These are not chat; they are structured payloads sent to typed task endpoints.
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
 - Remote execution context: shown as a warning-coloured block for remote tasks. It must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. Use this before review, conflict-resolution delegation, or approval.
 - Result block: shown only when a task has a stored result.
-- Worker trace: groups external worker output by run id, combines live `agent.delegate.output`
-  events with completed artifacts from `data/runs`, and exposes direct stop/retry controls.
+- Worker trace: groups external worker output by run id and combines live `agent.delegate.output` events with completed artifacts from `data/runs`.
 - Task activity: event-log timeline filtered to the selected task. This is the task-scoped history equivalent to issue activity or incident timelines.
 - Reviewed plan: shown directly above the original input so the operator can see the task-, phase-, or target-specific execution path before rereading the full prompt.
 - Original input: shown below task activity, preserving the full task goal text for reference after the timeline.
@@ -156,11 +156,11 @@ Local tasks use isolated local worktrees. Remote tasks do not create local workt
 
 On compact screens `/tasks` stacks:
 
-1. Task queue first, capped to the top portion of the viewport and collapsible from the queue header.
-2. Selected-task record below it.
-3. Global command panel below the selected-task record.
+1. A sticky `Queue` / `Task` switch sits below the navbar.
+2. `Queue` shows filters, search, task rows, approvals, execution queues, and new-task creation.
+3. `Task` shows the selected task record, direct action buttons, diff, worker trace, activity, plan, and original input.
 
-The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Task selection itself must not hide the queue: the operator should still see queue position, counts, and nearby work after tapping a row. The `Hide queue` / `Show queue` control is a manual escape hatch when the selected-task record needs more vertical room.
+The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Selecting a row switches to `Task`; the `Queue` tab and the record header's `Queue` button return to the list. The Tasks page does not render a global command panel on mobile.
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
 

@@ -166,6 +166,8 @@ type ExternalAgentConfig struct {
 	Description    string   `json:"description,omitempty"`
 }
 
+const DefaultExternalAgentTimeoutSeconds = 5 * 60 * 60
+
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path == "" {
@@ -354,21 +356,21 @@ func Default() Config {
 				Enabled:        true,
 				Command:        getenvAnyDefault("codex", "CODEX_CLI", "CODEX_CMD"),
 				Args:           []string{"exec", "--skip-git-repo-check"},
-				TimeoutSeconds: 900,
+				TimeoutSeconds: DefaultExternalAgentTimeoutSeconds,
 				Description:    "OpenAI Codex CLI worker for coding tasks.",
 			},
 			"claude": {
 				Enabled:        true,
 				Command:        getenvAnyDefault("claude", "CLAUDE_CLI", "CLAUDE_CMD"),
 				Args:           []string{},
-				TimeoutSeconds: 900,
+				TimeoutSeconds: DefaultExternalAgentTimeoutSeconds,
 				Description:    "Claude CLI worker for analysis or coding tasks.",
 			},
 			"gemini": {
 				Enabled:        true,
 				Command:        getenvAnyDefault("gemini", "GEMINI_CLI", "GEMINI_CMD"),
 				Args:           []string{},
-				TimeoutSeconds: 900,
+				TimeoutSeconds: DefaultExternalAgentTimeoutSeconds,
 				Description:    "Gemini CLI worker for analysis or coding tasks.",
 			},
 		},

@@ -35,7 +35,7 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Nielsen Norman usability heuristics: always expose system status, speak the operator's language, and keep clear exits for wrong actions.
 - Atlassian/Jira issue views: work-item detail pages have top-level issue actions and an activity feed containing changes, comments, history, and related updates.
 - Slack threads and incident-command tools: conversations need explicit context boundaries; task or incident timelines prevent important work from being buried in a global chat scroll.
-- Atlassian dashboard and status guidance: centralize task visibility, make bottlenecks obvious, use semantic color roles, and pair color with text.
+- Atlassian dashboard and status guidance: centralize task visibility, make bottlenecks obvious, use semantic colour roles, and pair colour with text.
 - GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
 - GitLab merge request reviews: the changes view is the primary review surface, with review status and merge checks kept close to the diff.
 - CodeMirror and Monaco diff APIs: mature web diff viewers support hidden unchanged regions, gutters, syntax-aware deleted text, inline change highlighting, and unified or side-by-side review modes.
@@ -88,19 +88,20 @@ If a component does not answer one of those questions, it should not be in the p
 ## Component Placement
 
 - `/tasks` left pane: task queue. It is the navigation model, because the operator supervises work by task rather than by chat transcript.
-- Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current.
+- Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current. The `Synced` timestamp includes seconds so a manual reload is visible even when repeated within the same minute.
 - Triage buttons: `Needs action`, `Running`, and `All`. They double as counts and filters so the operator can shift attention without extra controls.
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
 - Decision block: pending approvals appear before the task list because they are human-blocked work.
-- Task rows: colored dot plus text status. Color gives scan speed; text keeps it accessible and unambiguous.
+- Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous.
 - Right pane: selected task record. It is not a chat transcript. Selecting a different task changes the record, summary, result, and activity timeline.
+- Manual `Sync` refreshes tasks, approvals, events, and remote agents first, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current.
 - Selected task title: use a compact summary derived from the task input so long prompts do not dominate the top of the record.
 - Task summary: ID, status, owner, started time, runtime, and update time. This answers what object is selected and how long it has been running before asking the operator to act.
 - Primary action: one emphasized button derived from task state. The UI should not make the operator infer the next command from raw status.
 - Secondary actions: show, `ux <task_id>`, delegate, delete, or reopen. Use the UX action when a task needs a researched UI/accessibility pass, automated regression coverage, and browser-level UAT.
 - Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
 - Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
-- Remote execution context: shown as a warning-colored block for remote tasks. It must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
+- Remote execution context: shown as a warning-coloured block for remote tasks. It must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. Use this before review, conflict-resolution delegation, or approval.
 - Result block: shown only when a task has a stored result.
 - Worker trace: groups external worker output by run id, combines live `agent.delegate.output`
@@ -121,7 +122,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Green: done. No action required unless the result is wrong.
 - Gray: unknown or neutral state.
 
-Do not rely on color alone. Always show the status text next to the colored indicator.
+Do not rely on colour alone. Always show the status text next to the coloured indicator.
 
 ## Task Supervisor
 
@@ -168,7 +169,7 @@ On compact screens `/terminal` keeps the xterm viewport as the primary scroll ar
 
 The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts the user's shell in the homelabd working directory inside a Linux PTY. The browser renders the session with xterm.js, connects terminal bytes over `GET /terminal/sessions/{id}/ws`, and sends terminal resize updates with `POST /terminal/sessions/{id}/resize`.
 
-Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colors, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
+Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colours, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
 
 The Terminal page has a session target picker. `homelabd local` opens a PTY on the control plane. Online remote agents appear when their heartbeat metadata includes `terminal_base_url`; choosing one starts the session through that agent's browser-reachable terminal API.
 

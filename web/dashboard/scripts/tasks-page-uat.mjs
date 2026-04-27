@@ -182,6 +182,95 @@ const run = async () => {
     );
     assert(afterAll.queueCollapsed === false, 'desktop task queue collapsed during all-filter selection', afterAll);
 
+    const manualSync = await evalJS(
+      cdp,
+      `(() => {
+        const countResources = () => {
+          const counts = { tasks: 0, approvals: 0, events: 0, agents: 0 };
+          for (const entry of performance.getEntriesByType('resource')) {
+            let path = '';
+            try {
+              path = new URL(entry.name, location.href).pathname;
+            } catch {
+              continue;
+            }
+            if (path === '/api/tasks' || path === '/tasks') counts.tasks += 1;
+            if (path === '/api/approvals' || path === '/approvals') counts.approvals += 1;
+            if (path === '/api/events' || path === '/events') counts.events += 1;
+            if (path === '/api/agents' || path === '/agents') counts.agents += 1;
+          }
+          return counts;
+        };
+        const findSyncButton = () =>
+          [...document.querySelectorAll('.task-header nav button')]
+            .find((button) => button.innerText.includes('Sync'));
+        return new Promise((resolve) => {
+          const started = Date.now();
+          const waitForEnabled = () => {
+            const button = findSyncButton();
+            if (!button || button.disabled) {
+              if (Date.now() - started > 5000) {
+                resolve({
+                  clicked: false,
+                  reason: button ? 'sync button stayed disabled' : 'sync button missing',
+                  buttonText: button?.innerText || '',
+                  before: countResources()
+                });
+                return;
+              }
+              setTimeout(waitForEnabled, 100);
+              return;
+            }
+            const before = countResources();
+            const syncedBefore = document.querySelector('.task-header span')?.innerText || '';
+            button.click();
+            const sample = () => {
+              const after = countResources();
+              const currentButton = findSyncButton();
+              const completed =
+                Boolean(currentButton) &&
+                !currentButton.disabled &&
+                after.tasks > before.tasks &&
+                after.approvals > before.approvals &&
+                after.events > before.events &&
+                after.agents > before.agents;
+              if (completed || Date.now() - started > 8000) {
+                resolve({
+                  clicked: true,
+                  completed,
+                  before,
+                  after,
+                  buttonText: currentButton?.innerText || '',
+                  syncedBefore,
+                  syncedAfter: document.querySelector('.task-header span')?.innerText || '',
+                  rows: document.querySelectorAll('.task-row').length,
+                  selected: document.querySelector('.task-row.selected')?.innerText || '',
+                  workerTrace: document.querySelector('[aria-label="Worker runs"]')?.innerText || ''
+                });
+                return;
+              }
+              setTimeout(sample, 100);
+            };
+            setTimeout(sample, 100);
+          };
+          waitForEnabled();
+        });
+      })()`
+    );
+    assert(manualSync.clicked === true, 'manual Sync button was unavailable', manualSync);
+    assert(manualSync.completed === true, 'manual Sync did not reload all task pane data sources', manualSync);
+    assert(manualSync.after.tasks > manualSync.before.tasks, 'manual Sync did not reload the task list', manualSync);
+    assert(manualSync.after.approvals > manualSync.before.approvals, 'manual Sync did not reload approvals', manualSync);
+    assert(manualSync.after.events > manualSync.before.events, 'manual Sync did not reload events', manualSync);
+    assert(manualSync.after.agents > manualSync.before.agents, 'manual Sync did not reload agents', manualSync);
+    assert(manualSync.rows > 0, 'manual Sync left the task queue empty', manualSync);
+    assert(manualSync.selected, 'manual Sync did not leave a selected visible task', manualSync);
+    assert(
+      /synced\s+\d{1,2}:\d{2}:\d{2}/i.test(manualSync.syncedAfter),
+      'manual Sync freshness timestamp did not include seconds',
+      manualSync
+    );
+
     const afterRunning = await evalJS(
       cdp,
       `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('Running'))?.click(),
@@ -568,6 +657,7 @@ const run = async () => {
           ok: true,
           dashboardURL,
           initial,
+          manualSync,
           afterRunning,
           afterAll,
           afterSelect,

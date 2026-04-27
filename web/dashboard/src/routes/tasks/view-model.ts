@@ -48,6 +48,22 @@ export interface WorkerTraceRun {
   active: boolean;
 }
 
+export interface TaskSyncSelectionInput {
+  tasks: HomelabdTask[];
+  approvals: HomelabdApproval[];
+  taskFilter: TaskFilter;
+  queueFilter: TaskQueueFilter;
+  taskSearch: string;
+  selectedTaskId: string;
+}
+
+export interface TaskSyncSelection {
+  selectedTaskId: string;
+  selectedTask?: HomelabdTask;
+  shouldLoadRuns: boolean;
+  shouldLoadDiff: boolean;
+}
+
 const normalizeSearch = (value: string) => value.trim().toLowerCase();
 
 const taskMatchesSearch = (task: HomelabdTask, search: string) => {
@@ -233,6 +249,34 @@ export const selectTaskForQueue = (
     return selectedTaskId;
   }
   return visibleTaskItems[0]?.id || '';
+};
+
+export const resolveTaskSyncSelection = ({
+  tasks,
+  approvals,
+  taskFilter,
+  queueFilter,
+  taskSearch,
+  selectedTaskId
+}: TaskSyncSelectionInput): TaskSyncSelection => {
+  const normalizedSelectedTaskId = selectTaskForQueue(
+    tasks,
+    approvals,
+    taskFilter,
+    queueFilter,
+    taskSearch,
+    selectedTaskId
+  );
+  const selectedTask = normalizedSelectedTaskId
+    ? tasks.find((task) => task.id === normalizedSelectedTaskId)
+    : undefined;
+
+  return {
+    selectedTaskId: normalizedSelectedTaskId,
+    selectedTask,
+    shouldLoadRuns: Boolean(selectedTask),
+    shouldLoadDiff: Boolean(selectedTask && selectedTask.target?.mode !== 'remote')
+  };
 };
 
 export const createTaskQueueView = ({

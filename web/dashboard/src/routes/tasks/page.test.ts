@@ -26,9 +26,19 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('const setTaskFilter = (filter: TaskFilter) =>');
     expect(pageSource).toContain('const setQueueFilter = (filter: TaskQueueFilter) =>');
     expect(pageSource).toContain('selectedTaskId = selectTaskForQueue');
+    expect(pageSource).toContain('resolveTaskSyncSelection');
+    expect(pageSource).toContain('selectedTaskId = syncSelection.selectedTaskId');
+    expect(pageSource).toContain('taskQueueView.selectedTaskId !== selectedTaskId');
     expect(pageSource).toContain('on:click={() => setTaskFilter(filter.id as TaskFilter)}');
     expect(pageSource).toContain('on:click={() => setQueueFilter(option.id)}');
     expect(pageSource).not.toContain('on:click={() => (taskFilter = filter.id as TaskFilter)}');
+  });
+
+  test('keeps manual sync responsive while refreshing selected task details', () => {
+    expect(pageSource).toContain('let refreshStateSequence = 0');
+    expect(pageSource).toContain('void refreshSelectedTaskDetails(syncSelection.selectedTaskId');
+    expect(pageSource).toContain('if (sequence === refreshStateSequence)');
+    expect(pageSource).toContain('lastRefresh = syncTimeLabel();');
   });
 
   test('does not hide the queue when a task is selected', () => {

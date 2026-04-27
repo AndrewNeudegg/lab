@@ -24,4 +24,11 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('long split diff line did not wrap to multiple visual lines');
     expect(scriptSource).toContain('split diff still creates horizontal overflow');
   });
+
+  test('exercises manual task pane sync against the browser network layer', () => {
+    expect(scriptSource).toContain('manual Sync did not reload all task pane data sources');
+    expect(scriptSource).toContain("path === '/api/tasks'");
+    expect(scriptSource).toContain('manual Sync did not leave a selected visible task');
+    expect(scriptSource).toContain('manual Sync freshness timestamp did not include seconds');
+  });
 });

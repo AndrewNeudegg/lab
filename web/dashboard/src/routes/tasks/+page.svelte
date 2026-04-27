@@ -33,6 +33,7 @@
   import {
     buildWorkerTraceRuns,
     createTaskQueueView,
+    resolveTaskSyncSelection,
     selectTaskForQueue,
     type TaskFilter,
     type TaskQueueFilter,
@@ -51,6 +52,11 @@
     reason: string;
   };
   type DiffMode = 'split' | 'unified';
+  type RefreshSelectedTaskDetailsOptions = {
+    force?: boolean;
+    resetDiffSelection?: boolean;
+    task?: HomelabdTask;
+  };
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
@@ -98,6 +104,7 @@
   let queueFilter: TaskQueueFilter = 'all';
   let taskSearch = '';
   let selectedTaskId = '';
+  let loadedRunsTaskId = '';
   let selectedDiffFilePath = '';
   let loadedDiffTaskId = '';
   let diffMode: DiffMode = 'split';
@@ -142,11 +149,19 @@
   let selectedWorkdir: HomelabdRemoteAgentWorkdir | undefined;
   let queueOptions: { id: TaskQueueFilter; label: string; count: number; detail: string }[] = [];
   let selectedContextLabel = 'Local homelabd workspace';
+  let refreshStateSequence = 0;
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit'
+    });
+
+  const syncTimeLabel = () =>
+    new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
     });
 
   const shortID = (id = '') => {
@@ -358,6 +373,9 @@
     taskSearch,
     selectedTaskId
   });
+  $: if (taskQueueView.selectedTaskId !== selectedTaskId) {
+    selectedTaskId = taskQueueView.selectedTaskId;
+  }
   $: pendingApprovalItems = taskQueueView.pendingApprovalItems;
   $: activeTaskItems = taskQueueView.activeTaskItems;
   $: attentionTaskItems = taskQueueView.attentionTaskItems;
@@ -377,10 +395,16 @@
   }
   $: currentDiffFile = currentDiffFiles.find((file) => diffFileKey(file) === selectedDiffFilePath);
   $: currentSplitRows = buildSplitRows(currentDiffFile);
-  $: if (currentTask?.id && !isRemoteTask(currentTask) && currentTask.id !== loadedDiffTaskId) {
-    loadedDiffTaskId = currentTask.id;
+  $: if (currentTask?.id && currentTask.id !== loadedRunsTaskId) {
+    void refreshSelectedTaskDetails(currentTask.id, {
+      resetDiffSelection: true,
+      task: currentTask
+    });
+  }
+  $: if (!currentTask?.id && (loadedRunsTaskId || loadedDiffTaskId || selectedDiffFilePath)) {
+    loadedRunsTaskId = '';
+    loadedDiffTaskId = '';
     selectedDiffFilePath = '';
-    void refreshTaskDiff(currentTask.id);
   }
   $: needsActionTotal =
     attentionTaskItems.length + pendingApprovalItems.filter((approval) => !approval.task_id).length;
@@ -529,6 +553,33 @@
     }
   };
 
+  const refreshSelectedTaskDetails = async (
+    taskId: string,
+    options: RefreshSelectedTaskDetailsOptions = {}
+  ) => {
+    if (!taskId) {
+      return;
+    }
+
+    const selected = options.task || tasks.find((task) => task.id === taskId);
+    const detailTasks: Promise<void>[] = [];
+
+    if (options.force || loadedRunsTaskId !== taskId) {
+      loadedRunsTaskId = taskId;
+      detailTasks.push(refreshTaskRuns(taskId));
+    }
+
+    if (selected && !isRemoteTask(selected) && (options.force || loadedDiffTaskId !== taskId)) {
+      loadedDiffTaskId = taskId;
+      if (options.resetDiffSelection) {
+        selectedDiffFilePath = '';
+      }
+      detailTasks.push(refreshTaskDiff(taskId));
+    }
+
+    await Promise.allSettled(detailTasks);
+  };
+
   const taskTone = (task: HomelabdTask) => {
     if (task.status === 'blocked' || task.status === 'failed' || task.status === 'conflict_resolution') {
       return 'red';
@@ -666,6 +717,7 @@
   };
 
   const refreshState = async () => {
+    const sequence = (refreshStateSequence += 1);
     refreshing = true;
     try {
       const [taskResult, approvalResult, eventResult, agentResult] = await Promise.allSettled([
@@ -674,47 +726,79 @@
         client.listEvents({ limit: 500 }),
         client.listAgents()
       ]);
+      if (sequence !== refreshStateSequence) {
+        return;
+      }
 
+      const refreshErrors: string[] = [];
+      let nextTasks = tasks;
+      let nextApprovals = approvals;
       if (taskResult.status === 'fulfilled') {
-        tasks = [...taskResult.value.tasks].sort(
+        nextTasks = [...taskResult.value.tasks].sort(
           (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
         );
+        tasks = nextTasks;
       } else {
-        error = taskResult.reason instanceof Error ? taskResult.reason.message : 'Unable to load tasks.';
+        refreshErrors.push(
+          taskResult.reason instanceof Error ? taskResult.reason.message : 'Unable to load tasks.'
+        );
       }
 
       if (approvalResult.status === 'fulfilled') {
-        approvals = [...approvalResult.value.approvals].sort(
+        nextApprovals = [...approvalResult.value.approvals].sort(
           (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
         );
+        approvals = nextApprovals;
       } else {
-        error =
+        refreshErrors.push(
           approvalResult.reason instanceof Error
             ? approvalResult.reason.message
-            : 'Unable to load approvals.';
+            : 'Unable to load approvals.'
+        );
       }
 
       if (eventResult.status === 'fulfilled') {
         events = eventResult.value.events;
+      } else {
+        refreshErrors.push(
+          eventResult.reason instanceof Error ? eventResult.reason.message : 'Unable to load events.'
+        );
       }
 
       if (agentResult.status === 'fulfilled') {
         agents = agentResult.value.agents;
+      } else {
+        refreshErrors.push(
+          agentResult.reason instanceof Error ? agentResult.reason.message : 'Unable to load agents.'
+        );
       }
 
-      lastRefresh = timeLabel();
-      if (selectedTaskId && !tasks.some((task) => task.id === selectedTaskId)) {
-        selectedTaskId = '';
+      const syncSelection = resolveTaskSyncSelection({
+        tasks: nextTasks,
+        approvals: nextApprovals,
+        taskFilter,
+        queueFilter,
+        taskSearch,
+        selectedTaskId
+      });
+      selectedTaskId = syncSelection.selectedTaskId;
+      if (!syncSelection.selectedTaskId) {
+        loadedRunsTaskId = '';
+        loadedDiffTaskId = '';
+        selectedDiffFilePath = '';
       }
-      if (selectedTaskId) {
-        await refreshTaskRuns(selectedTaskId);
-        const selected = tasks.find((task) => task.id === selectedTaskId);
-        if (!isRemoteTask(selected)) {
-          await refreshTaskDiff(selectedTaskId);
-        }
+      error = refreshErrors.join(' ');
+      lastRefresh = syncTimeLabel();
+      if (syncSelection.shouldLoadRuns) {
+        void refreshSelectedTaskDetails(syncSelection.selectedTaskId, {
+          force: true,
+          task: syncSelection.selectedTask
+        });
       }
     } finally {
-      refreshing = false;
+      if (sequence === refreshStateSequence) {
+        refreshing = false;
+      }
     }
   };
 
@@ -795,13 +879,14 @@
 
   const selectTask = (id: string) => {
     selectedTaskId = id;
-    loadedDiffTaskId = id;
+    loadedRunsTaskId = '';
+    loadedDiffTaskId = '';
     selectedDiffFilePath = '';
-    void refreshTaskRuns(id);
-    const selected = tasks.find((task) => task.id === id);
-    if (!isRemoteTask(selected)) {
-      void refreshTaskDiff(id);
-    }
+    void refreshSelectedTaskDetails(id, {
+      force: true,
+      resetDiffSelection: true,
+      task: tasks.find((task) => task.id === id)
+    });
   };
 
   const performTaskAction = async (action: 'cancel' | 'retry') => {
@@ -818,10 +903,10 @@
           : await client.retryTask(taskId);
       addMessage('assistant', response.reply || `${action} submitted.`, 'program');
       await refreshState();
-      await refreshTaskRuns(taskId);
-      if (!isRemoteTask(currentTask)) {
-        await refreshTaskDiff(taskId);
-      }
+      await refreshSelectedTaskDetails(taskId, {
+        force: true,
+        task: tasks.find((task) => task.id === taskId)
+      });
     } catch (err) {
       error = err instanceof Error ? err.message : `Unable to ${action} task.`;
     } finally {

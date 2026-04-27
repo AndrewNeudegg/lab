@@ -2287,6 +2287,30 @@
 
   .diff-review {
     overflow: hidden;
+    --diff-bg: var(--surface, #ffffff);
+    --diff-bg-muted: var(--surface-muted, #f8fafc);
+    --diff-bg-subtle: #fbfdff;
+    --diff-bg-hover: var(--surface-hover, #eef5ff);
+    --diff-border: var(--border-soft, #e2e8f0);
+    --diff-border-strong: var(--border, #cbd5e1);
+    --diff-text: var(--text, #243047);
+    --diff-text-strong: var(--text-strong, #111827);
+    --diff-muted: var(--muted, #64748b);
+    --diff-selected-bg: #eff6ff;
+    --diff-selected-border: #93c5fd;
+    --diff-accent-text: #1d4ed8;
+    --diff-add-bg: #ecfdf3;
+    --diff-add-gutter-bg: #dcfce7;
+    --diff-add-text: #166534;
+    --diff-delete-bg: #fff1f2;
+    --diff-delete-gutter-bg: #fee2e2;
+    --diff-delete-text: #991b1b;
+    --diff-hunk-bg: #eff6ff;
+    --diff-hunk-text: #1e40af;
+    --diff-changed-bg: rgb(250 204 21 / 0.38);
+    border-color: var(--diff-border);
+    color: var(--diff-text);
+    background: var(--diff-bg);
   }
 
   .diff-review > header,
@@ -2296,7 +2320,7 @@
     justify-content: space-between;
     gap: 0.75rem;
     padding: 0.85rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--diff-border);
   }
 
   .diff-review header p,
@@ -2308,7 +2332,7 @@
   }
 
   .diff-review header p {
-    color: #64748b;
+    color: var(--diff-muted);
     font-size: 0.72rem;
     font-weight: 800;
     letter-spacing: 0.06em;
@@ -2317,7 +2341,7 @@
 
   .diff-review h3 {
     margin-top: 0.1rem;
-    color: #111827;
+    color: var(--diff-text-strong);
     font-size: 0.95rem;
   }
 
@@ -2325,7 +2349,7 @@
   .diff-file small,
   .diff-file header span,
   .diff-meta {
-    color: #64748b;
+    color: var(--diff-muted);
     font-size: 0.76rem;
     font-weight: 750;
   }
@@ -2337,10 +2361,22 @@
     gap: 0.45rem;
   }
 
+  .diff-controls button {
+    border-color: var(--diff-border-strong);
+    color: var(--diff-text);
+    background: var(--diff-bg);
+  }
+
+  .diff-controls button:hover:not(:disabled),
+  .diff-file-list button:hover:not(:disabled) {
+    border-color: var(--diff-selected-border);
+    background: var(--diff-bg-hover);
+  }
+
   .diff-controls button.active {
-    border-color: #2563eb;
-    color: #1d4ed8;
-    background: #eff6ff;
+    border-color: var(--diff-selected-border);
+    color: var(--diff-accent-text);
+    background: var(--diff-selected-bg);
   }
 
   .diff-meta {
@@ -2349,8 +2385,8 @@
     justify-content: space-between;
     gap: 0.75rem;
     padding: 0.65rem 0.85rem;
-    border-bottom: 1px solid #eef2f7;
-    background: #f8fafc;
+    border-bottom: 1px solid var(--diff-border);
+    background: var(--diff-bg-muted);
   }
 
   .diff-meta code {
@@ -2372,31 +2408,38 @@
     max-height: 32rem;
     overflow: auto;
     padding: 0.75rem;
-    border-right: 1px solid #e2e8f0;
-    background: #fbfdff;
+    border-right: 1px solid var(--diff-border);
+    background: var(--diff-bg-subtle);
   }
 
   .diff-file-list button {
     display: grid;
+    grid-template-rows: auto auto;
+    align-content: center;
     gap: 0.16rem;
     width: 100%;
     min-width: 0;
-    min-height: 0;
+    min-height: 3.15rem;
     padding: 0.55rem 0.6rem;
     border-color: transparent;
     border-radius: 0.55rem;
+    color: var(--diff-text);
+    background: transparent;
     text-align: left;
   }
 
   .diff-file-list button.selected {
-    border-color: #93c5fd;
-    background: #eff6ff;
+    border-color: var(--diff-selected-border);
+    background: var(--diff-selected-bg);
   }
 
   .diff-file-list span,
   .diff-file strong {
+    display: block;
+    min-width: 0;
     overflow: hidden;
-    color: #111827;
+    color: var(--diff-text-strong);
+    line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -2406,9 +2449,12 @@
   }
 
   .diff-file-list small {
+    display: block;
+    min-width: 0;
     overflow: hidden;
-    color: #64748b;
+    color: var(--diff-muted);
     font-size: 0.7rem;
+    line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -2431,12 +2477,13 @@
   .diff-scroll {
     max-height: 34rem;
     overflow: auto;
-    background: #ffffff;
+    background: var(--diff-bg);
   }
 
   .split-diff,
   .unified-diff {
     min-width: 46rem;
+    color: var(--diff-text);
     font-family:
       "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     font-size: 0.76rem;
@@ -2451,7 +2498,7 @@
   .diff-row {
     display: grid;
     min-height: 1.55rem;
-    border-top: 1px solid #f1f5f9;
+    border-top: 1px solid var(--diff-border);
   }
 
   .split-row {
@@ -2479,8 +2526,8 @@
   }
 
   .line-no {
-    color: #94a3b8;
-    background: #f8fafc;
+    color: var(--diff-muted);
+    background: var(--diff-bg-muted);
     text-align: right;
     user-select: none;
   }
@@ -2491,58 +2538,82 @@
   }
 
   .split-row code.blank {
-    background: #f8fafc;
+    background: var(--diff-bg-muted);
   }
 
   .marker {
     display: inline-block;
     width: 1.1rem;
-    color: #64748b;
+    color: var(--diff-muted);
     user-select: none;
   }
 
   .split-row.add code:last-child,
   .split-row.change code:last-child,
   .diff-row.add code {
-    background: #ecfdf3;
+    background: var(--diff-add-bg);
   }
 
   .split-row.delete code:nth-child(2),
   .split-row.change code:nth-child(2),
   .diff-row.delete code {
-    background: #fff1f2;
+    background: var(--diff-delete-bg);
   }
 
   .diff-row.add .line-no.new,
   .split-row.add .line-no.new,
   .split-row.change .line-no.new {
-    color: #166534;
-    background: #dcfce7;
+    color: var(--diff-add-text);
+    background: var(--diff-add-gutter-bg);
   }
 
   .diff-row.delete .line-no.old,
   .split-row.delete .line-no.old,
   .split-row.change .line-no.old {
-    color: #991b1b;
-    background: #fee2e2;
+    color: var(--diff-delete-text);
+    background: var(--diff-delete-gutter-bg);
   }
 
   .split-row.hunk,
   .diff-row.hunk {
-    color: #1e40af;
-    background: #eff6ff;
+    color: var(--diff-hunk-text);
+    background: var(--diff-hunk-bg);
     font-weight: 800;
   }
 
   .split-row.meta,
   .diff-row.meta {
-    color: #475569;
-    background: #f8fafc;
+    color: var(--diff-muted);
+    background: var(--diff-bg-muted);
   }
 
   .changed {
     border-radius: 0.2rem;
-    background: rgb(250 204 21 / 0.38);
+    background: var(--diff-changed-bg);
+  }
+
+  :global(html[data-theme='dark'] .diff-review) {
+    --diff-bg: #0b1120;
+    --diff-bg-muted: #111827;
+    --diff-bg-subtle: #101827;
+    --diff-bg-hover: #243047;
+    --diff-border: #263244;
+    --diff-border-strong: #334155;
+    --diff-text: #dbe7f6;
+    --diff-text-strong: #f8fafc;
+    --diff-muted: #9fb0c7;
+    --diff-selected-bg: #10254a;
+    --diff-selected-border: #1d4ed8;
+    --diff-accent-text: #bfdbfe;
+    --diff-add-bg: #0f2f22;
+    --diff-add-gutter-bg: #164e32;
+    --diff-add-text: #bbf7d0;
+    --diff-delete-bg: #3a1418;
+    --diff-delete-gutter-bg: #7f1d1d;
+    --diff-delete-text: #fecaca;
+    --diff-hunk-bg: #10254a;
+    --diff-hunk-text: #bfdbfe;
+    --diff-changed-bg: rgb(202 138 4 / 0.42);
   }
 
   .state-machine {

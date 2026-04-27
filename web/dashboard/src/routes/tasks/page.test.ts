@@ -102,6 +102,14 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('!isRemoteTask(currentTask) && void refreshTaskDiff(currentTask.id)');
   });
 
+  test('keeps diff file labels legible and theme-aware', () => {
+    expect(pageSource).toContain('--diff-text-strong: var(--text-strong, #111827);');
+    expect(pageSource).toContain(":global(html[data-theme='dark'] .diff-review)");
+    expect(pageSource).toContain('grid-template-rows: auto auto;');
+    expect(pageSource).toContain('min-height: 3.15rem;');
+    expect(pageSource).toContain('line-height: 1.25;');
+  });
+
   test('caps the mobile queue above the selected task record', () => {
     expect(pageSource).toContain('height: auto;');
     expect(pageSource).toContain('max-height: min(54dvh, 28rem);');

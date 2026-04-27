@@ -267,7 +267,9 @@ const run = async () => {
               })),
               fileButtons: [...document.querySelectorAll('[aria-label="Changed files"] button')].map((button) => ({
                 text: button.innerText,
-                selected: button.classList.contains('selected')
+                selected: button.classList.contains('selected'),
+                label: button.querySelector('span')?.innerText || '',
+                labelHeight: button.querySelector('span')?.getBoundingClientRect().height || 0
               })),
               splitRows: document.querySelectorAll('[aria-label="Split diff"] .split-row').length,
               unifiedRows: document.querySelectorAll('[aria-label="Unified diff"] .diff-row').length
@@ -298,6 +300,11 @@ const run = async () => {
       assert(
         diffInitial.fileButtons.some((button) => button.selected),
         'changed file list rendered without a selected file',
+        diffInitial
+      );
+      assert(
+        diffInitial.fileButtons.every((button) => button.label.trim().length > 0 && button.labelHeight >= 10),
+        'changed file list labels were empty or visually collapsed',
         diffInitial
       );
       assert(diffInitial.splitRows > 0, 'split diff rows did not render for selected file', diffInitial);
@@ -342,6 +349,44 @@ const run = async () => {
       'Split diff control did not become active again',
       diffSplit
     );
+
+    const diffDark = await evalJS(
+      cdp,
+      `(localStorage.setItem('homelabd.dashboard.theme', 'dark'),
+        document.documentElement.dataset.theme = 'dark',
+        document.documentElement.style.colorScheme = 'dark',
+        new Promise((resolve) => requestAnimationFrame(() => {
+          const panel = document.querySelector('[aria-label="Task diff"]');
+          const selected = document.querySelector('[aria-label="Changed files"] button.selected');
+          const label = selected?.querySelector('span');
+          const code = document.querySelector('[aria-label="Split diff"] .split-row code:not(.blank)');
+          const styleFor = (element) => element ? {
+            color: getComputedStyle(element).color,
+            background: getComputedStyle(element).backgroundColor,
+            border: getComputedStyle(element).borderColor,
+            height: element.getBoundingClientRect().height,
+            text: element.textContent || ''
+          } : null;
+          resolve({
+            theme: document.documentElement.dataset.theme,
+            panel: styleFor(panel),
+            selected: styleFor(selected),
+            label: styleFor(label),
+            code: styleFor(code)
+          });
+        })))`
+    );
+    if (diffInitial.fileButtons.length > 0) {
+      assert(diffDark.theme === 'dark', 'dark theme did not apply to the document', diffDark);
+      assert(diffDark.label?.text.trim(), 'dark diff file label text was empty', diffDark);
+      assert(diffDark.label?.height >= 10, 'dark diff file label was visually collapsed', diffDark);
+      assert(
+        diffDark.panel?.background !== 'rgb(255, 255, 255)' &&
+          diffDark.selected?.background !== 'rgb(239, 246, 255)',
+        'diff panel kept light-mode backgrounds in dark mode',
+        diffDark
+      );
+    }
 
     const collapse = await evalJS(
       cdp,

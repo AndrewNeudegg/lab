@@ -12,4 +12,10 @@ describe('tasks page UAT flow', () => {
     expect(rowAssertionIndex).toBeGreaterThan(-1);
     expect(allClickIndex).toBeLessThan(rowAssertionIndex);
   });
+
+  test('checks diff file labels and dark theme contrast', () => {
+    expect(scriptSource).toContain('changed file list labels were empty or visually collapsed');
+    expect(scriptSource).toContain("localStorage.setItem('homelabd.dashboard.theme', 'dark')");
+    expect(scriptSource).toContain('diff panel kept light-mode backgrounds in dark mode');
+  });
 });

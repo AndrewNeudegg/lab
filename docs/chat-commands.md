@@ -75,7 +75,24 @@ search the web for current SvelteKit adapter-auto production deployment guidance
 search internet for Bun workspace package.json docs
 ```
 
-Web search runs through the `internet.search` tool. Academic wording such as `academic`, `scholarly`, or `papers` searches scholarly sources.
+Web search runs through the `internet.search` tool. The default web backend is SearXNG, using the hosted `https://searxng.website/` instance plus public-instance discovery from `https://searx.space/data/instances.json` when no instance is configured. Results are deduplicated across attempted instances and include source-instance metadata. Academic wording such as `academic`, `scholarly`, or `papers` searches scholarly sources.
+
+Use environment variables when a specific SearXNG deployment is preferred:
+
+```text
+HOMELABD_SEARXNG_INSTANCES=https://search.example/,https://backup.example/
+HOMELABD_SEARXNG_DISCOVERY=0
+```
+
+`HOMELABD_SEARCH_PROVIDER=searxng|brave|tavily|duckduckgo` can force a backend. `internet.search` also accepts `time_range` (`day`, `month`, or `year`) and `language` for SearXNG web searches.
+
+Spelling and grammar cleanup runs through `text.correct`. It is a local, dependency-free helper for short English text and search queries. Direct web-search and research commands use it before searching when the tool is registered, and LLM agents can call it before `internet.search` for typo-prone natural-language queries:
+
+```json
+{"text":"kittens in pijamas","mode":"search_query","max_variants":4}
+```
+
+The result includes `corrected_text`, a correction list, and `search_queries` such as `kittens in pajamas` and `kittens in pyjamas`.
 
 Use research when a quick search result is not enough and the agent needs a source bundle to reason from:
 
@@ -85,7 +102,7 @@ deep research local LLM agent web research architecture
 research academic papers on deep research agents
 ```
 
-Research runs through `internet.research`. It creates fan-out queries, searches web and/or academic sources, deduplicates URLs, fetches bounded text from top public pages, and returns follow-up queries. If `BRAVE_SEARCH_API_KEY` or `TAVILY_API_KEY` is set, `internet.search` and `internet.research` use those stronger search backends before falling back to DuckDuckGo. `HOMELABD_SEARCH_PROVIDER=brave|tavily|duckduckgo` can force a provider.
+Research runs through `internet.research`. It creates fan-out queries, searches web and/or academic sources, deduplicates URLs, fetches bounded text from top public pages, and returns follow-up queries. SearXNG is used for web fan-out by default. Brave, Tavily, and DuckDuckGo remain available as explicit fallbacks; Brave and Tavily require their existing API key environment variables.
 
 ## Task Worktree Recovery
 

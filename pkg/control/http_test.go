@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -94,6 +95,86 @@ func TestTaskRunsEndpointListsExternalArtifacts(t *testing.T) {
 	}
 	if got.Runs[0].Path == "" {
 		t.Fatalf("run path was not returned: %#v", got.Runs[0])
+	}
+}
+
+func TestTaskDiffEndpointReturnsStructuredBranchDiff(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	workspaceRoot := filepath.Join(dir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "task_20260426_204322_c01777ee")
+	gitHTTPTestRun(t, "", "init", "--initial-branch=main", repo)
+	gitHTTPTestRun(t, repo, "config", "user.email", "test@example.com")
+	gitHTTPTestRun(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitHTTPTestRun(t, repo, "add", "app.txt")
+	gitHTTPTestRun(t, repo, "commit", "-m", "base")
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitHTTPTestRun(t, repo, "worktree", "add", "-b", "homelabd/task_20260426_204322_c01777ee", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("base\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitHTTPTestRun(t, workspace, "add", "app.txt")
+	gitHTTPTestRun(t, workspace, "commit", "-m", "change app")
+
+	cfg := config.Default()
+	cfg.DataDir = filepath.Join(dir, "data")
+	cfg.Repo.Root = repo
+	cfg.Repo.WorkspaceRoot = workspaceRoot
+	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
+	orch := agent.NewOrchestrator(
+		cfg,
+		eventlog.NewStore(filepath.Join(cfg.DataDir, "events")),
+		tasks,
+		approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals")),
+		tool.NewRegistry(),
+		tool.NewPolicy(nil),
+		nil,
+		"",
+	)
+	taskID := "task_20260426_204322_c01777ee"
+	if err := tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "change app",
+		Goal:       "change app",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "codex",
+		Workspace:  workspace,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := Server{Orchestrator: orch}
+	mux := http.NewServeMux()
+	server.register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/tasks/c01777ee/diff", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body.String())
+	}
+	var got agent.TaskDiff
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TaskID != taskID {
+		t.Fatalf("task id = %q, want %q", got.TaskID, taskID)
+	}
+	if got.Summary.Files != 1 || got.Summary.Additions != 1 || got.Summary.Deletions != 0 {
+		t.Fatalf("summary = %#v, want one added line in one file", got.Summary)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "app.txt" || got.Files[0].Status != "modified" {
+		t.Fatalf("files = %#v, want modified app.txt", got.Files)
+	}
+	if !strings.Contains(got.RawDiff, "+changed") || got.BaseLabel != "main" {
+		t.Fatalf("diff = %#v, base label = %q", got.RawDiff, got.BaseLabel)
 	}
 }
 
@@ -396,5 +477,17 @@ func writeJSONFile(t *testing.T, path string, value any) {
 	}
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func gitHTTPTestRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 }

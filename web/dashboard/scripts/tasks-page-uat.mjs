@@ -249,6 +249,100 @@ const run = async () => {
       afterSelect
     );
 
+    const diffInitial = await evalJS(
+      cdp,
+      `new Promise((resolve) => {
+        const started = Date.now();
+        const sample = () => {
+          const panel = document.querySelector('[aria-label="Task diff"]');
+          const text = panel?.innerText || '';
+          const loading = text.includes('Loading task diff');
+          if ((panel && !loading) || Date.now() - started > 3500) {
+            resolve({
+              text,
+              controls: [...document.querySelectorAll('[aria-label="Diff controls"] button')].map((button) => ({
+                text: button.innerText,
+                active: button.classList.contains('active'),
+                disabled: button.disabled
+              })),
+              fileButtons: [...document.querySelectorAll('[aria-label="Changed files"] button')].map((button) => ({
+                text: button.innerText,
+                selected: button.classList.contains('selected')
+              })),
+              splitRows: document.querySelectorAll('[aria-label="Split diff"] .split-row').length,
+              unifiedRows: document.querySelectorAll('[aria-label="Unified diff"] .diff-row').length
+            });
+            return;
+          }
+          setTimeout(sample, 100);
+        };
+        sample();
+      })`
+    );
+    assert(
+      diffInitial.text.toLowerCase().includes('changes vs main'),
+      'task diff panel did not render',
+      diffInitial
+    );
+    assert(
+      diffInitial.controls.some((control) => control.text.includes('Split') && control.active),
+      'Split diff view was not active by default',
+      diffInitial
+    );
+    assert(
+      diffInitial.controls.some((control) => control.text.includes('Unified')),
+      'Unified diff control did not render',
+      diffInitial
+    );
+    if (diffInitial.fileButtons.length > 0) {
+      assert(
+        diffInitial.fileButtons.some((button) => button.selected),
+        'changed file list rendered without a selected file',
+        diffInitial
+      );
+      assert(diffInitial.splitRows > 0, 'split diff rows did not render for selected file', diffInitial);
+    }
+
+    const diffUnified = await evalJS(
+      cdp,
+      `([...document.querySelectorAll('[aria-label="Diff controls"] button')]
+          .find((button) => button.innerText.includes('Unified'))?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          controls: [...document.querySelectorAll('[aria-label="Diff controls"] button')].map((button) => ({
+            text: button.innerText,
+            active: button.classList.contains('active')
+          })),
+          unifiedRows: document.querySelectorAll('[aria-label="Unified diff"] .diff-row').length,
+          splitRows: document.querySelectorAll('[aria-label="Split diff"] .split-row').length
+        }), 150)))`
+    );
+    assert(
+      diffUnified.controls.some((control) => control.text.includes('Unified') && control.active),
+      'Unified diff control did not become active',
+      diffUnified
+    );
+    if (diffInitial.fileButtons.length > 0) {
+      assert(diffUnified.unifiedRows > 0, 'unified diff rows did not render after toggle', diffUnified);
+    }
+
+    const diffSplit = await evalJS(
+      cdp,
+      `([...document.querySelectorAll('[aria-label="Diff controls"] button')]
+          .find((button) => button.innerText.includes('Split'))?.click(),
+        new Promise((resolve) => setTimeout(() => resolve({
+          controls: [...document.querySelectorAll('[aria-label="Diff controls"] button')].map((button) => ({
+            text: button.innerText,
+            active: button.classList.contains('active')
+          })),
+          selectedFile: document.querySelector('[aria-label="Changed files"] button.selected')?.innerText || ''
+        }), 150)))`
+    );
+    assert(
+      diffSplit.controls.some((control) => control.text.includes('Split') && control.active),
+      'Split diff control did not become active again',
+      diffSplit
+    );
+
     const collapse = await evalJS(
       cdp,
       `(document.querySelector('.command-header-actions button')?.click(),
@@ -392,6 +486,9 @@ const run = async () => {
           afterRunning,
           afterAll,
           afterSelect,
+          diffInitial,
+          diffUnified,
+          diffSplit,
           collapse,
           open,
           mobile,

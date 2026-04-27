@@ -11,6 +11,7 @@ import type {
   HomelabdMessageRequest,
   HomelabdMessageResponse,
   HomelabdTaskActionResponse,
+  HomelabdTaskDiffResponse,
   HomelabdTaskRetryRequest,
   HomelabdTaskRunsResponse,
   HomelabdTasksResponse,
@@ -83,6 +84,12 @@ export const createHomelabdClient = (
     },
     listTaskRuns(taskId: string) {
       return apiFetch<HomelabdTaskRunsResponse>(`/tasks/${encodeURIComponent(taskId)}/runs`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    getTaskDiff(taskId: string) {
+      return apiFetch<HomelabdTaskDiffResponse>(`/tasks/${encodeURIComponent(taskId)}/diff`, {
         baseUrl,
         fetcher
       });

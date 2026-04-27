@@ -1172,6 +1172,71 @@ func TestReviewWorkspaceCommitFeedsBranchDiff(t *testing.T) {
 	}
 }
 
+func TestNaturalDiffQuestionUsesProgramDiffSummary(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260426_204322_c01777ee",
+		Title:      "change main",
+		Goal:       "change main",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "codex",
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := orch.HandleDetailed(context.Background(), "dashboard", "what is the diff between c01777ee and main?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != "program" {
+		t.Fatalf("source = %q, want program", result.Source)
+	}
+	if !strings.Contains(result.Reply, "Diff for c01777ee") ||
+		!strings.Contains(result.Reply, "main.go") ||
+		!strings.Contains(result.Reply, "homelabctl task diff c01777ee") {
+		t.Fatalf("reply = %q, want diff summary and CLI hint", result.Reply)
+	}
+}
+
+func TestNaturalDiffQuestionForRemoteTaskExplainsRemoteCheckout(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_20260426_204322_c01777ee",
+		Title:      "change remote",
+		Goal:       "change remote",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "desk",
+		Target: &taskstore.ExecutionTarget{
+			Mode:    "remote",
+			AgentID: "desk",
+			Workdir: "/srv/repo",
+		},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := orch.HandleDetailed(context.Background(), "dashboard", "what is the diff between c01777ee and main?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != "program" {
+		t.Fatalf("source = %q, want program", result.Source)
+	}
+	if !strings.Contains(result.Reply, "Remote task diffs are not read from homelabd's repo") {
+		t.Fatalf("reply = %q, want remote diff guidance", result.Reply)
+	}
+}
+
 func TestApprovedMergeAwaitsVerificationUntilAccepted(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {

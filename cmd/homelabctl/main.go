@@ -115,10 +115,12 @@ func (c cli) dispatch(args []string) error {
 		return c.task(withAction("show", args[1:]))
 	case "runs":
 		return c.task(withAction("runs", args[1:]))
+	case "diff":
+		return c.task(withAction("diff", args[1:]))
 	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry":
 		return c.task(withAction(cmd, args[1:]))
 	case "status", "agents", "delete", "remove", "rm", "refresh", "rebase", "sync",
-		"delegate", "escalate", "codex", "claude", "gemini", "ux", "diff", "test", "patch",
+		"delegate", "escalate", "codex", "claude", "gemini", "ux", "test", "patch",
 		"search", "web", "internet", "research", "read", "reflect", "deep", "work", "start":
 		return c.message(strings.Join(args, " "))
 	default:
@@ -128,7 +130,7 @@ func (c cli) dispatch(args []string) error {
 
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|run|review|accept|reopen|cancel|retry>")
+		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|reopen|cancel|retry>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -158,6 +160,11 @@ func (c cli) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task runs <task_id>")
 		}
 		return c.do(http.MethodGet, path("tasks", args[1], "runs"), nil)
+	case "diff":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl task diff <task_id>")
+		}
+		return c.printTaskDiff(path("tasks", args[1], "diff"))
 	case "run", "review":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: homelabctl task %s <task_id>", action)
@@ -375,6 +382,42 @@ func (c cli) message(message string) error {
 		return nil
 	}
 	return c.printResponse(out)
+}
+
+func (c cli) printTaskDiff(endpoint string) error {
+	out, err := c.request(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	if c.json {
+		return c.printResponse(out)
+	}
+	var diff struct {
+		BaseLabel string `json:"base_label"`
+		RawDiff   string `json:"raw_diff"`
+		Summary   struct {
+			Files     int `json:"files"`
+			Additions int `json:"additions"`
+			Deletions int `json:"deletions"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out, &diff); err != nil {
+		return c.printResponse(out)
+	}
+	if strings.EqualFold(diff.BaseLabel, "remote agent") {
+		fmt.Fprintln(c.out, "remote task diff is recorded by the remote agent")
+		return nil
+	}
+	if strings.TrimSpace(diff.RawDiff) == "" {
+		fmt.Fprintln(c.out, "no diff")
+		return nil
+	}
+	fmt.Fprintf(c.out, "# %d changed file(s), +%d/-%d\n", diff.Summary.Files, diff.Summary.Additions, diff.Summary.Deletions)
+	fmt.Fprint(c.out, diff.RawDiff)
+	if !strings.HasSuffix(diff.RawDiff, "\n") {
+		fmt.Fprintln(c.out)
+	}
+	return nil
 }
 
 func (c cli) shell() error {

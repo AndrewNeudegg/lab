@@ -18,8 +18,18 @@
     type HomelabdRemoteAgent,
     type HomelabdRemoteAgentWorkdir,
     type HomelabdRunArtifact,
-    type HomelabdTask
+    type HomelabdTask,
+    type HomelabdTaskDiffResponse
   } from '@homelab/shared';
+  import {
+    buildSplitRows,
+    inlineChangeSegments,
+    parseUnifiedDiff,
+    type DiffSplitRow,
+    type InlineSegment,
+    type ParsedDiffFile,
+    type ParsedDiffLine
+  } from './diff-view';
   import {
     buildWorkerTraceRuns,
     createTaskQueueView,
@@ -40,6 +50,7 @@
     command: string;
     reason: string;
   };
+  type DiffMode = 'split' | 'unified';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
@@ -79,12 +90,17 @@
   let contextAcknowledged = false;
   let refreshing = false;
   let error = '';
+  let diffError = '';
   let taskActionLoading = '';
+  let diffLoadingTaskId = '';
   let messageId = 0;
   let taskFilter: TaskFilter = 'attention';
   let queueFilter: TaskQueueFilter = 'all';
   let taskSearch = '';
   let selectedTaskId = '';
+  let selectedDiffFilePath = '';
+  let loadedDiffTaskId = '';
+  let diffMode: DiffMode = 'split';
   let lastRefresh = '';
   let taskQueueOpen = true;
   let commandPanelOpen = true;
@@ -96,6 +112,7 @@
   let approvals: HomelabdApproval[] = [];
   let events: HomelabdEvent[] = [];
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
+  let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
   let taskQueueView: TaskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -112,6 +129,10 @@
   let currentTask: HomelabdTask | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
   let currentTaskRuns: WorkerTraceRun[] = [];
+  let currentTaskDiff: HomelabdTaskDiffResponse | undefined;
+  let currentDiffFiles: ParsedDiffFile[] = [];
+  let currentDiffFile: ParsedDiffFile | undefined;
+  let currentSplitRows: DiffSplitRow[] = [];
   let needsActionTotal = 0;
   let selectedAgentId = '';
   let selectedWorkdirId = '';
@@ -151,6 +172,8 @@
     const dir = task.target.workdir || task.target.workdir_id || 'directory';
     return `${machine} · ${dir}`;
   };
+
+  const isRemoteTask = (task?: HomelabdTask) => task?.target?.mode === 'remote';
 
   const compactTime = (value?: string) => {
     if (!value) {
@@ -344,6 +367,21 @@
   $: currentTaskRuns = currentTask
     ? buildWorkerTraceRuns(currentTaskEvents, taskRuns[currentTask.id] || [])
     : [];
+  $: currentTaskDiff = currentTask ? taskDiffs[currentTask.id] : undefined;
+  $: currentDiffFiles = currentTaskDiff ? parseUnifiedDiff(currentTaskDiff.raw_diff) : [];
+  $: if (currentDiffFiles.length && !currentDiffFiles.some((file) => diffFileKey(file) === selectedDiffFilePath)) {
+    selectedDiffFilePath = diffFileKey(currentDiffFiles[0]);
+  }
+  $: if (!currentDiffFiles.length && selectedDiffFilePath) {
+    selectedDiffFilePath = '';
+  }
+  $: currentDiffFile = currentDiffFiles.find((file) => diffFileKey(file) === selectedDiffFilePath);
+  $: currentSplitRows = buildSplitRows(currentDiffFile);
+  $: if (currentTask?.id && !isRemoteTask(currentTask) && currentTask.id !== loadedDiffTaskId) {
+    loadedDiffTaskId = currentTask.id;
+    selectedDiffFilePath = '';
+    void refreshTaskDiff(currentTask.id);
+  }
   $: needsActionTotal =
     attentionTaskItems.length + pendingApprovalItems.filter((approval) => !approval.task_id).length;
   $: onlineAgentItems = agents.filter((agent) => agent.status !== 'offline');
@@ -422,6 +460,62 @@
   const runOutput = (run: WorkerTraceRun) => run.output || run.artifact?.output || '';
 
   const runCommand = (run: WorkerTraceRun) => run.command?.join(' ') || 'external worker';
+
+  const diffFileKey = (file: ParsedDiffFile) => `${file.oldPath || ''}->${file.path}`;
+
+  const diffStatusLabel = (status = '') => status.replaceAll('_', ' ') || 'modified';
+
+  const diffFileTitle = (file: ParsedDiffFile) =>
+    file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path;
+
+  const diffLineMarker = (line?: ParsedDiffLine) => {
+    if (!line) {
+      return '';
+    }
+    if (line.kind === 'add') {
+      return '+';
+    }
+    if (line.kind === 'delete') {
+      return '-';
+    }
+    return ' ';
+  };
+
+  const diffLineSegments = (
+    line?: ParsedDiffLine,
+    partner?: ParsedDiffLine,
+    side: 'left' | 'right' = 'left'
+  ): InlineSegment[] => {
+    if (!line) {
+      return [{ text: '', changed: false }];
+    }
+    if (partner && line.kind !== 'context') {
+      const segments =
+        side === 'left'
+          ? inlineChangeSegments(line.content, partner.content)
+          : inlineChangeSegments(partner.content, line.content);
+      return side === 'left' ? segments.left : segments.right;
+    }
+    return [{ text: line.content, changed: false }];
+  };
+
+  const refreshTaskDiff = async (taskId: string) => {
+    if (!taskId) {
+      return;
+    }
+    diffLoadingTaskId = taskId;
+    diffError = '';
+    try {
+      const result = await client.getTaskDiff(taskId);
+      taskDiffs = { ...taskDiffs, [taskId]: result };
+    } catch (err) {
+      diffError = err instanceof Error ? err.message : 'Unable to load task diff.';
+    } finally {
+      if (diffLoadingTaskId === taskId) {
+        diffLoadingTaskId = '';
+      }
+    }
+  };
 
   const refreshTaskRuns = async (taskId: string) => {
     if (!taskId) {
@@ -614,6 +708,10 @@
       }
       if (selectedTaskId) {
         await refreshTaskRuns(selectedTaskId);
+        const selected = tasks.find((task) => task.id === selectedTaskId);
+        if (!isRemoteTask(selected)) {
+          await refreshTaskDiff(selectedTaskId);
+        }
       }
     } finally {
       refreshing = false;
@@ -697,7 +795,13 @@
 
   const selectTask = (id: string) => {
     selectedTaskId = id;
+    loadedDiffTaskId = id;
+    selectedDiffFilePath = '';
     void refreshTaskRuns(id);
+    const selected = tasks.find((task) => task.id === id);
+    if (!isRemoteTask(selected)) {
+      void refreshTaskDiff(id);
+    }
   };
 
   const performTaskAction = async (action: 'cancel' | 'retry') => {
@@ -715,6 +819,9 @@
       addMessage('assistant', response.reply || `${action} submitted.`, 'program');
       await refreshState();
       await refreshTaskRuns(taskId);
+      if (!isRemoteTask(currentTask)) {
+        await refreshTaskDiff(taskId);
+      }
     } catch (err) {
       error = err instanceof Error ? err.message : `Unable to ${action} task.`;
     } finally {
@@ -1045,6 +1152,163 @@
             <small>Agent {currentTask.target.agent_id} · backend {currentTask.target.backend || 'default'}</small>
           </section>
         {/if}
+
+        <section class="diff-review" aria-label="Task diff">
+          <header>
+            <div>
+              <p>Changes vs main</p>
+              <h3>
+                {#if currentTaskDiff}
+                  {currentTaskDiff.summary.files} file{currentTaskDiff.summary.files === 1 ? '' : 's'}
+                  <span>+{currentTaskDiff.summary.additions} / -{currentTaskDiff.summary.deletions}</span>
+                {:else}
+                  Diff
+                {/if}
+              </h3>
+            </div>
+            <div class="diff-controls" aria-label="Diff controls">
+              <button
+                type="button"
+                class:active={diffMode === 'split'}
+                on:click={() => (diffMode = 'split')}
+              >
+                Split
+              </button>
+              <button
+                type="button"
+                class:active={diffMode === 'unified'}
+                on:click={() => (diffMode = 'unified')}
+              >
+                Unified
+              </button>
+              <button
+                type="button"
+                disabled={diffLoadingTaskId === currentTask?.id || isRemoteTask(currentTask)}
+                on:click={() =>
+                  currentTask?.id && !isRemoteTask(currentTask) && void refreshTaskDiff(currentTask.id)}
+              >
+                {diffLoadingTaskId === currentTask?.id ? 'Loading' : 'Refresh'}
+              </button>
+            </div>
+          </header>
+
+          {#if diffError}
+            <p class="error" role="alert">{diffError}</p>
+          {/if}
+
+          {#if isRemoteTask(currentTask)}
+            <p class="empty">Remote task diffs are recorded by the remote agent. Inspect the result, worker trace, or remote checkout for changed files and validation.</p>
+          {:else if diffLoadingTaskId === currentTask?.id && !currentTaskDiff}
+            <p class="empty">Loading task diff…</p>
+          {:else if currentTaskDiff && !currentTaskDiff.raw_diff.trim()}
+            <p class="empty">No diff found between this task branch and current main.</p>
+          {:else if currentTaskDiff}
+            <div class="diff-meta">
+              <span>{currentTaskDiff.base_label || 'main'} → {currentTaskDiff.head_label || shortID(currentTaskDiff.task_id)}</span>
+              {#if currentTaskDiff.base_ref && currentTaskDiff.head_ref}
+                <code>{currentTaskDiff.base_ref.slice(0, 8)}...{currentTaskDiff.head_ref.slice(0, 8)}</code>
+              {/if}
+            </div>
+
+            <div class="diff-layout">
+              <nav class="diff-file-list" aria-label="Changed files">
+                {#each currentDiffFiles as file}
+                  <button
+                    type="button"
+                    class:selected={diffFileKey(file) === selectedDiffFilePath}
+                    on:click={() => (selectedDiffFilePath = diffFileKey(file))}
+                  >
+                    <span>{diffFileTitle(file)}</span>
+                    <small>{diffStatusLabel(file.status)} · +{file.additions} / -{file.deletions}</small>
+                  </button>
+                {/each}
+              </nav>
+
+              <article class="diff-file" aria-label="Selected file diff">
+                {#if currentDiffFile}
+                  <header>
+                    <div>
+                      <strong>{diffFileTitle(currentDiffFile)}</strong>
+                      <small>{diffStatusLabel(currentDiffFile.status)}</small>
+                    </div>
+                    <span>+{currentDiffFile.additions} / -{currentDiffFile.deletions}</span>
+                  </header>
+
+                  {#if currentDiffFile.binary}
+                    <p class="empty compact">Binary diff metadata is available, but binary content is not rendered inline.</p>
+                  {/if}
+
+                  {#if diffMode === 'split'}
+                    <div class="diff-scroll" data-mode="split">
+                      <div class="split-diff" role="table" aria-label="Split diff">
+                        {#each currentSplitRows as row}
+                          {#if row.kind === 'hunk' || row.kind === 'meta'}
+                            <div class={`split-row full ${row.kind}`} role="row">
+                              <code>{row.label}</code>
+                            </div>
+                          {:else}
+                            <div class={`split-row ${row.kind}`} role="row">
+                              <span class="line-no old">{row.left?.oldNumber ?? ''}</span>
+                              <code class:blank={!row.left}>
+                                {#if row.left}
+                                  <span class="marker">{diffLineMarker(row.left)}</span>
+                                  {#each diffLineSegments(row.left, row.kind === 'change' ? row.right : undefined, 'left') as segment}
+                                    <span class:changed={segment.changed}>{segment.text}</span>
+                                  {/each}
+                                {/if}
+                              </code>
+                              <span class="line-no new">{row.right?.newNumber ?? ''}</span>
+                              <code class:blank={!row.right}>
+                                {#if row.right}
+                                  <span class="marker">{diffLineMarker(row.right)}</span>
+                                  {#each diffLineSegments(row.right, row.kind === 'change' ? row.left : undefined, 'right') as segment}
+                                    <span class:changed={segment.changed}>{segment.text}</span>
+                                  {/each}
+                                {/if}
+                              </code>
+                            </div>
+                          {/if}
+                        {/each}
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="diff-scroll" data-mode="unified">
+                      <div class="unified-diff" role="table" aria-label="Unified diff">
+                        {#each currentDiffFile.headerLines as line}
+                          <div class="diff-row meta" role="row">
+                            <span class="line-no"></span>
+                            <span class="line-no"></span>
+                            <code>{line}</code>
+                          </div>
+                        {/each}
+                        {#each currentDiffFile.hunks as hunk}
+                          <div class="diff-row hunk" role="row">
+                            <span class="line-no"></span>
+                            <span class="line-no"></span>
+                            <code>{hunk.header}</code>
+                          </div>
+                          {#each hunk.lines as line}
+                            <div class={`diff-row ${line.kind}`} role="row">
+                              <span class="line-no old">{line.oldNumber ?? ''}</span>
+                              <span class="line-no new">{line.newNumber ?? ''}</span>
+                              <code>
+                                <span class="marker">{diffLineMarker(line)}</span>{line.content}
+                              </code>
+                            </div>
+                          {/each}
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                {:else}
+                  <p class="empty">Select a changed file to inspect.</p>
+                {/if}
+              </article>
+            </div>
+          {:else}
+            <p class="empty">Select a task to load its branch diff.</p>
+          {/if}
+        </section>
 
         {#if currentTask?.result}
           <section class="task-result">
@@ -1423,6 +1687,8 @@
   .triage button,
   .mini-actions button,
   .record-actions button,
+  .diff-controls button,
+  .diff-file-list button,
   .worker-controls button,
   .next-step button,
   .message-actions button,
@@ -1443,6 +1709,8 @@
   .triage button:hover,
   .mini-actions button:hover:not(:disabled),
   .record-actions button:hover:not(:disabled),
+  .diff-controls button:hover:not(:disabled),
+  .diff-file-list button:hover:not(:disabled),
   .worker-controls button:hover:not(:disabled),
   .next-step button:hover:not(:disabled),
   .message-actions button:hover:not(:disabled),
@@ -1968,6 +2236,7 @@
 
   .workspace-path,
   .execution-context,
+  .diff-review,
   .task-result,
   .task-plan,
   .task-input,
@@ -2014,6 +2283,266 @@
 
   .execution-context small {
     color: #92400e;
+  }
+
+  .diff-review {
+    overflow: hidden;
+  }
+
+  .diff-review > header,
+  .diff-file > header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.85rem;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .diff-review header p,
+  .diff-review h3,
+  .diff-file strong,
+  .diff-file small,
+  .diff-file header span {
+    margin: 0;
+  }
+
+  .diff-review header p {
+    color: #64748b;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .diff-review h3 {
+    margin-top: 0.1rem;
+    color: #111827;
+    font-size: 0.95rem;
+  }
+
+  .diff-review h3 span,
+  .diff-file small,
+  .diff-file header span,
+  .diff-meta {
+    color: #64748b;
+    font-size: 0.76rem;
+    font-weight: 750;
+  }
+
+  .diff-controls {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
+  }
+
+  .diff-controls button.active {
+    border-color: #2563eb;
+    color: #1d4ed8;
+    background: #eff6ff;
+  }
+
+  .diff-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.65rem 0.85rem;
+    border-bottom: 1px solid #eef2f7;
+    background: #f8fafc;
+  }
+
+  .diff-meta code {
+    font-family:
+      "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.72rem;
+  }
+
+  .diff-layout {
+    display: grid;
+    grid-template-columns: minmax(11rem, 16rem) minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .diff-file-list {
+    display: grid;
+    align-content: start;
+    gap: 0.35rem;
+    max-height: 32rem;
+    overflow: auto;
+    padding: 0.75rem;
+    border-right: 1px solid #e2e8f0;
+    background: #fbfdff;
+  }
+
+  .diff-file-list button {
+    display: grid;
+    gap: 0.16rem;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: 0.55rem 0.6rem;
+    border-color: transparent;
+    border-radius: 0.55rem;
+    text-align: left;
+  }
+
+  .diff-file-list button.selected {
+    border-color: #93c5fd;
+    background: #eff6ff;
+  }
+
+  .diff-file-list span,
+  .diff-file strong {
+    overflow: hidden;
+    color: #111827;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .diff-file-list span {
+    font-size: 0.8rem;
+  }
+
+  .diff-file-list small {
+    overflow: hidden;
+    color: #64748b;
+    font-size: 0.7rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .diff-file {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .diff-file > header {
+    align-items: center;
+    padding: 0.7rem 0.85rem;
+  }
+
+  .diff-file > header > div {
+    display: grid;
+    min-width: 0;
+  }
+
+  .diff-scroll {
+    max-height: 34rem;
+    overflow: auto;
+    background: #ffffff;
+  }
+
+  .split-diff,
+  .unified-diff {
+    min-width: 46rem;
+    font-family:
+      "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.76rem;
+    line-height: 1.45;
+  }
+
+  .split-diff {
+    min-width: 62rem;
+  }
+
+  .split-row,
+  .diff-row {
+    display: grid;
+    min-height: 1.55rem;
+    border-top: 1px solid #f1f5f9;
+  }
+
+  .split-row {
+    grid-template-columns: 3.4rem minmax(0, 1fr) 3.4rem minmax(0, 1fr);
+  }
+
+  .diff-row {
+    grid-template-columns: 3.4rem 3.4rem minmax(0, 1fr);
+  }
+
+  .split-row.full {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .split-row.full code {
+    padding-left: 0.8rem;
+  }
+
+  .line-no,
+  .split-row code,
+  .diff-row code {
+    min-width: 0;
+    padding: 0.18rem 0.55rem;
+    white-space: pre;
+  }
+
+  .line-no {
+    color: #94a3b8;
+    background: #f8fafc;
+    text-align: right;
+    user-select: none;
+  }
+
+  .split-row code,
+  .diff-row code {
+    overflow: visible;
+  }
+
+  .split-row code.blank {
+    background: #f8fafc;
+  }
+
+  .marker {
+    display: inline-block;
+    width: 1.1rem;
+    color: #64748b;
+    user-select: none;
+  }
+
+  .split-row.add code:last-child,
+  .split-row.change code:last-child,
+  .diff-row.add code {
+    background: #ecfdf3;
+  }
+
+  .split-row.delete code:nth-child(2),
+  .split-row.change code:nth-child(2),
+  .diff-row.delete code {
+    background: #fff1f2;
+  }
+
+  .diff-row.add .line-no.new,
+  .split-row.add .line-no.new,
+  .split-row.change .line-no.new {
+    color: #166534;
+    background: #dcfce7;
+  }
+
+  .diff-row.delete .line-no.old,
+  .split-row.delete .line-no.old,
+  .split-row.change .line-no.old {
+    color: #991b1b;
+    background: #fee2e2;
+  }
+
+  .split-row.hunk,
+  .diff-row.hunk {
+    color: #1e40af;
+    background: #eff6ff;
+    font-weight: 800;
+  }
+
+  .split-row.meta,
+  .diff-row.meta {
+    color: #475569;
+    background: #f8fafc;
+  }
+
+  .changed {
+    border-radius: 0.2rem;
+    background: rgb(250 204 21 / 0.38);
   }
 
   .state-machine {
@@ -2712,6 +3241,36 @@
 
     .next-step .primary-action {
       margin-left: 0;
+    }
+
+    .diff-review > header,
+    .diff-meta,
+    .diff-file > header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .diff-controls {
+      justify-content: flex-start;
+    }
+
+    .diff-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .diff-file-list {
+      display: flex;
+      overflow-x: auto;
+      border-right: 0;
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    .diff-file-list button {
+      flex: 0 0 min(16rem, 78vw);
+    }
+
+    .diff-scroll {
+      max-height: 28rem;
     }
 
     .command-panel {

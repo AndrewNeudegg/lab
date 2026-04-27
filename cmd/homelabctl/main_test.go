@@ -202,6 +202,61 @@ func TestUXShortcutSendsChatCommand(t *testing.T) {
 	}
 }
 
+func TestTaskDiffCommandPrintsRawPatch(t *testing.T) {
+	var observed observedRequest
+	stdout, stderr, code := runAgainstServer(t, []string{"diff", "task_123"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		observed = observeRequest(t, req)
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{
+			"raw_diff": "diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -1 +1,2 @@\n base\n+changed\n",
+			"summary":  map[string]any{"files": 1, "additions": 1, "deletions": 0},
+			"files":    []any{},
+		})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if observed.Method != http.MethodGet || observed.Path != "/tasks/task_123/diff" {
+		t.Fatalf("request = %s %s, want GET /tasks/task_123/diff", observed.Method, observed.Path)
+	}
+	if !strings.Contains(stdout, "# 1 changed file(s), +1/-0") || !strings.Contains(stdout, "+changed") {
+		t.Fatalf("stdout = %q, want summary and raw diff", stdout)
+	}
+}
+
+func TestTaskDiffCommandPrintsNoDiff(t *testing.T) {
+	stdout, stderr, code := runAgainstServer(t, []string{"task", "diff", "task_123"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{
+			"raw_diff": "",
+			"summary":  map[string]any{"files": 0, "additions": 0, "deletions": 0},
+			"files":    []any{},
+		})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if stdout != "no diff\n" {
+		t.Fatalf("stdout = %q, want no diff", stdout)
+	}
+}
+
+func TestTaskDiffCommandPrintsRemoteDiffGuidance(t *testing.T) {
+	stdout, stderr, code := runAgainstServer(t, []string{"task", "diff", "task_123"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{
+			"base_label": "remote agent",
+			"head_label": "desk",
+			"raw_diff":   "",
+			"summary":    map[string]any{"files": 0, "additions": 0, "deletions": 0},
+			"files":      []any{},
+		})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "remote task diff is recorded by the remote agent") {
+		t.Fatalf("stdout = %q, want remote diff guidance", stdout)
+	}
+}
+
 func TestInteractiveShellSendsLinesToMessageEndpoint(t *testing.T) {
 	var messages []string
 	stdout, stderr, code := runAgainstServer(t, []string{"shell"}, "status\n\napprove app_1\nexit\n", func(rw http.ResponseWriter, req *http.Request) {
@@ -323,6 +378,12 @@ func TestFullWorkflowIntegration(t *testing.T) {
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"agents": []map[string]any{{"id": "desk"}}})
 		case "/agents/desk":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"id": "desk"})
+		case "/tasks/task_1/diff":
+			writeTestJSON(t, rw, http.StatusOK, map[string]any{
+				"raw_diff": "",
+				"summary":  map[string]any{"files": 0, "additions": 0, "deletions": 0},
+				"files":    []any{},
+			})
 		case "/approvals":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"approvals": []map[string]any{{"id": "app_1"}}})
 		case "/approvals/app_1/approve":
@@ -341,6 +402,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		{"tasks"},
 		{"show", "task_1"},
 		{"runs", "task_1"},
+		{"diff", "task_1"},
 		{"run", "task_1"},
 		{"review", "task_1"},
 		{"accept", "task_1"},
@@ -364,6 +426,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		"GET /tasks",
 		"GET /tasks/task_1",
 		"GET /tasks/task_1/runs",
+		"GET /tasks/task_1/diff",
 		"POST /tasks/task_1/run",
 		"POST /tasks/task_1/review",
 		"POST /tasks/task_1/accept",

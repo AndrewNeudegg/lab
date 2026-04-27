@@ -200,6 +200,9 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 	if isActiveTaskStatusRequest(message) || isInFlightQuery(message) {
 		return programResult(o.listInFlight())
 	}
+	if selector, ok := taskDiffQuestionSelector(message); ok {
+		return programResult(o.describeTaskDiff(ctx, selector))
+	}
 	switch cmd {
 	case "help":
 		return programResult(help(), nil)
@@ -565,6 +568,51 @@ func isWebSearchRequest(message string) bool {
 		strings.Contains(normalized, " latest ") ||
 		strings.Contains(normalized, " docs ") ||
 		strings.Contains(normalized, " documentation ")
+}
+
+func taskDiffQuestionSelector(message string) (string, bool) {
+	normalized := normalizeIntentText(message)
+	if !strings.Contains(normalized, "diff") {
+		return "", false
+	}
+	if !strings.Contains(" "+normalized+" ", " main ") && !strings.Contains(" "+normalized+" ", " master ") {
+		return "", false
+	}
+	if !strings.Contains(normalized, "between") && !strings.Contains(normalized, " vs ") && !strings.Contains(normalized, "against") {
+		return "", false
+	}
+	for _, field := range strings.Fields(message) {
+		token := taskDiffSelectorToken(field)
+		if isTaskRefLike(token) {
+			return token, true
+		}
+	}
+	return "", false
+}
+
+func taskDiffSelectorToken(value string) string {
+	value = strings.Trim(value, " \t\r\n`'\".,?!:;()[]{}")
+	if strings.Contains(value, "/") {
+		parts := strings.Split(value, "/")
+		value = parts[len(parts)-1]
+	}
+	return strings.Trim(value, " \t\r\n`'\".,?!:;()[]{}")
+}
+
+func isTaskRefLike(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.HasPrefix(value, "task_") {
+		return true
+	}
+	if len(value) < 6 || len(value) > 16 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func webSearchQueryFromCommand(args []string) string {
@@ -3754,18 +3802,47 @@ func (o *Orchestrator) diffTask(ctx context.Context, selector string) (string, e
 	if remoteTask(t) {
 		return "Remote task diffs are not read from homelabd's repo. Inspect the remote agent result for changed files and validation.", nil
 	}
-	raw, err := o.runTool(ctx, "CoderAgent", "repo.current_diff", map[string]any{"workspace": t.Workspace}, taskID)
+	diff, err := o.TaskDiff(ctx, taskID)
 	if err != nil {
 		return "", err
 	}
-	var out struct {
-		Diff string `json:"diff"`
-	}
-	_ = json.Unmarshal(raw, &out)
-	if out.Diff == "" {
+	if strings.TrimSpace(diff.RawDiff) == "" {
 		return "no diff", nil
 	}
-	return out.Diff, nil
+	return diff.RawDiff, nil
+}
+
+func (o *Orchestrator) describeTaskDiff(ctx context.Context, selector string) (string, error) {
+	diff, err := o.TaskDiff(ctx, selector)
+	if err != nil {
+		return "", err
+	}
+	shortID := taskShortID(diff.TaskID)
+	base := diff.BaseLabel
+	if base == "" {
+		base = "main"
+	}
+	if strings.EqualFold(diff.BaseLabel, "remote agent") && strings.TrimSpace(diff.RawDiff) == "" {
+		return "Remote task diffs are not read from homelabd's repo. Inspect the remote agent result for changed files and validation.", nil
+	}
+	if strings.TrimSpace(diff.RawDiff) == "" {
+		return fmt.Sprintf("Task %s has no diff against %s.\nOpen the task in the dashboard to inspect the highlighted Changes panel, or run `homelabctl task diff %s`.", shortID, base, shortID), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Diff for %s against %s: %d changed file(s), +%d/-%d.", shortID, base, diff.Summary.Files, diff.Summary.Additions, diff.Summary.Deletions)
+	limit := len(diff.Files)
+	if limit > 8 {
+		limit = 8
+	}
+	for i := 0; i < limit; i++ {
+		file := diff.Files[i]
+		fmt.Fprintf(&b, "\n- %s (%s, +%d/-%d)", file.Path, file.Status, file.Additions, file.Deletions)
+	}
+	if len(diff.Files) > limit {
+		fmt.Fprintf(&b, "\n- ... %d more", len(diff.Files)-limit)
+	}
+	fmt.Fprintf(&b, "\nOpen Tasks and use the Changes vs main panel for highlighted unified/split review, or run `homelabctl task diff %s` for the raw patch.", shortID)
+	return b.String(), nil
 }
 
 func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string, error) {

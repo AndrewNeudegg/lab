@@ -56,7 +56,7 @@ go run ./cmd/homelabctl agents
 
 ## Task Commands
 
-Direct task commands use the typed HTTP endpoints and print pretty JSON:
+Direct task commands use typed HTTP endpoints. Most print pretty JSON; `task diff` prints a review-friendly patch by default:
 
 ```bash
 go run ./cmd/homelabctl task new "Add dashboard regression tests"
@@ -64,6 +64,7 @@ go run ./cmd/homelabctl task new --agent workstation --workdir repo "Update this
 go run ./cmd/homelabctl task list
 go run ./cmd/homelabctl task show task_123
 go run ./cmd/homelabctl task runs task_123
+go run ./cmd/homelabctl task diff task_123
 go run ./cmd/homelabctl task run task_123
 go run ./cmd/homelabctl task review task_123
 go run ./cmd/homelabctl task accept task_123
@@ -86,15 +87,17 @@ go run ./cmd/homelabctl reopen task_123 "needs mobile UAT"
 go run ./cmd/homelabctl cancel task_123
 go run ./cmd/homelabctl retry task_123
 go run ./cmd/homelabctl runs task_123
+go run ./cmd/homelabctl diff task_123
 ```
 
-Some orchestrator actions, such as `delegate`, `ux`, `refresh`, `diff`, `test`, and `delete`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
+`task diff` and its top-level `diff` alias call `GET /tasks/{task_id}/diff`. Plain output starts with a compact file/addition/deletion summary and then prints the raw patch. Add `-json` to inspect the structured response used by the dashboard diff viewer.
+
+Some orchestrator actions, such as `delegate`, `ux`, `refresh`, `test`, and `delete`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
 
 ```bash
 go run ./cmd/homelabctl delegate task_123 to codex "finish docs and tests"
 go run ./cmd/homelabctl ux task_123 "run a UX pass with research, regression tests, and browser UAT"
 go run ./cmd/homelabctl refresh task_123
-go run ./cmd/homelabctl diff task_123
 go run ./cmd/homelabctl delete task_123
 ```
 
@@ -186,6 +189,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks`, including optional remote `target`
 - `GET /tasks/{id}`
 - `GET /tasks/{id}/runs`
+- `GET /tasks/{id}/diff`
 - `POST /tasks/{id}/run`
 - `POST /tasks/{id}/review`
 - `POST /tasks/{id}/accept`

@@ -178,21 +178,21 @@
       "enabled": true,
       "command": "codex",
       "args": ["exec", "--skip-git-repo-check"],
-      "timeout_seconds": 900,
+      "timeout_seconds": 18000,
       "description": "OpenAI Codex CLI worker for coding tasks."
     },
     "claude": {
       "enabled": true,
       "command": "claude",
       "args": [],
-      "timeout_seconds": 900,
+      "timeout_seconds": 18000,
       "description": "Claude CLI worker for analysis or coding tasks."
     },
     "gemini": {
       "enabled": true,
       "command": "gemini",
       "args": [],
-      "timeout_seconds": 900,
+      "timeout_seconds": 18000,
       "description": "Gemini CLI worker for analysis or coding tasks."
     }
   }

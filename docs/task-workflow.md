@@ -16,7 +16,7 @@
 
 ## Planning Gate
 
-Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is also visible in the `/tasks` selected-task pane above the original input. The default planning gate derives the plan from task metadata, so local tasks, remote tasks, and legacy graph phases get distinct summaries, steps, and risks. It records:
+Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is visible in the `/tasks` selected-task pane as a collapsible reviewed-plan section. The default planning gate derives the plan from task metadata, so local tasks, remote tasks, and legacy graph phases get distinct summaries, steps, and risks. It records:
 
 - a concise task-, phase-, or target-specific plan summary
 - ordered execution steps for the current task, legacy graph phase, or execution target
@@ -37,7 +37,7 @@ Approvals are single-use decisions tied to the task state at the time they were 
 
 New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.
 
-Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat.
+Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat. Long diagnostics such as worker output, activity, the reviewed plan, and the original prompt are collapsible so they remain available without dominating the decision flow.
 
 Older task records may still contain graph metadata from the previous workflow:
 

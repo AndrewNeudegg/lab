@@ -124,7 +124,7 @@ const run = async () => {
         taskActionText: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
         syncText: document.querySelector('.task-header button')?.innerText || '',
         createSummary: document.querySelector('.target-create summary')?.innerText || '',
-        mobileTabsDisplay: getComputedStyle(document.querySelector('.mobile-tabs')).display
+        mobilePanelNavCount: document.querySelectorAll('[aria-label="Task panels"]').length
       })`
     );
     assert(initial.filters.length === 3, 'task filters did not render', initial);
@@ -135,7 +135,7 @@ const run = async () => {
     assert(initial.composerCount === 0, 'chat composer still rendered on tasks page', initial);
     assert(initial.syncText.includes('Sync'), 'manual Sync button missing', initial);
     assert(initial.createSummary.includes('New task'), 'new task details control missing', initial);
-    assert(initial.mobileTabsDisplay === 'none', 'mobile tabs should not display on desktop', initial);
+    assert(initial.mobilePanelNavCount === 0, 'ambiguous mobile Queue/Task tabs still rendered', initial);
 
     const afterAll = await evalJS(
       cdp,
@@ -265,7 +265,7 @@ const run = async () => {
               setTimeout(() => resolve({
                 rows: document.querySelectorAll('.task-row').length,
                 selected: document.querySelector('.task-row.selected')?.innerText || '',
-                actionButtons: [...document.querySelectorAll('[aria-label="Task actions"] button, [aria-label="Secondary task actions"] button')]
+                actionButtons: [...document.querySelectorAll('[aria-label="Task actions"] button')]
                   .map((button) => ({ text: button.innerText, disabled: button.disabled })),
                 retrySettings: document.querySelector('[aria-label="Retry settings"]')?.innerText || '',
                 reopenReason: document.querySelector('[aria-label="Reopen reason"]')?.innerText || '',
@@ -494,69 +494,79 @@ const run = async () => {
       `new Promise((resolve) => requestAnimationFrame(() => resolve({
         bodyWidth: document.body.scrollWidth,
         viewport: window.innerWidth,
-        tabs: [...document.querySelectorAll('.mobile-tabs button')].map((button) => ({
-          text: button.innerText,
-          active: button.classList.contains('active'),
-          disabled: button.disabled
-        })),
+        panelNavCount: document.querySelectorAll('[aria-label="Task panels"], .mobile-tabs').length,
         queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
         detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
         commandPanelCount: document.querySelectorAll('.command-panel, .composer, #message').length
       })))`
     );
     assert(mobileStart.bodyWidth <= mobileStart.viewport + 2, 'mobile viewport has horizontal overflow', mobileStart);
-    assert(mobileStart.tabs.length === 2, 'mobile Queue/Task tabs did not render', mobileStart);
+    assert(mobileStart.panelNavCount === 0, 'mobile still renders ambiguous Queue/Task tabs', mobileStart);
     assert(mobileStart.commandPanelCount === 0, 'mobile tasks page still renders chat command controls', mobileStart);
 
     const mobileQueue = await evalJS(
       cdp,
-      `([...document.querySelectorAll('.mobile-tabs button')].find((button) => button.innerText.includes('Queue'))?.click(),
-        new Promise((resolve) => setTimeout(() => resolve({
-          active: [...document.querySelectorAll('.mobile-tabs button')].find((button) => button.classList.contains('active'))?.innerText || '',
+      `(document.querySelector('.back-to-queue')?.click(),
+        new Promise((resolve) => setTimeout(() => {
+          const firstRow = document.querySelector('.task-row');
+          const navbar = document.querySelector('.navbar');
+          resolve({
           rows: document.querySelectorAll('.task-row').length,
           queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
           detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
+          firstRowTop: firstRow?.getBoundingClientRect().top ?? null,
+          navbarBottom: navbar?.getBoundingClientRect().bottom ?? null,
           bodyWidth: document.body.scrollWidth,
           viewport: window.innerWidth
-        }), 150)))`
+        });
+        }, 150)))`
     );
-    assert(mobileQueue.active.includes('Queue'), 'mobile Queue tab did not become active', mobileQueue);
     assert(mobileQueue.rows > 0, 'mobile Queue tab rendered no task rows', mobileQueue);
     assert(mobileQueue.queueDisplay !== 'none', 'mobile Queue tab did not show queue', mobileQueue);
     assert(mobileQueue.detailDisplay === 'none', 'mobile Queue tab did not hide detail pane', mobileQueue);
+    assert(
+      mobileQueue.firstRowTop === null ||
+        mobileQueue.navbarBottom === null ||
+        mobileQueue.firstRowTop >= mobileQueue.navbarBottom,
+      'mobile queue rows are overlapped by the navbar',
+      mobileQueue
+    );
     assert(mobileQueue.bodyWidth <= mobileQueue.viewport + 2, 'mobile Queue tab has horizontal overflow', mobileQueue);
 
     const mobileSelect = await evalJS(
       cdp,
       `(document.querySelector('.task-row')?.click(),
         new Promise((resolve) => setTimeout(() => resolve({
-          active: [...document.querySelectorAll('.mobile-tabs button')].find((button) => button.classList.contains('active'))?.innerText || '',
           selected: document.querySelector('.task-row.selected')?.innerText || '',
           queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
           detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
+          backButton: document.querySelector('.back-to-queue')?.innerText || '',
           taskActions: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
+          workerOpen: document.querySelector('[aria-label="Worker runs"]')?.open ?? null,
+          scrollY: window.scrollY,
           bodyWidth: document.body.scrollWidth,
           viewport: window.innerWidth
         }), 200)))`
     );
     assert(mobileSelect.selected, 'mobile task tap did not select a queue row', mobileSelect);
-    assert(mobileSelect.active.includes('Task'), 'mobile task tap did not switch to Task tab', mobileSelect);
     assert(mobileSelect.queueDisplay === 'none', 'mobile Task tab did not hide queue', mobileSelect);
     assert(mobileSelect.detailDisplay !== 'none', 'mobile Task tab did not show selected detail', mobileSelect);
+    assert(mobileSelect.backButton.includes('Back to queue'), 'mobile detail did not expose a clear back-to-queue control', mobileSelect);
     assert(mobileSelect.taskActions.length > 0, 'mobile selected task did not show action buttons', mobileSelect);
+    assert(mobileSelect.workerOpen === false, 'mobile worker trace should start collapsed', mobileSelect);
+    assert(mobileSelect.scrollY <= 2, 'mobile detail did not start at the top after selecting a task', mobileSelect);
     assert(mobileSelect.bodyWidth <= mobileSelect.viewport + 2, 'mobile selected detail has horizontal overflow', mobileSelect);
 
     const mobileBack = await evalJS(
       cdp,
       `(document.querySelector('.back-to-queue')?.click(),
         new Promise((resolve) => setTimeout(() => resolve({
-          active: [...document.querySelectorAll('.mobile-tabs button')].find((button) => button.classList.contains('active'))?.innerText || '',
           rows: document.querySelectorAll('.task-row').length,
           queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
           detailDisplay: getComputedStyle(document.querySelector('.workbench')).display
         }), 150)))`
     );
-    assert(mobileBack.active.includes('Queue'), 'mobile Queue button in detail did not return to queue', mobileBack);
+    assert(mobileBack.detailDisplay === 'none', 'mobile Back to queue did not hide detail', mobileBack);
     assert(mobileBack.rows > 0, 'mobile queue rows disappeared after returning from detail', mobileBack);
     assert(mobileBack.queueDisplay !== 'none', 'mobile return did not show queue', mobileBack);
 

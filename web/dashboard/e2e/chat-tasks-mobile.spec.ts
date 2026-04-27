@@ -120,30 +120,27 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
 	const rows = page.locator('.task-row');
 	const queue = page.locator('.task-pane');
 	const detail = page.locator('.workbench');
-	const mobileSwitch = page.getByRole('navigation', { name: 'Task panels' });
-	const queueSwitch = mobileSwitch.getByRole('button', { name: /Queue/ });
-	const taskSwitch = mobileSwitch.getByRole('button', { name: /Task/ });
-	await expect(queueSwitch).toBeVisible();
-	await expect(taskSwitch).toBeVisible();
+	await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
 	await expect(rows).toHaveCount(1);
 	await expect(queue).toBeVisible();
 	await expect(detail).not.toBeVisible();
 
 	await rows.first().click();
-	await expect(taskSwitch).toHaveClass(/active/);
   await expect(queue).not.toBeVisible();
   await expect(detail).toBeVisible();
   await expect(page.getByRole('region', { name: 'Task actions', exact: true })).toContainText(
     'Approve merge'
   );
-  await expect(page.getByRole('region', { name: 'Task plan' })).toContainText('Reviewed plan');
-  await expect(page.getByRole('region', { name: 'Task plan' })).toContainText(
+  await expect(page.getByRole('button', { name: 'Back to queue' })).toBeVisible();
+  await expect(page.locator('[aria-label="Worker runs"]')).not.toHaveAttribute('open', '');
+  await page.locator('[aria-label="Task plan"] summary').click();
+  await expect(page.locator('[aria-label="Task plan"]')).toContainText('Reviewed plan');
+  await expect(page.locator('[aria-label="Task plan"]')).toContainText(
     'Inspect mobile layout'
   );
   await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
-	await page.getByRole('button', { name: 'Queue', exact: true }).click();
-	await expect(queueSwitch).toHaveClass(/active/);
+	await page.getByRole('button', { name: 'Back to queue' }).click();
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
   await expect(rows).toHaveCount(1);
@@ -168,7 +165,7 @@ test('tasks mobile has no task chat composer and keeps new-task text stable', as
   await expect(goal).toHaveValue(typedMessage);
 
   await page.locator('.triage button').filter({ hasText: 'All' }).click();
-  await expect(goal).toHaveValue(typedMessage);
+  await expect(page.locator('#new-task-goal')).toHaveValue(typedMessage);
 
   await expect(page.locator('.draft-preview')).toHaveCount(0);
   const overflow = await page.evaluate(() => ({

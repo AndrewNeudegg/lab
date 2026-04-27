@@ -59,11 +59,14 @@ describe('tasks page composition', () => {
 
   test('renders mobile queue/detail switching without the old collapsing sidebar model', () => {
     expect(pageSource).toContain("type MobilePanel = 'queue' | 'detail'");
-    expect(pageSource).toContain('class:active={mobilePanel ===');
-    expect(pageSource).toContain("mobilePanel = 'detail';");
-    expect(pageSource).toContain("mobilePanel = 'queue'");
+    expect(pageSource).toContain('const showMobilePanel = (panel: MobilePanel)');
+    expect(pageSource).toContain("showMobilePanel('detail')");
+    expect(pageSource).toContain("showMobilePanel('queue')");
+    expect(pageSource).toContain('Back to queue');
     expect(pageSource).toContain("data-mobile-hidden={mobilePanel !== 'queue'}");
     expect(pageSource).toContain("data-mobile-hidden={mobilePanel !== 'detail'}");
+    expect(pageSource).not.toContain('aria-label="Task panels"');
+    expect(pageSource).not.toContain('mobile-tabs');
     expect(pageSource).not.toContain('taskQueueOpen');
     expect(pageSource).not.toContain('.task-pane.collapsed');
   });
@@ -72,14 +75,17 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('primaryTaskAction');
     expect(pageSource).toContain('secondaryTaskOperations');
     expect(pageSource).toContain('aria-label="Task actions"');
+    expect(pageSource).toContain('class={`decision-panel ${currentPrimaryAction.tone}`}');
     expect(pageSource).toContain('aria-label="Retry settings"');
     expect(pageSource).toContain('aria-label="Reopen reason"');
+    expect(pageSource).toContain('class="detail-section state-context"');
     expect(pageSource).toContain('taskStateDescription');
     expect(pageSource).toContain('taskStateTransitions');
     expect(pageSource).toContain('aria-label="Workflow state"');
     expect(pageSource).toContain('aria-label="Worker runs"');
     expect(pageSource).toContain('aria-label="Task plan"');
     expect(pageSource).toContain('aria-label="Original task input"');
+    expect(pageSource).toContain('<dl class="record-summary"');
   });
 
   test('renders highlighted task diff controls from the dedicated diff endpoint', () => {

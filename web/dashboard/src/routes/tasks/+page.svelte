@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
     Navbar,
@@ -137,6 +137,15 @@
   let currentPrimaryAction: PrimaryTaskAction = primaryTaskAction(undefined, []);
   let currentSecondaryOperations: TaskOperation[] = [];
   let currentPendingApproval: HomelabdApproval | undefined;
+
+  const showMobilePanel = (panel: MobilePanel) => {
+    mobilePanel = panel;
+    void tick().then(() => {
+      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches) {
+        window.scrollTo({ top: 0 });
+      }
+    });
+  };
 
   const syncTimeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -635,7 +644,7 @@
       contextAcknowledged = false;
       setNotice('success', 'Task created', response.reply || 'Task created.');
       await refreshState();
-      mobilePanel = 'queue';
+      showMobilePanel('queue');
     } catch (err) {
       setNotice('error', 'Task creation failed', errorMessage(err, 'Unable to create task.'));
     } finally {
@@ -645,7 +654,7 @@
 
   const selectTask = (id: string) => {
     selectedTaskId = id;
-    mobilePanel = 'detail';
+    showMobilePanel('detail');
     loadedRunsTaskId = '';
     loadedDiffTaskId = '';
     selectedDiffFilePath = '';
@@ -681,19 +690,19 @@
 
   const setTaskFilter = (filter: TaskFilter) => {
     taskFilter = filter;
-    mobilePanel = 'queue';
+    showMobilePanel('queue');
     syncSelectionForCurrentFilters();
   };
 
   const setQueueFilter = (filter: TaskQueueFilter) => {
     queueFilter = filter;
-    mobilePanel = 'queue';
+    showMobilePanel('queue');
     syncSelectionForCurrentFilters();
   };
 
   const handleTaskSearchInput = (event: Event) => {
     taskSearch = (event.currentTarget as HTMLInputElement).value;
-    mobilePanel = 'queue';
+    showMobilePanel('queue');
     syncSelectionForCurrentFilters();
   };
 
@@ -785,7 +794,7 @@
       }
       if (operation === 'delete') {
         selectedTaskId = '';
-        mobilePanel = 'queue';
+        showMobilePanel('queue');
       }
       deleteConfirmTaskId = '';
       await refreshState();
@@ -847,24 +856,6 @@
 
 <div class="tasks-page">
   <Navbar title="Tasks" subtitle="homelabd" current="/tasks" apiBase={apiBase} />
-
-  <nav class="mobile-tabs" aria-label="Task panels">
-    <button
-      type="button"
-      class:active={mobilePanel === 'queue'}
-      on:click={() => (mobilePanel = 'queue')}
-    >
-      Queue <span>{visibleTaskItems.length}</span>
-    </button>
-    <button
-      type="button"
-      class:active={mobilePanel === 'detail'}
-      disabled={!currentTask}
-      on:click={() => (mobilePanel = 'detail')}
-    >
-      Task <span>{currentTask ? shortID(currentTask.id) : '-'}</span>
-    </button>
-  </nav>
 
   <div class="shell">
     <aside class="task-pane" data-mobile-hidden={mobilePanel !== 'queue'} aria-label="Task queue">
@@ -942,8 +933,12 @@
       {/if}
 
       {#if pendingApprovalItems.length}
-        <section class="approval-list" aria-label="Pending approvals">
-          <h2>Pending approvals</h2>
+        <details class="approval-list" aria-label="Pending approvals">
+          <summary>
+            <span>Pending approvals</span>
+            <strong>{pendingApprovalItems.length}</strong>
+          </summary>
+          <div class="approval-items">
           {#each pendingApprovalItems as approval}
             <article>
               <span class="dot amber" aria-hidden="true"></span>
@@ -952,25 +947,32 @@
                 <small>{shortID(approval.id)}{approval.task_id ? ` / ${shortID(approval.task_id)}` : ''}</small>
                 <p>{truncate(approval.reason, 96)}</p>
                 <div class="mini-actions">
-                  <button
-                    type="button"
-                    disabled={approvalLoading !== ''}
-                    on:click={() => void performApprovalAction(approval, 'approve')}
-                  >
-                    {approvalLoading === approvalLoadingKey('approve', approval.id) ? 'Approving' : 'Approve'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={approvalLoading !== ''}
-                    on:click={() => void performApprovalAction(approval, 'deny')}
-                  >
-                    {approvalLoading === approvalLoadingKey('deny', approval.id) ? 'Denying' : 'Deny'}
-                  </button>
+                  {#if approval.task_id}
+                    <button type="button" on:click={() => approval.task_id && selectTask(approval.task_id)}>
+                      Open task
+                    </button>
+                  {:else}
+                    <button
+                      type="button"
+                      disabled={approvalLoading !== ''}
+                      on:click={() => void performApprovalAction(approval, 'approve')}
+                    >
+                      {approvalLoading === approvalLoadingKey('approve', approval.id) ? 'Approving' : 'Approve'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={approvalLoading !== ''}
+                      on:click={() => void performApprovalAction(approval, 'deny')}
+                    >
+                      {approvalLoading === approvalLoadingKey('deny', approval.id) ? 'Denying' : 'Deny'}
+                    </button>
+                  {/if}
                 </div>
               </div>
             </article>
           {/each}
-        </section>
+          </div>
+        </details>
       {/if}
 
       <section class="queue-groups" aria-label="Execution queues">
@@ -1062,8 +1064,8 @@
       {#if currentTask}
         <article class="task-record">
           <header class="record-header">
-            <button type="button" class="back-to-queue" on:click={() => (mobilePanel = 'queue')}>
-              Queue
+            <button type="button" class="back-to-queue" on:click={() => showMobilePanel('queue')}>
+              Back to queue
             </button>
             <div>
               <p>Selected task</p>
@@ -1072,146 +1074,160 @@
             <span class={`status ${taskTone(currentTask)}`}>{statusLabel(currentTask.status)}</span>
           </header>
 
-          <section class={`action-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
-            <div>
-              <span class={`dot ${taskTone(currentTask)}`} aria-hidden="true"></span>
-              <div>
-                <h3>{currentPrimaryAction.label}</h3>
-                <p>{currentPrimaryAction.detail}</p>
+          <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
+            <header class="decision-header">
+              <div class="decision-copy">
+                <span class={`dot ${taskTone(currentTask)}`} aria-hidden="true"></span>
+                <div>
+                  <p>Next action</p>
+                  <h3>{currentPrimaryAction.label}</h3>
+                  <span>{currentPrimaryAction.detail}</span>
+                </div>
               </div>
-            </div>
-            {#if currentPrimaryAction.type !== 'none'}
-              <button
-                type="button"
-                class="primary-action"
-                disabled={actionLoading !== '' || approvalLoading !== ''}
-                on:click={performPrimaryAction}
-              >
-                {currentPrimaryAction.type === 'task'
-                  ? operationButtonText(currentPrimaryAction.operation)
-                  : approvalLoading === approvalLoadingKey(currentPrimaryAction.operation, currentPrimaryAction.approval.id)
-                    ? 'Approving'
-                    : currentPrimaryAction.label}
-              </button>
-            {:else}
-              <button type="button" class="primary-action" disabled={refreshing} on:click={() => void refreshState()}>
-                {refreshing ? 'Syncing' : 'Sync'}
-              </button>
+              {#if currentPrimaryAction.type !== 'none'}
+                <button
+                  type="button"
+                  class="primary-action"
+                  disabled={actionLoading !== '' || approvalLoading !== ''}
+                  on:click={performPrimaryAction}
+                >
+                  {currentPrimaryAction.type === 'task'
+                    ? operationButtonText(currentPrimaryAction.operation)
+                    : approvalLoading === approvalLoadingKey(currentPrimaryAction.operation, currentPrimaryAction.approval.id)
+                      ? 'Approving'
+                      : currentPrimaryAction.label}
+                </button>
+              {:else}
+                <button type="button" class="primary-action" disabled={refreshing} on:click={() => void refreshState()}>
+                  {refreshing ? 'Syncing' : 'Sync'}
+                </button>
+              {/if}
+            </header>
+
+            {#if currentTask.status === 'blocked' || currentTask.status === 'failed' || currentTask.status === 'conflict_resolution' || currentSecondaryOperations.includes('retry')}
+              <div class="action-form" aria-label="Retry settings">
+                <label>
+                  <span>Retry backend</span>
+                  <select bind:value={retryBackend}>
+                    <option value="codex">Codex</option>
+                    <option value="claude">Claude</option>
+                    <option value="gemini">Gemini</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Retry instruction</span>
+                  <textarea
+                    rows="3"
+                    bind:value={retryInstruction}
+                    placeholder="Optional retry instruction"
+                  ></textarea>
+                </label>
+              </div>
+            {/if}
+
+            {#if currentTask.status === 'awaiting_verification' || currentSecondaryOperations.includes('reopen')}
+              <div class="action-form" aria-label="Reopen reason">
+                <label>
+                  <span>Reopen reason</span>
+                  <textarea rows="2" bind:value={reopenReason} placeholder="Optional reason"></textarea>
+                </label>
+              </div>
+            {/if}
+
+            {#if currentSecondaryOperations.length || currentPendingApproval}
+              <div class="secondary-actions" aria-label="Secondary task actions">
+                <p>Other actions</p>
+                <div class="secondary-action-row">
+                  {#if currentPendingApproval}
+                    <button
+                      type="button"
+                      disabled={approvalLoading !== ''}
+                      on:click={() => void performApprovalAction(currentPendingApproval, 'deny')}
+                    >
+                      {approvalLoading === approvalLoadingKey('deny', currentPendingApproval.id) ? 'Denying' : 'Deny approval'}
+                    </button>
+                  {/if}
+                  {#each currentSecondaryOperations as operation}
+                    <button
+                      type="button"
+                      class:danger={operation === 'delete' || operation === 'cancel'}
+                      disabled={actionLoading !== ''}
+                      on:click={() => void performTaskOperation(operation)}
+                    >
+                      {operationButtonText(operation)}
+                    </button>
+                  {/each}
+                </div>
+              </div>
             {/if}
           </section>
 
-          {#if currentTask.status === 'blocked' || currentTask.status === 'failed' || currentTask.status === 'conflict_resolution' || currentSecondaryOperations.includes('retry')}
-            <section class="action-form" aria-label="Retry settings">
-              <label>
-                <span>Retry backend</span>
-                <select bind:value={retryBackend}>
-                  <option value="codex">Codex</option>
-                  <option value="claude">Claude</option>
-                  <option value="gemini">Gemini</option>
-                </select>
-              </label>
-              <label>
-                <span>Retry instruction</span>
-                <textarea
-                  rows="3"
-                  bind:value={retryInstruction}
-                  placeholder="Optional retry instruction"
-                ></textarea>
-              </label>
-            </section>
-          {/if}
+          <dl class="record-summary" aria-label="Task summary">
+            <div>
+              <dt>ID</dt>
+              <dd>{shortID(currentTask.id)}</dd>
+            </div>
+            <div>
+              <dt>Owner</dt>
+              <dd>{currentTask.assigned_to || 'unassigned'}</dd>
+            </div>
+            <div>
+              <dt>Target</dt>
+              <dd>{targetLabel(currentTask)}</dd>
+            </div>
+            <div>
+              <dt>Started</dt>
+              <dd>{compactTime(taskStartedAt(currentTask))}</dd>
+            </div>
+            <div>
+              <dt>Runtime</dt>
+              <dd>{compactDuration(taskRuntimeMs(currentTask))}</dd>
+            </div>
+            <div>
+              <dt>Updated</dt>
+              <dd>{compactTime(currentTask.updated_at)}</dd>
+            </div>
+          </dl>
 
-          {#if currentTask.status === 'awaiting_verification' || currentSecondaryOperations.includes('reopen')}
-            <section class="action-form" aria-label="Reopen reason">
-              <label>
-                <span>Reopen reason</span>
-                <textarea rows="2" bind:value={reopenReason} placeholder="Optional reason"></textarea>
-              </label>
-            </section>
-          {/if}
-
-          {#if currentSecondaryOperations.length || currentPendingApproval}
-            <section class="secondary-actions" aria-label="Secondary task actions">
-              {#if currentPendingApproval}
-                <button
-                  type="button"
-                  disabled={approvalLoading !== ''}
-                  on:click={() => void performApprovalAction(currentPendingApproval, 'deny')}
-                >
-                  {approvalLoading === approvalLoadingKey('deny', currentPendingApproval.id) ? 'Denying' : 'Deny approval'}
-                </button>
-              {/if}
-              {#each currentSecondaryOperations as operation}
-                <button
-                  type="button"
-                  class:danger={operation === 'delete' || operation === 'cancel'}
-                  disabled={actionLoading !== ''}
-                  on:click={() => void performTaskOperation(operation)}
-                >
-                  {operationButtonText(operation)}
-                </button>
-              {/each}
-            </section>
-          {/if}
-
-          <section class="record-summary" aria-label="Task summary">
-            <div>
-              <span>ID</span>
-              <strong>{shortID(currentTask.id)}</strong>
-            </div>
-            <div>
-              <span>Owner</span>
-              <strong>{currentTask.assigned_to || 'unassigned'}</strong>
-            </div>
-            <div>
-              <span>Target</span>
-              <strong>{targetLabel(currentTask)}</strong>
-            </div>
-            <div>
-              <span>Started</span>
-              <strong>{compactTime(taskStartedAt(currentTask))}</strong>
-            </div>
-            <div>
-              <span>Runtime</span>
-              <strong>{compactDuration(taskRuntimeMs(currentTask))}</strong>
-            </div>
-            <div>
-              <span>Updated</span>
-              <strong>{compactTime(currentTask.updated_at)}</strong>
-            </div>
-          </section>
-
-          <section class="state-machine" aria-label="Workflow state">
-            <div>
-              <span>Workflow state</span>
+          <details class="detail-section state-context" aria-label="Task context" open>
+            <summary>
+              <span>State and context</span>
               <strong>{statusLabel(currentTask.status)}</strong>
+            </summary>
+            <div class="detail-body">
+              <section class="state-machine" aria-label="Workflow state">
+                <div>
+                  <span>Workflow state</span>
+                  <strong>{statusLabel(currentTask.status)}</strong>
+                </div>
+                <p>{taskStateDescription(currentTask.status)}</p>
+                <small>Next: {taskStateTransitions(currentTask.status)}</small>
+              </section>
+
+              {#if currentTask.workspace}
+                <section class="workspace-path" aria-label="Workspace path">
+                  <span>Workspace</span>
+                  <code>{currentTask.workspace}</code>
+                </section>
+              {/if}
+
+              {#if currentTask.target?.mode === 'remote'}
+                <section class="execution-context" aria-label="Execution context">
+                  <span>Remote execution context</span>
+                  <strong>{currentTask.target.machine || currentTask.target.agent_id}</strong>
+                  <code>{currentTask.target.workdir}</code>
+                  <small>Agent {currentTask.target.agent_id} / backend {currentTask.target.backend || 'default'}</small>
+                </section>
+              {/if}
+
+              {#if currentTask.result}
+                <section class="task-result" aria-label="Task result">
+                  <h3>Result</h3>
+                  <p>{currentTask.result}</p>
+                </section>
+              {/if}
             </div>
-            <p>{taskStateDescription(currentTask.status)}</p>
-            <small>Next: {taskStateTransitions(currentTask.status)}</small>
-          </section>
-
-          {#if currentTask.workspace}
-            <section class="workspace-path" aria-label="Workspace path">
-              <span>Workspace</span>
-              <code>{currentTask.workspace}</code>
-            </section>
-          {/if}
-
-          {#if currentTask.target?.mode === 'remote'}
-            <section class="execution-context" aria-label="Execution context">
-              <span>Remote execution context</span>
-              <strong>{currentTask.target.machine || currentTask.target.agent_id}</strong>
-              <code>{currentTask.target.workdir}</code>
-              <small>Agent {currentTask.target.agent_id} / backend {currentTask.target.backend || 'default'}</small>
-            </section>
-          {/if}
-
-          {#if currentTask.result}
-            <section class="task-result" aria-label="Task result">
-              <h3>Result</h3>
-              <p>{currentTask.result}</p>
-            </section>
-          {/if}
+          </details>
 
           <section class="diff-review" aria-label="Task diff">
             <header>
@@ -1369,13 +1385,11 @@
             {/if}
           </section>
 
-          <section class="worker-runs" aria-label="Worker runs">
-            <header>
-              <div>
-                <p>Worker trace</p>
-                <h3>{currentTaskRuns.length} run{currentTaskRuns.length === 1 ? '' : 's'}</h3>
-              </div>
-            </header>
+          <details class="worker-runs detail-section" aria-label="Worker runs">
+            <summary>
+              <span>Worker trace</span>
+              <strong>{currentTaskRuns.length} run{currentTaskRuns.length === 1 ? '' : 's'}</strong>
+            </summary>
 
             {#if currentTaskRuns.length === 0}
               <p class="empty">No external worker runs recorded for this task.</p>
@@ -1409,15 +1423,13 @@
                 {/each}
               </div>
             {/if}
-          </section>
+          </details>
 
-          <section class="activity" aria-label="Task activity">
-            <header>
-              <div>
-                <p>Task activity</p>
-                <h3>{currentTaskEvents.length} recent event{currentTaskEvents.length === 1 ? '' : 's'}</h3>
-              </div>
-            </header>
+          <details class="activity detail-section" aria-label="Task activity">
+            <summary>
+              <span>Task activity</span>
+              <strong>{currentTaskEvents.length} recent event{currentTaskEvents.length === 1 ? '' : 's'}</strong>
+            </summary>
             {#if currentTaskEvents.length === 0}
               <p class="empty">No task-specific events loaded yet.</p>
             {:else}
@@ -1436,17 +1448,15 @@
                 {/each}
               </ol>
             {/if}
-          </section>
+          </details>
 
           {#if currentTask.plan}
-            <section class="task-plan" aria-label="Task plan">
-              <header>
-                <div>
-                  <p>Reviewed plan</p>
-                  <h3>{currentTask.plan.summary}</h3>
-                </div>
+            <details class="task-plan detail-section" aria-label="Task plan">
+              <summary>
+                <span>Reviewed plan</span>
+                <strong>{currentTask.plan.summary}</strong>
                 <span>{planStatusLabel(currentTask.plan.status)}</span>
-              </header>
+              </summary>
               {#if currentTask.plan.steps?.length}
                 <ol>
                   {#each currentTask.plan.steps as step}
@@ -1472,13 +1482,16 @@
               {#if currentTask.plan.review}
                 <p class="plan-review">{currentTask.plan.review}</p>
               {/if}
-            </section>
+            </details>
           {/if}
 
-          <section class="task-input" aria-label="Original task input">
-            <h3>Original input</h3>
+          <details class="task-input detail-section" aria-label="Original task input">
+            <summary>
+              <span>Original input</span>
+              <strong>{truncate(taskInputText(currentTask), 80)}</strong>
+            </summary>
             <p>{taskInputText(currentTask)}</p>
-          </section>
+          </details>
         </article>
       {:else}
         <section class="empty-record">
@@ -1532,10 +1545,6 @@
     background: var(--bg, #f5f7fb);
   }
 
-  .mobile-tabs {
-    display: none;
-  }
-
   .shell {
     display: grid;
     grid-template-columns: minmax(20rem, 25rem) minmax(0, 1fr);
@@ -1563,8 +1572,9 @@
   .triage,
   .task-row,
   .approval-list article,
-  .action-panel,
-  .secondary-actions,
+  .decision-header,
+  .decision-copy,
+  .secondary-action-row,
   .notice {
     display: flex;
     align-items: center;
@@ -1580,8 +1590,9 @@
   .task-header span,
   .record-header p,
   .record-header h2,
-  .action-panel h3,
-  .action-panel p,
+  .decision-copy p,
+  .decision-copy h3,
+  .decision-copy span,
   .approval-list p,
   .empty,
   footer {
@@ -1591,12 +1602,11 @@
   .task-header p,
   .task-header span,
   .record-header p,
-  .record-summary span,
+  .record-summary dt,
+  .detail-section > summary > span,
   .workspace-path span,
-  .activity header p,
-  .worker-runs header p,
+  .secondary-actions p,
   .diff-review header p,
-  .task-plan header p,
   .plan-risks > strong,
   .action-form span {
     color: var(--muted, #64748b);
@@ -1623,7 +1633,8 @@
   .primary-action,
   .notice button,
   .back-to-queue,
-  .target-create summary {
+  .target-create summary,
+  .approval-list summary {
     min-height: 2.55rem;
     padding: 0 0.75rem;
     border: 1px solid var(--border, #cbd5e1);
@@ -1644,7 +1655,8 @@
   .primary-action:hover:not(:disabled),
   .notice button:hover,
   .back-to-queue:hover,
-  .target-create summary:hover {
+  .target-create summary:hover,
+  .approval-list summary:hover {
     border-color: var(--accent, #2563eb);
     background: var(--surface-hover, #eef5ff);
   }
@@ -1899,23 +1911,61 @@
     gap: 0.45rem;
   }
 
-  .approval-list h2,
   .queue-groups h2 {
     margin: 0;
     color: var(--text, #374151);
     font-size: 0.84rem;
   }
 
+  .approval-list {
+    border: 1px solid var(--border-soft, #e2e8f0);
+    border-radius: 0.8rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .approval-list summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    list-style: none;
+    border: 0;
+    border-radius: 0.8rem;
+    background: transparent;
+  }
+
+  .approval-list summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .approval-list summary span {
+    color: var(--text, #374151);
+    font-size: 0.84rem;
+  }
+
+  .approval-list summary strong {
+    border-radius: 999px;
+    padding: 0.12rem 0.48rem;
+    color: #92400e;
+    background: #fef3c7;
+    font-size: 0.72rem;
+  }
+
+  .approval-items {
+    display: grid;
+    gap: 0.45rem;
+    padding: 0 0.55rem 0.55rem;
+  }
+
   .approval-list article {
     align-items: flex-start;
     gap: 0.6rem;
     padding: 0.7rem;
-    border: 1px solid #fde68a;
+    border: 1px solid var(--border-soft, #e2e8f0);
     border-radius: 0.75rem;
-    background: #fffbeb;
+    background: var(--surface, #ffffff);
   }
 
-  .approval-list strong {
+  .approval-list article strong {
     color: #713f12;
     font-size: 0.88rem;
   }
@@ -1928,13 +1978,14 @@
 
   .approval-list p {
     margin-top: 0.2rem;
-    color: #92400e;
+    color: var(--text, #475569);
     font-size: 0.78rem;
     line-height: 1.35;
   }
 
   .mini-actions,
-  .secondary-actions {
+  .secondary-action-row {
+    display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
     margin-top: 0.55rem;
@@ -2083,59 +2134,60 @@
     display: none;
   }
 
-  .action-panel,
+  .decision-panel,
   .record-summary,
+  .diff-review,
+  .detail-section,
+  .empty-record,
+  .state-machine,
   .workspace-path,
   .execution-context,
-  .diff-review,
-  .task-result,
-  .task-plan,
-  .task-input,
-  .state-machine,
-  .worker-runs,
-  .activity,
-  .empty-record,
-  .action-form,
-  .secondary-actions {
+  .task-result {
     margin: 1rem 1.25rem 0;
     border: 1px solid var(--border-soft, #e2e8f0);
     border-radius: 0.85rem;
     background: var(--surface, #ffffff);
   }
 
-  .action-panel {
+  .decision-panel {
+    overflow: hidden;
+  }
+
+  .decision-header {
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 0.85rem;
     padding: 0.85rem;
   }
 
-  .action-panel > div {
-    display: flex;
+  .decision-copy {
     align-items: flex-start;
     gap: 0.7rem;
     min-width: 0;
   }
 
-  .action-panel h3 {
+  .decision-copy > div {
+    min-width: 0;
+  }
+
+  .decision-copy h3 {
     color: var(--text-strong, #111827);
     font-size: 0.95rem;
   }
 
-  .action-panel p {
+  .decision-copy span {
+    display: block;
     margin-top: 0.15rem;
     color: var(--text, #475569);
     font-size: 0.84rem;
     line-height: 1.35;
   }
 
-  .action-panel.warning {
+  .decision-panel.warning {
     border-color: #fde68a;
-    background: #fffbeb;
   }
 
-  .action-panel.danger {
+  .decision-panel.danger {
     border-color: #fecaca;
-    background: #fff7f7;
   }
 
   .primary-action {
@@ -2147,6 +2199,8 @@
     display: grid;
     gap: 0.75rem;
     padding: 0.85rem;
+    border-top: 1px solid var(--border-soft, #e2e8f0);
+    background: var(--surface-muted, #f8fafc);
   }
 
   .action-form label {
@@ -2155,7 +2209,17 @@
   }
 
   .secondary-actions {
-    padding: 0.75rem;
+    padding: 0.75rem 0.85rem 0.85rem;
+    border-top: 1px solid var(--border-soft, #e2e8f0);
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .secondary-actions p {
+    margin: 0;
+  }
+
+  .secondary-action-row {
+    margin-top: 0.45rem;
   }
 
   .secondary-actions button.danger {
@@ -2165,28 +2229,93 @@
   }
 
   .record-summary {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(7rem, 1fr));
-    gap: 0.65rem;
-    padding: 0.85rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.95rem;
+    padding: 0.62rem 0.85rem;
   }
 
   .record-summary div {
+    display: flex;
+    align-items: baseline;
+    gap: 0.28rem;
     min-width: 0;
-    padding: 0.65rem;
-    border: 1px solid var(--border-soft, #e2e8f0);
-    border-radius: 0.65rem;
-    background: var(--surface-muted, #f8fafc);
+    max-width: 100%;
   }
 
-  .record-summary strong {
-    display: block;
-    margin-top: 0.2rem;
+  .record-summary dt,
+  .record-summary dd {
+    margin: 0;
+  }
+
+  .record-summary dd {
+    max-width: min(18rem, 60vw);
     overflow: hidden;
     color: var(--text-strong, #111827);
-    font-size: 0.88rem;
+    font-size: 0.82rem;
+    font-weight: 800;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .detail-section {
+    overflow: hidden;
+  }
+
+  .detail-section > summary {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 3rem;
+    padding: 0.75rem 0.85rem;
+    list-style: none;
+    cursor: pointer;
+  }
+
+  .detail-section > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .detail-section > summary::before {
+    content: '+';
+    display: inline-grid;
+    place-items: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 999px;
+    color: var(--muted, #64748b);
+    font-size: 0.85rem;
+    font-weight: 900;
+  }
+
+  .detail-section[open] > summary::before {
+    content: '-';
+  }
+
+  .detail-section > summary > strong {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-strong, #111827);
+    font-size: 0.9rem;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .detail-body {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0 0.85rem 0.85rem;
+    border-top: 1px solid var(--border-soft, #e2e8f0);
+  }
+
+  .detail-body .state-machine,
+  .detail-body .workspace-path,
+  .detail-body .execution-context,
+  .detail-body .task-result {
+    margin: 0.85rem 0 0;
   }
 
   .state-machine {
@@ -2594,30 +2723,15 @@
     --diff-changed-bg: rgb(202 138 4 / 0.42);
   }
 
-  .worker-runs,
-  .activity,
-  .task-plan {
-    overflow: hidden;
-  }
-
-  .worker-runs > header,
-  .activity header,
-  .task-plan header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.85rem;
-    border-bottom: 1px solid var(--border-soft, #e2e8f0);
-  }
-
-  .worker-runs h3,
-  .activity h3,
-  .task-plan h3 {
-    margin: 0.1rem 0 0;
-    color: var(--text-strong, #111827);
-    font-size: 0.95rem;
-    line-height: 1.35;
+  .worker-runs[open] .run-list,
+  .worker-runs[open] > .empty,
+  .activity[open] ol,
+  .activity[open] > .empty,
+  .task-plan[open] ol,
+  .task-plan[open] .plan-risks,
+  .task-plan[open] .plan-review,
+  .task-input[open] > p {
+    border-top: 1px solid var(--border-soft, #e2e8f0);
   }
 
   .run-list {
@@ -2777,7 +2891,7 @@
     overflow-wrap: anywhere;
   }
 
-  .task-plan header span {
+  .task-plan > summary > span:last-child {
     flex: 0 0 auto;
     border-radius: 999px;
     background: #dbeafe;
@@ -2826,6 +2940,11 @@
     overflow-wrap: anywhere;
   }
 
+  .task-input > p {
+    margin: 0;
+    padding: 0.85rem;
+  }
+
   .empty-record {
     align-items: flex-start;
     gap: 0.75rem;
@@ -2870,11 +2989,9 @@
       overflow: auto;
     }
 
-    .tasks-page {
-      display: block;
-      min-height: 100dvh;
+    :global(body > div) {
+      min-height: 100%;
       height: auto;
-      padding-top: 3.75rem;
     }
 
     :global(.navbar) {
@@ -2882,38 +2999,14 @@
       top: 0 !important;
       right: 0;
       left: 0;
+      z-index: 20;
     }
 
-    .mobile-tabs {
-      position: sticky;
-      top: 3.75rem;
-      z-index: 10;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.5rem;
-      padding: 0.6rem 0.75rem;
-      border-bottom: 1px solid var(--border-soft, #dbe3ef);
-      background: var(--surface, #ffffff);
-    }
-
-    .mobile-tabs button {
-      min-height: 2.7rem;
-      border: 1px solid var(--border, #cbd5e1);
-      border-radius: 0.65rem;
-      color: var(--text, #243047);
-      background: var(--surface-muted, #f8fafc);
-      font-weight: 850;
-    }
-
-    .mobile-tabs button.active {
-      border-color: var(--accent, #2563eb);
-      color: #ffffff;
-      background: var(--accent, #2563eb);
-    }
-
-    .mobile-tabs span {
-      margin-left: 0.25rem;
-      font-size: 0.78rem;
+    .tasks-page {
+      display: block;
+      min-height: 100dvh;
+      height: auto;
+      padding-top: 3.75rem;
     }
 
     .shell {
@@ -2987,20 +3080,15 @@
     }
 
     .notice,
-    .action-panel,
+    .decision-panel,
     .record-summary,
+    .diff-review,
+    .detail-section,
+    .empty-record,
+    .state-machine,
     .workspace-path,
     .execution-context,
-    .diff-review,
-    .task-result,
-    .task-plan,
-    .task-input,
-    .state-machine,
-    .worker-runs,
-    .activity,
-    .empty-record,
-    .action-form,
-    .secondary-actions {
+    .task-result {
       margin: 0.75rem;
     }
 
@@ -3018,9 +3106,13 @@
       white-space: normal;
     }
 
-    .action-panel {
+    .decision-header {
       align-items: stretch;
       flex-direction: column;
+    }
+
+    .decision-copy {
+      align-items: flex-start;
     }
 
     .primary-action {
@@ -3029,7 +3121,7 @@
     }
 
     .record-summary {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.3rem 0.75rem;
     }
 
     .diff-review > header,

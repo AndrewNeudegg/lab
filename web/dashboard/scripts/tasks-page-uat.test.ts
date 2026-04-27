@@ -36,11 +36,13 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('diff panel kept light-mode backgrounds in dark mode');
   });
 
-  test('checks mobile Queue and Task tabs plus selected item changes', () => {
-    expect(scriptSource).toContain('mobile Queue tab did not become active');
-    expect(scriptSource).toContain('mobile task tap did not switch to Task tab');
+  test('checks mobile parent/detail navigation plus selected item changes', () => {
+    expect(scriptSource).toContain('mobile still renders ambiguous Queue/Task tabs');
+    expect(scriptSource).toContain('mobile queue rows are overlapped by the navbar');
+    expect(scriptSource).toContain('mobile detail did not expose a clear back-to-queue control');
+    expect(scriptSource).toContain('mobile worker trace should start collapsed');
     expect(scriptSource).toContain('mobile selected task did not show action buttons');
-    expect(scriptSource).toContain('mobile Queue button in detail did not return to queue');
+    expect(scriptSource).toContain('mobile Back to queue did not hide detail');
     expect(scriptSource).toContain('mobile selected detail has horizontal overflow');
   });
 });

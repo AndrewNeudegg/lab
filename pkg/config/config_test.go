@@ -36,6 +36,16 @@ func TestDefaultSupervisorIncludesDisabledRemoteAgentTemplate(t *testing.T) {
 	}
 }
 
+func TestDefaultExternalAgentTimeoutsAreFiveHours(t *testing.T) {
+	cfg := Default()
+	for _, name := range []string{"codex", "claude", "gemini"} {
+		agent := cfg.ExternalAgents[name]
+		if agent.TimeoutSeconds != DefaultExternalAgentTimeoutSeconds {
+			t.Fatalf("%s timeout = %d, want %d", name, agent.TimeoutSeconds, DefaultExternalAgentTimeoutSeconds)
+		}
+	}
+}
+
 func TestWithDefaultsPreservesRemoteAgentWorkdirsAndFillsIntervals(t *testing.T) {
 	cfg := Config{
 		RemoteAgent: RemoteAgentConfig{

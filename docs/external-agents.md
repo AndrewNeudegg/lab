@@ -54,11 +54,16 @@ the command, args, timeout, and description:
       "enabled": true,
       "command": "codex",
       "args": ["exec", "--skip-git-repo-check"],
-      "timeout_seconds": 900
+      "timeout_seconds": 18000
     }
   }
 }
 ```
+
+`timeout_seconds` is measured in seconds. If it is omitted or set to zero, external
+workers default to 18,000 seconds, or 5 hours, before timing out. Existing config
+files that pin the old 900 second value should update it to `18000` to use the
+5 hour execution window.
 
 ## Safety Model
 

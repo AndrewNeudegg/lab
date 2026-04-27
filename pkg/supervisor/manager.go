@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -72,6 +73,7 @@ type Manager struct {
 }
 
 type appRuntime struct {
+	opMu    sync.Mutex
 	cfg     config.SupervisorAppConfig
 	cmd     *exec.Cmd
 	status  AppStatus
@@ -177,7 +179,27 @@ func (m *Manager) Snapshot() Snapshot {
 	return Snapshot{Status: status, StartedAt: m.startedAt, Restartable: restartable, RestartHint: restartHint, RestartAfter: m.restartAfter, Apps: apps}
 }
 
+func (m *Manager) appForOperation(name string) (*appRuntime, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	app := m.apps[name]
+	if app == nil {
+		return nil, fmt.Errorf("unknown app %q", name)
+	}
+	return app, nil
+}
+
 func (m *Manager) StartApp(ctx context.Context, name string) error {
+	app, err := m.appForOperation(name)
+	if err != nil {
+		return err
+	}
+	app.opMu.Lock()
+	defer app.opMu.Unlock()
+	return m.startApp(ctx, name)
+}
+
+func (m *Manager) startApp(ctx context.Context, name string) error {
 	_ = ctx
 	m.mu.Lock()
 	app, ok := m.apps[name]
@@ -185,7 +207,15 @@ func (m *Manager) StartApp(ctx context.Context, name string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("unknown app %q", name)
 	}
-	if app.status.State == StateRunning || app.status.State == StateStarting {
+	if app.status.State == StateStarting {
+		app.status.Desired = StateRunning
+		app.status.Message = "already starting"
+		app.status.UpdatedAt = time.Now().UTC()
+		_ = m.saveStateLocked()
+		m.mu.Unlock()
+		return nil
+	}
+	if app.status.State == StateRunning {
 		if app.status.PID <= 0 || !processAlive(app.status.PID) {
 			app.status.State = StateFailed
 			app.status.PID = 0
@@ -201,14 +231,6 @@ func (m *Manager) StartApp(ctx context.Context, name string) error {
 			return nil
 		}
 	}
-	if app.status.State == StateStarting {
-		app.status.Desired = StateRunning
-		app.status.Message = "already starting"
-		app.status.UpdatedAt = time.Now().UTC()
-		_ = m.saveStateLocked()
-		m.mu.Unlock()
-		return nil
-	}
 	if app.status.State == StateStopping {
 		app.status.Desired = StateRunning
 		app.status.Message = "already stopping"
@@ -220,6 +242,15 @@ func (m *Manager) StartApp(ctx context.Context, name string) error {
 	if app.cfg.Command == "" {
 		m.mu.Unlock()
 		return fmt.Errorf("app %q has no command", name)
+	}
+	if app.status.PID > 0 {
+		if processAlive(app.status.PID) {
+			pid := app.status.PID
+			state := app.status.State
+			m.mu.Unlock()
+			return fmt.Errorf("app %q still has live pid %d while %s", name, pid, state)
+		}
+		app.status.PID = 0
 	}
 	now := time.Now().UTC()
 	app.status.State = StateStarting
@@ -266,10 +297,37 @@ func (m *Manager) StopApp(ctx context.Context, name string) error {
 }
 
 func (m *Manager) RestartApp(ctx context.Context, name string) error {
-	if err := m.stopApp(ctx, name, StateRunning); err != nil {
+	app, err := m.appForOperation(name)
+	if err != nil {
 		return err
 	}
-	return m.StartApp(ctx, name)
+	app.opMu.Lock()
+	defer app.opMu.Unlock()
+	if err := m.stopAppOperation(ctx, name, StateRunning); err != nil {
+		return err
+	}
+	return m.startApp(ctx, name)
+}
+
+func (m *Manager) restartAppIfDesiredRunning(ctx context.Context, name string) error {
+	app, err := m.appForOperation(name)
+	if err != nil {
+		return err
+	}
+	app.opMu.Lock()
+	defer app.opMu.Unlock()
+
+	m.mu.Lock()
+	if app.status.Desired != StateRunning {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	if err := m.stopAppOperation(ctx, name, StateRunning); err != nil {
+		return err
+	}
+	return m.startApp(ctx, name)
 }
 
 func (m *Manager) AdoptApp(name string, pid int) error {
@@ -279,12 +337,14 @@ func (m *Manager) AdoptApp(name string, pid int) error {
 	if !processAlive(pid) {
 		return fmt.Errorf("pid %d is not running", pid)
 	}
+	app, err := m.appForOperation(name)
+	if err != nil {
+		return err
+	}
+	app.opMu.Lock()
+	defer app.opMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	app, ok := m.apps[name]
-	if !ok {
-		return fmt.Errorf("unknown app %q", name)
-	}
 	now := time.Now().UTC()
 	if app.status.StartedAt == nil {
 		app.status.StartedAt = &now
@@ -308,6 +368,16 @@ func (m *Manager) StopAll(ctx context.Context) {
 }
 
 func (m *Manager) stopApp(ctx context.Context, name, desired string) error {
+	app, err := m.appForOperation(name)
+	if err != nil {
+		return err
+	}
+	app.opMu.Lock()
+	defer app.opMu.Unlock()
+	return m.stopAppOperation(ctx, name, desired)
+}
+
+func (m *Manager) stopAppOperation(ctx context.Context, name, desired string) error {
 	m.mu.Lock()
 	app, ok := m.apps[name]
 	if !ok {
@@ -325,42 +395,22 @@ func (m *Manager) stopApp(ctx context.Context, name, desired string) error {
 	}
 	cmd := app.cmd
 	stopped := app.stopped
+	pid := app.status.PID
 	timeout := time.Duration(app.cfg.ShutdownTimeoutSec) * time.Second
 	app.status.State = StateStopping
 	app.status.Message = "stopping"
 	app.status.UpdatedAt = time.Now().UTC()
+	_ = m.saveStateLocked()
 	m.mu.Unlock()
 
 	if cmd == nil || cmd.Process == nil {
-		pid := app.status.PID
-		if err := m.stopAdoptedProcess(ctx, pid, stopped, timeout); err != nil {
+		if err := m.stopProcessSet(ctx, name, pid, stopped, timeout, false); err != nil {
 			return err
 		}
 		m.markAppStopped(name, pid, "stopped")
 		return nil
 	}
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err == nil {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	} else {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-stopped:
-		return nil
-	case <-timer.C:
-		m.logger.Warn("app did not stop gracefully; killing", "app", name)
-		if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		} else {
-			_ = cmd.Process.Kill()
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return m.stopProcessSet(ctx, name, cmd.Process.Pid, stopped, timeout, true)
 }
 
 func (m *Manager) markAppStopped(name string, pid int, message string) {
@@ -386,15 +436,12 @@ func (m *Manager) markAppStopped(name string, pid int, message string) {
 	_ = m.saveStateLocked()
 }
 
-func (m *Manager) stopAdoptedProcess(ctx context.Context, pid int, stopped <-chan struct{}, timeout time.Duration) error {
+func (m *Manager) stopProcessSet(ctx context.Context, name string, pid int, stopped <-chan struct{}, timeout time.Duration, includeGroup bool) error {
 	if pid <= 0 {
 		return nil
 	}
-	if pgid, err := syscall.Getpgid(pid); err == nil {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	} else if process, err := os.FindProcess(pid); err == nil {
-		_ = process.Signal(syscall.SIGTERM)
-	}
+	processes := newProcessSet(pid, includeGroup)
+	processes.signal(syscall.SIGTERM)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -402,18 +449,57 @@ func (m *Manager) stopAdoptedProcess(ctx context.Context, pid int, stopped <-cha
 	for {
 		select {
 		case <-stopped:
+			if processes.alive() {
+				childGrace := time.NewTimer(250 * time.Millisecond)
+				select {
+				case <-childGrace.C:
+				case <-ctx.Done():
+					childGrace.Stop()
+					return ctx.Err()
+				}
+				if processes.alive() {
+					m.logger.Warn("app process exited but child processes remained; killing", "app", name, "pid", pid)
+					return m.forceKillProcessSet(ctx, name, processes, nil)
+				}
+			}
 			return nil
 		case <-deadline.C:
-			if pgid, err := syscall.Getpgid(pid); err == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			} else if process, err := os.FindProcess(pid); err == nil {
-				_ = process.Kill()
-			}
-			return nil
+			m.logger.Warn("app did not stop gracefully; killing", "app", name, "pid", pid)
+			return m.forceKillProcessSet(ctx, name, processes, stopped)
 		case <-ticker.C:
-			if !processAlive(pid) {
+			if stopped == nil && !processes.alive() {
 				return nil
 			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (m *Manager) forceKillProcessSet(ctx context.Context, name string, processes *processSet, stopped <-chan struct{}) error {
+	processes.signal(syscall.SIGKILL)
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopped:
+			stopped = nil
+			if !processes.alive() {
+				return nil
+			}
+		case <-ticker.C:
+			if processes.alive() {
+				processes.signal(syscall.SIGKILL)
+				continue
+			}
+			return nil
+		case <-deadline.C:
+			if !processes.alive() {
+				return nil
+			}
+			return fmt.Errorf("app %q pid %d did not exit after SIGKILL", name, processes.root)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -758,7 +844,7 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 	for _, name := range toRestart {
 		go func(name string) {
 			m.logger.Warn("restarting app because health check is unreachable", "app", name)
-			if err := m.RestartApp(context.Background(), name); err != nil {
+			if err := m.restartAppIfDesiredRunning(context.Background(), name); err != nil {
 				m.logger.Error("health recovery failed", "app", name, "error", err)
 			}
 		}(name)
@@ -769,11 +855,149 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
+	if _, state, ok := procStat(pid); ok && state == "Z" {
+		return false
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+type processSet struct {
+	root         int
+	includeGroup bool
+	pgid         int
+	seen         map[int]struct{}
+}
+
+func newProcessSet(root int, includeGroup bool) *processSet {
+	ps := &processSet{
+		root:         root,
+		includeGroup: includeGroup,
+		seen:         map[int]struct{}{root: {}},
+	}
+	if includeGroup {
+		if pgid, err := syscall.Getpgid(root); err == nil {
+			ps.pgid = pgid
+		}
+	}
+	ps.refresh()
+	return ps
+}
+
+func (ps *processSet) signal(sig syscall.Signal) {
+	ps.refresh()
+	if ps.includeGroup && ps.pgid > 0 {
+		_ = syscall.Kill(-ps.pgid, sig)
+	}
+	for pid := range ps.seen {
+		if pid == os.Getpid() {
+			continue
+		}
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Signal(sig)
+		}
+	}
+}
+
+func (ps *processSet) alive() bool {
+	ps.refresh()
+	for pid := range ps.seen {
+		if processAlive(pid) {
+			return true
+		}
+	}
+	return false
+}
+
+func (ps *processSet) refresh() {
+	if ps.root <= 0 {
+		return
+	}
+	for _, pid := range descendantPIDs(ps.root) {
+		ps.seen[pid] = struct{}{}
+	}
+	if ps.includeGroup && ps.pgid > 0 {
+		for _, pid := range processGroupPIDs(ps.pgid) {
+			ps.seen[pid] = struct{}{}
+		}
+	}
+}
+
+func descendantPIDs(root int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	children := make(map[int][]int)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		ppid, _, ok := procStat(pid)
+		if !ok {
+			continue
+		}
+		children[ppid] = append(children[ppid], pid)
+	}
+	var out []int
+	queue := append([]int(nil), children[root]...)
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		out = append(out, pid)
+		queue = append(queue, children[pid]...)
+	}
+	return out
+}
+
+func processGroupPIDs(pgid int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		got, err := syscall.Getpgid(pid)
+		if err == nil && got == pgid {
+			out = append(out, pid)
+		}
+	}
+	return out
+}
+
+func procStat(pid int) (ppid int, state string, ok bool) {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, "", false
+	}
+	stat := string(b)
+	end := strings.LastIndex(stat, ")")
+	if end < 0 || end+2 >= len(stat) {
+		return 0, "", false
+	}
+	fields := strings.Fields(stat[end+2:])
+	if len(fields) < 2 {
+		return 0, "", false
+	}
+	ppid, err = strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, "", false
+	}
+	return ppid, fields[0], true
 }
 
 func (m *Manager) pushHeartbeat(ctx context.Context) {

@@ -16,14 +16,14 @@
 
 ## Planning Gate
 
-Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is also visible in the `/tasks` selected-task pane above the original input. The default planning gate records:
+Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is also visible in the `/tasks` selected-task pane above the original input. The default planning gate derives the plan from task metadata, so root tasks, graph phases, local tasks, and remote tasks get distinct summaries, steps, and risks. It records:
 
-- a concise plan summary
-- ordered execution steps covering inspection, minimal workspace change, validation, and handoff
-- known risks before inspection completes
+- a concise task-, phase-, or target-specific plan summary
+- ordered execution steps for the current graph phase or execution target
+- known risks for that phase or target before work starts
 - a reviewer note confirming the plan contains the required execution stages
 
-`homelabd` writes `task.plan.created` and `task.plan.reviewed` events to the JSONL event log. If an older task has no reviewed plan, `run` or `delegate` creates and reviews one before assigning the worker.
+`homelabd` writes `task.plan.created` and `task.plan.reviewed` events to the JSONL event log. If an older task has no reviewed plan, or only has the legacy generic default plan, `run` or `delegate` creates and reviews the current task-specific plan before assigning the worker.
 
 Reviewing a task with no workspace diff moves it to `blocked` instead of leaving it `running`; the next action should be to rerun, delegate with clearer instructions, or delete the task.
 

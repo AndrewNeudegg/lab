@@ -514,6 +514,18 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	if children[0].Status != taskstore.StatusQueued || children[0].GraphPhase != "inspect" {
 		t.Fatalf("first child = %#v, want queued inspect phase", children[0])
 	}
+	if children[0].Plan == nil || children[1].Plan == nil {
+		t.Fatalf("child plans = %#v/%#v, want reviewed plans", children[0].Plan, children[1].Plan)
+	}
+	if !strings.Contains(children[0].Plan.Summary, "inspect phase") {
+		t.Fatalf("inspect plan summary = %q, want phase-specific summary", children[0].Plan.Summary)
+	}
+	if children[0].Plan.Steps[0].Title != "Map affected surface" {
+		t.Fatalf("inspect first step = %q, want phase-specific inspection step", children[0].Plan.Steps[0].Title)
+	}
+	if children[1].Plan.Steps[0].Title != "Define implementation boundary" {
+		t.Fatalf("design first step = %q, want phase-specific design step", children[1].Plan.Steps[0].Title)
+	}
 	for i, child := range children[1:] {
 		if child.Status != taskstore.StatusBlocked {
 			t.Fatalf("child %d status = %q, want blocked", i+1, child.Status)
@@ -929,6 +941,52 @@ func TestDelegationCreatesReviewedPlanBeforeExecution(t *testing.T) {
 	}
 	if updated.Plan == nil || updated.Plan.Status != "reviewed" {
 		t.Fatalf("plan = %#v, want reviewed plan", updated.Plan)
+	}
+}
+
+func TestDelegationRefreshesLegacyGenericPlanBeforeExecution(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	reviewedAt := now
+	task := taskstore.Task{
+		ID:         "task_20260427_001343_deadbeef",
+		Title:      "inspect plans",
+		Goal:       "Inspect the repository and current task context for: all task plans look generic",
+		Status:     taskstore.StatusQueued,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+		GraphPhase: "inspect",
+		Plan: &taskstore.TaskPlan{
+			Status:     "reviewed",
+			Summary:    "Plan to satisfy: all task plans look generic",
+			Steps:      []taskstore.TaskPlanStep{{Title: "Inspect scope"}},
+			Review:     legacyDefaultTaskPlanReview,
+			CreatedAt:  now,
+			ReviewedAt: &reviewedAt,
+		},
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := orch.prepareDelegationForTask(context.Background(), task.ID, "codex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(run.Instruction, "Map affected surface") {
+		t.Fatalf("instruction = %q, want refreshed phase-specific plan", run.Instruction)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Plan == nil || updated.Plan.Review != taskSpecificDefaultPlanReview {
+		t.Fatalf("plan = %#v, want refreshed task-specific plan", updated.Plan)
+	}
+	if !strings.Contains(updated.Plan.Summary, "inspect phase") {
+		t.Fatalf("summary = %q, want inspect phase", updated.Plan.Summary)
 	}
 }
 

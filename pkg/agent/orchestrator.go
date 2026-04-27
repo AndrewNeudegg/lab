@@ -2277,7 +2277,7 @@ func (o *Orchestrator) ensureTaskPlan(ctx context.Context, t *taskstore.Task) bo
 		return false
 	}
 	now := time.Now().UTC()
-	plan := defaultTaskPlan(t.Goal, now)
+	plan := defaultTaskPlan(*t, now)
 	t.Plan = &plan
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.plan.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(plan)})
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.plan.reviewed", Actor: "ReviewerAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"status": plan.Status, "review": plan.Review})})
@@ -2285,31 +2285,180 @@ func (o *Orchestrator) ensureTaskPlan(ctx context.Context, t *taskstore.Task) bo
 }
 
 func taskPlanReviewed(plan *taskstore.TaskPlan) bool {
-	return plan != nil && strings.TrimSpace(plan.Summary) != "" && len(plan.Steps) > 0 && strings.EqualFold(plan.Status, "reviewed")
+	return plan != nil && strings.TrimSpace(plan.Summary) != "" && len(plan.Steps) > 0 && strings.EqualFold(plan.Status, "reviewed") && !legacyDefaultTaskPlan(plan)
 }
 
-func defaultTaskPlan(goal string, now time.Time) taskstore.TaskPlan {
-	reviewedAt := now
-	summary := "Plan to satisfy the task goal safely in an isolated workspace."
-	if strings.TrimSpace(goal) != "" {
-		summary = "Plan to satisfy: " + firstLine(goal)
+const taskSpecificDefaultPlanReview = "OrchestratorAgent generated this task-specific default plan and ReviewerAgent checked it includes the required execution stages before execution."
+
+const legacyDefaultTaskPlanReview = "OrchestratorAgent generated this default plan and ReviewerAgent checked it includes inspect, change, validate, and handoff stages before execution."
+
+func legacyDefaultTaskPlan(plan *taskstore.TaskPlan) bool {
+	if plan == nil {
+		return false
 	}
+	review := strings.TrimSpace(plan.Review)
+	return review == legacyDefaultTaskPlanReview || (strings.Contains(review, "generated this default plan") && strings.Contains(review, "inspect, change, validate, and handoff"))
+}
+
+func defaultTaskPlan(t taskstore.Task, now time.Time) taskstore.TaskPlan {
+	reviewedAt := now
 	return taskstore.TaskPlan{
-		Status:  "reviewed",
-		Summary: summary,
-		Steps: []taskstore.TaskPlanStep{
-			{Title: "Inspect scope", Detail: "Read the task goal, relevant repo files, current task state, and recent context before editing."},
-			{Title: "Make a minimal workspace change", Detail: "Apply the smallest practical patch inside the isolated task worktree; do not edit the live repo."},
-			{Title: "Validate the change", Detail: "Run targeted formatting, build, tests, or browser checks that match the files touched."},
-			{Title: "Summarize and hand off", Detail: "Report changed files, validation results, how to use the change, docs updates, and remaining risks before merge approval."},
-		},
-		Risks: []string{
-			"Affected files and components are unknown until inspection finishes.",
-			"The task must stay inside its workspace until review and approval gates pass.",
-		},
-		Review:     "OrchestratorAgent generated this default plan and ReviewerAgent checked it includes inspect, change, validate, and handoff stages before execution.",
+		Status:     "reviewed",
+		Summary:    taskPlanSummary(t),
+		Steps:      taskPlanSteps(t),
+		Risks:      taskPlanRisks(t),
+		Review:     taskSpecificDefaultPlanReview,
 		CreatedAt:  now,
 		ReviewedAt: &reviewedAt,
+	}
+}
+
+func taskPlanSummary(t taskstore.Task) string {
+	subject := firstLine(t.Goal)
+	if subject == "" {
+		subject = "the task goal"
+	}
+	switch strings.ToLower(strings.TrimSpace(t.GraphPhase)) {
+	case "root":
+		return "Plan to coordinate the task graph for: " + subject
+	case "inspect":
+		return "Plan for the inspect phase: " + subject
+	case "design":
+		return "Plan for the design phase: " + subject
+	case "implement":
+		return "Plan for the implement phase: " + subject
+	case "test":
+		return "Plan for the test phase: " + subject
+	case "docs":
+		return "Plan for the docs phase: " + subject
+	case "review":
+		return "Plan for the review phase: " + subject
+	}
+	if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
+		target := firstNonEmptyString(t.Target.Workdir, t.Target.WorkdirID, t.Target.AgentID)
+		if target != "" {
+			return "Plan to complete the remote task on " + target + ": " + subject
+		}
+		return "Plan to complete the remote task: " + subject
+	}
+	return "Plan to satisfy: " + subject
+}
+
+func taskPlanSteps(t taskstore.Task) []taskstore.TaskPlanStep {
+	switch strings.ToLower(strings.TrimSpace(t.GraphPhase)) {
+	case "root":
+		return []taskstore.TaskPlanStep{
+			{Title: "Coordinate task graph", Detail: "Keep the original goal and acceptance criteria on the parent task while child phases drive execution."},
+			{Title: "Release the inspect phase", Detail: "Create isolated child worktrees and start only the first unblocked phase."},
+			{Title: "Track phase acceptance", Detail: "Advance later phases only after dependencies are accepted or explicitly waived."},
+			{Title: "Prepare final handoff", Detail: "Confirm validation, documentation, and remaining risks across the completed graph."},
+		}
+	case "inspect":
+		return []taskstore.TaskPlanStep{
+			{Title: "Map affected surface", Detail: "Identify relevant files, commands, docs, and current behaviour before proposing edits."},
+			{Title: "Check task context", Detail: "Read the task goal, graph context, dependencies, and recent repository state."},
+			{Title: "Record findings", Detail: "Capture unknowns, risks, and likely validation needs in the task result."},
+			{Title: "Handoff inspection", Detail: "State whether the next phase should change code, docs, tests, or workflow."},
+		}
+	case "design":
+		return []taskstore.TaskPlanStep{
+			{Title: "Define implementation boundary", Detail: "Name the modules, data contracts, and behaviours the smallest fix should touch."},
+			{Title: "Choose the approach", Detail: "Prefer existing repository patterns and avoid broad refactors unless required."},
+			{Title: "Plan validation", Detail: "List targeted tests, formatting, builds, and any browser/UAT checks needed before coding starts."},
+			{Title: "Surface open questions", Detail: "Record blockers, assumptions, and risks for the implementation phase."},
+		}
+	case "implement":
+		return []taskstore.TaskPlanStep{
+			{Title: "Apply scoped changes", Detail: "Edit only the files needed for the approved design inside the task worktree."},
+			{Title: "Keep docs in sync", Detail: "Update docs or help text when behaviour, commands, UI, configuration, tools, or workflow changes."},
+			{Title: "Add regression coverage", Detail: "Include focused automated coverage for fixed bugs or changed contracts."},
+			{Title: "Prepare implementation notes", Detail: "Summarize changed files, user impact, and remaining risks for validation."},
+		}
+	case "test":
+		return []taskstore.TaskPlanStep{
+			{Title: "Run targeted checks", Detail: "Execute formatting, builds, and automated tests that match the files changed."},
+			{Title: "Exercise UI when relevant", Detail: "Run browser/UAT checks for changed pages and verify the reported interaction."},
+			{Title: "Record results", Detail: "Capture commands, outcomes, skipped checks, and any failures in the task result."},
+			{Title: "Identify residual risk", Detail: "Call out untested surfaces or environment blockers before review."},
+		}
+	case "docs":
+		return []taskstore.TaskPlanStep{
+			{Title: "Find affected docs", Detail: "Locate operator docs, help text, examples, and workflow notes tied to the behaviour changed."},
+			{Title: "Update discoverable guidance", Detail: "Use concise British English with clear titles, searchable terms, related links, and current examples."},
+			{Title: "Check consistency", Detail: "Keep docs, commands, UI, configuration, tools, and workflows aligned with the implementation."},
+			{Title: "Report docs status", Detail: "State exactly what changed or why no documentation update was needed."},
+		}
+	case "review":
+		return []taskstore.TaskPlanStep{
+			{Title: "Review phase outcomes", Detail: "Confirm prior graph phases are accepted, waived, or clearly blocked."},
+			{Title: "Inspect diff and tests", Detail: "Check correctness, regression coverage, docs, and validation evidence before approval."},
+			{Title: "Verify handoff quality", Detail: "Ensure changed files, validation, usage notes, docs status, and risks are clear."},
+			{Title: "Choose final action", Detail: "Approve, reopen, or record follow-up work based on the evidence."},
+		}
+	}
+	if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
+		return []taskstore.TaskPlanStep{
+			{Title: "Confirm remote target", Detail: "Verify the selected agent, machine, backend, and working directory before work starts."},
+			{Title: "Run in remote checkout", Detail: "Execute the requested change only in the advertised remote directory."},
+			{Title: "Validate remotely", Detail: "Run relevant checks available on that machine and report any environment limits."},
+			{Title: "Report remote result", Detail: "Return changed files, validation, usage notes, docs status, and follow-up needs."},
+		}
+	}
+	return []taskstore.TaskPlanStep{
+		{Title: "Inspect scope", Detail: "Read the task goal, relevant repo files, current task state, and recent context before editing."},
+		{Title: "Make a minimal workspace change", Detail: "Apply the smallest practical patch inside the isolated task worktree; do not edit the live repo."},
+		{Title: "Validate the change", Detail: "Run targeted formatting, build, tests, or browser checks that match the files touched."},
+		{Title: "Summarize and hand off", Detail: "Report changed files, validation results, how to use the change, docs updates, and remaining risks before merge approval."},
+	}
+}
+
+func taskPlanRisks(t taskstore.Task) []string {
+	switch strings.ToLower(strings.TrimSpace(t.GraphPhase)) {
+	case "root":
+		return []string{
+			"Child phases can drift from the original goal if dependencies or acceptance criteria are unclear.",
+			"The graph parent must remain blocked until phase results are accepted or explicitly waived.",
+		}
+	case "inspect":
+		return []string{
+			"Affected files and components may be broader than the initial task wording suggests.",
+			"Inspection should avoid speculative edits unless a minimal fix is clearly required.",
+		}
+	case "design":
+		return []string{
+			"The design may miss hidden contracts if inspection findings are incomplete.",
+			"Validation needs must be explicit before implementation starts.",
+		}
+	case "implement":
+		return []string{
+			"Unrelated workspace changes must be preserved while applying the patch.",
+			"Behaviour changes need matching tests and docs/help text updates.",
+		}
+	case "test":
+		return []string{
+			"Environment limits can block full validation and must be recorded clearly.",
+			"UI changes require browser-level checks, not compile checks alone.",
+		}
+	case "docs":
+		return []string{
+			"Docs can become misleading if examples or command names drift from the implementation.",
+			"Operator-facing workflow changes need discoverable help text as well as prose docs.",
+		}
+	case "review":
+		return []string{
+			"Approval should not proceed if checks, docs, or merge readiness are unclear.",
+			"Remaining risks must be visible before final acceptance.",
+		}
+	}
+	if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
+		return []string{
+			"Remote execution can affect a checkout outside the local control-plane repository.",
+			"Local review acknowledges the remote result but cannot compare or merge that checkout.",
+		}
+	}
+	return []string{
+		"Affected files and components are unknown until inspection finishes.",
+		"The task must stay inside its workspace until review and approval gates pass.",
 	}
 }
 

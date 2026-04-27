@@ -110,6 +110,15 @@ describe('tasks page selection rendering', () => {
     expect(pageSource).toContain('line-height: 1.25;');
   });
 
+  test('wraps long diff lines inside the diff pane', () => {
+    expect(pageSource).toContain('.split-diff,');
+    expect(pageSource).toContain('width: 100%;');
+    expect(pageSource).toContain('min-width: 0;');
+    expect(pageSource).toContain('overflow-wrap: anywhere;');
+    expect(pageSource).toContain('white-space: pre-wrap;');
+    expect(pageSource).toContain('white-space: nowrap;');
+  });
+
   test('caps the mobile queue above the selected task record', () => {
     expect(pageSource).toContain('height: auto;');
     expect(pageSource).toContain('max-height: min(54dvh, 28rem);');

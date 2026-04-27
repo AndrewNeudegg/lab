@@ -144,6 +144,8 @@ The Tasks page separates work by execution queue:
 
 Remote task creation is deliberately explicit. The "New task target" panel shows the selected agent, machine, and full directory path, and the create button remains disabled until the context confirmation checkbox is checked. Treat that checkbox as the final guard against running an agent in the wrong checkout. The API rejects unknown workdir ids or paths for registered agents, so a stale UI selection should fail instead of silently falling back.
 
+The `Needs action` tab shows tasks that need an operator decision, failed work, review, approval, verification, or conflict resolution. It does not include task graph parent records or child phases that are blocked only because an earlier graph phase is not accepted yet; those records remain visible in `All` and search.
+
 Remote task detail pages repeat the execution context in an amber "Remote execution context" block. Verify that machine and path before asking for follow-up work.
 
 Local tasks continue to use local task graph workspaces. Remote tasks do not create local worktrees and do not compare their repository state against the control-plane repo.

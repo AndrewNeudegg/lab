@@ -19,7 +19,30 @@ export type TerminalTarget = {
   status: string;
 };
 
+export type TerminalSessionSnapshot = {
+  id: string;
+  shell: string;
+  cwd: string;
+  created_at: string;
+  persistent?: boolean;
+};
+
+export type StoredTerminalTab = {
+  id: string;
+  title: string;
+  targetId: string;
+  targetLabel: string;
+  apiBase: string;
+  session?: TerminalSessionSnapshot;
+};
+
+export type StoredTerminalTabsState = {
+  activeTabId: string;
+  tabs: StoredTerminalTab[];
+};
+
 export const defaultTerminalGeometry: TerminalGeometry = { cols: 100, rows: 30 };
+export const terminalTabsStorageKey = 'homelab-terminal-tabs:v1';
 
 export const clampTerminalGeometry = (geometry: Partial<TerminalGeometry>): TerminalGeometry => {
   const cols = Math.trunc(geometry.cols || defaultTerminalGeometry.cols);
@@ -72,4 +95,53 @@ export const terminalStatusLabel = (connected: boolean, loading: boolean) => {
     return 'Starting';
   }
   return 'Disconnected';
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const cleanString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+export const defaultTerminalTabTitle = (index: number) => `Terminal ${index + 1}`;
+
+export const normaliseStoredTerminalTabs = (
+  value: unknown,
+  fallbackTarget: TerminalTarget
+): StoredTerminalTabsState => {
+  if (!isRecord(value) || !Array.isArray(value.tabs)) {
+    return { activeTabId: '', tabs: [] };
+  }
+  const tabs = value.tabs.flatMap((candidate, index): StoredTerminalTab[] => {
+    if (!isRecord(candidate)) {
+      return [];
+    }
+    const sessionCandidate = isRecord(candidate.session) ? candidate.session : undefined;
+    const sessionId = cleanString(sessionCandidate?.id);
+    const id = cleanString(candidate.id) || sessionId;
+    if (!id) {
+      return [];
+    }
+    const session = sessionId
+      ? {
+          id: sessionId,
+          shell: cleanString(sessionCandidate?.shell),
+          cwd: cleanString(sessionCandidate?.cwd),
+          created_at: cleanString(sessionCandidate?.created_at),
+          persistent: Boolean(sessionCandidate?.persistent)
+        }
+      : undefined;
+    return [
+      {
+        id,
+        title: cleanString(candidate.title) || defaultTerminalTabTitle(index),
+        targetId: cleanString(candidate.targetId) || fallbackTarget.id,
+        targetLabel: cleanString(candidate.targetLabel) || fallbackTarget.label,
+        apiBase: normaliseAPIBase(cleanString(candidate.apiBase) || fallbackTarget.apiBase),
+        session
+      }
+    ];
+  });
+  const requestedActiveTabId = cleanString(value.activeTabId);
+  const activeTabId = tabs.some((tab) => tab.id === requestedActiveTabId) ? requestedActiveTabId : tabs[0]?.id || '';
+  return { activeTabId, tabs };
 };

@@ -310,7 +310,7 @@ func (c cli) events(args []string) error {
 
 func (c cli) terminal(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl terminal <start|send|input|stream|signal|close>")
+		return fmt.Errorf("usage: homelabctl terminal <start|show|send|input|stream|signal|close>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -323,6 +323,11 @@ func (c cli) terminal(args []string) error {
 			body["cwd"] = args[1]
 		}
 		return c.do(http.MethodPost, "/terminal/sessions", body)
+	case "show", "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl terminal show <session_id>")
+		}
+		return c.do(http.MethodGet, path("terminal", "sessions", args[1]), nil)
 	case "send":
 		if len(args) < 3 {
 			return fmt.Errorf("usage: homelabctl terminal send <session_id> <text>")
@@ -658,6 +663,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] events [-limit N] [YYYY-MM-DD]
 
   homelabctl [-addr http://127.0.0.1:18080] terminal start [cwd]
+  homelabctl [-addr http://127.0.0.1:18080] terminal show <session_id>
   homelabctl [-addr http://127.0.0.1:18080] terminal stream <session_id>
   homelabctl [-addr http://127.0.0.1:18080] terminal send <session_id> <text>
   homelabctl [-addr http://127.0.0.1:18080] terminal input <session_id> <text>

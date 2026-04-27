@@ -156,6 +156,12 @@ go run ./cmd/homelabctl terminal start
 go run ./cmd/homelabctl terminal start /home/lab/lab
 ```
 
+Show session metadata and reattach homelabd to an existing persistent terminal session:
+
+```bash
+go run ./cmd/homelabctl terminal show term_123
+```
+
 Stream session output:
 
 ```bash
@@ -203,6 +209,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /approvals/{id}/deny`
 - `GET /events?date=YYYY-MM-DD&limit=N`
 - `POST /terminal/sessions`
+- `GET /terminal/sessions/{id}`
 - `GET /terminal/sessions/{id}/events`
 - `POST /terminal/sessions/{id}/input`
 - `POST /terminal/sessions/{id}/signal`

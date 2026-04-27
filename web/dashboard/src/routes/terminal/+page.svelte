@@ -6,20 +6,21 @@
   import {
     buildTerminalTargets,
     clampTerminalGeometry,
+    defaultTerminalTabTitle,
     defaultTerminalGeometry,
     endpoint,
+    normaliseStoredTerminalTabs,
     terminalStatusLabel,
+    terminalTabsStorageKey,
     websocketEndpoint,
+    type StoredTerminalTab,
+    type TerminalSessionSnapshot,
     type TerminalTarget,
     type TerminalGeometry
   } from './terminal-client';
 
-  type TerminalSession = {
-    id: string;
-    shell: string;
-    cwd: string;
-    created_at: string;
-  };
+  type TerminalSession = TerminalSessionSnapshot;
+  type TerminalTab = StoredTerminalTab;
 
   type XtermTerminal = {
     open: (element: HTMLElement) => void;
@@ -64,7 +65,6 @@
     { label: '↓', hint: 'Down arrow', value: '\u001b[B' }
   ];
 
-  let session: TerminalSession | undefined;
   let socket: WebSocket | undefined;
   let eventSource: EventSource | undefined;
   let terminalHost: HTMLElement | undefined;
@@ -72,11 +72,17 @@
   let fitAddon: FitAddonLike | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let agents: HomelabdRemoteAgent[] = [];
+  let tabs: TerminalTab[] = [];
+  let activeTabId = '';
+  let activeTab: TerminalTab | undefined;
+  let session: TerminalSession | undefined;
   let selectedTargetId = 'local';
-  let activeTarget: TerminalTarget | undefined;
   let loading = true;
   let connected = false;
   let error = '';
+  let editingTabId = '';
+  let editingTitle = '';
+  let renameInput: HTMLInputElement | undefined;
   let lastResize = '';
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let socketFallbackTimer: ReturnType<typeof setTimeout> | undefined;
@@ -87,6 +93,8 @@
   $: if (terminalTargets.length > 0 && !terminalTargets.some((target) => target.id === selectedTargetId)) {
     selectedTargetId = terminalTargets[0].id;
   }
+  $: activeTab = tabs.find((tab) => tab.id === activeTabId);
+  $: session = activeTab?.session;
 
   async function requestFrom<T>(base: string, path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
@@ -102,8 +110,8 @@
   }
 
   const request = <T,>(path: string, init: RequestInit = {}) => requestFrom<T>(apiBase, path, init);
-  const terminalRequest = <T,>(path: string, init: RequestInit = {}) =>
-    requestFrom<T>(activeTarget?.apiBase || selectedTarget?.apiBase || apiBase, path, init);
+  const requestForTab = <T,>(tab: TerminalTab, path: string, init: RequestInit = {}) =>
+    requestFrom<T>(tab.apiBase || apiBase, path, init);
 
   const currentGeometry = () =>
     clampTerminalGeometry({
@@ -115,8 +123,106 @@
     terminal?.writeln(`\r\n\x1b[90m${message}\x1b[0m`);
   };
 
+  const makeTabId = () => {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return `tab_${crypto.randomUUID()}`;
+    }
+    return `tab_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  };
+
+  const persistTabs = () => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.localStorage.setItem(terminalTabsStorageKey, JSON.stringify({ activeTabId, tabs }));
+  };
+
+  const tabTarget = (target: TerminalTarget | undefined) =>
+    target || terminalTargets[0] || {
+      id: 'local',
+      label: 'homelabd local',
+      detail: 'Control plane shell',
+      apiBase,
+      status: 'online'
+    };
+
+  const createTab = (target = tabTarget(selectedTarget)): TerminalTab => ({
+    id: makeTabId(),
+    title: defaultTerminalTabTitle(tabs.length),
+    targetId: target.id,
+    targetLabel: target.label,
+    apiBase: target.apiBase
+  });
+
+  const loadTabs = () => {
+    const fallbackTarget = tabTarget(terminalTargets[0]);
+    try {
+      const raw = window.localStorage.getItem(terminalTabsStorageKey);
+      const restored = normaliseStoredTerminalTabs(raw ? JSON.parse(raw) : undefined, fallbackTarget);
+      tabs = restored.tabs;
+      activeTabId = restored.activeTabId;
+    } catch {
+      tabs = [];
+      activeTabId = '';
+    }
+    if (tabs.length === 0) {
+      const tab = createTab(fallbackTarget);
+      tabs = [tab];
+      activeTabId = tab.id;
+    }
+    persistTabs();
+  };
+
+  const updateTab = (tabId: string, updater: (tab: TerminalTab) => TerminalTab) => {
+    tabs = tabs.map((tab) => (tab.id === tabId ? updater(tab) : tab));
+    persistTabs();
+  };
+
+  const cleanTabTitle = (title: string) => title.trim().slice(0, 16) || 'Terminal';
+
+  const startRename = async (tab: TerminalTab) => {
+    if (tab.id !== activeTabId) {
+      await selectTab(tab.id);
+      return;
+    }
+    editingTabId = tab.id;
+    editingTitle = (tab.title || 'Terminal').slice(0, 16);
+    await tick();
+    renameInput?.focus();
+    renameInput?.select();
+  };
+
+  const commitRename = () => {
+    const tabId = editingTabId;
+    if (!tabId) {
+      return;
+    }
+    updateTab(tabId, (tab) => ({ ...tab, title: cleanTabTitle(editingTitle) }));
+    editingTabId = '';
+    editingTitle = '';
+    terminal?.focus();
+  };
+
+  const cancelRename = () => {
+    editingTabId = '';
+    editingTitle = '';
+    terminal?.focus();
+  };
+
+  const handleRenameKeydown = (event: KeyboardEvent) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitRename();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelRename();
+    }
+  };
+
   const sendResize = (geometry = currentGeometry()) => {
-    if (!session) {
+    const tab = activeTab;
+    const currentSession = tab?.session;
+    if (!tab || !currentSession) {
       return;
     }
     const size = clampTerminalGeometry(geometry);
@@ -127,7 +233,7 @@
     lastResize = key;
     window.clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => {
-      void terminalRequest(`/terminal/sessions/${encodeURIComponent(session!.id)}/resize`, {
+      void requestForTab(tab, `/terminal/sessions/${encodeURIComponent(currentSession.id)}/resize`, {
         method: 'POST',
         body: JSON.stringify(size)
       }).catch((err) => {
@@ -149,8 +255,10 @@
       socket.send(data);
       return;
     }
-    if (eventSource && session) {
-      void terminalRequest(`/terminal/sessions/${encodeURIComponent(session.id)}/input`, {
+    const tab = activeTab;
+    const currentSession = tab?.session;
+    if (eventSource && tab && currentSession) {
+      void requestForTab(tab, `/terminal/sessions/${encodeURIComponent(currentSession.id)}/input`, {
         method: 'POST',
         body: JSON.stringify({ data })
       }).catch((err) => {
@@ -180,21 +288,10 @@
     connected = false;
   };
 
-  const closeSession = async () => {
-    disconnectTransport();
-    if (!session) {
+  const handleTerminalEvent = (event: TerminalEvent, tabId: string, sessionId: string) => {
+    if (activeTabId !== tabId || activeTab?.session?.id !== sessionId) {
       return;
     }
-    const closing = session.id;
-    session = undefined;
-    try {
-      await terminalRequest(`/terminal/sessions/${encodeURIComponent(closing)}`, { method: 'DELETE' });
-    } catch {
-      // The shell may already have exited.
-    }
-  };
-
-  const handleTerminalEvent = (event: TerminalEvent) => {
     switch (event.type) {
       case 'output':
         if (event.data) {
@@ -204,6 +301,7 @@
       case 'exit':
         terminal?.write(`\r\n[process exited ${event.code ?? 0}]\r\n`);
         disconnectTransport();
+        updateTab(tabId, (tab) => ({ ...tab, session: undefined }));
         break;
       case 'error':
         if (event.data) {
@@ -213,24 +311,30 @@
     }
   };
 
-  const connectEventStream = (nextSession: TerminalSession) => {
+  const connectEventStream = (tab: TerminalTab, nextSession: TerminalSession) => {
     closeSocket();
     closeEventSource();
-    eventSource = new EventSource(endpoint(activeTarget?.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/events`));
+    eventSource = new EventSource(endpoint(tab.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/events`));
     eventSource.onopen = () => {
+      if (activeTabId !== tab.id) {
+        return;
+      }
       connected = true;
       error = '';
       terminal?.focus();
       fitTerminal();
     };
     eventSource.onerror = () => {
+      if (activeTabId !== tab.id) {
+        return;
+      }
       connected = false;
       error = 'Terminal event stream disconnected.';
     };
     for (const eventType of ['output', 'exit', 'error']) {
       eventSource.addEventListener(eventType, (message) => {
         try {
-          handleTerminalEvent(JSON.parse((message as MessageEvent).data) as TerminalEvent);
+          handleTerminalEvent(JSON.parse((message as MessageEvent).data) as TerminalEvent, tab.id, nextSession.id);
         } catch {
           error = 'Terminal event stream returned invalid data.';
         }
@@ -238,18 +342,21 @@
     }
   };
 
-  const connectSocket = (nextSession: TerminalSession) => {
+  const connectSocket = (tab: TerminalTab, nextSession: TerminalSession) => {
     closeSocket();
     closeEventSource();
-    const url = websocketEndpoint(activeTarget?.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/ws`, window.location);
+    const url = websocketEndpoint(tab.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/ws`, window.location);
     socket = new WebSocket(url);
     socket.binaryType = 'arraybuffer';
     socketFallbackTimer = window.setTimeout(() => {
       if (socket?.readyState !== WebSocket.OPEN) {
-        connectEventStream(nextSession);
+        connectEventStream(tab, nextSession);
       }
     }, 1000);
     socket.onopen = () => {
+      if (activeTabId !== tab.id) {
+        return;
+      }
       window.clearTimeout(socketFallbackTimer);
       connected = true;
       error = '';
@@ -257,6 +364,9 @@
       fitTerminal();
     };
     socket.onmessage = (event) => {
+      if (activeTabId !== tab.id) {
+        return;
+      }
       if (event.data instanceof ArrayBuffer) {
         terminal?.write(new Uint8Array(event.data));
       } else if (event.data instanceof Blob) {
@@ -266,37 +376,114 @@
       }
     };
     socket.onerror = () => {
-      connectEventStream(nextSession);
+      if (activeTabId === tab.id) {
+        connectEventStream(tab, nextSession);
+      }
     };
     socket.onclose = () => {
-      if (!eventSource) {
+      if (activeTabId === tab.id && !eventSource) {
         connected = false;
       }
     };
   };
 
-  const startSession = async () => {
+  const ensureSession = async (tab: TerminalTab, geometry: TerminalGeometry) => {
+    if (tab.session) {
+      try {
+        const resumed = await requestForTab<TerminalSession>(tab, `/terminal/sessions/${encodeURIComponent(tab.session.id)}`);
+        updateTab(tab.id, (current) => ({ ...current, session: resumed }));
+        return resumed;
+      } catch {
+        updateTab(tab.id, (current) => ({ ...current, session: undefined }));
+      }
+    }
+    const created = await requestForTab<TerminalSession>(tab, '/terminal/sessions', {
+      method: 'POST',
+      body: JSON.stringify(geometry)
+    });
+    updateTab(tab.id, (current) => ({ ...current, session: created }));
+    return created;
+  };
+
+  const connectActiveTab = async () => {
+    const tab = activeTab;
+    if (!tab) {
+      return;
+    }
     loading = true;
     error = '';
+    disconnectTransport();
     try {
-      await closeSession();
       terminal?.clear();
       fitAddon?.fit();
       const geometry = currentGeometry();
-      activeTarget = selectedTarget;
-      session = await terminalRequest<TerminalSession>('/terminal/sessions', {
-        method: 'POST',
-        body: JSON.stringify(geometry)
-      });
+      const nextSession = await ensureSession(tab, geometry);
       lastResize = `${geometry.cols}x${geometry.rows}`;
-      terminal?.writeln(`\x1b[90mConnected to ${session.shell} in ${session.cwd} on ${activeTarget?.label || 'homelabd local'}\x1b[0m`);
-      connectSocket(session);
+      terminal?.writeln(`\x1b[90m${tab.title || 'Terminal'} · ${tab.targetLabel} · ${nextSession.cwd}\x1b[0m`);
+      connectSocket(tab, nextSession);
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to start terminal.';
+      error = err instanceof Error ? err.message : 'Unable to connect terminal.';
       writeNotice(`[${error}]`);
     } finally {
       loading = false;
       terminal?.focus();
+    }
+  };
+
+  const selectTab = async (tabId: string) => {
+    if (tabId === activeTabId) {
+      terminal?.focus();
+      return;
+    }
+    activeTabId = tabId;
+    persistTabs();
+    await tick();
+    await connectActiveTab();
+  };
+
+  const addTab = async () => {
+    const target = tabTarget(selectedTarget);
+    const tab = createTab(target);
+    tabs = [...tabs, tab];
+    activeTabId = tab.id;
+    selectedTargetId = target.id;
+    persistTabs();
+    await tick();
+    await connectActiveTab();
+  };
+
+  const closeTab = async (tabId: string) => {
+    const closing = tabs.find((tab) => tab.id === tabId);
+    if (!closing) {
+      return;
+    }
+    const closingIndex = tabs.findIndex((tab) => tab.id === tabId);
+    const wasActive = activeTabId === tabId;
+    if (editingTabId === tabId) {
+      editingTabId = '';
+      editingTitle = '';
+    }
+    if (wasActive) {
+      disconnectTransport();
+    }
+    tabs = tabs.filter((tab) => tab.id !== tabId);
+    if (tabs.length === 0) {
+      tabs = [createTab(tabTarget(selectedTarget))];
+    }
+    if (wasActive) {
+      activeTabId = tabs[Math.max(0, closingIndex - 1)]?.id || tabs[0].id;
+    }
+    persistTabs();
+    if (closing.session) {
+      try {
+        await requestForTab(closing, `/terminal/sessions/${encodeURIComponent(closing.session.id)}`, { method: 'DELETE' });
+      } catch {
+        // The shell may already have exited.
+      }
+    }
+    if (wasActive) {
+      await tick();
+      await connectActiveTab();
     }
   };
 
@@ -360,7 +547,11 @@
   };
 
   onMount(() => {
-    void Promise.all([initialiseTerminal(), loadAgents()]).then(startSession).catch((err) => {
+    void Promise.all([initialiseTerminal(), loadAgents()]).then(async () => {
+      loadTabs();
+      await tick();
+      await connectActiveTab();
+    }).catch((err) => {
       loading = false;
       error = err instanceof Error ? err.message : 'Unable to initialise terminal.';
     });
@@ -371,7 +562,8 @@
       window.clearTimeout(resizeTimer);
       window.clearTimeout(socketFallbackTimer);
       window.removeEventListener('resize', fitTerminal);
-      void closeSession();
+      disconnectTransport();
+      persistTabs();
     }
     resizeObserver?.disconnect();
     terminal?.dispose();
@@ -388,29 +580,63 @@
 
   <main class="terminal-panel">
     <header class="terminal-header">
-      <div>
-        <p class="eyebrow">Operator PTY</p>
-        <h1>{session ? session.cwd : 'Starting shell'}</h1>
-        <p class="shell-meta">{session?.shell || 'Preparing a real interactive terminal'}</p>
-      </div>
+      <nav class="terminal-tabs" aria-label="Terminal tabs">
+        {#each tabs as tab}
+          <div class:active={tab.id === activeTabId} class="terminal-tab">
+            {#if editingTabId === tab.id}
+              <input
+                bind:this={renameInput}
+                bind:value={editingTitle}
+                class="tab-title-editor"
+                aria-label="Rename terminal tab"
+                maxlength="16"
+                spellcheck="false"
+                on:keydown={handleRenameKeydown}
+                on:blur={commitRename}
+              />
+            {:else}
+              <button
+                type="button"
+                class="tab-select"
+                aria-current={tab.id === activeTabId ? 'page' : undefined}
+                title={tab.id === activeTabId ? 'Rename tab' : (tab.session?.cwd || tab.targetLabel)}
+                on:click={() => void startRename(tab)}
+              >
+                <span>{tab.title || 'Terminal'}</span>
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="tab-close"
+              title="Close tab"
+              aria-label={`Close ${tab.title || 'terminal tab'}`}
+              on:click={() => void closeTab(tab.id)}
+            >x</button>
+          </div>
+        {/each}
+      </nav>
       <div class="terminal-actions">
         <span class:connected class="status-pill">{statusLabel}</span>
-        <label class="target-picker">
-          <span>Session target</span>
-          <select bind:value={selectedTargetId} disabled={loading}>
+        {#if error}
+          <span class="status-error" role="alert">{error}</span>
+        {/if}
+        <div class="new-tab-control">
+          <select class="target-picker" aria-label="Session target" bind:value={selectedTargetId} disabled={loading}>
             {#each terminalTargets as target}
-              <option value={target.id}>{target.label} — {target.detail}</option>
+              <option value={target.id}>{target.label} - {target.detail}</option>
             {/each}
           </select>
-        </label>
-        <button type="button" on:click={() => terminal?.clear()}>Clear</button>
-        <button type="button" on:click={() => void startSession()} disabled={loading}>New session</button>
+          <button
+            type="button"
+            class="tab-add"
+            title="Add terminal tab"
+            aria-label="Add terminal tab"
+            disabled={loading}
+            on:click={() => void addTab()}
+          >+</button>
+        </div>
       </div>
     </header>
-
-    <p class:error class="terminal-notice" role={error ? 'alert' : 'status'}>
-      {error || 'Click in the terminal and type normally. ANSI colours, prompts, tab completion, and interactive CLIs use a real PTY.'}
-    </p>
 
     <div
       class="terminal-host"
@@ -445,6 +671,12 @@
     height: 100%;
   }
 
+  :global(*),
+  :global(*::before),
+  :global(*::after) {
+    box-sizing: border-box;
+  }
+
   :global(body) {
     margin: 0;
     color: #172033;
@@ -454,8 +686,15 @@
       sans-serif;
   }
 
-  button {
+  button,
+  input,
+  select {
     font: inherit;
+  }
+
+  button,
+  select {
+    -webkit-tap-highlight-color: transparent;
   }
 
   .terminal-shell {
@@ -470,120 +709,210 @@
     display: grid;
     grid-template-areas:
       "header"
-      "notice"
       "terminal"
       "controls";
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     min-height: 0;
-    width: min(100%, 76rem);
-    margin: 0 auto;
+    width: 100%;
+    margin: 0;
     background: #07130e;
-    box-shadow: 0 18px 50px rgb(15 23 42 / 0.12);
+    box-shadow: none;
   }
 
   .terminal-header {
     grid-area: header;
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 0.85rem 1rem;
-    border-bottom: 1px solid #dde4ef;
-    background: #ffffff;
-  }
-
-  .terminal-header h1,
-  .terminal-header p {
-    margin: 0;
-  }
-
-  .eyebrow {
-    color: #64748b;
-    font-size: 0.72rem;
-    font-weight: 900;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .terminal-header h1 {
-    max-width: min(58vw, 44rem);
+    gap: 0.5rem;
+    min-width: 0;
+    min-height: 2.85rem;
+    padding: 0.35rem 0.55rem 0;
     overflow: hidden;
-    color: #0f172a;
-    font-size: 1.02rem;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    border-bottom: 1px solid #07130e;
+    background: #e8edf4;
   }
 
-  .terminal-header .shell-meta {
-    max-width: min(62vw, 48rem);
-    overflow: hidden;
-    color: #64748b;
-    font-size: 0.78rem;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .terminal-actions,
-  .terminal-controls {
+  .terminal-tabs {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.45rem;
+    flex: 1 1 auto;
+    align-items: flex-end;
+    gap: 0.12rem;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
   }
 
-  .terminal-actions {
-    align-items: center;
-    justify-content: flex-end;
-  }
-
-  .terminal-actions button,
-  .terminal-controls button {
-    min-height: 2.5rem;
-    border: 1px solid #cbd5e1;
-    border-radius: 0.5rem;
+  .terminal-tab {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: stretch;
+    min-width: 0;
+    max-width: 14rem;
+    overflow: hidden;
+    margin-bottom: -1px;
     color: #243047;
+    border: 1px solid #aab6c7;
+    border-bottom: 0;
+    border-radius: 0.48rem 0.48rem 0 0;
+    background: #dbe3ef;
+    transition:
+      border-color 120ms ease,
+      background 120ms ease,
+      color 120ms ease;
+  }
+
+  .terminal-tab.active {
+    color: #d8f3dc;
+    border-color: #07130e;
+    background: #07130e;
+  }
+
+  .tab-select,
+  .tab-close,
+  .tab-add {
+    font-weight: 850;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      border-color 120ms ease,
+      color 120ms ease,
+      box-shadow 120ms ease,
+      filter 120ms ease;
+  }
+
+  .tab-select {
+    min-height: 2.4rem;
+    min-width: 4.5rem;
+    max-width: 10.5rem;
+    padding: 0 0.65rem;
+    overflow: hidden;
+    color: inherit;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tab-select span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tab-close {
+    align-self: center;
+    width: 1.65rem;
+    height: 1.65rem;
+    margin-right: 0.25rem;
+    color: inherit;
+    border: 1px solid transparent;
+    border-radius: 0.35rem;
+    background: transparent;
+    line-height: 1;
+  }
+
+  .terminal-tab:not(.active):hover {
+    border-color: #7d8ca3;
+    background: #edf2f8;
+  }
+
+  .terminal-tab.active:hover {
+    background: #0b1f17;
+  }
+
+  .tab-select:hover {
+    background: rgb(255 255 255 / 0.45);
+  }
+
+  .terminal-tab.active .tab-select:hover {
+    background: rgb(255 255 255 / 0.08);
+  }
+
+  .tab-close:hover {
+    color: #991b1b;
+    border-color: #fecaca;
+    background: #fee2e2;
+  }
+
+  .terminal-tab.active .tab-close:hover {
+    color: #fecaca;
+    border-color: #7f1d1d;
+    background: #2a1010;
+  }
+
+  .tab-title-editor {
+    width: min(10rem, calc(100vw - 13rem));
+    height: 2.2rem;
+    margin: 0.1rem 0.25rem 0.1rem 0.35rem;
+    padding: 0 0.5rem;
+    color: #0f172a;
+    border: 1px solid #60a5fa;
+    border-radius: 0.35rem;
     background: #ffffff;
+    font-size: 0.86rem;
     font-weight: 850;
   }
 
-  .terminal-actions button {
-    padding: 0 0.75rem;
+  .terminal-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    justify-content: flex-end;
+    min-width: 0;
+    padding-bottom: 0.35rem;
+  }
+
+  .new-tab-control {
+    display: inline-flex;
+    align-items: stretch;
+    min-width: 0;
   }
 
   .target-picker {
-    display: grid;
-    gap: 0.15rem;
-    color: #475569;
-    font-size: 0.68rem;
-    font-weight: 900;
-    text-transform: uppercase;
-  }
-
-  .target-picker select {
-    max-width: min(34rem, 44vw);
-    min-height: 2.5rem;
+    width: clamp(11rem, 20vw, 20rem);
+    min-height: 2.2rem;
+    padding: 0 0.45rem;
     border: 1px solid #cbd5e1;
-    border-radius: 0.5rem;
+    border-right: 0;
+    border-radius: 0.45rem 0 0 0.45rem;
     color: #243047;
     background: #ffffff;
-    font: inherit;
     font-size: 0.82rem;
-    font-weight: 800;
-    text-transform: none;
+    font-weight: 850;
   }
 
-  :global(html[data-theme='dark'] .target-picker select) {
-    color: #e2e8f0;
-    border-color: #334155;
-    background: #111827;
+  .target-picker:hover:not(:disabled) {
+    border-color: #93a3bb;
+    background: #f8fafc;
+  }
+
+  .tab-add {
+    flex: 0 0 auto;
+    width: 2.35rem;
+    min-height: 2.2rem;
+    color: #ffffff;
+    border: 1px solid #1d4ed8;
+    border-radius: 0 0.45rem 0.45rem 0;
+    background: #2563eb;
+    font-size: 1.1rem;
+    line-height: 1;
+  }
+
+  .tab-add:hover:not(:disabled) {
+    border-color: #1e40af;
+    background: #1d4ed8;
+    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.16);
   }
 
   .status-pill {
     display: inline-flex;
     align-items: center;
     min-height: 2rem;
-    padding: 0 0.65rem;
+    padding: 0 0.6rem;
     border: 1px solid #fed7aa;
     border-radius: 999px;
     color: #9a3412;
@@ -598,21 +927,33 @@
     background: #f0fdf4;
   }
 
-  .terminal-notice {
-    grid-area: notice;
-    margin: 0;
-    padding: 0.62rem 1rem;
-    color: #475569;
-    border-bottom: 1px solid #dde4ef;
-    background: #f8fafc;
-    font-size: 0.82rem;
+  .status-error {
+    max-width: 18rem;
+    overflow: hidden;
+    color: #991b1b;
+    font-size: 0.78rem;
     font-weight: 700;
-    overflow-wrap: anywhere;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .terminal-notice.error {
-    color: #991b1b;
-    background: #fef2f2;
+  button:focus-visible,
+  .target-picker:focus-visible,
+  .tab-title-editor:focus-visible {
+    position: relative;
+    z-index: 2;
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+  }
+
+  .terminal-tab.active .tab-select:focus-visible,
+  .terminal-tab.active .tab-close:focus-visible {
+    outline-color: #93c5fd;
+  }
+
+  button:active:not(:disabled) {
+    filter: brightness(0.94);
+    box-shadow: inset 0 1px 3px rgb(15 23 42 / 0.18);
   }
 
   .terminal-host {
@@ -640,7 +981,9 @@
 
   .terminal-controls {
     grid-area: controls;
+    display: flex;
     align-items: center;
+    gap: 0.45rem;
     padding: 0.55rem 1rem;
     border-top: 1px solid #1f2937;
     background: #111827;
@@ -654,8 +997,16 @@
     min-height: 2.5rem;
     padding: 0 0.65rem;
     color: #e2e8f0;
-    border-color: #334155;
+    cursor: pointer;
+    border: 1px solid #334155;
+    border-radius: 0.45rem;
     background: #1f2937;
+  }
+
+  .terminal-controls button:hover:not(:disabled) {
+    color: #ffffff;
+    border-color: #64748b;
+    background: #2d3748;
   }
 
   button:disabled {
@@ -675,36 +1026,64 @@
     }
 
     .terminal-header {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 0.65rem;
-      padding: 0.7rem 0.75rem;
-    }
-
-    .terminal-header h1,
-    .terminal-header .shell-meta {
-      max-width: calc(100vw - 1.5rem);
+      gap: 0.35rem;
+      min-height: 2.7rem;
+      padding: 0.3rem 0.4rem 0;
     }
 
     .terminal-actions {
-      width: 100%;
-      justify-content: space-between;
+      flex: 0 0 auto;
+      gap: 0.3rem;
+      padding-bottom: 0.3rem;
     }
 
-    .target-picker,
-    .target-picker select {
-      width: 100%;
-      max-width: none;
+    .terminal-tabs {
+      min-width: 9rem;
     }
 
-    .terminal-actions button {
-      min-height: 2.75rem;
-      padding: 0 0.7rem;
+    .terminal-tab {
+      max-width: 9.5rem;
     }
 
-    .terminal-notice {
-      padding: 0.55rem 0.75rem;
-      font-size: 0.76rem;
+    .tab-select {
+      min-height: 2.35rem;
+      min-width: 3.75rem;
+      max-width: 7rem;
+      padding: 0 0.5rem;
+      font-size: 0.78rem;
+    }
+
+    .tab-close {
+      width: 1.55rem;
+      height: 1.55rem;
+      margin-right: 0.16rem;
+    }
+
+    .tab-title-editor {
+      width: 7rem;
+      font-size: 0.78rem;
+    }
+
+    .target-picker {
+      width: 7.8rem;
+      min-height: 2.15rem;
+      padding: 0 0.25rem;
+      font-size: 0.72rem;
+    }
+
+    .tab-add {
+      width: 2.15rem;
+      min-height: 2.15rem;
+    }
+
+    .status-pill {
+      min-height: 1.95rem;
+      padding: 0 0.45rem;
+      font-size: 0.72rem;
+    }
+
+    .status-error {
+      max-width: 10rem;
     }
 
     .terminal-host {
@@ -712,7 +1091,6 @@
     }
 
     .terminal-controls {
-      display: flex;
       flex-wrap: nowrap;
       gap: 0.45rem;
       padding: 0.55rem 0.65rem;

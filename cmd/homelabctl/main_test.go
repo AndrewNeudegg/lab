@@ -298,6 +298,12 @@ func TestTerminalCommandsUseHTTPAPI(t *testing.T) {
 			wantBody:   map[string]any{"data": "ls -la\n"},
 		},
 		{
+			name:       "show",
+			args:       []string{"terminal", "show", "term_1"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/terminal/sessions/term_1",
+		},
+		{
 			name:       "input",
 			args:       []string{"terminal", "input", "term_1", "\u0003"},
 			wantMethod: http.MethodPost,

@@ -585,12 +585,7 @@ func (s *Server) handleTerminalSessions(rw http.ResponseWriter, req *http.Reques
 		writeError(rw, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(rw, http.StatusCreated, map[string]any{
-		"id":         session.id,
-		"shell":      session.shell,
-		"cwd":        session.cwd,
-		"created_at": session.created,
-	})
+	writeJSON(rw, http.StatusCreated, terminalSessionResponse(session))
 }
 
 func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request) {
@@ -608,11 +603,28 @@ func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request
 		writeJSON(rw, http.StatusOK, map[string]any{"closed": true})
 		return
 	}
+	if len(parts) == 1 && req.Method == http.MethodGet {
+		session, ok, err := s.terminals().getOrAttach(parts[0], terminalSize{Cols: defaultTerminalCols, Rows: defaultTerminalRows})
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !ok {
+			writeError(rw, http.StatusNotFound, "terminal session not found")
+			return
+		}
+		writeJSON(rw, http.StatusOK, terminalSessionResponse(session))
+		return
+	}
 	if len(parts) != 2 {
 		writeError(rw, http.StatusNotFound, "terminal action not found")
 		return
 	}
-	session, ok := s.terminals().get(parts[0])
+	session, ok, err := s.terminals().getOrAttach(parts[0], terminalSize{Cols: defaultTerminalCols, Rows: defaultTerminalRows})
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if !ok {
 		writeError(rw, http.StatusNotFound, "terminal session not found")
 		return
@@ -681,6 +693,16 @@ func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request
 		writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "cols": size.Cols, "rows": size.Rows})
 	default:
 		writeError(rw, http.StatusNotFound, "terminal action not found")
+	}
+}
+
+func terminalSessionResponse(session *terminalSession) map[string]any {
+	return map[string]any{
+		"id":         session.id,
+		"shell":      session.shell,
+		"cwd":        session.cwd,
+		"created_at": session.created,
+		"persistent": session.tmux != "",
 	}
 }
 

@@ -70,7 +70,7 @@ Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are config
 
 `homelab-agent` can optionally expose the same PTY terminal API as `homelabd`. Set `remote_agent.terminal_addr` or pass `-terminal-addr` to bind the local terminal server, and set `remote_agent.terminal_public_url` or `-terminal-url` to the browser-reachable base URL that should be advertised in heartbeats.
 
-The dashboard Terminal page always offers `homelabd local`. Online remote agents are added to the session target picker when their heartbeat metadata contains `terminal_base_url`. Selecting a remote target and pressing `New session` starts the PTY on that remote agent, not on the control plane.
+The dashboard Terminal page always offers `homelabd local`. Online remote agents are added to the session target picker when their heartbeat metadata contains `terminal_base_url`. Selecting a remote target and pressing the adjacent `+` button starts the PTY on that remote agent, not on the control plane.
 
 Treat remote terminal URLs as trusted operator endpoints. They execute commands as the `homelab-agent` process user on the remote machine.
 

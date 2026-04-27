@@ -77,4 +77,43 @@ describe('homelabd client', () => {
     expect(paths).toEqual(['http://homelabd/agents']);
     expect(response.agents[0].workdirs?.[0].path).toBe('/srv/desk/repo');
   });
+
+  test('uses typed task and approval action endpoints', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        return jsonResponse({ reply: 'ok' });
+      }
+    });
+
+    await client.runTask('task_1');
+    await client.reviewTask('task_1');
+    await client.acceptTask('task_1');
+    await client.reopenTask('task_1', { reason: 'needs mobile verification' });
+    await client.cancelTask('task_1');
+    await client.retryTask('task_1', { backend: 'codex', instruction: 'fix the blocked state' });
+    await client.deleteTask('task_1');
+    await client.approveApproval('approval_1');
+    await client.denyApproval('approval_2');
+
+    expect(requests.map((request) => `${request.init?.method || 'GET'} ${request.url}`)).toEqual([
+      'POST http://homelabd/tasks/task_1/run',
+      'POST http://homelabd/tasks/task_1/review',
+      'POST http://homelabd/tasks/task_1/accept',
+      'POST http://homelabd/tasks/task_1/reopen',
+      'POST http://homelabd/tasks/task_1/cancel',
+      'POST http://homelabd/tasks/task_1/retry',
+      'POST http://homelabd/tasks/task_1/delete',
+      'POST http://homelabd/approvals/approval_1/approve',
+      'POST http://homelabd/approvals/approval_2/deny'
+    ]);
+    expect(requests[3].body).toEqual({ reason: 'needs mobile verification' });
+    expect(requests[5].body).toEqual({ backend: 'codex', instruction: 'fix the blocked state' });
+  });
 });

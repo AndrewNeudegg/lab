@@ -213,6 +213,36 @@ func TestTaskCancelEndpointCancelsTask(t *testing.T) {
 	}
 }
 
+func TestTaskDeleteEndpointDeletesTask(t *testing.T) {
+	server, tasks, _ := newHTTPTestServer(t)
+	now := time.Now().UTC()
+	taskID := "task_delete_endpoint"
+	if err := tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "delete me",
+		Goal:       "delete me",
+		Status:     taskstore.StatusBlocked,
+		AssignedTo: "codex",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	server.register(mux)
+	req := httptest.NewRequest(http.MethodPost, "/tasks/"+taskID+"/delete", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body.String())
+	}
+	if _, err := tasks.Load(taskID); err == nil {
+		t.Fatal("deleted task still loads")
+	}
+}
+
 func TestAgentHeartbeatRequiresBearerToken(t *testing.T) {
 	server := Server{RemoteAgents: remoteagent.NewStore(t.TempDir()), AgentToken: "secret"}
 	mux := http.NewServeMux()

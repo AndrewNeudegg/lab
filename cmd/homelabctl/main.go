@@ -117,9 +117,9 @@ func (c cli) dispatch(args []string) error {
 		return c.task(withAction("runs", args[1:]))
 	case "diff":
 		return c.task(withAction("diff", args[1:]))
-	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry":
+	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
 		return c.task(withAction(cmd, args[1:]))
-	case "status", "agents", "delete", "remove", "rm", "refresh", "rebase", "sync",
+	case "status", "agents", "refresh", "rebase", "sync",
 		"delegate", "escalate", "codex", "claude", "gemini", "ux", "test", "patch",
 		"search", "web", "internet", "research", "read", "reflect", "deep", "work", "start":
 		return c.message(strings.Join(args, " "))
@@ -130,7 +130,7 @@ func (c cli) dispatch(args []string) error {
 
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|reopen|cancel|retry>")
+		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|reopen|cancel|retry|delete>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -180,6 +180,11 @@ func (c cli) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task cancel <task_id>")
 		}
 		return c.do(http.MethodPost, path("tasks", args[1], "cancel"), nil)
+	case "delete", "remove", "rm":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl task delete <task_id>")
+		}
+		return c.do(http.MethodPost, path("tasks", args[1], "delete"), nil)
 	case "reopen":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: homelabctl task reopen <task_id> [reason]")
@@ -648,6 +653,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] task reopen <task_id> [reason]
   homelabctl [-addr http://127.0.0.1:18080] task cancel <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task retry <task_id> [codex|claude|gemini] [instruction]
+  homelabctl [-addr http://127.0.0.1:18080] task delete <task_id>
 
   homelabctl [-addr http://127.0.0.1:18080] agent list
   homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>
@@ -666,7 +672,7 @@ func usage(out io.Writer) {
 
 Top-level shortcuts:
   homelabctl new <goal>
-  homelabctl run|review|accept|reopen|cancel|retry <task_id> [...]
+  homelabctl run|review|accept|reopen|cancel|retry|delete <task_id> [...]
   homelabctl approve|deny <approval_id>
-  homelabctl status|agents|delegate|ux|refresh|diff|test|delete ...`)
+  homelabctl status|agents|delegate|ux|refresh|diff|test ...`)
 }

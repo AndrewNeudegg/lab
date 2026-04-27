@@ -37,7 +37,7 @@ Approvals are single-use decisions tied to the task state at the time they were 
 
 New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.
 
-Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result.
+Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat.
 
 Older task records may still contain graph metadata from the previous workflow:
 
@@ -70,6 +70,7 @@ go run ./cmd/homelabctl task review <task_id>
 go run ./cmd/homelabctl approve <approval_id>
 go run ./cmd/homelabctl task accept <task_id>
 go run ./cmd/homelabctl task reopen <task_id> "needs rework"
+go run ./cmd/homelabctl task delete <task_id>
 ```
 
 See `docs/homelabctl.md` for the full CLI command surface and the rule that new operator workflows must keep the CLI up to date.

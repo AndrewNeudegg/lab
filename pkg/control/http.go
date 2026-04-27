@@ -277,6 +277,8 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 				_ = json.NewDecoder(req.Body).Decode(&in)
 			}
 			reply, err = s.Orchestrator.RetryTask(req.Context(), taskID, in.Backend, in.Instruction)
+		case "delete":
+			reply, err = s.Orchestrator.DeleteTask(req.Context(), taskID)
 		default:
 			writeError(rw, http.StatusNotFound, "unknown task action")
 			return

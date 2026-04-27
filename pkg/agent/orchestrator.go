@@ -1970,11 +1970,10 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 		return "usage: new <goal>", nil
 	}
 	t := created.Task
-	childSummary := formatCreatedGraphChildren(created.Children)
-	return fmt.Sprintf("Created task graph %s with %d child phase(s).\nPlan created and reviewed before execution.\n%s\nFirst branch: %s\nThe task supervisor will start the first unblocked child phase automatically.\nNext:\n%s", t.ID, len(created.Children), childSummary, created.Branch, commandBlock(
+	return fmt.Sprintf("Created queued task %s.\nPlan created and reviewed before execution.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
 		"status",
-		"show "+t.ID,
-		"run "+created.firstChildID(),
+		"run "+t.ID,
+		"delegate "+t.ID+" to codex",
 	)), nil
 }
 
@@ -2015,36 +2014,36 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 		return createdTask{}, nil
 	}
 	now := time.Now().UTC()
-	parent := taskstore.Task{
-		ID:                 id.New("task"),
-		Title:              firstLine(goal),
-		Goal:               goal,
-		Status:             taskstore.StatusBlocked,
-		AssignedTo:         "OrchestratorAgent",
-		Priority:           5,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		GraphPhase:         "root",
-		Result:             "task graph parent; child phases drive execution",
-		AcceptanceCriteria: rootAcceptanceCriteria(),
+	t := taskstore.Task{
+		ID:         id.New("task"),
+		Title:      firstLine(goal),
+		Goal:       goal,
+		Status:     taskstore.StatusQueued,
+		AssignedTo: "OrchestratorAgent",
+		Priority:   5,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Result:     "queued for task supervisor",
 	}
-	o.ensureTaskPlan(ctx, &parent)
-	if err := o.tasks.Save(parent); err != nil {
-		return createdTask{}, err
-	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: parent.ID, Payload: eventlog.Payload(parent)})
-	children, branch, err := o.createTaskGraphChildren(ctx, parent, now)
+	o.ensureTaskPlan(ctx, &t)
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_create", map[string]any{"task_id": t.ID}, t.ID)
 	if err != nil {
-		parent.Status = taskstore.StatusFailed
-		parent.Result = err.Error()
-		_ = o.tasks.Save(parent)
+		t.Status = taskstore.StatusFailed
+		t.Result = err.Error()
+		_ = o.tasks.Save(t)
 		return createdTask{}, err
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.graph.created", Actor: "OrchestratorAgent", TaskID: parent.ID, Payload: eventlog.Payload(map[string]any{
-		"children": taskIDs(children),
-		"phases":   taskGraphPhaseNames(),
-	})})
-	return createdTask{Task: parent, Branch: branch, Children: children}, nil
+	var out struct {
+		Workspace string `json:"workspace"`
+		Branch    string `json:"branch"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	t.Workspace = out.Workspace
+	if err := o.tasks.Save(t); err != nil {
+		return createdTask{}, err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(t)})
+	return createdTask{Task: t, Branch: out.Branch}, nil
 }
 
 func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, target taskstore.ExecutionTarget) (taskstore.Task, error) {
@@ -3537,18 +3536,15 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 		"Work only in this task worktree. Inspect first, make the smallest practical patch, update relevant docs/help text when behavior or commands change, run relevant formatting and tests, and leave a concise summary with how to use the change.",
 	}, "\n")); err != nil {
 		shortID := taskShortID(created.Task.ID)
-		childShortID := taskShortID(taskID)
-		return fmt.Sprintf("Created task graph %s, but could not start codex on %s: %v\nNext:\n%s", shortID, childShortID, err, commandBlock(
-			"run "+childShortID,
-			"delegate "+childShortID+" to codex",
+		return fmt.Sprintf("Created queued task %s, but could not start codex: %v\nNext:\n%s", shortID, err, commandBlock(
+			"run "+shortID,
+			"delegate "+shortID+" to codex",
 		)), nil
 	}
 	shortID := taskShortID(created.Task.ID)
-	childShortID := taskShortID(taskID)
-	return fmt.Sprintf("Created task graph %s and started codex on %s. It is cooking in the background.\nNext:\n%s", shortID, childShortID, commandBlock(
+	return fmt.Sprintf("Created queued task %s and started codex. It is cooking in the background.\nNext:\n%s", shortID, commandBlock(
 		"status",
 		"show "+shortID,
-		"show "+childShortID,
 	)), nil
 }
 

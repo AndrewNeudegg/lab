@@ -16,10 +16,10 @@
 
 ## Planning Gate
 
-Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is also visible in the `/tasks` selected-task pane above the original input. The default planning gate derives the plan from task metadata, so root tasks, graph phases, local tasks, and remote tasks get distinct summaries, steps, and risks. It records:
+Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is also visible in the `/tasks` selected-task pane above the original input. The default planning gate derives the plan from task metadata, so local tasks, remote tasks, and legacy graph phases get distinct summaries, steps, and risks. It records:
 
 - a concise task-, phase-, or target-specific plan summary
-- ordered execution steps for the current graph phase or execution target
+- ordered execution steps for the current task, legacy graph phase, or execution target
 - known risks for that phase or target before work starts
 - a reviewer note confirming the plan contains the required execution stages
 
@@ -33,28 +33,19 @@ The review gate must not silently restart a worker. If checks or diff validation
 
 Approvals are single-use decisions tied to the task state at the time they were requested. A merge approval for a task that is no longer `awaiting_approval` is stale and must not run. When a merge approval is approved, the Orchestrator automatically merges current `main` into the task worktree before executing the approved merge. If that reconciliation conflicts, the approval is marked `failed`, the task moves to `conflict_resolution`, and the operator gets conflict-resolution actions instead of a raw HTTP error.
 
-## Task Graphs
+## Task Records
 
-New development tasks are represented as a graph. The root task keeps the original goal and durable acceptance criteria. `homelabd` creates six child phase tasks under that root:
+New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.
 
-1. `inspect`
-2. `design`
-3. `implement`
-4. `test`
-5. `docs`
-6. `review`
+Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result.
 
-The first child phase is `queued`. Later phases start as `blocked` with `depends_on` and `blocked_by` pointing at the previous phase. A worker can only run a child phase when all dependency tasks are `done`. If an operator tries to run or delegate a blocked phase early, homelabd records the blockers and refuses execution.
+Older task records may still contain graph metadata from the previous workflow:
 
-Use `accept <child_task_id>` after verifying a phase result. Accepting a child marks its acceptance criteria as accepted and releases any dependent child whose blockers are now done. When all child phases are accepted, the parent task is marked `done`.
-
-Task records now include:
-
-- `parent_id`: parent graph task, when this task is a child phase.
-- `depends_on`: task IDs that must be accepted before this task can run.
+- `parent_id`: parent task for a legacy child phase.
+- `depends_on`: task IDs that must be accepted before a legacy phase can run.
 - `blocked_by`: currently unresolved dependency task IDs.
-- `graph_phase`: `root`, `inspect`, `design`, `implement`, `test`, `docs`, or `review`.
-- `acceptance_criteria`: durable checklist items for the task or phase.
+- `graph_phase`: legacy phase name such as `root`, `inspect`, `design`, `implement`, `test`, `docs`, or `review`.
+- `acceptance_criteria`: durable checklist items for the task or legacy phase.
 
 ## Verification Commands
 

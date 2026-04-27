@@ -26,13 +26,12 @@ create a task to fix running task recovery after homelabd restarts
 
 `homelabd` treats `new`, `task:`, `create a task to ...`, and similar creation phrases as task creation even when the goal text mentions words like `running`, `active tasks`, or `in progress`.
 
-New development tasks are created as task graphs. The root task keeps the original goal, and child phases run in order:
+New local development tasks create one queued task record and one isolated worktree. The task supervisor starts an available worker automatically, or you can run it explicitly:
 
 ```text
-inspect -> design -> implement -> test -> docs -> review
+run <task_id>
+delegate <task_id> to codex
 ```
-
-Use `show <root_task_id>` to see the graph. Use `accept <child_task_id>` after verifying a child phase; accepting it releases the next phase when its dependencies are satisfied. `run` or `delegate` refuses a child phase while `blocked_by` contains unresolved dependencies.
 
 ## UX Agent
 

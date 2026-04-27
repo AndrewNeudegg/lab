@@ -124,7 +124,8 @@ const run = async () => {
         taskActionText: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
         syncText: document.querySelector('.task-header button')?.innerText || '',
         createSummary: document.querySelector('.target-create summary')?.innerText || '',
-        mobilePanelNavCount: document.querySelectorAll('[aria-label="Task panels"]').length
+        mobilePanelNavCount: document.querySelectorAll('[aria-label="Task panels"]').length,
+        approvalPopoutCount: document.querySelectorAll('[aria-label="Pending approvals"], .approval-list').length
       })`
     );
     assert(initial.filters.length === 3, 'task filters did not render', initial);
@@ -136,6 +137,7 @@ const run = async () => {
     assert(initial.syncText.includes('Sync'), 'manual Sync button missing', initial);
     assert(initial.createSummary.includes('New task'), 'new task details control missing', initial);
     assert(initial.mobilePanelNavCount === 0, 'ambiguous mobile Queue/Task tabs still rendered', initial);
+    assert(initial.approvalPopoutCount === 0, 'pending approvals queue popout still rendered', initial);
 
     const afterAll = await evalJS(
       cdp,
@@ -482,6 +484,46 @@ const run = async () => {
     }
 
     await cdp.call('Emulation.setDeviceMetricsOverride', {
+      width: 980,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false
+    });
+    await sleep(250);
+
+    const mediumDiff = await evalJS(
+      cdp,
+      `new Promise((resolve) => requestAnimationFrame(() => {
+        const fileList = document.querySelector('[aria-label="Changed files"]');
+        const splitDiff = document.querySelector('[aria-label="Split diff"]');
+        const scroll = document.querySelector('.diff-scroll[data-mode="split"]');
+        const firstRow = document.querySelector('.task-row');
+        resolve({
+          available: Boolean(fileList && splitDiff && scroll),
+          fileListDisplay: fileList ? getComputedStyle(fileList).display : '',
+          fileListBorderRight: fileList ? getComputedStyle(fileList).borderRightWidth : '',
+          splitMinWidth: splitDiff ? getComputedStyle(splitDiff).minWidth : '',
+          scrollWidth: scroll ? Math.round(scroll.scrollWidth) : 0,
+          clientWidth: scroll ? Math.round(scroll.clientWidth) : 0,
+          rowHeight: firstRow ? firstRow.getBoundingClientRect().height : 0,
+          rowScrollHeight: firstRow ? firstRow.scrollHeight : 0
+        });
+      }))`
+    );
+    if (diffInitial.fileButtons.length > 0) {
+      assert(mediumDiff.available === true, 'medium-width diff was unavailable', mediumDiff);
+      assert(mediumDiff.fileListDisplay === 'flex', 'medium-width diff file list did not move above the diff', mediumDiff);
+      assert(mediumDiff.fileListBorderRight === '0px', 'medium-width diff file list still consumes a side column', mediumDiff);
+      assert(mediumDiff.splitMinWidth !== '0px', 'medium-width split diff still allows code columns to collapse', mediumDiff);
+      assert(
+        mediumDiff.scrollWidth > mediumDiff.clientWidth,
+        'medium-width split diff did not keep a readable scrolled width',
+        mediumDiff
+      );
+      assert(mediumDiff.rowHeight + 1 >= mediumDiff.rowScrollHeight, 'task queue row content is vertically clipped', mediumDiff);
+    }
+
+    await cdp.call('Emulation.setDeviceMetricsOverride', {
       width: 390,
       height: 844,
       deviceScaleFactor: 2,
@@ -510,10 +552,14 @@ const run = async () => {
         new Promise((resolve) => setTimeout(() => {
           const firstRow = document.querySelector('.task-row');
           const navbar = document.querySelector('.navbar');
+          const taskHeading = document.querySelector('.task-header h1');
+          const syncButton = document.querySelector('.task-header button');
           resolve({
           rows: document.querySelectorAll('.task-row').length,
           queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
           detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
+          taskHeadingTop: taskHeading?.getBoundingClientRect().top ?? null,
+          syncTop: syncButton?.getBoundingClientRect().top ?? null,
           firstRowTop: firstRow?.getBoundingClientRect().top ?? null,
           navbarBottom: navbar?.getBoundingClientRect().bottom ?? null,
           bodyWidth: document.body.scrollWidth,
@@ -529,6 +575,20 @@ const run = async () => {
         mobileQueue.navbarBottom === null ||
         mobileQueue.firstRowTop >= mobileQueue.navbarBottom,
       'mobile queue rows are overlapped by the navbar',
+      mobileQueue
+    );
+    assert(
+      mobileQueue.taskHeadingTop === null ||
+        mobileQueue.navbarBottom === null ||
+        mobileQueue.taskHeadingTop >= mobileQueue.navbarBottom,
+      'mobile task queue heading is overlapped by the navbar',
+      mobileQueue
+    );
+    assert(
+      mobileQueue.syncTop === null ||
+        mobileQueue.navbarBottom === null ||
+        mobileQueue.syncTop >= mobileQueue.navbarBottom,
+      'mobile Sync button is overlapped by the navbar',
       mobileQueue
     );
     assert(mobileQueue.bodyWidth <= mobileQueue.viewport + 2, 'mobile Queue tab has horizontal overflow', mobileQueue);

@@ -41,6 +41,8 @@ describe('tasks page composition', () => {
     expect(pageSource).not.toContain('sendCommand');
     expect(pageSource).not.toContain('command-panel');
     expect(pageSource).not.toContain('Task command');
+    expect(pageSource).not.toContain('Pending approvals');
+    expect(pageSource).not.toContain('approval-list');
   });
 
   test('keeps manual sync responsive while selected details refresh separately', () => {
@@ -86,6 +88,7 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('aria-label="Task plan"');
     expect(pageSource).toContain('aria-label="Original task input"');
     expect(pageSource).toContain('<dl class="record-summary"');
+    expect(pageSource).toContain('border-width: 0 2px 2px 0;');
   });
 
   test('renders highlighted task diff controls from the dedicated diff endpoint', () => {
@@ -102,5 +105,6 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('selectedDiffFilePath');
     expect(pageSource).toContain('overflow-wrap: anywhere;');
     expect(pageSource).toContain('white-space: pre-wrap;');
+    expect(pageSource).toContain('min-width: 64rem;');
   });
 });

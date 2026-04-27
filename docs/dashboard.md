@@ -91,8 +91,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current. The `Synced` timestamp includes seconds so a manual reload is visible even when repeated within the same minute.
 - Triage buttons: `Needs action`, `Running`, and `All`. The page opens on `Needs action` because this page is primarily an operator console; `All` remains one tap away for audit and search. The buttons double as counts and filters so the operator can shift attention without extra controls.
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
-- Task list: appears immediately after search. Rows are the main navigation and must stay fast to scan even when approvals or remote queues are present.
-- Pending approvals: shown as a compact disclosure in the queue. Task-scoped approvals should open the selected task instead of competing with the main decision button. Orphan approvals may still expose direct approve/deny buttons. Approval actions must call the typed approval endpoints, not route through chat.
+- Task list: appears immediately after search. Rows are the main navigation and must stay fast to scan even when remote queues are present. Approval state belongs on the task row and in the selected task decision panel, not in a separate queue pop-out.
 - Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous.
 - Right pane: selected task record. It is not a chat transcript and has no task chat composer. Selecting a different task changes the record, summary, result, action buttons, diff, worker trace, and activity timeline.
 - Manual `Sync` refreshes tasks, approvals, events, and remote agents first, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current.
@@ -103,7 +102,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Secondary actions: low-emphasis direct endpoint buttons such as retry, reopen, stop, delete, or deny approval. Destructive actions must remain visually distinct from constructive actions.
 - Retry and reopen forms: short, task-scoped inputs for optional retry instruction or reopen reason. These are structured payloads sent to typed task endpoints.
 - State and context: workflow state, workspace path, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
-- Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. Use this before review, conflict-resolution delegation, or approval.
+- Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
@@ -151,7 +150,7 @@ Local tasks use isolated local worktrees. Remote tasks do not create local workt
 
 On compact screens `/tasks` stacks:
 
-1. `Queue` is the parent view. It shows filters, search, task rows, approvals, execution queues, and new-task creation.
+1. `Queue` is the parent view. It shows filters, search, task rows, execution queues, and new-task creation.
 2. Tapping a task opens the selected task record as a child view.
 3. The selected task record starts at the top, shows the decision panel first, and exposes a clear `Back to queue` control.
 4. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.

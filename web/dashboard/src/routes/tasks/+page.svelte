@@ -115,7 +115,6 @@
     taskSearch,
     selectedTaskId
   });
-  let pendingApprovalItems: HomelabdApproval[] = [];
   let attentionTaskItems: HomelabdTask[] = [];
   let activeTaskItems: HomelabdTask[] = [];
   let visibleTaskItems: HomelabdTask[] = [];
@@ -239,7 +238,6 @@
     taskSearch,
     selectedTaskId
   });
-  $: pendingApprovalItems = taskQueueView.pendingApprovalItems;
   $: activeTaskItems = taskQueueView.activeTaskItems;
   $: attentionTaskItems = taskQueueView.attentionTaskItems;
   $: visibleTaskItems = taskQueueView.visibleTaskItems;
@@ -269,8 +267,7 @@
     loadedDiffTaskId = '';
     selectedDiffFilePath = '';
   }
-  $: needsActionTotal =
-    attentionTaskItems.length + pendingApprovalItems.filter((approval) => !approval.task_id).length;
+  $: needsActionTotal = attentionTaskItems.length;
   $: onlineAgentItems = agents.filter((agent) => agent.status !== 'offline');
   $: if (!selectedAgentId && onlineAgentItems[0]) {
     selectedAgentId = onlineAgentItems[0].id;
@@ -932,49 +929,6 @@
         </section>
       {/if}
 
-      {#if pendingApprovalItems.length}
-        <details class="approval-list" aria-label="Pending approvals">
-          <summary>
-            <span>Pending approvals</span>
-            <strong>{pendingApprovalItems.length}</strong>
-          </summary>
-          <div class="approval-items">
-          {#each pendingApprovalItems as approval}
-            <article>
-              <span class="dot amber" aria-hidden="true"></span>
-              <div>
-                <strong>{approval.tool}</strong>
-                <small>{shortID(approval.id)}{approval.task_id ? ` / ${shortID(approval.task_id)}` : ''}</small>
-                <p>{truncate(approval.reason, 96)}</p>
-                <div class="mini-actions">
-                  {#if approval.task_id}
-                    <button type="button" on:click={() => approval.task_id && selectTask(approval.task_id)}>
-                      Open task
-                    </button>
-                  {:else}
-                    <button
-                      type="button"
-                      disabled={approvalLoading !== ''}
-                      on:click={() => void performApprovalAction(approval, 'approve')}
-                    >
-                      {approvalLoading === approvalLoadingKey('approve', approval.id) ? 'Approving' : 'Approve'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={approvalLoading !== ''}
-                      on:click={() => void performApprovalAction(approval, 'deny')}
-                    >
-                      {approvalLoading === approvalLoadingKey('deny', approval.id) ? 'Denying' : 'Deny'}
-                    </button>
-                  {/if}
-                </div>
-              </div>
-            </article>
-          {/each}
-          </div>
-        </details>
-      {/if}
-
       <section class="queue-groups" aria-label="Execution queues">
         <h2>Execution queues</h2>
         {#each queueOptions as option}
@@ -1064,8 +1018,11 @@
       {#if currentTask}
         <article class="task-record">
           <header class="record-header">
-            <button type="button" class="back-to-queue" on:click={() => showMobilePanel('queue')}>
-              Back to queue
+            <button type="button" class="back-to-queue" aria-label="Back to queue" on:click={() => showMobilePanel('queue')}>
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M12.5 4.5 7 10l5.5 5.5" />
+              </svg>
+              <span>Back to queue</span>
             </button>
             <div>
               <p>Selected task</p>
@@ -1560,7 +1517,7 @@
 
   .task-pane {
     display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto auto;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto;
     gap: 0.75rem;
     padding: 1rem;
     border-right: 1px solid var(--border-soft, #dde4ef);
@@ -1571,7 +1528,6 @@
   .record-header,
   .triage,
   .task-row,
-  .approval-list article,
   .decision-header,
   .decision-copy,
   .secondary-action-row,
@@ -1593,7 +1549,6 @@
   .decision-copy p,
   .decision-copy h3,
   .decision-copy span,
-  .approval-list p,
   .empty,
   footer {
     margin: 0;
@@ -1626,15 +1581,13 @@
   .task-header button,
   .triage button,
   .queue-groups button,
-  .mini-actions button,
   .secondary-actions button,
   .diff-controls button,
   .diff-file-list button,
   .primary-action,
   .notice button,
   .back-to-queue,
-  .target-create summary,
-  .approval-list summary {
+  .target-create summary {
     min-height: 2.55rem;
     padding: 0 0.75rem;
     border: 1px solid var(--border, #cbd5e1);
@@ -1648,15 +1601,13 @@
   .task-header button:hover:not(:disabled),
   .triage button:hover,
   .queue-groups button:hover,
-  .mini-actions button:hover:not(:disabled),
   .secondary-actions button:hover:not(:disabled),
   .diff-controls button:hover:not(:disabled),
   .diff-file-list button:hover:not(:disabled),
   .primary-action:hover:not(:disabled),
   .notice button:hover,
   .back-to-queue:hover,
-  .target-create summary:hover,
-  .approval-list summary:hover {
+  .target-create summary:hover {
     border-color: var(--accent, #2563eb);
     background: var(--surface-hover, #eef5ff);
   }
@@ -1739,11 +1690,12 @@
   }
 
   .task-row {
+    align-items: flex-start;
     gap: 0.7rem;
     width: 100%;
     min-width: 0;
-    min-height: 4.2rem;
-    padding: 0.72rem;
+    min-height: 5.4rem;
+    padding: 0.64rem 0.68rem;
     border: 1px solid transparent;
     border-radius: 0.75rem;
     color: inherit;
@@ -1758,17 +1710,22 @@
   }
 
   .task-copy {
+    flex: 1 1 auto;
     display: grid;
-    gap: 0.18rem;
+    gap: 0.2rem;
     min-width: 0;
   }
 
   .task-copy strong {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     overflow: hidden;
     color: var(--text-strong, #111827);
     font-size: 0.9rem;
     line-height: 1.25;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
   }
 
   .task-copy small {
@@ -1781,10 +1738,12 @@
   }
 
   .task-copy em {
+    display: block;
     overflow: hidden;
     color: var(--muted, #475569);
     font-size: 0.73rem;
     font-style: normal;
+    line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1833,6 +1792,7 @@
     flex: 0 0 auto;
     width: 0.72rem;
     height: 0.72rem;
+    margin-top: 0.22rem;
     border-radius: 999px;
     background: #94a3b8;
     box-shadow: 0 0 0 3px rgb(148 163 184 / 0.18);
@@ -1905,7 +1865,6 @@
     line-height: 1.35;
   }
 
-  .approval-list,
   .queue-groups {
     display: grid;
     gap: 0.45rem;
@@ -1917,73 +1876,6 @@
     font-size: 0.84rem;
   }
 
-  .approval-list {
-    border: 1px solid var(--border-soft, #e2e8f0);
-    border-radius: 0.8rem;
-    background: var(--surface-muted, #f8fafc);
-  }
-
-  .approval-list summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    list-style: none;
-    border: 0;
-    border-radius: 0.8rem;
-    background: transparent;
-  }
-
-  .approval-list summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .approval-list summary span {
-    color: var(--text, #374151);
-    font-size: 0.84rem;
-  }
-
-  .approval-list summary strong {
-    border-radius: 999px;
-    padding: 0.12rem 0.48rem;
-    color: #92400e;
-    background: #fef3c7;
-    font-size: 0.72rem;
-  }
-
-  .approval-items {
-    display: grid;
-    gap: 0.45rem;
-    padding: 0 0.55rem 0.55rem;
-  }
-
-  .approval-list article {
-    align-items: flex-start;
-    gap: 0.6rem;
-    padding: 0.7rem;
-    border: 1px solid var(--border-soft, #e2e8f0);
-    border-radius: 0.75rem;
-    background: var(--surface, #ffffff);
-  }
-
-  .approval-list article strong {
-    color: #713f12;
-    font-size: 0.88rem;
-  }
-
-  .approval-list small {
-    margin-left: 0.35rem;
-    color: #b45309;
-    font-size: 0.72rem;
-  }
-
-  .approval-list p {
-    margin-top: 0.2rem;
-    color: var(--text, #475569);
-    font-size: 0.78rem;
-    line-height: 1.35;
-  }
-
-  .mini-actions,
   .secondary-action-row {
     display: flex;
     flex-wrap: wrap;
@@ -2134,6 +2026,16 @@
     display: none;
   }
 
+  .back-to-queue svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.2;
+  }
+
   .decision-panel,
   .record-summary,
   .diff-review,
@@ -2277,20 +2179,20 @@
   }
 
   .detail-section > summary::before {
-    content: '+';
-    display: inline-grid;
-    place-items: center;
-    width: 1.25rem;
-    height: 1.25rem;
-    border: 1px solid var(--border, #cbd5e1);
-    border-radius: 999px;
+    content: '';
+    flex: 0 0 auto;
+    width: 0.52rem;
+    height: 0.52rem;
+    margin-left: 0.15rem;
+    border: solid var(--muted, #64748b);
+    border-width: 0 2px 2px 0;
     color: var(--muted, #64748b);
-    font-size: 0.85rem;
-    font-weight: 900;
+    transform: rotate(-45deg);
+    transition: transform 120ms ease;
   }
 
   .detail-section[open] > summary::before {
-    content: '-';
+    transform: rotate(45deg);
   }
 
   .detail-section > summary > strong {
@@ -2978,8 +2880,28 @@
   }
 
   @media (max-width: 1180px) {
-    .record-summary {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+    .shell {
+      grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr);
+    }
+
+    .diff-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .diff-file-list {
+      display: flex;
+      max-height: none;
+      overflow-x: auto;
+      border-right: 0;
+      border-bottom: 1px solid var(--diff-border);
+    }
+
+    .diff-file-list button {
+      flex: 0 0 min(15rem, 42vw);
+    }
+
+    .split-diff {
+      min-width: 64rem;
     }
   }
 
@@ -3006,7 +2928,7 @@
       display: block;
       min-height: 100dvh;
       height: auto;
-      padding-top: 3.75rem;
+      padding-top: calc(3.75rem + 1px);
     }
 
     .shell {
@@ -3026,7 +2948,7 @@
 
     .task-pane {
       display: grid;
-      grid-template-rows: auto auto auto minmax(18rem, auto) auto auto auto auto;
+      grid-template-rows: auto auto auto minmax(18rem, auto) auto auto auto;
       padding: 0.75rem;
       border-right: 0;
     }
@@ -3059,7 +2981,7 @@
 
     .task-row {
       align-items: flex-start;
-      min-height: 4.5rem;
+      min-height: 5.4rem;
       padding: 0.65rem;
     }
 
@@ -3093,12 +3015,29 @@
     }
 
     .record-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
       padding: 0.85rem 0.75rem;
     }
 
     .back-to-queue {
+      grid-column: 1 / -1;
+      justify-self: start;
       display: inline-flex;
       align-items: center;
+      gap: 0.25rem;
+      min-height: 2rem;
+      padding: 0 0.15rem;
+      border: 0;
+      color: var(--accent, #2563eb);
+      background: transparent;
+      font-size: 0.82rem;
+    }
+
+    .back-to-queue:hover {
+      border-color: transparent;
+      background: transparent;
     }
 
     .record-header h2 {
@@ -3148,6 +3087,10 @@
 
     .diff-file-list button {
       flex: 0 0 min(16rem, 78vw);
+    }
+
+    .split-diff {
+      min-width: 0;
     }
 
     .diff-scroll {

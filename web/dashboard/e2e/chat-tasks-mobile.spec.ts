@@ -120,18 +120,45 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
 	const rows = page.locator('.task-row');
 	const queue = page.locator('.task-pane');
 	const detail = page.locator('.workbench');
-	await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
-	await expect(rows).toHaveCount(1);
-	await expect(queue).toBeVisible();
-	await expect(detail).not.toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
+  await expect(page.getByText('Pending approvals')).toHaveCount(0);
+  await expect(rows).toHaveCount(1);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
 
-	await rows.first().click();
+  const queueMetrics = await page.evaluate(() => {
+    const navbar = document.querySelector('.navbar');
+    const heading = document.querySelector('.task-header h1');
+    const sync = document.querySelector('.task-header button');
+    return {
+      navbarBottom: navbar?.getBoundingClientRect().bottom ?? 0,
+      headingTop: heading?.getBoundingClientRect().top ?? 0,
+      syncTop: sync?.getBoundingClientRect().top ?? 0
+    };
+  });
+  expect(queueMetrics.headingTop, JSON.stringify(queueMetrics)).toBeGreaterThanOrEqual(
+    queueMetrics.navbarBottom
+  );
+  expect(queueMetrics.syncTop, JSON.stringify(queueMetrics)).toBeGreaterThanOrEqual(
+    queueMetrics.navbarBottom
+  );
+
+  await rows.first().click();
   await expect(queue).not.toBeVisible();
   await expect(detail).toBeVisible();
   await expect(page.getByRole('region', { name: 'Task actions', exact: true })).toContainText(
     'Approve merge'
   );
   await expect(page.getByRole('button', { name: 'Back to queue' })).toBeVisible();
+  const backStyle = await page.locator('.back-to-queue').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      background: style.backgroundColor,
+      borderTopWidth: style.borderTopWidth
+    };
+  });
+  expect(backStyle.borderTopWidth).toBe('0px');
+  expect(backStyle.background).toBe('rgba(0, 0, 0, 0)');
   await expect(page.locator('[aria-label="Worker runs"]')).not.toHaveAttribute('open', '');
   await page.locator('[aria-label="Task plan"] summary').click();
   await expect(page.locator('[aria-label="Task plan"]')).toContainText('Reviewed plan');

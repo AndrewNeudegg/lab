@@ -18,6 +18,7 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('chat composer still rendered on tasks page');
     expect(scriptSource).toContain('no direct action buttons rendered for selected task');
     expect(scriptSource).toContain('mobile tasks page still renders chat command controls');
+    expect(scriptSource).toContain('pending approvals queue popout still rendered');
   });
 
   test('exercises manual task pane sync against the browser network layer', () => {
@@ -39,10 +40,18 @@ describe('tasks page UAT flow', () => {
   test('checks mobile parent/detail navigation plus selected item changes', () => {
     expect(scriptSource).toContain('mobile still renders ambiguous Queue/Task tabs');
     expect(scriptSource).toContain('mobile queue rows are overlapped by the navbar');
+    expect(scriptSource).toContain('mobile task queue heading is overlapped by the navbar');
+    expect(scriptSource).toContain('mobile Sync button is overlapped by the navbar');
     expect(scriptSource).toContain('mobile detail did not expose a clear back-to-queue control');
     expect(scriptSource).toContain('mobile worker trace should start collapsed');
     expect(scriptSource).toContain('mobile selected task did not show action buttons');
     expect(scriptSource).toContain('mobile Back to queue did not hide detail');
     expect(scriptSource).toContain('mobile selected detail has horizontal overflow');
+  });
+
+  test('checks constrained desktop diff readability', () => {
+    expect(scriptSource).toContain('medium-width diff file list did not move above the diff');
+    expect(scriptSource).toContain('medium-width split diff still allows code columns to collapse');
+    expect(scriptSource).toContain('task queue row content is vertically clipped');
   });
 });

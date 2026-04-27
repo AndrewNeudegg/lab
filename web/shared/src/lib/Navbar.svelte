@@ -372,6 +372,7 @@
 	  }
 
   .navbar {
+    box-sizing: border-box;
     position: sticky;
     top: 0;
     z-index: 20;

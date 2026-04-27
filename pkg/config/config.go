@@ -168,8 +168,6 @@ type ExternalAgentConfig struct {
 	Description    string   `json:"description,omitempty"`
 }
 
-const DefaultExternalAgentTimeoutSeconds = 5 * 60 * 60
-
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path == "" {

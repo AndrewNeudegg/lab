@@ -39,6 +39,7 @@
     type TaskQueueView,
     type WorkerTraceRun
   } from './view-model';
+  import { createCoalescedAsync } from './refresh-state';
 
   type PromptAction = {
     label: string;
@@ -113,7 +114,7 @@
   let events: HomelabdEvent[] = [];
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
-  let refreshStatePromise: Promise<void> | undefined;
+  const coalesceRefreshState = createCoalescedAsync<void>();
   let taskQueueView: TaskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -667,12 +668,8 @@
   };
 
   const refreshState = () => {
-    if (refreshStatePromise) {
-      return refreshStatePromise;
-    }
-
-    refreshing = true;
-    refreshStatePromise = (async () => {
+    return coalesceRefreshState(async () => {
+      refreshing = true;
       const [taskResult, approvalResult, eventResult, agentResult] = await Promise.allSettled([
         client.listTasks(),
         client.listApprovals(),
@@ -718,12 +715,9 @@
           await refreshTaskDiff(selectedTaskId);
         }
       }
-    })().finally(() => {
+    }).finally(() => {
       refreshing = false;
-      refreshStatePromise = undefined;
     });
-
-    return refreshStatePromise;
   };
 
   onMount(() => {

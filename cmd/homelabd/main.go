@@ -38,6 +38,7 @@ import (
 	supervisortools "github.com/andrewneudegg/lab/pkg/tools/supervisor"
 	tasktools "github.com/andrewneudegg/lab/pkg/tools/task"
 	testtools "github.com/andrewneudegg/lab/pkg/tools/test"
+	texttools "github.com/andrewneudegg/lab/pkg/tools/text"
 )
 
 func main() {
@@ -169,6 +170,9 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 		return runtimeServices{}, err
 	}
 	if err := internettools.Register(registry, internettools.Base{}); err != nil {
+		return runtimeServices{}, err
+	}
+	if err := texttools.Register(registry); err != nil {
 		return runtimeServices{}, err
 	}
 	if err := memtools.Register(registry, memstore.NewStore("memory")); err != nil {

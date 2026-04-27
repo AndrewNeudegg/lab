@@ -145,6 +145,32 @@ func TestSearchTheWebUsesInternetTool(t *testing.T) {
 	}
 }
 
+func TestSearchTheWebCorrectsQueryWhenTextToolAvailable(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	correct := &textCorrectStub{corrected: "kittens in pajamas", variants: []string{"kittens in pyjamas", "kittens in pijamas"}}
+	search := &internetSearchStub{}
+	if err := orch.registry.Register(correct); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.registry.Register(search); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "search the web for kittens in pijamas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if correct.text != "kittens in pijamas" {
+		t.Fatalf("text.correct text = %q", correct.text)
+	}
+	if search.query != "kittens in pajamas" {
+		t.Fatalf("search query = %q, want corrected query", search.query)
+	}
+	if !strings.Contains(reply, "Corrected search query: kittens in pijamas -> kittens in pajamas") {
+		t.Fatalf("reply = %q, want correction note", reply)
+	}
+}
+
 func TestResearchCommandUsesInternetResearchTool(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	research := &internetResearchStub{}
@@ -2896,6 +2922,37 @@ func (s *internetSearchStub) Run(_ context.Context, raw json.RawMessage) (json.R
 			"url":     "https://svelte.dev/docs/kit/adapter-auto",
 			"snippet": "Adapter-auto detects supported production environments.",
 		}},
+	})
+}
+
+type textCorrectStub struct {
+	text      string
+	corrected string
+	variants  []string
+}
+
+func (textCorrectStub) Name() string        { return "text.correct" }
+func (textCorrectStub) Description() string { return "" }
+func (textCorrectStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (textCorrectStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *textCorrectStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	s.text = req.Text
+	corrected := s.corrected
+	if corrected == "" {
+		corrected = req.Text
+	}
+	queries := append([]string{corrected}, s.variants...)
+	return json.Marshal(map[string]any{
+		"text":           req.Text,
+		"corrected_text": corrected,
+		"changed":        corrected != req.Text,
+		"search_queries": queries,
 	})
 }
 

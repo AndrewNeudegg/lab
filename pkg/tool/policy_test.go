@@ -109,7 +109,7 @@ func TestReviewerCanRunPremergeCheck(t *testing.T) {
 func TestAgentsCanUseInternetReadTools(t *testing.T) {
 	policy := NewPolicy(nil)
 	for _, agent := range []string{"OrchestratorAgent", "CoderAgent", "UXAgent", "ResearchAgent", "ReviewerAgent"} {
-		for _, name := range []string{"internet.search", "internet.fetch", "internet.research"} {
+		for _, name := range []string{"text.correct", "internet.search", "internet.fetch", "internet.research"} {
 			decision := policy.Decide(agent, stubTool{name: name, risk: RiskReadOnly}, json.RawMessage(`{"query":"golang","url":"https://example.com"}`))
 			if !decision.Allowed || decision.NeedsApproval {
 				t.Fatalf("expected %s %s to be allowed without approval: %+v", agent, name, decision)

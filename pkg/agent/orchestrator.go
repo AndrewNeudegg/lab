@@ -1835,6 +1835,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		`{"message":"final answer","done":true,"tool_calls":[]}`,
 		"Use tools for inspection before answering repo-specific questions.",
 		"Use internet.research for broad, current, multi-source questions before synthesizing advice.",
+		"Use text.correct to fix likely spelling or grammar issues before internet.search when the user query looks typo-prone; preserve exact code symbols and quoted strings.",
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
@@ -3709,22 +3710,77 @@ func (o *Orchestrator) searchRepo(ctx context.Context, query string) (string, er
 }
 
 func (o *Orchestrator) searchInternet(ctx context.Context, query, source string) (string, error) {
-	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.search", map[string]any{"query": query, "source": source, "max_results": 5}, "")
+	correction := o.correctExternalSearchQuery(ctx, query)
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.search", map[string]any{"query": correction.Query, "source": source, "max_results": 8}, "")
 	if err != nil {
 		return "", err
 	}
-	return formatInternetSearchResult(raw), nil
+	result := formatInternetSearchResult(raw)
+	if correction.Note != "" {
+		return correction.Note + "\n" + result, nil
+	}
+	return result, nil
 }
 
 func (o *Orchestrator) researchInternet(ctx context.Context, query, source, depth string) (string, error) {
 	if source == "" || source == "web" {
 		source = "all"
 	}
-	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.research", map[string]any{"query": query, "source": source, "depth": depth}, "")
+	correction := o.correctExternalSearchQuery(ctx, query)
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.research", map[string]any{"query": correction.Query, "source": source, "depth": depth}, "")
 	if err != nil {
 		return "", err
 	}
-	return formatInternetResearchResult(raw), nil
+	result := formatInternetResearchResult(raw)
+	if correction.Note != "" {
+		return correction.Note + "\n" + result, nil
+	}
+	return result, nil
+}
+
+type externalSearchCorrection struct {
+	Query string
+	Note  string
+}
+
+func (o *Orchestrator) correctExternalSearchQuery(ctx context.Context, query string) externalSearchCorrection {
+	out := externalSearchCorrection{Query: query}
+	if _, ok := o.registry.Get("text.correct"); !ok {
+		return out
+	}
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "text.correct", map[string]any{"text": query, "mode": "search_query", "max_variants": 3}, "")
+	if err != nil {
+		return out
+	}
+	var corrected struct {
+		Corrected     string   `json:"corrected_text"`
+		Changed       bool     `json:"changed"`
+		SearchQueries []string `json:"search_queries"`
+	}
+	if err := json.Unmarshal(raw, &corrected); err != nil {
+		return out
+	}
+	correctedText := strings.TrimSpace(corrected.Corrected)
+	if !corrected.Changed || correctedText == "" || strings.EqualFold(correctedText, query) {
+		return out
+	}
+	out.Query = correctedText
+	var variants []string
+	for _, variant := range corrected.SearchQueries {
+		variant = strings.TrimSpace(variant)
+		if variant == "" || strings.EqualFold(variant, query) || strings.EqualFold(variant, correctedText) {
+			continue
+		}
+		variants = append(variants, variant)
+		if len(variants) >= 2 {
+			break
+		}
+	}
+	out.Note = fmt.Sprintf("Corrected search query: %s -> %s", query, correctedText)
+	if len(variants) > 0 {
+		out.Note += "\nOther query variants: " + strings.Join(variants, "; ")
+	}
+	return out
 }
 
 func formatInternetResearchResult(raw json.RawMessage) string {
@@ -3809,10 +3865,14 @@ func formatInternetSearchResult(raw json.RawMessage) string {
 	var out struct {
 		Query       string           `json:"query"`
 		Source      string           `json:"source"`
+		Provider    string           `json:"provider"`
 		Answer      string           `json:"answer"`
+		Answers     []string         `json:"answers"`
 		Abstract    string           `json:"abstract"`
 		AbstractURL string           `json:"abstract_url"`
 		Results     []map[string]any `json:"results"`
+		Suggestions []string         `json:"suggestions"`
+		Errors      []string         `json:"errors"`
 		Web         *json.RawMessage `json:"web"`
 		Academic    []map[string]any `json:"academic"`
 		WebError    string           `json:"web_error"`
@@ -3831,8 +3891,16 @@ func formatInternetSearchResult(raw json.RawMessage) string {
 		source = "internet"
 	}
 	fmt.Fprintf(&b, "Internet search (%s): %s\n", source, query)
+	if out.Provider != "" && out.Provider != source {
+		fmt.Fprintf(&b, "Provider: %s\n", out.Provider)
+	}
 	if out.Answer != "" {
 		fmt.Fprintf(&b, "Answer: %s\n", out.Answer)
+	}
+	for _, answer := range out.Answers {
+		if answer != "" && answer != out.Answer {
+			fmt.Fprintf(&b, "Answer: %s\n", answer)
+		}
 	}
 	if out.Abstract != "" {
 		fmt.Fprintf(&b, "Abstract: %s\n", out.Abstract)
@@ -3855,6 +3923,18 @@ func formatInternetSearchResult(raw json.RawMessage) string {
 	}
 	if out.AcademicErr != "" {
 		fmt.Fprintf(&b, "Academic error: %s\n", out.AcademicErr)
+	}
+	if len(out.Errors) > 0 {
+		fmt.Fprintln(&b, "Search errors:")
+		for _, err := range out.Errors {
+			fmt.Fprintf(&b, "- %s\n", err)
+		}
+	}
+	if len(out.Suggestions) > 0 {
+		fmt.Fprintln(&b, "Suggestions:")
+		for _, suggestion := range out.Suggestions {
+			fmt.Fprintf(&b, "- %s\n", suggestion)
+		}
 	}
 	result := strings.TrimSpace(b.String())
 	if result == fmt.Sprintf("Internet search (%s): %s", source, query) {
@@ -4480,6 +4560,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
 		"- Use internet.research for broad, current, multi-source questions before implementation choices.",
+		"- Use text.correct before internet.search when a natural-language query appears misspelled or grammatically ambiguous; preserve exact code symbols.",
 		"- Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"- Use internet.search with source academic for papers or source all when both web and scholarly context matter.",
 		"- Use internet.fetch on promising result URLs before relying on details; prefer official, primary, or scholarly sources.",
@@ -4492,6 +4573,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
+			"text.correct":    true,
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
@@ -4519,6 +4601,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
 		"- Use internet.research for broad or current UX/accessibility questions before implementation choices.",
+		"- Use text.correct before internet.search when a natural-language query appears misspelled or grammatically ambiguous; preserve exact code symbols.",
 		"- Use internet.search for precise current documentation lookups and internet.fetch before citing or relying on details.",
 		"- Prefer official standards, primary framework docs, design-system docs, and reputable UX research. Mention source URLs in the final message.",
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
@@ -4532,6 +4615,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available UXAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
+			"text.correct":    true,
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,

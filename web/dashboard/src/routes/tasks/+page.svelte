@@ -40,7 +40,12 @@
     type TaskQueueView,
     type WorkerTraceRun
   } from './view-model';
-  import { collectionFromResponse, errorMessage, taskListEmptyMessage } from './sync-model';
+  import {
+    collectionFromResponse,
+    errorMessage,
+    taskListEmptyMessage,
+    withRefreshTimeout as withTimeout
+  } from './sync-model';
 
   type PromptAction = {
     label: string;
@@ -368,23 +373,9 @@
     return [...commands].slice(0, 5);
   };
 
-  const withRefreshTimeout = async <T,>(label: string, request: Promise<T>): Promise<T> =>
-    new Promise((resolve, reject) => {
-      const timer = window.setTimeout(
-        () => reject(new Error(`${label} timed out after ${refreshTimeoutMs / 1000}s.`)),
-        refreshTimeoutMs
-      );
-      request.then(
-        (value) => {
-          window.clearTimeout(timer);
-          resolve(value);
-        },
-        (err) => {
-          window.clearTimeout(timer);
-          reject(err);
-        }
-      );
-    });
+  function withRefreshTimeout<T>(label: string, operation: Promise<T>): Promise<T> {
+    return withTimeout(label, operation, refreshTimeoutMs, window);
+  }
 
   $: taskQueueView = createTaskQueueView({
     tasks,

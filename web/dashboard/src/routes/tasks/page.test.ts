@@ -42,7 +42,9 @@ describe('tasks page selection rendering', () => {
   test('keeps manual sync responsive while refreshing selected task details', () => {
     expect(pageSource).toContain("let taskFilter: TaskFilter = 'all'");
     expect(pageSource).toContain('let refreshStateSequence = 0');
-    expect(pageSource).toContain('const withRefreshTimeout');
+    expect(pageSource).toContain('function withRefreshTimeout');
+    expect(pageSource).toContain('withRefreshTimeout as withTimeout');
+    expect(pageSource).not.toContain('const withRefreshTimeout = async <T,>');
     expect(pageSource).toContain("const taskRequest = withRefreshTimeout('Tasks', client.listTasks())");
     expect(pageSource).toContain("collectionFromResponse<HomelabdTask>('Tasks', 'tasks'");
     expect(pageSource).toContain('let taskLoadError =');

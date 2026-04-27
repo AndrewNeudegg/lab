@@ -14,6 +14,36 @@ export const collectionFromResponse = <T>(label: string, key: string, response: 
 export const errorMessage = (err: unknown, fallback: string) =>
   err instanceof Error ? err.message : fallback;
 
+export type RefreshTimers = {
+  setTimeout: (handler: () => void, timeoutMs: number) => ReturnType<typeof setTimeout>;
+  clearTimeout: (timer: ReturnType<typeof setTimeout>) => void;
+};
+
+export function withRefreshTimeout<T>(
+  label: string,
+  operation: Promise<T>,
+  timeoutMs: number,
+  timers: RefreshTimers = globalThis
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = timers.setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s.`)),
+      timeoutMs
+    );
+
+    operation.then(
+      (value) => {
+        timers.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        timers.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 export const taskListEmptyMessage = ({
   apiBase,
   refreshing,

@@ -35,6 +35,7 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
+  let lastSelectedSlug = selectedSlug;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -75,15 +76,10 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: jumpSlug = selectedSlug;
-
-  const openSelectedDoc = (event: Event) => {
-    const slug = (event.currentTarget as HTMLSelectElement).value;
-
-    if (slug && slug !== selectedSlug) {
-      window.location.assign(`/docs/${slug}`);
-    }
-  };
+  $: if (selectedSlug !== lastSelectedSlug) {
+    jumpSlug = selectedSlug;
+    lastSelectedSlug = selectedSlug;
+  }
 </script>
 
 <svelte:head>
@@ -103,7 +99,7 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:value={jumpSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select id="docs-jump" bind:value={jumpSlug} data-navigate-base="/docs/" aria-label="Jump to document">
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}

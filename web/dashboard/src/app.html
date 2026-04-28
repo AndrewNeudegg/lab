@@ -3,6 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="application-name" content="homelabd Dashboard" />
+    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/homelab-dashboard.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/homelab-dashboard-192.png" />
     <script>
       (() => {
         try {
@@ -14,6 +20,22 @@
           document.documentElement.dataset.theme = 'light';
           document.documentElement.style.colorScheme = 'light';
         }
+
+        // Keep select-based navigation usable before Svelte hydration completes.
+        document.addEventListener(
+          'change',
+          (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLSelectElement)) {
+              return;
+            }
+            const base = target.dataset.navigateBase;
+            if (base && target.value) {
+              window.location.assign(`${base}${target.value}`);
+            }
+          },
+          true
+        );
       })();
     </script>
     %sveltekit.head%

@@ -15,6 +15,14 @@ Healthd is also deliberately separate: its API is served by the `healthd` Go ser
 
 Agent browser testing is deliberately separate from the supervised dashboard. Use `nix develop -c bun run --cwd web uat:tasks` for task-page UAT and `nix develop -c bun run --cwd web uat:site` for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes. Both start an isolated Playwright/Vite server from the task worktree and use mocked APIs. Do not restart the production dashboard or `homelabd` stack for agent validation. See `docs/agentic-testing.md`.
 
+## Progressive Web App
+
+The dashboard is installable as a Progressive Web App from HTTPS, `localhost`, or `127.0.0.1`. The app shell links `/manifest.webmanifest`, app icons, theme colours, and a SvelteKit service worker from `web/dashboard/src/service-worker.ts`. Production builds register the service worker; dev-server UAT keeps registration off so cached workers cannot affect mocked browser tests.
+
+The service worker precaches built SvelteKit assets, static assets, icons, the manifest, and `/offline.html`. Page navigations use network-first caching so a previously loaded shell can reopen during a brief disconnect, then fall back to the offline page. Live operational endpoints under `/api`, `/healthd-api`, and `/supervisord-api` bypass the service worker, and non-GET requests are never replayed, because stale task, terminal, health, or supervisor data is worse than unavailable data.
+
+Validate PWA metadata with `nix develop -c bun run --cwd web uat:site`. For a production service-worker check, build and serve the dashboard from the task worktree, then verify `/chat` registers `/service-worker.js` and that `/manifest.webmanifest`, the 192px icon, 512px icon, and maskable 512px icon load successfully.
+
 ## Navigation
 
 Use the shared responsive navbar on every dashboard page.
@@ -49,6 +57,10 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
 - GitLab merge request reviews: the changes view is the primary review surface, with review status and merge checks kept close to the diff.
 - CodeMirror and Monaco diff APIs: mature web diff viewers support hidden unchanged regions, gutters, syntax-aware deleted text, inline change highlighting, and unified or side-by-side review modes.
+- web.dev PWA checklist: installable apps need a manifest, service worker, responsive layout, custom offline behaviour, and careful performance/accessibility checks.
+- MDN installable PWA guidance: Chromium installability requires a manifest with name or short name, 192px and 512px icons, `start_url`, display mode, and HTTPS or local loopback serving.
+- SvelteKit service-worker guidance: `src/service-worker.ts` is bundled and automatically registered for production builds, and `$service-worker` exposes build, static file, and version lists for cache management.
+- Chrome maskable icon guidance: provide a separate maskable icon and verify its safe zone instead of relying only on regular icons.
 
 Sources:
 
@@ -77,6 +89,11 @@ Sources:
 - https://docs.gitlab.com/user/project/merge_requests/reviews/
 - https://codemirror.net/docs/ref/#merge.unifiedMergeView
 - https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor.IDiffEditorConstructionOptions.html
+- https://web.dev/articles/pwa-checklist
+- https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable
+- https://svelte.dev/docs/kit/service-workers
+- https://developer.chrome.com/docs/lighthouse/pwa/installable-manifest
+- https://developer.chrome.com/docs/lighthouse/pwa/maskable-icon-audit
 
 ## Layout Rationale
 

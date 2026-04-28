@@ -1,0 +1,52 @@
+{
+  "id": "/chat",
+  "name": "homelabd Dashboard",
+  "short_name": "homelabd",
+  "description": "Operator dashboard for homelabd chat, task review, workflows, terminals, health, and supervisor controls.",
+  "start_url": "/chat",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f172a",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/homelab-dashboard-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/homelab-dashboard-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/homelab-dashboard-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Tasks",
+      "short_name": "Tasks",
+      "description": "Open the task queue and review console.",
+      "url": "/tasks"
+    },
+    {
+      "name": "Chat",
+      "short_name": "Chat",
+      "description": "Open the global homelabd chat.",
+      "url": "/chat"
+    },
+    {
+      "name": "Terminal",
+      "short_name": "Terminal",
+      "description": "Open the browser terminal.",
+      "url": "/terminal"
+    }
+  ]
+}

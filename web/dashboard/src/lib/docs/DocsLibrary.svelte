@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
+  import { onMount } from 'svelte';
   import { Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
@@ -34,8 +36,11 @@
   const preferredDocSlugs = new Set(preferredDocOrder);
 
   let search = '';
-  let jumpSlug = selectedSlug;
-  let lastJumpSourceSlug = selectedSlug;
+  let ready = false;
+
+  onMount(() => {
+    ready = true;
+  });
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -76,16 +81,12 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: if (selectedSlug !== lastJumpSourceSlug) {
-    jumpSlug = selectedSlug;
-    lastJumpSourceSlug = selectedSlug;
-  }
 
   const openSelectedDoc = (event: Event) => {
     const slug = (event.currentTarget as HTMLSelectElement).value;
 
     if (slug && slug !== selectedSlug) {
-      window.location.assign(`/docs/${slug}`);
+      void goto(`/docs/${slug}`);
     }
   };
 </script>
@@ -96,7 +97,7 @@
 
 <Navbar title="Docs" subtitle="Library" current="/docs" />
 
-<main class="docs-shell">
+<main class="docs-shell" data-docs-library-ready={ready ? 'true' : 'false'}>
   <div class="docs-layout">
     <aside class="library" aria-label="Docs library">
       <div class="library-header">
@@ -107,7 +108,7 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:value={jumpSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select id="docs-jump" value={selectedSlug} on:change={openSelectedDoc} aria-label="Jump to document">
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}

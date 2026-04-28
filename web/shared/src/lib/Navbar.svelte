@@ -15,13 +15,16 @@
     { href: '/healthd', label: 'Health' }
   ];
 
-  let mobileMenuOpen = false;
+  let mobileMenu: HTMLDetailsElement | undefined;
 
   const isActive = (href: string) => current === href;
+  const closeMobileMenu = () => {
+    mobileMenu?.removeAttribute('open');
+  };
 </script>
 
 <header class="navbar">
-  <a class="brand" href="/chat" onclick={() => (mobileMenuOpen = false)}>
+  <a class="brand" href="/chat" onclick={closeMobileMenu}>
     <span>{subtitle}</span>
     <strong>{title}</strong>
   </a>
@@ -41,13 +44,12 @@
     <div class="desktop-theme">
       <ThemeToggle />
     </div>
-    <details class="mobile-menu" bind:open={mobileMenuOpen}>
+    <details class="mobile-menu" bind:this={mobileMenu}>
       <!-- svelte-ignore a11y_no_redundant_roles -- Chromium exposes this styled summary consistently with an explicit role. -->
       <summary
         class="menu-button"
         role="button"
         aria-controls="primary-mobile-nav"
-        aria-expanded={mobileMenuOpen}
       >
         <span aria-hidden="true">☰</span>
         Menu
@@ -57,7 +59,7 @@
           <a
             href={link.href}
             aria-current={isActive(link.href) ? 'page' : undefined}
-            onclick={() => (mobileMenuOpen = false)}
+            onclick={closeMobileMenu}
           >
             {link.label}
           </a>

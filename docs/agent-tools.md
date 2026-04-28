@@ -25,6 +25,16 @@ Orchestrator-style agents respond with one JSON object:
 
 Each `args` object must match the tool's schema. Empty args are treated as `{}`. Results are JSON and are stored in the event log as `tool.result`; denied calls are stored as `tool.call.denied`.
 
+Registered tools expose a name, description, JSON schema, risk level, and `Run` implementation through `pkg/tool.Tool`. Pseudo-tools such as `task.create` and `workflow.run` use the same call shape, but the Orchestrator handles them directly instead of looking them up in the registry.
+
+## Argument Conventions
+
+- `workspace` is an absolute task worktree path under `repo.workspace_root`; workspace-scoped write tools rely on this for medium-risk approval decisions.
+- `path` is repository-relative or workspace-relative, depending on whether `workspace` is supplied. Absolute paths and parent traversal are rejected by repository helpers.
+- `dir` is the working directory for Git, shell, and validation commands. Prefer the isolated task workspace for agent work.
+- `target` is required on approval-sensitive critical or high-impact operations so the human approval request has an explicit destination.
+- `command` is an argv array, not a shell string. Pipes, redirects, glob expansion, and environment assignment do not happen unless the executable itself implements them.
+
 ## Policy And Approval
 
 Tools declare one of these risk levels:
@@ -55,7 +65,7 @@ Paths are repository-relative unless `workspace` is supplied. Absolute paths and
 - `repo.read`: required args: `path`. Optional args: `workspace`. Reads one bounded text file. The default maximum is `limits.max_file_bytes`, currently 1 MiB in `config.example.json`.
 - `repo.search`: required args: `query`. Optional args: `path`, `workspace`, `context_lines`, `max_results`. Searches plain substrings, not regex, and skips binary files. `context_lines` clamps to 0-8; `max_results` defaults to 100 and clamps to 200.
 - `repo.write_patch`: required args: `workspace`, `patch`. Applies a unified diff with `git apply --whitespace=nowarn` inside an isolated task workspace. Medium risk.
-- `repo.current_diff`: required args: `workspace`. Returns tracked diff plus untracked file diffs, excluding `.codex` metadata.
+- `repo.current_diff`: required args: `workspace`. Returns tracked diff plus untracked file diffs, excluding untracked `.codex` metadata.
 - `repo.apply_patch_to_main`: required args: `patch`. Optional args: `target`. Admin/approval path for applying a patch to the configured repo root. High risk.
 - `repo.reset_workspace`: required args: `workspace`. Runs `git reset --hard HEAD` in a task workspace. Medium risk and not in normal agent role lists.
 
@@ -111,8 +121,10 @@ bun run --cwd web check
 bun run --cwd web build
 bun run --cwd web test
 bun run --cwd web browser:preflight
+bun run --cwd web uat:docs
 bun run --cwd web uat:tasks
 bun run --cwd web uat:site
+bun run --cwd web e2e
 ```
 
 The same Bun commands are allowed through `nix develop -c ...`. Destructive commands such as `rm`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>` are high risk and require approval.
@@ -158,7 +170,7 @@ Use `internet.fetch` on promising result URLs before relying on page details, an
 
 ## Task And Workflow Tools
 
-`task.create`, `task.run`, and `workflow.*` are pseudo-tools handled by the Orchestrator, not registered package tools.
+`task.create`, `task.run`, and `workflow.*` are pseudo-tools handled by the Orchestrator, not registered package tools. `task.list` is a registered read-only tool in `pkg/tools/task`.
 
 - `task.create`: required args: `goal`. Optional args: `target`. Creates a durable local task or remote-target task. `target` may include `mode`, `agent_id`, `machine`, `workdir_id`, `workdir`, and `backend`.
 - `task.run`: required args: `task_id`. Starts `CoderAgent` on an existing task after the planning gate.
@@ -197,6 +209,8 @@ Agents must not restart production `dashboard`, `homelabd`, `healthd`, or `super
 - The registry is built at `homelabd` startup in `cmd/homelabd/main.go`; changing a tool implementation requires restarting `homelabd` after merge.
 - Agents have a bounded number of tool calls per turn: `limits.max_tool_calls_per_turn`, default 12. Task-running agents get double that budget.
 - Repository tools are intentionally simple and bounded; use `repo.search` for deterministic substring search, not semantic search or regex.
+- `repo.write_patch` only applies a unified diff. It does not format, run tests, or commit the result.
+- Shell and validation tools return captured command output, but they are still bounded by `limits.max_shell_seconds` unless the specific tool raises its own minimum.
 - Internet tools depend on configured providers and public network reachability. Fallbacks can change result quality.
 - Browser UAT commands start isolated servers from the task worktree and mocked APIs. Live production diagnostics are separate operator actions.
 

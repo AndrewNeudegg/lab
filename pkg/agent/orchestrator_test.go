@@ -17,6 +17,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/llm"
+	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
@@ -2766,6 +2767,84 @@ func TestOpenEndedChatReportsProviderSource(t *testing.T) {
 	}
 }
 
+func TestRememberCommandStoresDistilledLesson(t *testing.T) {
+	provider := &staticProvider{content: `{"lesson":"Prefer durable decision rules over style mimicry.","kind":"preference"}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "remember that feedback should become decision guidance, not copied wording")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Remembered mem_") ||
+		!strings.Contains(reply, "Prefer durable decision rules over style mimicry.") {
+		t.Fatalf("reply = %q, want remembered distilled lesson", reply)
+	}
+
+	list, err := orch.Handle(context.Background(), "test", "memories")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(list, "Prefer durable decision rules over style mimicry.") {
+		t.Fatalf("memories = %q, want stored lesson", list)
+	}
+	if !strings.Contains(orch.llmToolPrompt(), "Prefer durable decision rules over style mimicry.") {
+		t.Fatalf("prompt does not include stored lesson")
+	}
+}
+
+func TestUnlearnCommandRemovesLesson(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	reply, err := orch.Handle(context.Background(), "test", "remember prefer short direct handoffs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Remembered mem_") {
+		t.Fatalf("reply = %q, want remembered", reply)
+	}
+
+	reply, err = orch.Handle(context.Background(), "test", "unlearn short direct handoffs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Unlearned mem_") {
+		t.Fatalf("reply = %q, want unlearned", reply)
+	}
+
+	list, err := orch.Handle(context.Background(), "test", "memories")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(list, "short direct handoffs") {
+		t.Fatalf("memories = %q, want lesson removed", list)
+	}
+}
+
+func TestOpenEndedChatIncludesDurableMemory(t *testing.T) {
+	provider := &recordingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+	if _, err := orch.memory.RememberLesson(memstore.DefaultLessonFile, memstore.Lesson{
+		Content: "Prefer distilled lessons over language mimicry.",
+		Kind:    "preference",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.Handle(context.Background(), "test", "what should you optimise for?"); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(provider.requests))
+	}
+	system := provider.requests[0].Messages[0].Content
+	if !strings.Contains(system, "Prefer distilled lessons over language mimicry.") {
+		t.Fatalf("system prompt missing durable memory: %s", system)
+	}
+}
+
 func TestReflectIncludesActionableNewTaskCommand(t *testing.T) {
 	goal := "Add task-ready action buttons for reflection results"
 	provider := &staticProvider{content: `{"reflection":"Keep improvement ideas task-ready.","task_goal":"` + goal + `"}`}
@@ -3835,7 +3914,9 @@ func newTestOrchestrator(t *testing.T, delegate *delegateStub) *Orchestrator {
 		tool.NewPolicy(nil),
 		nil,
 		"",
-	).WithWorkflows(workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows")))
+	).
+		WithMemory(memstore.NewStore(filepath.Join(cfg.DataDir, "memory"))).
+		WithWorkflows(workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows")))
 }
 
 func gitTestRun(t *testing.T, dir string, args ...string) {

@@ -86,7 +86,7 @@ func defaultAgentTools() map[string]map[string]bool {
 			"task.create", "task.run", "task.list",
 			"workflow.create", "workflow.list", "workflow.show", "workflow.run",
 			"agent.list", "agent.delegate",
-			"memory.read", "memory.propose_write",
+			"memory.list", "memory.read", "memory.remember", "memory.unlearn", "memory.propose_write",
 			"text.correct", "text.summarize",
 			"health.errors",
 			"internet.search", "internet.fetch", "internet.research",

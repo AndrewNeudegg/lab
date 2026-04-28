@@ -181,7 +181,8 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	if err := texttools.Register(registry); err != nil {
 		return runtimeServices{}, err
 	}
-	if err := memtools.Register(registry, memstore.NewStore("memory")); err != nil {
+	memoryStore := memstore.NewStore("memory")
+	if err := memtools.Register(registry, memoryStore); err != nil {
 		return runtimeServices{}, err
 	}
 	if err := supervisortools.Register(registry); err != nil {
@@ -220,6 +221,7 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	remoteAgents := remoteagent.NewStore(filepath.Join(cfg.DataDir, "remote_agents"))
 	orch := agent.NewOrchestrator(cfg, events, tasks, approvals, registry, tool.NewPolicy(cfg.Policy.RequireApprovalFor), provider, model).
 		WithLogger(slog.Default()).
+		WithMemory(memoryStore).
 		WithRemoteAgents(remoteAgents).
 		WithWorkflows(workflows)
 	return runtimeServices{Orchestrator: orch, RemoteAgents: remoteAgents}, nil

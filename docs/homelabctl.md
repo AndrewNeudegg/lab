@@ -37,6 +37,8 @@ Inside the shell, enter the same commands accepted by `homelabd` chat, for examp
 status
 tasks
 show task_123
+remember prefer distilled lessons over copied phrasing
+memories
 delegate task_123 to codex fix the failing tests
 ux task_123 audit keyboard and mobile states
 approve app_123
@@ -52,6 +54,8 @@ For one-shot chat commands:
 
 ```bash
 go run ./cmd/homelabctl message "status"
+go run ./cmd/homelabctl remember "prefer concise validation summaries"
+go run ./cmd/homelabctl memories
 go run ./cmd/homelabctl status
 go run ./cmd/homelabctl agents
 ```
@@ -79,6 +83,8 @@ go run ./cmd/homelabctl task delete task_123
 ```
 
 `task retry` preserves the previous task result as retry context. For `conflict_resolution` tasks, or blocked tasks whose result is a premerge/rebase failure, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
+
+`task review` normally runs after a local worker has moved the task to `ready_for_review`. It can also recheck a blocked task whose result starts with `ReviewerAgent checks failed:` after a test-infrastructure fix. It owns the task while checks run; concurrent run, retry, or delegation attempts are rejected, and a stale review result is ignored if the task state changes before checks finish.
 
 The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
 
@@ -112,6 +118,8 @@ go run ./cmd/homelabctl test task_123
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
 
 Agent UI validation must not restart production services. For dashboard task-page changes, workers and reviewers should use `nix develop -c bun run --cwd web uat:tasks`; for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use `nix develop -c bun run --cwd web uat:site`. Both start an isolated Playwright/Vite server from the task worktree and mock production APIs. See `docs/agentic-testing.md`.
+
+When `homelabd` review invokes `bun.check`, `bun.build`, `bun.test`, `bun.uat.tasks`, or `bun.uat.site`, the tool enters the repo's Nix dev shell whenever `flake.nix` is available. This keeps automated review aligned with the documented worker commands and avoids browser-library drift in supervised processes.
 
 ## Workflow Commands
 

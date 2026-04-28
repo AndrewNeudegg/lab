@@ -145,7 +145,8 @@ func (c cli) dispatch(args []string) error {
 		return c.task(withAction(cmd, args[1:]))
 	case "status", "agents", "refresh", "rebase", "sync",
 		"delegate", "escalate", "codex", "claude", "gemini", "ux", "test", "patch",
-		"search", "web", "internet", "research", "read", "reflect", "deep", "work", "start":
+		"search", "web", "internet", "research", "read", "reflect", "deep", "work", "start",
+		"memory", "memories", "remember", "learn", "forget", "unlearn":
 		return c.message(strings.Join(args, " "))
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
@@ -931,6 +932,7 @@ Top-level shortcuts:
   homelabctl new <goal>
   homelabctl run|review|accept|reopen|cancel|retry|delete <task_id> [...]
   homelabctl approve|deny <approval_id>
+  homelabctl memories|remember|unlearn ...
   homelabctl errors [-limit N] [app]
   homelabctl supervisor restart dashboard
   homelabctl status|agents|delegate|ux|refresh|diff|test ...`)

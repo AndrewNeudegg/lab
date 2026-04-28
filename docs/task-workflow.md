@@ -16,14 +16,15 @@
 
 ## Planning Gate
 
-Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is visible in the `/tasks` selected-task pane as a collapsible reviewed-plan section. The default planning gate derives the plan from task metadata, so local tasks, remote tasks, and legacy graph phases get distinct summaries, steps, and risks. It records:
+Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is visible in the `/tasks` selected-task pane as a collapsible reviewed-plan section. The planning gate keeps the default inspect, change, validate, and handoff shape, then grounds local task plans with a lightweight repository scan. It searches the task title, goal, and acceptance criteria against source files, docs, and tests so the worker sees likely starting points before editing. Remote tasks and legacy graph phases still get target- or phase-specific plans. It records:
 
-- a concise task-, phase-, or target-specific plan summary
+- a concise task-, phase-, or target-specific plan summary, including likely repo paths when the scan finds them
 - ordered execution steps for the current task, legacy graph phase, or execution target
-- known risks for that phase or target before work starts
+- likely code, docs, tests, and validation commands for local repository work
+- known risks for that phase, target, or repo scan before work starts
 - a reviewer note confirming the plan contains the required execution stages
 
-`homelabd` writes `task.plan.created` and `task.plan.reviewed` events to the JSONL event log. If an older task has no reviewed plan, or only has the legacy generic default plan, `run` or `delegate` creates and reviews the current task-specific plan before assigning the worker.
+`homelabd` writes `task.plan.created` and `task.plan.reviewed` events to the JSONL event log. If an older task has no reviewed plan, or only has the legacy generic or pre-scan default plan, `run` or `delegate` creates and reviews the current repo-aware plan before assigning the worker. The scan is a starting point only; workers must still inspect callers, imports, generated files, UI flows, and task state before editing.
 
 Reviewing a task with no workspace diff moves it to `blocked` instead of leaving it `running`; the next action should be to rerun, delegate with clearer instructions, or delete the task.
 
@@ -123,7 +124,7 @@ Recovery decisions are written to the JSONL event log as `task.recovery.*` event
 
 When a task changes user-facing behavior, commands, UI, configuration, tools, or workflow, the worker should update relevant docs or help text in the same patch.
 
-When an external coding worker finishes a local task, `homelabd` automatically runs the review gate. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, stales any older pending approvals for the task, and only then creates a merge approval. A task branch that cannot merge cleanly moves to `conflict_resolution` with an explicit premerge failure; approval is not created, no worker is restarted implicitly, and the main repository must not be left in a conflicted state. Retrying that task prepares the isolated worktree, not the main repository, so the next worker sees the unresolved files instead of a clean but still-stale branch.
+When an external coding worker finishes a local task, `homelabd` automatically runs the review gate. Review only runs for `ready_for_review` tasks and temporarily owns the task while checks run, so a retry or worker cannot mutate the same workspace underneath ReviewerAgent. If the task changes state during a long review, the review result is ignored and no approval or block state is written. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, stales any older pending approvals for the task, and only then creates a merge approval. Check failures name the failing tool, for example `bun.uat.site`, and keep the failing output tail visible. A task branch that cannot merge cleanly moves to `conflict_resolution` with an explicit premerge failure; approval is not created, no worker is restarted implicitly, and the main repository must not be left in a conflicted state. Retrying that task prepares the isolated worktree, not the main repository, so the next worker sees the unresolved files instead of a clean but still-stale branch.
 
 When a remote agent finishes, `homelabd` records the remote result and moves the task to `ready_for_review`. Reviewing a remote task acknowledges the result and moves it to `awaiting_verification`; it does not run local project checks, compare local and remote `HEAD`, create a merge approval, or touch the control-plane checkout.
 
@@ -135,6 +136,12 @@ Final task summaries should include:
 - validation run
 - how to use the change
 - docs updated, or why no docs change was needed
+
+## Repository Agent Tools
+
+Agents inspect code with `repo.list`, `repo.read`, `repo.search`, and `repo.current_diff`. `repo.search` is the default code-search tool: it returns repository-relative paths, matched line numbers, and bounded grep-like context. Use `workspace` for task worktrees, `path` to narrow scope, `context_lines` to tune surrounding lines, and `max_results` to keep prompts small.
+
+Coder and UX agents create or edit files in isolated task worktrees with `repo.write_patch`. The patch is a unified diff against repository-relative paths, so it can add new files and modify existing files without touching the live checkout.
 
 ## Git Agent Tools
 
@@ -150,7 +157,7 @@ These write tools are high-risk and approval-gated by default. Task review still
 
 ## Shell Agent Tools
 
-`shell.run_limited` executes only allowlisted command arrays without shell expansion. Read-only or routine build/test commands remain low risk. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
+`shell.run_limited` executes only allowlisted command arrays without shell expansion. Read-only inspection and search commands such as `pwd`, `ls`, `find`, `grep`, `rg`, `cat`, `wc`, `head`, and `tail` are available for task worktrees, along with routine build/test commands. `find` execution hooks and `rg --pre` preprocessors are rejected. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
 
 Review pending shell requests with `approvals`, then use `approve <approval_id>` or `deny <approval_id>`.
 

@@ -268,6 +268,26 @@ func TestParseDelegateCommandAcceptsUXAgent(t *testing.T) {
 	}
 }
 
+func TestParseRetryCommand(t *testing.T) {
+	tests := []struct {
+		input           []string
+		wantSelector    string
+		wantBackend     string
+		wantInstruction string
+	}{
+		{[]string{"6d41996e"}, "6d41996e", "", ""},
+		{[]string{"6d41996e", "codex", "resolve", "the", "conflict"}, "6d41996e", "codex", "resolve the conflict"},
+		{[]string{"6d41996e", "with", "claude", "rebase", "it"}, "6d41996e", "claude", "rebase it"},
+		{[]string{"6d41996e", "unstick", "the", "review"}, "6d41996e", "", "unstick the review"},
+	}
+	for _, tt := range tests {
+		selector, backend, instruction := parseRetryCommand(tt.input)
+		if selector != tt.wantSelector || backend != tt.wantBackend || instruction != tt.wantInstruction {
+			t.Fatalf("parseRetryCommand(%v) = (%q, %q, %q), want (%q, %q, %q)", tt.input, selector, backend, instruction, tt.wantSelector, tt.wantBackend, tt.wantInstruction)
+		}
+	}
+}
+
 func TestParseSpecialistRunCommandWithTaskIDInstruction(t *testing.T) {
 	selector, instruction := parseSpecialistRunCommand([]string{"1e0b26b6", "check", "mobile", "states"})
 	if selector != "1e0b26b6" || instruction != "check mobile states" {
@@ -1788,6 +1808,75 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 	}
 }
 
+func TestPrepareDelegationForConflictResolutionPreservesFailureContext(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspaceRoot := filepath.Join(tempDir, "workspaces")
+	workspace := filepath.Join(workspaceRoot, "task_20260428_090000_c0ffee00")
+	orch.cfg.Repo.Root = root
+	orch.cfg.Repo.WorkspaceRoot = workspaceRoot
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "base")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_20260428_090000_c0ffee00", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, workspace, "commit", "-am", "task conflict")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "commit", "-am", "main conflict")
+	previousResult := "ReviewerAgent could not reconcile task branch with current main before checks: CONFLICT (content): Merge conflict in app.txt"
+	task := taskstore.Task{
+		ID:         "task_20260428_090000_c0ffee00",
+		Title:      "conflict retry",
+		Goal:       "conflict retry",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		Result:     previousResult,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := orch.prepareDelegationForTask(context.Background(), task.ID, "codex", "resolve the main branch conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(run.Instruction, previousResult) ||
+		!strings.Contains(run.Instruction, "Conflict-resolution workspace context") ||
+		!strings.Contains(run.Instruction, "resolve them, stage the resolved files, and commit") {
+		t.Fatalf("instruction = %q, want prior failure and conflict guidance", run.Instruction)
+	}
+	status := gitTestOutput(t, workspace, "status", "--porcelain")
+	if !strings.Contains(status, "UU app.txt") {
+		t.Fatalf("status = %q, want unmerged conflict prepared for worker", status)
+	}
+	if got := readTestFile(t, filepath.Join(workspace, "app.txt")); !strings.Contains(got, "<<<<<<<") {
+		t.Fatalf("app.txt = %q, want conflict markers left for worker", got)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" {
+		t.Fatalf("task = %#v, want running codex task", updated)
+	}
+	if !strings.Contains(updated.Result, previousResult) || !strings.Contains(updated.Result, "conflict retry context") {
+		t.Fatalf("result = %q, want preserved failure and conflict context", updated.Result)
+	}
+}
+
 func TestStaleMergeApprovalDoesNotRunForDoneTask(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
@@ -2036,6 +2125,94 @@ func TestRefreshTaskWorkspaceResetsBranchToCurrentMain(t *testing.T) {
 	}
 	if updated.Status != taskstore.StatusBlocked || !strings.Contains(updated.Result, "workspace refreshed") {
 		t.Fatalf("task = %#v, want blocked refreshed task", updated)
+	}
+}
+
+func TestRetryConflictResolutionPreparesWorkspaceAndKeepsContext(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "repo")
+	workspace := filepath.Join(tempDir, "workspaces", "task_20260428_090000_badf00d")
+	orch.cfg.Repo.Root = root
+	orch.cfg.Repo.WorkspaceRoot = filepath.Join(tempDir, "workspaces")
+	gitTestRun(t, "", "init", "--initial-branch=main", root)
+	gitTestRun(t, root, "config", "user.email", "test@example.com")
+	gitTestRun(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "add", ".")
+	gitTestRun(t, root, "commit", "-m", "base")
+	gitTestRun(t, root, "worktree", "add", "-b", "homelabd/task_20260428_090000_badf00d", workspace)
+	if err := os.WriteFile(filepath.Join(workspace, "app.txt"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, workspace, "commit", "-am", "task conflict")
+	if err := os.WriteFile(filepath.Join(root, "app.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, root, "commit", "-am", "main conflict")
+	previousResult := "ReviewerAgent could not reconcile task branch with current main before checks: CONFLICT (content): Merge conflict in app.txt"
+	task := taskstore.Task{
+		ID:         "task_20260428_090000_badf00d",
+		Title:      "resolve conflict",
+		Goal:       "resolve conflict",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		Result:     previousResult,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := orch.prepareDelegationForTask(context.Background(), task.ID, "codex", "resolve the rebase issue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"resolve the rebase issue",
+		"Task state before this worker run: status=conflict_resolution",
+		"Latest task result before this worker run",
+		previousResult,
+		"Conflict-resolution workspace context",
+		"Started merge of current main",
+		"Conflict-resolution requirements",
+	} {
+		if !strings.Contains(run.Instruction, want) {
+			t.Fatalf("instruction missing %q:\n%s", want, run.Instruction)
+		}
+	}
+	status := gitTestOutput(t, workspace, "status", "--porcelain")
+	if !strings.Contains(status, "UU app.txt") {
+		t.Fatalf("status = %q, want prepared unresolved conflict", status)
+	}
+	if got := readTestFile(t, filepath.Join(workspace, "app.txt")); !strings.Contains(got, "<<<<<<<") {
+		t.Fatalf("app.txt = %q, want conflict markers for worker", got)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" {
+		t.Fatalf("task = %#v, want running codex retry", updated)
+	}
+	if !strings.Contains(updated.Result, "previous task result before this run") ||
+		!strings.Contains(updated.Result, previousResult) ||
+		!strings.Contains(updated.Result, "conflict retry context") {
+		t.Fatalf("result = %q, want preserved retry context", updated.Result)
+	}
+}
+
+func TestRetryBlockedPremergeFailureIsTreatedAsConflictWork(t *testing.T) {
+	result := "ReviewerAgent premerge check failed: branch must be rebased or conflict-resolved before merge"
+	if !shouldPrepareConflictWorkspace(taskstore.StatusBlocked, result) {
+		t.Fatalf("blocked premerge failure should prepare conflict workspace")
+	}
+	if shouldPrepareConflictWorkspace(taskstore.StatusBlocked, "ReviewerAgent checks failed: go test failed") {
+		t.Fatalf("ordinary check failure should not prepare conflict workspace")
 	}
 }
 

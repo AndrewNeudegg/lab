@@ -310,6 +310,12 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		}
 		selector, reason := parseReopenCommand(fields[1:])
 		return programResult(o.reopenTask(ctx, selector, reason))
+	case "retry":
+		if len(fields) < 2 {
+			return programResult("usage: retry <task_id> [codex|claude|gemini] [instruction]", nil)
+		}
+		selector, backend, instruction := parseRetryCommand(fields[1:])
+		return programResult(o.retryTask(ctx, selector, backend, instruction))
 	case "refresh", "rebase", "sync":
 		if len(fields) < 2 {
 			return programResult("usage: refresh <task_id>", nil)
@@ -859,6 +865,21 @@ func parseReopenCommand(args []string) (string, string) {
 		}
 	}
 	return strings.Join(args, " "), ""
+}
+
+func parseRetryCommand(args []string) (selector, backend, instruction string) {
+	if len(args) == 0 {
+		return "", "", ""
+	}
+	selector = args[0]
+	rest := args[1:]
+	if len(rest) > 0 && isExternalBackend(rest[0]) {
+		return selector, strings.ToLower(rest[0]), strings.Join(rest[1:], " ")
+	}
+	if len(rest) > 1 && (strings.EqualFold(rest[0], "with") || strings.EqualFold(rest[0], "on")) && isExternalBackend(rest[1]) {
+		return selector, strings.ToLower(rest[1]), strings.Join(rest[2:], " ")
+	}
+	return selector, "", strings.Join(rest, " ")
 }
 
 func parseTaskStateCommand(message string) (action, selector, reason string, ok bool) {
@@ -1638,6 +1659,8 @@ func help() string {
 		"  review <task_id>           run tests, show diff, request merge approval",
 		"  accept <task_id>           mark merged task verified and done",
 		"  reopen <task_id> [reason]  mark task not done and continue work",
+		"  retry <task_id> [agent] [instruction]",
+		"                             rerun blocked or conflict work with preserved failure context",
 		"  refresh <task_id>          reset task worktree branch to current main",
 		"  run <task_id>              let CoderAgent work in the task worktree",
 		"  ux <task_id> [instruction] let UXAgent audit, research, improve, and test UI/UX",
@@ -2665,7 +2688,7 @@ func nextActionForTask(t taskstore.Task) string {
 	case taskstore.StatusReadyForReview:
 		return fmt.Sprintf("review %s", shortID)
 	case taskstore.StatusConflictResolution:
-		return fmt.Sprintf("delegate %s to codex resolve the main-branch conflict", shortID)
+		return fmt.Sprintf("retry %s codex resolve the main-branch conflict", shortID)
 	case taskstore.StatusBlocked:
 		if len(t.BlockedBy) > 0 {
 			return fmt.Sprintf("show %s", shortID)
@@ -3729,6 +3752,9 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 	if err != nil {
 		return delegationRun{}, err
 	}
+	previousStatus := t.Status
+	previousAssignedTo := t.AssignedTo
+	previousResult := t.Result
 	if t.Workspace == "" {
 		return delegationRun{}, fmt.Errorf("task %s has no workspace", taskID)
 	}
@@ -3757,9 +3783,24 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new worker run"); err != nil {
 		return delegationRun{}, err
 	}
+	conflictContext := ""
+	if shouldPrepareConflictWorkspace(previousStatus, previousResult) {
+		prepared, err := o.prepareConflictResolutionWorkspace(ctx, t)
+		if err != nil {
+			return delegationRun{}, err
+		}
+		conflictContext = strings.TrimSpace(prepared)
+		if conflictContext != "" {
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.conflict_resolution.prepared", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{
+				"status":  previousStatus,
+				"context": truncateForChat(conflictContext),
+			})})
+		}
+	}
+	instruction = contextualDelegationInstruction(t, instruction, previousStatus, previousAssignedTo, previousResult, conflictContext)
 	t.Status = taskstore.StatusRunning
 	t.AssignedTo = backend
-	t.Result = fmt.Sprintf("delegated to %s; external worker is running", backend)
+	t.Result = runningDelegationResult(backend, previousStatus, previousResult, conflictContext)
 	if err := o.tasks.Save(t); err != nil {
 		return delegationRun{}, err
 	}
@@ -3767,6 +3808,85 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 	runID := id.New("delegate")
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.started", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "workspace": t.Workspace})})
 	return delegationRun{ID: runID, TaskID: taskID, Backend: backend, Workspace: t.Workspace, Instruction: instruction}, nil
+}
+
+func shouldPrepareConflictWorkspace(status, result string) bool {
+	if status == taskstore.StatusConflictResolution {
+		return true
+	}
+	result = strings.ToLower(result)
+	return strings.Contains(result, "premerge check failed") ||
+		strings.Contains(result, "could not reconcile task branch") ||
+		strings.Contains(result, "auto-rebase failed") ||
+		strings.Contains(result, "merge conflict") ||
+		strings.Contains(result, "must be rebased or conflict-resolved")
+}
+
+func (o *Orchestrator) prepareConflictResolutionWorkspace(ctx context.Context, t taskstore.Task) (string, error) {
+	if !workspaceHasGit(t.Workspace) {
+		return "", nil
+	}
+	statusOut, err := exec.CommandContext(ctx, "git", "-C", t.Workspace, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git status task workspace: %w: %s", err, strings.TrimSpace(string(statusOut)))
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		return "Workspace already has uncommitted or conflicted changes; inspect and resolve this state before review.\nGit status:\n" + strings.TrimSpace(string(statusOut)), nil
+	}
+	headOut, err := exec.CommandContext(ctx, "git", "-C", o.cfg.Repo.Root, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse repo head: %w: %s", err, strings.TrimSpace(string(headOut)))
+	}
+	head := strings.TrimSpace(string(headOut))
+	mergeOut, mergeErr := exec.CommandContext(ctx, "git", "-C", t.Workspace, "merge", "--no-edit", head).CombinedOutput()
+	statusAfterOut, statusErr := exec.CommandContext(ctx, "git", "-C", t.Workspace, "status", "--porcelain").CombinedOutput()
+	if statusErr != nil {
+		return "", fmt.Errorf("git status task workspace after merge attempt: %w: %s", statusErr, strings.TrimSpace(string(statusAfterOut)))
+	}
+	if mergeErr != nil {
+		return fmt.Sprintf("Started merge of current main %s into the task workspace and left conflicts for the worker to resolve.\nMerge output:\n%s\nGit status:\n%s", head, strings.TrimSpace(string(mergeOut)), strings.TrimSpace(string(statusAfterOut))), nil
+	}
+	return fmt.Sprintf("Merged current main %s into the task workspace before retry.\nMerge output:\n%s\nGit status:\n%s", head, strings.TrimSpace(string(mergeOut)), strings.TrimSpace(string(statusAfterOut))), nil
+}
+
+func contextualDelegationInstruction(t taskstore.Task, instruction, previousStatus, previousAssignedTo, previousResult, conflictContext string) string {
+	var sections []string
+	if strings.TrimSpace(instruction) != "" {
+		sections = append(sections, strings.TrimSpace(instruction))
+	}
+	sections = append(sections, fmt.Sprintf("Task state before this worker run: status=%s assigned_to=%s workspace=%s.", previousStatus, firstNonEmptyString(previousAssignedTo, "unassigned"), t.Workspace))
+	if strings.TrimSpace(previousResult) != "" {
+		sections = append(sections, "Latest task result before this worker run:\n"+truncateForPrompt(strings.TrimSpace(previousResult)))
+	}
+	if strings.TrimSpace(conflictContext) != "" {
+		sections = append(sections, "Conflict-resolution workspace context:\n"+truncateForPrompt(strings.TrimSpace(conflictContext)))
+	}
+	if previousStatus == taskstore.StatusConflictResolution || strings.TrimSpace(conflictContext) != "" {
+		sections = append(sections, strings.Join([]string{
+			"Conflict-resolution requirements:",
+			"- Inspect `git status --short` first.",
+			"- If conflict markers or unmerged paths are present, resolve them, stage the resolved files, and commit the merge/resolution in the task branch.",
+			"- If the workspace is clean but the latest task result reports a main-branch conflict, merge current main into the task branch, resolve conflicts, and commit.",
+			"- Do not reset the task branch to main unless the operator explicitly asked for a fresh restart.",
+			"- Run relevant validation, then summarise the resolved conflict files, validation, and remaining risk.",
+		}, "\n"))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func runningDelegationResult(backend, previousStatus, previousResult, conflictContext string) string {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("delegated to %s; external worker is running", backend))
+	if strings.TrimSpace(previousStatus) != "" {
+		lines = append(lines, "previous status: "+previousStatus)
+	}
+	if strings.TrimSpace(previousResult) != "" {
+		lines = append(lines, "previous task result before this run:\n"+truncateForChat(strings.TrimSpace(previousResult)))
+	}
+	if strings.TrimSpace(conflictContext) != "" {
+		lines = append(lines, "conflict retry context:\n"+truncateForChat(strings.TrimSpace(conflictContext)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func defaultDelegationInstruction(t taskstore.Task) string {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/andrewneudegg/lab/pkg/config"
+	"github.com/andrewneudegg/lab/pkg/healthd"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -89,6 +90,70 @@ func TestManagerPushesHealthdHeartbeat(t *testing.T) {
 	case <-heartbeat:
 	case <-time.After(2 * time.Second):
 		t.Fatal("heartbeat not pushed")
+	}
+}
+
+func TestManagerCapturesAppErrorsToLogAndHealthd(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho hello\necho boom >&2\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logDir := t.TempDir()
+	pushed := make(chan []healthd.ApplicationError, 1)
+	manager := NewManager(config.SupervisordConfig{
+		HealthdURL:               "http://healthd.test",
+		HeartbeatIntervalSeconds: 1,
+		LogDir:                   logDir,
+		Apps: []config.SupervisorAppConfig{{
+			Name:    "test-app",
+			Type:    "test",
+			Command: script,
+			Restart: "never",
+		}},
+	}, nil)
+	manager.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/healthd/processes/heartbeat":
+			return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Body: http.NoBody}, nil
+		case "/healthd/errors":
+			var body struct {
+				Errors []healthd.ApplicationError `json:"errors"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode healthd errors: %v", err)
+			}
+			pushed <- body.Errors
+			return &http.Response{StatusCode: http.StatusAccepted, Status: "202 Accepted", Body: http.NoBody}, nil
+		default:
+			t.Fatalf("unexpected healthd path %q", req.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	if err := manager.StartApp(context.Background(), "test-app"); err != nil {
+		t.Fatal(err)
+	}
+	failed := waitForAppState(t, manager, "test-app", StateFailed)
+	if failed.ExitCode != 7 || failed.LastError != "boom" {
+		t.Fatalf("status = %#v, want failed app with captured stderr", failed)
+	}
+	errorLog := filepath.Join(logDir, "test-app.stderr.log")
+	logged, err := os.ReadFile(errorLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(logged) != "boom\n" {
+		t.Fatalf("stderr log = %q, want boom line", string(logged))
+	}
+
+	manager.pushHeartbeat(context.Background())
+	select {
+	case errors := <-pushed:
+		if len(errors) != 1 || errors[0].App != "test-app" || errors[0].Message != "boom" || errors[0].LogPath != errorLog {
+			t.Fatalf("pushed errors = %#v", errors)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("app error was not pushed to healthd")
 	}
 }
 

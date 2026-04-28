@@ -40,6 +40,7 @@ type Monitor struct {
 	checks        []CheckResult
 	processes     map[string]ProcessStatus
 	notifications []Notification
+	errors        []ApplicationError
 	previousCPU   cpuCounters
 	lastStatus    string
 	lastSLOStatus map[string]string
@@ -116,17 +117,35 @@ type Notification struct {
 	Delivered []string  `json:"delivered,omitempty"`
 }
 
+type ApplicationError struct {
+	ID       string            `json:"id,omitempty"`
+	Time     time.Time         `json:"time"`
+	Source   string            `json:"source"`
+	App      string            `json:"app,omitempty"`
+	Severity string            `json:"severity"`
+	Message  string            `json:"message"`
+	LogPath  string            `json:"log_path,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type ErrorFilter struct {
+	Limit  int
+	Source string
+	App    string
+}
+
 type Snapshot struct {
-	Status        string          `json:"status"`
-	StartedAt     time.Time       `json:"started_at"`
-	UptimeSeconds float64         `json:"uptime_seconds"`
-	WindowSeconds int             `json:"window_seconds"`
-	Current       Sample          `json:"current"`
-	Samples       []Sample        `json:"samples"`
-	Checks        []CheckResult   `json:"checks"`
-	Processes     []ProcessStatus `json:"processes"`
-	SLOs          []SLOReport     `json:"slos"`
-	Notifications []Notification  `json:"notifications"`
+	Status        string             `json:"status"`
+	StartedAt     time.Time          `json:"started_at"`
+	UptimeSeconds float64            `json:"uptime_seconds"`
+	WindowSeconds int                `json:"window_seconds"`
+	Current       Sample             `json:"current"`
+	Samples       []Sample           `json:"samples"`
+	Checks        []CheckResult      `json:"checks"`
+	Processes     []ProcessStatus    `json:"processes"`
+	SLOs          []SLOReport        `json:"slos"`
+	Notifications []Notification     `json:"notifications"`
+	Errors        []ApplicationError `json:"errors"`
 }
 
 func New(cfg config.HealthdConfig) *Monitor {
@@ -203,6 +222,7 @@ func (m *Monitor) Snapshot(window time.Duration) Snapshot {
 	checks := mergeProcessChecks(append([]CheckResult(nil), m.checks...), processes, now)
 	slos := evaluateSLOs(m.cfg.SLOs, m.samples, now)
 	notifications := append([]Notification(nil), m.notifications...)
+	errorEntries := errorsSince(m.errors, cutoff)
 	if samples == nil {
 		samples = []Sample{}
 	}
@@ -218,6 +238,9 @@ func (m *Monitor) Snapshot(window time.Duration) Snapshot {
 	if notifications == nil {
 		notifications = []Notification{}
 	}
+	if errorEntries == nil {
+		errorEntries = []ApplicationError{}
+	}
 	status := overallStatus(checks, slos)
 	return Snapshot{
 		Status:        status,
@@ -230,6 +253,7 @@ func (m *Monitor) Snapshot(window time.Duration) Snapshot {
 		Processes:     processes,
 		SLOs:          slos,
 		Notifications: notifications,
+		Errors:        errorEntries,
 	}
 }
 
@@ -259,6 +283,67 @@ func (m *Monitor) RecordHeartbeat(now time.Time, heartbeat ProcessHeartbeat) (Pr
 	defer m.mu.Unlock()
 	m.processes[status.Name] = status
 	return status, nil
+}
+
+func (m *Monitor) RecordErrors(now time.Time, entries []ApplicationError) []ApplicationError {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	recorded := make([]ApplicationError, 0, len(entries))
+	for _, entry := range entries {
+		entry.Message = strings.TrimSpace(entry.Message)
+		if entry.Message == "" {
+			continue
+		}
+		if entry.ID == "" {
+			entry.ID = id.New("apperr")
+		}
+		if entry.Time.IsZero() {
+			entry.Time = now
+		} else {
+			entry.Time = entry.Time.UTC()
+		}
+		if entry.Source == "" {
+			entry.Source = "application"
+		}
+		if entry.Severity == "" {
+			entry.Severity = SeverityWarn
+		}
+		entry.Metadata = copyStringMap(entry.Metadata)
+		recorded = append(recorded, entry)
+	}
+	if len(recorded) == 0 {
+		return []ApplicationError{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.errors = append(recorded, m.errors...)
+	if len(m.errors) > 500 {
+		m.errors = m.errors[:500]
+	}
+	return copyApplicationErrors(recorded)
+}
+
+func (m *Monitor) Errors(filter ErrorFilter) []ApplicationError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ApplicationError, 0, len(m.errors))
+	for _, entry := range m.errors {
+		if filter.Source != "" && entry.Source != filter.Source {
+			continue
+		}
+		if filter.App != "" && entry.App != filter.App {
+			continue
+		}
+		out = append(out, copyApplicationError(entry))
+		if filter.Limit > 0 && len(out) >= filter.Limit {
+			break
+		}
+	}
+	if out == nil {
+		return []ApplicationError{}
+	}
+	return out
 }
 
 func (m *Monitor) collect(ctx context.Context) {
@@ -741,6 +826,16 @@ func samplesSince(samples []Sample, cutoff time.Time) []Sample {
 	return out
 }
 
+func errorsSince(entries []ApplicationError, cutoff time.Time) []ApplicationError {
+	out := make([]ApplicationError, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Time.Before(cutoff) {
+			out = append(out, copyApplicationError(entry))
+		}
+	}
+	return out
+}
+
 func trimSamples(samples []Sample, cutoff time.Time) []Sample {
 	idx := 0
 	for idx < len(samples) && samples[idx].Time.Before(cutoff) {
@@ -818,6 +913,19 @@ func copyStringMap(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func copyApplicationErrors(entries []ApplicationError) []ApplicationError {
+	out := make([]ApplicationError, len(entries))
+	for i, entry := range entries {
+		out[i] = copyApplicationError(entry)
+	}
+	return out
+}
+
+func copyApplicationError(entry ApplicationError) ApplicationError {
+	entry.Metadata = copyStringMap(entry.Metadata)
+	return entry
 }
 
 func overallStatus(checks []CheckResult, slos []SLOReport) string {

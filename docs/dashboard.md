@@ -186,4 +186,6 @@ The default healthd API address is `127.0.0.1:18081`. During dashboard developme
 
 `homelabd` sends a heartbeat to `POST /healthd/processes/heartbeat` when healthd is enabled, then repeats every `healthd.process_heartbeat_interval_seconds`. Healthd lists announced processes in the `/healthd` snapshot and turns stale heartbeats into `process:<name>` check failures after `healthd.process_timeout_seconds`, so the Health page shows `homelabd` alongside configured HTTP checks and future monitored processes.
 
+`supervisord` sends application stderr lines to `POST /healthd/errors` after writing them to per-app stderr logs. Use `GET /healthd/errors` or `homelabctl errors` to review recent application errors before creating root-cause tasks.
+
 Remote agents are also represented as healthd processes. `homelabd` forwards accepted remote-agent heartbeats as `remote-agent:<agent_id>` with type `remote_agent`, machine metadata, service instance identity, current task id, advertised workdir count, and a TTL based on `control_plane.agent_stale_seconds`.

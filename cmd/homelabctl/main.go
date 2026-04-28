@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	defaultAddr = "http://127.0.0.1:18080"
-	defaultFrom = "homelabctl"
+	defaultAddr        = "http://127.0.0.1:18080"
+	defaultHealthdAddr = "http://127.0.0.1:18081"
+	defaultFrom        = "homelabctl"
 )
 
 func main() {
@@ -25,13 +26,14 @@ func main() {
 }
 
 type cli struct {
-	base string
-	http *http.Client
-	in   io.Reader
-	out  io.Writer
-	err  io.Writer
-	from string
-	json bool
+	base        string
+	healthdBase string
+	http        *http.Client
+	in          io.Reader
+	out         io.Writer
+	err         io.Writer
+	from        string
+	json        bool
 }
 
 func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string) string, httpClient *http.Client) int {
@@ -41,6 +43,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string)
 	flags := flag.NewFlagSet("homelabctl", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	addr := flags.String("addr", envDefault(getenv, "HOMELABD_ADDR", defaultAddr), "homelabd base URL")
+	healthdAddr := flags.String("healthd-addr", envDefault(getenv, "HOMELABD_HEALTHD_ADDR", defaultHealthdAddr), "healthd base URL")
 	from := flags.String("from", envDefault(getenv, "HOMELABCTL_FROM", defaultFrom), "sender name for chat messages")
 	timeout := flags.Duration("timeout", 30*time.Second, "HTTP request timeout")
 	jsonOutput := flags.Bool("json", false, "print the full JSON response for chat commands")
@@ -60,13 +63,14 @@ func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string)
 		httpClient = &copy
 	}
 	c := cli{
-		base: strings.TrimRight(*addr, "/"),
-		http: httpClient,
-		in:   in,
-		out:  out,
-		err:  errOut,
-		from: *from,
-		json: *jsonOutput,
+		base:        strings.TrimRight(*addr, "/"),
+		healthdBase: strings.TrimRight(*healthdAddr, "/"),
+		http:        httpClient,
+		in:          in,
+		out:         out,
+		err:         errOut,
+		from:        *from,
+		json:        *jsonOutput,
 	}
 	if err := c.dispatch(rest); err != nil {
 		fmt.Fprintln(errOut, "homelabctl:", err)
@@ -107,6 +111,10 @@ func (c cli) dispatch(args []string) error {
 		return c.approval(args)
 	case "events", "event":
 		return c.events(args[1:])
+	case "healthd":
+		return c.healthd(args[1:])
+	case "errors", "error":
+		return c.healthd(withAction("errors", args[1:]))
 	case "terminal", "term":
 		return c.terminal(args[1:])
 	case "new":
@@ -311,6 +319,44 @@ func (c cli) events(args []string) error {
 		endpoint += "?" + encoded
 	}
 	return c.do(http.MethodGet, endpoint, nil)
+}
+
+func (c cli) healthd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl healthd <errors>")
+	}
+	switch commandWord(args[0]) {
+	case "errors", "error":
+		flags := flag.NewFlagSet("healthd errors", flag.ContinueOnError)
+		flags.SetOutput(c.err)
+		limit := flags.Int("limit", 50, "maximum number of recent errors to return")
+		source := flags.String("source", "", "filter errors by source")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		rest := flags.Args()
+		if len(rest) > 1 {
+			return fmt.Errorf("usage: homelabctl healthd errors [-limit N] [-source SOURCE] [app]")
+		}
+		if *limit <= 0 {
+			return fmt.Errorf("limit must be a positive integer")
+		}
+		query := url.Values{}
+		query.Set("limit", strconv.Itoa(*limit))
+		if strings.TrimSpace(*source) != "" {
+			query.Set("source", strings.TrimSpace(*source))
+		}
+		if len(rest) == 1 {
+			query.Set("app", rest[0])
+		}
+		endpoint := "/healthd/errors"
+		if encoded := query.Encode(); encoded != "" {
+			endpoint += "?" + encoded
+		}
+		return c.doAt(c.healthdBase, http.MethodGet, endpoint, nil)
+	default:
+		return fmt.Errorf("unknown healthd command %q", args[0])
+	}
 }
 
 func (c cli) terminal(args []string) error {
@@ -527,7 +573,11 @@ func (c cli) printTerminalEvent(eventName, data string) bool {
 }
 
 func (c cli) do(method, endpoint string, body any) error {
-	out, err := c.request(method, endpoint, body)
+	return c.doAt(c.base, method, endpoint, body)
+}
+
+func (c cli) doAt(base, method, endpoint string, body any) error {
+	out, err := c.requestAt(base, method, endpoint, body)
 	if err != nil {
 		return err
 	}
@@ -535,6 +585,10 @@ func (c cli) do(method, endpoint string, body any) error {
 }
 
 func (c cli) request(method, endpoint string, body any) ([]byte, error) {
+	return c.requestAt(c.base, method, endpoint, body)
+}
+
+func (c cli) requestAt(base, method, endpoint string, body any) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -543,7 +597,7 @@ func (c cli) request(method, endpoint string, body any) ([]byte, error) {
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, c.base+endpoint, reader)
+	req, err := http.NewRequest(method, strings.TrimRight(base, "/")+endpoint, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -667,6 +721,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] approval approve <approval_id>
   homelabctl [-addr http://127.0.0.1:18080] approval deny <approval_id>
   homelabctl [-addr http://127.0.0.1:18080] events [-limit N] [YYYY-MM-DD]
+  homelabctl [-healthd-addr http://127.0.0.1:18081] healthd errors [-limit N] [-source SOURCE] [app]
 
   homelabctl [-addr http://127.0.0.1:18080] terminal start [cwd]
   homelabctl [-addr http://127.0.0.1:18080] terminal show <session_id>
@@ -680,5 +735,6 @@ Top-level shortcuts:
   homelabctl new <goal>
   homelabctl run|review|accept|reopen|cancel|retry|delete <task_id> [...]
   homelabctl approve|deny <approval_id>
+  homelabctl errors [-limit N] [app]
   homelabctl status|agents|delegate|ux|refresh|diff|test ...`)
 }

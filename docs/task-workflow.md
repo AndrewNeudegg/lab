@@ -133,6 +133,12 @@ Final task summaries should include:
 - how to use the change
 - docs updated, or why no docs change was needed
 
+## Repository Agent Tools
+
+Agents inspect code with `repo.list`, `repo.read`, `repo.search`, and `repo.current_diff`. `repo.search` is the default code-search tool: it returns repository-relative paths, matched line numbers, and bounded grep-like context. Use `workspace` for task worktrees, `path` to narrow scope, `context_lines` to tune surrounding lines, and `max_results` to keep prompts small.
+
+Coder and UX agents create or edit files in isolated task worktrees with `repo.write_patch`. The patch is a unified diff against repository-relative paths, so it can add new files and modify existing files without touching the live checkout.
+
 ## Git Agent Tools
 
 Agents can inspect repository state with `git.status`, `git.diff`, `git.branch`, `git.describe`, `git.log`, and `git.show`.
@@ -147,7 +153,7 @@ These write tools are high-risk and approval-gated by default. Task review still
 
 ## Shell Agent Tools
 
-`shell.run_limited` executes only allowlisted command arrays without shell expansion. Read-only or routine build/test commands remain low risk. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
+`shell.run_limited` executes only allowlisted command arrays without shell expansion. Read-only inspection and search commands such as `pwd`, `ls`, `find`, `grep`, `rg`, `cat`, `wc`, `head`, and `tail` are available for task worktrees, along with routine build/test commands. `find` execution hooks and `rg --pre` preprocessors are rejected. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
 
 Review pending shell requests with `approvals`, then use `approve <approval_id>` or `deny <approval_id>`.
 

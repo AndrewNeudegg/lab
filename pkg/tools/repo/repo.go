@@ -182,17 +182,19 @@ type SearchTool struct{ base Base }
 
 func (t SearchTool) Name() string { return "repo.search" }
 func (t SearchTool) Description() string {
-	return "Search text in repository or workspace files without invoking a shell."
+	return "Search text in repository or workspace files with grep-like line context without invoking a shell."
 }
 func (t SearchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"path":{"type":"string"},"workspace":{"type":"string"}}}`)
+	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"path":{"type":"string"},"workspace":{"type":"string"},"context_lines":{"type":"integer","minimum":0,"maximum":8},"max_results":{"type":"integer","minimum":1,"maximum":200}}}`)
 }
 func (t SearchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t SearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 	var req struct {
-		Query     string `json:"query"`
-		Path      string `json:"path"`
-		Workspace string `json:"workspace"`
+		Query        string `json:"query"`
+		Path         string `json:"path"`
+		Workspace    string `json:"workspace"`
+		ContextLines *int   `json:"context_lines"`
+		MaxResults   int    `json:"max_results"`
 	}
 	if err := json.Unmarshal(input, &req); err != nil {
 		return nil, err
@@ -208,6 +210,8 @@ func (t SearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMes
 	if err != nil {
 		return nil, err
 	}
+	contextLines := normalizedSearchContextLines(req.ContextLines)
+	maxResults := normalizedSearchMaxResults(req.MaxResults)
 	var matches []map[string]any
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -223,11 +227,16 @@ func (t SearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMes
 		if err != nil || bytes.IndexByte(b, 0) >= 0 {
 			return nil
 		}
-		for i, line := range strings.Split(string(b), "\n") {
+		lines := strings.Split(string(b), "\n")
+		for i, line := range lines {
 			if strings.Contains(line, req.Query) {
 				rel, _ := filepath.Rel(rootBase, path)
-				matches = append(matches, map[string]any{"path": rel, "line": i + 1, "text": line})
-				if len(matches) >= 100 {
+				match := map[string]any{"path": rel, "line": i + 1, "text": line}
+				if contextLines > 0 {
+					match["context"] = searchContext(lines, i, contextLines)
+				}
+				matches = append(matches, match)
+				if len(matches) >= maxResults {
 					return filepath.SkipAll
 				}
 			}
@@ -243,6 +252,49 @@ func (t SearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMes
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"matches": matches, "workspace": req.Workspace})
+}
+
+func normalizedSearchContextLines(value *int) int {
+	if value == nil {
+		return 2
+	}
+	if *value < 0 {
+		return 0
+	}
+	if *value > 8 {
+		return 8
+	}
+	return *value
+}
+
+func normalizedSearchMaxResults(value int) int {
+	if value <= 0 {
+		return 100
+	}
+	if value > 200 {
+		return 200
+	}
+	return value
+}
+
+func searchContext(lines []string, matchIndex, contextLines int) []map[string]any {
+	start := matchIndex - contextLines
+	if start < 0 {
+		start = 0
+	}
+	end := matchIndex + contextLines + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	context := make([]map[string]any, 0, end-start)
+	for i := start; i < end; i++ {
+		context = append(context, map[string]any{
+			"line":  i + 1,
+			"text":  lines[i],
+			"match": i == matchIndex,
+		})
+	}
+	return context
 }
 
 type WritePatchTool struct{ base Base }

@@ -3452,6 +3452,23 @@ func TestRecoveryPlanPreservesUXAgent(t *testing.T) {
 	}
 }
 
+func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(shellRunLimitedStub{}); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := orch.coderPrompt(taskstore.Task{
+		ID:        "task_123",
+		Workspace: "/tmp/workspaces/task_123",
+	})
+	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestReviewNoDiffBlocksTask(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(noDiffStub{}); err != nil {
@@ -3829,6 +3846,18 @@ func (s *repoSearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMe
 		"line": 148,
 		"text": "case search",
 	}}})
+}
+
+type shellRunLimitedStub struct{}
+
+func (shellRunLimitedStub) Name() string        { return "shell.run_limited" }
+func (shellRunLimitedStub) Description() string { return "Run allowlisted command arrays." }
+func (shellRunLimitedStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (shellRunLimitedStub) Risk() tool.RiskLevel { return tool.RiskLow }
+func (shellRunLimitedStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"output":""}`), nil
 }
 
 type internetSearchStub struct {

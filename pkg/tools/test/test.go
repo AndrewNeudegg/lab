@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +14,12 @@ import (
 )
 
 var goPackagePatterns = []string{"./cmd/...", "./pkg/...", "./constraints"}
+
+const (
+	minBunScriptTimeout = 3 * time.Minute
+	minBunUATTasksTime  = 5 * time.Minute
+	minBunUATSiteTime   = 10 * time.Minute
+)
 
 type Base struct {
 	Timeout  time.Duration
@@ -39,17 +46,17 @@ func Register(reg *tool.Registry, base Base) error {
 }
 
 func runBunScript(ctx context.Context, timeout time.Duration, repoRoot, dir, script string) (json.RawMessage, error) {
-	return runBunScriptWithOptions(ctx, timeout, repoRoot, dir, script, false)
+	return runBunScriptWithOptions(ctx, atLeastTimeout(timeout, minBunScriptTimeout), repoRoot, dir, script)
 }
 
 func runBrowserUATScript(ctx context.Context, timeout time.Duration, repoRoot, dir, script string) (json.RawMessage, error) {
-	return runBunScriptWithOptions(ctx, timeout, repoRoot, dir, script, true)
+	return runBunScriptWithOptions(ctx, timeout, repoRoot, dir, script)
 }
 
-func runBunScriptWithOptions(ctx context.Context, timeout time.Duration, repoRoot, dir, script string, preferNix bool) (json.RawMessage, error) {
-	if preferNix && repoRoot != "" && os.Getenv("IN_NIX_SHELL") == "" {
+func runBunScriptWithOptions(ctx context.Context, timeout time.Duration, repoRoot, dir, script string) (json.RawMessage, error) {
+	if nixRoot := bunNixRoot(repoRoot, dir); nixRoot != "" {
 		if _, err := exec.LookPath("nix"); err == nil {
-			return runBunScriptInNix(ctx, timeout, repoRoot, dir, script)
+			return runBunScriptInNix(ctx, timeout, nixRoot, dir, script)
 		}
 	}
 	if _, err := exec.LookPath("bun"); err == nil {
@@ -59,6 +66,51 @@ func runBunScriptWithOptions(ctx context.Context, timeout time.Duration, repoRoo
 		return run(ctx, timeout, dir, "bun", "run", script)
 	}
 	return runBunScriptInNix(ctx, timeout, repoRoot, dir, script)
+}
+
+func atLeastTimeout(timeout, minimum time.Duration) time.Duration {
+	if timeout < minimum {
+		return minimum
+	}
+	return timeout
+}
+
+func bunNixRoot(repoRoot, dir string) string {
+	if root := findFlakeRoot(dir); root != "" {
+		return root
+	}
+	if hasFlake(repoRoot) {
+		return repoRoot
+	}
+	return ""
+}
+
+func hasFlake(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, "flake.nix"))
+	return err == nil && !info.IsDir()
+}
+
+func findFlakeRoot(start string) string {
+	if start == "" {
+		return ""
+	}
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		dir = filepath.Clean(start)
+	}
+	for {
+		if hasFlake(dir) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func runBunScriptInNix(ctx context.Context, timeout time.Duration, repoRoot, dir, script string) (json.RawMessage, error) {
@@ -145,9 +197,7 @@ func (t BunUATTasksTool) Run(ctx context.Context, input json.RawMessage) (json.R
 	}
 	_ = json.Unmarshal(input, &req)
 	timeout := t.timeout
-	if timeout < 2*time.Minute {
-		timeout = 2 * time.Minute
-	}
+	timeout = atLeastTimeout(timeout, minBunUATTasksTime)
 	return runBrowserUATScript(ctx, timeout, t.repoRoot, req.Dir, "uat:tasks")
 }
 
@@ -170,9 +220,7 @@ func (t BunUATSiteTool) Run(ctx context.Context, input json.RawMessage) (json.Ra
 	}
 	_ = json.Unmarshal(input, &req)
 	timeout := t.timeout
-	if timeout < 4*time.Minute {
-		timeout = 4 * time.Minute
-	}
+	timeout = atLeastTimeout(timeout, minBunUATSiteTime)
 	return runBrowserUATScript(ctx, timeout, t.repoRoot, req.Dir, "uat:site")
 }
 

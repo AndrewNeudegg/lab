@@ -60,7 +60,7 @@ Do not use `uat:tasks:live` as an agent completion gate unless the operator expl
 
 ## homelabd Review Gate
 
-Local review runs Go tests, web type checks, web build, web unit tests, and isolated browser UAT when the diff touches browser-tested UI paths. Task-page-only diffs run `bun.uat.tasks`; shared UI, shell, route, Playwright, or browser tooling diffs run `bun.uat.site`. Failures block the task and do not restart a worker automatically.
+Local review runs Go tests, web type checks, web build, web unit tests, and isolated browser UAT when the diff touches browser-tested UI paths. Bun-backed review tools enter the repo's Nix dev shell when a `flake.nix` is present, matching worker commands such as `nix develop -c bun run --cwd web uat:site` and preserving Playwright browser libraries. Task-page-only diffs run `bun.uat.tasks`; shared UI, shell, route, Playwright, or browser tooling diffs run `bun.uat.site`. Failures block the task and do not restart a worker automatically.
 
 Remote review only acknowledges the remote result and moves the task to verification. The remote agent's final summary must state the exact validation commands, ports, URLs, and browser environment used on that remote machine.
 

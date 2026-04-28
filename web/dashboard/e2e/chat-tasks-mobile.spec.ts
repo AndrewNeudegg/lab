@@ -117,9 +117,9 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await mockTaskApi(page);
   await page.goto('/tasks');
 
-	const rows = page.locator('.task-row');
-	const queue = page.locator('.task-pane');
-	const detail = page.locator('.workbench');
+  const rows = page.getByRole('region', { name: 'Task list' }).getByRole('button');
+  const queue = page.locator('.task-pane');
+  const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
   await expect(rows).toHaveCount(1);
@@ -167,7 +167,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   );
   await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
-	await page.getByRole('button', { name: 'Back to queue' }).click();
+  await page.getByRole('button', { name: 'Back to queue' }).click();
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
   await expect(rows).toHaveCount(1);

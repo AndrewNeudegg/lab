@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { onMount } from 'svelte';
   import { docsURL, Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
@@ -35,6 +36,7 @@
   const preferredDocSlugs = new Set(preferredDocOrder);
 
   let search = '';
+  let jumpSelect: HTMLSelectElement;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -75,16 +77,58 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  const openSelectedDoc = (event: Event) => {
-    const slug = (event.currentTarget as HTMLSelectElement).value;
-    if (slug && slug !== selectedSlug) {
+  let requestedSlug = '';
+  $: if (requestedSlug === selectedSlug) {
+    requestedSlug = '';
+  }
+  const openSelectedDoc = (slug: string) => {
+    if (slug && slug !== selectedSlug && slug !== requestedSlug) {
+      requestedSlug = slug;
       void goto(docsURL(slug), { keepFocus: true, noScroll: true });
     }
   };
+
+  onMount(() => {
+    jumpSelect.dataset.docsEnhanced = 'true';
+    const handleJump = () => openSelectedDoc(jumpSelect.value);
+    jumpSelect.addEventListener('input', handleJump);
+    jumpSelect.addEventListener('change', handleJump);
+    return () => {
+      delete jumpSelect.dataset.docsEnhanced;
+      jumpSelect.removeEventListener('input', handleJump);
+      jumpSelect.removeEventListener('change', handleJump);
+    };
+  });
 </script>
 
 <svelte:head>
   <title>{selectedDoc.title} - Docs - homelabd</title>
+  <script>
+    (() => {
+      if (window.__homelabDocsJumpFallback) {
+        return;
+      }
+      window.__homelabDocsJumpFallback = true;
+
+      const docsPath = (slug) => slug.split('/').map(encodeURIComponent).join('/');
+      const openDocsJump = (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLSelectElement) || target.dataset.docsJump !== 'true') {
+          return;
+        }
+        if (target.dataset.docsEnhanced === 'true') {
+          return;
+        }
+        const slug = target.value.trim();
+        if (slug) {
+          window.location.assign(`/docs/${docsPath(slug)}`);
+        }
+      };
+
+      document.addEventListener('input', openDocsJump);
+      document.addEventListener('change', openDocsJump);
+    })();
+  </script>
 </svelte:head>
 
 <Navbar title="Docs" subtitle="Library" current="/docs" />
@@ -100,9 +144,9 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" value={selectedSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select id="docs-jump" bind:this={jumpSelect} data-docs-jump="true" aria-label="Jump to document">
           {#each navigationDocs as doc}
-            <option value={doc.slug}>{doc.title}</option>
+            <option value={doc.slug} selected={doc.slug === selectedSlug}>{doc.title}</option>
           {/each}
         </select>
       </div>

@@ -5,6 +5,7 @@ import {
   defaultTerminalTabTitle,
   endpoint,
   normaliseStoredTerminalTabs,
+  terminalReconnectDelay,
   terminalBaseFromAgent,
   terminalStatusLabel,
   websocketEndpoint
@@ -42,7 +43,14 @@ describe('terminal client helpers', () => {
   it('reports concise connection status labels', () => {
     expect(terminalStatusLabel(true, false)).toBe('Connected');
     expect(terminalStatusLabel(false, true)).toBe('Starting');
+    expect(terminalStatusLabel(false, true, true)).toBe('Reconnecting');
     expect(terminalStatusLabel(false, false)).toBe('Disconnected');
+  });
+
+  it('backs off reconnect attempts without growing unbounded', () => {
+    expect(terminalReconnectDelay(0)).toBe(500);
+    expect(terminalReconnectDelay(1)).toBe(1000);
+    expect(terminalReconnectDelay(20)).toBe(10000);
   });
 
   it('builds local and online remote terminal targets', () => {

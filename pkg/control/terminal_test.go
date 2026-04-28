@@ -13,7 +13,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -171,6 +173,61 @@ func TestNormalizeTerminalSizeClampsUnsafeValues(t *testing.T) {
 	size = normalizeTerminalSize(terminalSize{Cols: 1, Rows: 1})
 	if size.Cols != 20 || size.Rows != 5 {
 		t.Fatalf("minimum normalized size = %+v", size)
+	}
+}
+
+func TestTerminalSessionSubscribeSinceReplaysOnlyNewEvents(t *testing.T) {
+	session := &terminalSession{
+		exitCode:  -1,
+		listeners: make(map[chan terminalEvent]struct{}),
+	}
+	session.broadcast(terminalEvent{Type: "output", Data: "old"})
+	session.broadcast(terminalEvent{Type: "output", Data: "new"})
+
+	events := session.subscribeSince(1)
+	defer session.unsubscribe(events)
+	select {
+	case event := <-events:
+		if event.Data != "new" || event.Seq != 2 {
+			t.Fatalf("first replayed event = %+v, want only seq 2 output", event)
+		}
+	default:
+		t.Fatalf("subscribeSince did not replay newer output")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("unexpected extra replayed event: %+v", event)
+	default:
+	}
+
+	session.close(0)
+	closedEvents := session.subscribeSince(2)
+	event, ok := <-closedEvents
+	if !ok || event.Type != "exit" || event.Seq != 3 {
+		t.Fatalf("closed subscribe event = %+v ok=%v, want seq 3 exit", event, ok)
+	}
+	if _, ok := <-closedEvents; ok {
+		t.Fatalf("closed subscribe channel stayed open")
+	}
+}
+
+func TestTerminalStartupCommandUsesRunShellBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/usr/bin/env bash\nexec /bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := terminalCommand(dir, "/bin/sh")
+	if cmd.Path != "./run.sh" || strings.Join(cmd.Args, " ") != "./run.sh shell" {
+		t.Fatalf("terminal command = path %q args %q, want ./run.sh shell", cmd.Path, cmd.Args)
+	}
+	if got := terminalStartupCommand(dir, "/bin/sh"); got != "'./run.sh' shell" {
+		t.Fatalf("tmux startup command = %q, want ./run.sh shell", got)
+	}
+
+	t.Setenv("HOMELAB_WEB_TERMINAL_SKIP_RUN_SH_SHELL", "1")
+	if got := terminalStartupCommand(dir, "/bin/sh"); got == "'./run.sh' shell" {
+		t.Fatalf("startup command used run.sh despite skip env")
 	}
 }
 
@@ -372,6 +429,7 @@ func skipIfNoPTY(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PTY tests are unix-only")
 	}
+	t.Setenv("HOMELAB_WEB_TERMINAL_SKIP_RUN_SH_SHELL", "1")
 }
 
 func skipIfNoTmux(t *testing.T) {

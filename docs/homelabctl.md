@@ -162,7 +162,7 @@ go run ./cmd/homelabctl events -limit 20 2026-04-26
 
 ## Terminal Commands
 
-The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page.
+The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page. Starting a session runs `./run.sh shell` first when the target working directory contains an executable `run.sh`; otherwise it opens the configured interactive shell.
 
 Create a shell session:
 
@@ -177,7 +177,7 @@ Show session metadata and reattach homelabd to an existing persistent terminal s
 go run ./cmd/homelabctl terminal show term_123
 ```
 
-Stream session output:
+Stream session output. The underlying event stream emits SSE ids so clients can resume with `GET /terminal/sessions/{id}/events?after=N` or the `Last-Event-ID` header after a disconnect:
 
 ```bash
 go run ./cmd/homelabctl terminal stream term_123
@@ -230,7 +230,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `GET /events?date=YYYY-MM-DD&limit=N`
 - `POST /terminal/sessions`
 - `GET /terminal/sessions/{id}`
-- `GET /terminal/sessions/{id}/events`
+- `GET /terminal/sessions/{id}/events`, including optional `after=N` resume support
 - `POST /terminal/sessions/{id}/input`
 - `POST /terminal/sessions/{id}/signal`
 - `DELETE /terminal/sessions/{id}`

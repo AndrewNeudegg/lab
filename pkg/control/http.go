@@ -724,7 +724,7 @@ func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request,
 	rw.Header().Set("Cache-Control", "no-cache")
 	rw.Header().Set("Connection", "keep-alive")
 
-	events := session.subscribe()
+	events := session.subscribeSince(terminalEventStreamAfter(req))
 	defer session.unsubscribe(events)
 
 	fmt.Fprintf(rw, "event: ready\ndata: {}\n\n")
@@ -741,6 +741,9 @@ func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request,
 			if err != nil {
 				continue
 			}
+			if event.Seq > 0 {
+				fmt.Fprintf(rw, "id: %d\n", event.Seq)
+			}
 			fmt.Fprintf(rw, "event: %s\ndata: %s\n\n", event.Type, b)
 			flusher.Flush()
 			if event.Type == "exit" {
@@ -748,6 +751,19 @@ func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request,
 			}
 		}
 	}
+}
+
+func terminalEventStreamAfter(req *http.Request) int64 {
+	for _, value := range []string{req.URL.Query().Get("after"), req.Header.Get("Last-Event-ID")} {
+		if value == "" {
+			continue
+		}
+		after, err := strconv.ParseInt(value, 10, 64)
+		if err == nil && after > 0 {
+			return after
+		}
+	}
+	return 0
 }
 
 func writeJSON(rw http.ResponseWriter, status int, v any) {

@@ -10,6 +10,7 @@
     defaultTerminalGeometry,
     endpoint,
     normaliseStoredTerminalTabs,
+    terminalReconnectDelay,
     terminalStatusLabel,
     terminalTabsStorageKey,
     websocketEndpoint,
@@ -48,6 +49,7 @@
 
   type TerminalEvent = {
     type: string;
+    seq?: number;
     data?: string;
     code?: number;
   };
@@ -86,8 +88,14 @@
   let lastResize = '';
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let socketFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let lifecycleFitTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectAttempt = 0;
+  let reconnecting = false;
+  let destroyed = false;
+  const lastEventSeqByTab = new Map<string, number>();
 
-  $: statusLabel = terminalStatusLabel(connected, loading);
+  $: statusLabel = terminalStatusLabel(connected, loading, reconnecting);
   $: terminalTargets = buildTerminalTargets(agents, apiBase);
   $: selectedTarget = terminalTargets.find((target) => target.id === selectedTargetId) || terminalTargets[0];
   $: if (terminalTargets.length > 0 && !terminalTargets.some((target) => target.id === selectedTargetId)) {
@@ -121,6 +129,31 @@
 
   const writeNotice = (message: string) => {
     terminal?.writeln(`\r\n\x1b[90m${message}\x1b[0m`);
+  };
+
+  const rememberEventSeq = (tabId: string, event: TerminalEvent) => {
+    if (typeof event.seq !== 'number' || !Number.isFinite(event.seq)) {
+      return;
+    }
+    lastEventSeqByTab.set(tabId, Math.max(lastEventSeqByTab.get(tabId) || 0, event.seq));
+  };
+
+  const clearReconnect = () => {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+    reconnectAttempt = 0;
+    reconnecting = false;
+  };
+
+  const scheduleTerminalFit = () => {
+    if (!fitAddon || typeof window === 'undefined') {
+      return;
+    }
+    window.clearTimeout(lifecycleFitTimer);
+    window.requestAnimationFrame(() => {
+      fitTerminal();
+      lifecycleFitTimer = window.setTimeout(fitTerminal, 250);
+    });
   };
 
   const makeTabId = () => {
@@ -257,7 +290,7 @@
     }
     const tab = activeTab;
     const currentSession = tab?.session;
-    if (eventSource && tab && currentSession) {
+    if (eventSource && connected && tab && currentSession) {
       void requestForTab(tab, `/terminal/sessions/${encodeURIComponent(currentSession.id)}/input`, {
         method: 'POST',
         body: JSON.stringify({ data })
@@ -273,25 +306,86 @@
     if (typeof window !== 'undefined') {
       window.clearTimeout(socketFallbackTimer);
     }
-    socket?.close();
+    const current = socket;
     socket = undefined;
+    if (!current) {
+      return;
+    }
+    current.onopen = null;
+    current.onmessage = null;
+    current.onerror = null;
+    current.onclose = null;
+    current.close();
   };
 
   const closeEventSource = () => {
-    eventSource?.close();
+    const current = eventSource;
     eventSource = undefined;
+    if (!current) {
+      return;
+    }
+    current.onopen = null;
+    current.onerror = null;
+    current.close();
   };
 
   const disconnectTransport = () => {
+    clearReconnect();
     closeSocket();
     closeEventSource();
     connected = false;
+  };
+
+  const scheduleReconnect = (tabId: string, sessionId: string) => {
+    if (destroyed || typeof window === 'undefined') {
+      return;
+    }
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (activeTabId !== tabId || tab?.session?.id !== sessionId) {
+      return;
+    }
+    connected = false;
+    reconnecting = true;
+    loading = false;
+    error = 'Terminal disconnected. Reconnecting...';
+    window.clearTimeout(reconnectTimer);
+    const delay = terminalReconnectDelay(reconnectAttempt);
+    reconnectAttempt += 1;
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = undefined;
+      void reconnectActiveTab(tabId, sessionId);
+    }, delay);
+  };
+
+  const reconnectActiveTab = async (tabId: string, sessionId: string) => {
+    if (destroyed) {
+      return;
+    }
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (activeTabId !== tabId || tab?.session?.id !== sessionId) {
+      return;
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      scheduleReconnect(tabId, sessionId);
+      return;
+    }
+    try {
+      const resumed = await requestForTab<TerminalSession>(tab, `/terminal/sessions/${encodeURIComponent(sessionId)}`);
+      updateTab(tab.id, (current) => ({ ...current, session: resumed }));
+      const geometry = currentGeometry();
+      lastResize = `${geometry.cols}x${geometry.rows}`;
+      connectTransport(tab, resumed, false);
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to reconnect terminal.';
+      scheduleReconnect(tabId, sessionId);
+    }
   };
 
   const handleTerminalEvent = (event: TerminalEvent, tabId: string, sessionId: string) => {
     if (activeTabId !== tabId || activeTab?.session?.id !== sessionId) {
       return;
     }
+    rememberEventSeq(tabId, event);
     switch (event.type) {
       case 'output':
         if (event.data) {
@@ -311,28 +405,40 @@
     }
   };
 
-  const connectEventStream = (tab: TerminalTab, nextSession: TerminalSession) => {
+  const connectEventStream = (tab: TerminalTab, nextSession: TerminalSession, replayHistory = true) => {
     closeSocket();
     closeEventSource();
-    eventSource = new EventSource(endpoint(tab.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/events`));
-    eventSource.onopen = () => {
+    const after = replayHistory ? 0 : lastEventSeqByTab.get(tab.id) || 0;
+    const streamPath = `/terminal/sessions/${encodeURIComponent(nextSession.id)}/events${after > 0 ? `?after=${after}` : ''}`;
+    const source = new EventSource(endpoint(tab.apiBase || apiBase, streamPath));
+    eventSource = source;
+    source.onopen = () => {
+      if (eventSource !== source) {
+        return;
+      }
       if (activeTabId !== tab.id) {
         return;
       }
+      clearReconnect();
       connected = true;
       error = '';
       terminal?.focus();
-      fitTerminal();
+      scheduleTerminalFit();
     };
-    eventSource.onerror = () => {
+    source.onerror = () => {
+      if (eventSource !== source) {
+        return;
+      }
       if (activeTabId !== tab.id) {
         return;
       }
+      source.close();
+      eventSource = undefined;
       connected = false;
-      error = 'Terminal event stream disconnected.';
+      scheduleReconnect(tab.id, nextSession.id);
     };
     for (const eventType of ['output', 'exit', 'error']) {
-      eventSource.addEventListener(eventType, (message) => {
+      source.addEventListener(eventType, (message) => {
         try {
           handleTerminalEvent(JSON.parse((message as MessageEvent).data) as TerminalEvent, tab.id, nextSession.id);
         } catch {
@@ -346,24 +452,32 @@
     closeSocket();
     closeEventSource();
     const url = websocketEndpoint(tab.apiBase || apiBase, `/terminal/sessions/${encodeURIComponent(nextSession.id)}/ws`, window.location);
-    socket = new WebSocket(url);
-    socket.binaryType = 'arraybuffer';
+    const nextSocket = new WebSocket(url);
+    socket = nextSocket;
+    nextSocket.binaryType = 'arraybuffer';
     socketFallbackTimer = window.setTimeout(() => {
-      if (socket?.readyState !== WebSocket.OPEN) {
-        connectEventStream(tab, nextSession);
+      if (socket === nextSocket && nextSocket.readyState !== WebSocket.OPEN) {
+        connectEventStream(tab, nextSession, false);
       }
     }, 1000);
-    socket.onopen = () => {
+    nextSocket.onopen = () => {
+      if (socket !== nextSocket) {
+        return;
+      }
       if (activeTabId !== tab.id) {
         return;
       }
       window.clearTimeout(socketFallbackTimer);
+      clearReconnect();
       connected = true;
       error = '';
       terminal?.focus();
-      fitTerminal();
+      scheduleTerminalFit();
     };
-    socket.onmessage = (event) => {
+    nextSocket.onmessage = (event) => {
+      if (socket !== nextSocket) {
+        return;
+      }
       if (activeTabId !== tab.id) {
         return;
       }
@@ -375,16 +489,32 @@
         terminal?.write(String(event.data));
       }
     };
-    socket.onerror = () => {
+    nextSocket.onerror = () => {
+      if (socket !== nextSocket) {
+        return;
+      }
       if (activeTabId === tab.id) {
-        connectEventStream(tab, nextSession);
+        connectEventStream(tab, nextSession, false);
       }
     };
-    socket.onclose = () => {
+    nextSocket.onclose = () => {
+      if (socket !== nextSocket) {
+        return;
+      }
+      socket = undefined;
       if (activeTabId === tab.id && !eventSource) {
         connected = false;
+        scheduleReconnect(tab.id, nextSession.id);
       }
     };
+  };
+
+  const connectTransport = (tab: TerminalTab, nextSession: TerminalSession, replayHistory = true) => {
+    if (typeof EventSource !== 'undefined') {
+      connectEventStream(tab, nextSession, replayHistory);
+      return;
+    }
+    connectSocket(tab, nextSession);
   };
 
   const ensureSession = async (tab: TerminalTab, geometry: TerminalGeometry) => {
@@ -418,9 +548,10 @@
       fitAddon?.fit();
       const geometry = currentGeometry();
       const nextSession = await ensureSession(tab, geometry);
+      lastEventSeqByTab.set(tab.id, 0);
       lastResize = `${geometry.cols}x${geometry.rows}`;
       terminal?.writeln(`\x1b[90m${tab.title || 'Terminal'} · ${tab.targetLabel} · ${nextSession.cwd}\x1b[0m`);
-      connectSocket(tab, nextSession);
+      connectTransport(tab, nextSession, true);
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to connect terminal.';
       writeNotice(`[${error}]`);
@@ -435,6 +566,8 @@
       terminal?.focus();
       return;
     }
+    editingTabId = '';
+    editingTitle = '';
     activeTabId = tabId;
     persistTabs();
     await tick();
@@ -496,6 +629,29 @@
     }
   };
 
+  const recoverActiveTab = () => {
+    scheduleTerminalFit();
+    const tab = activeTab;
+    const currentSession = tab?.session;
+    if (!tab || !currentSession || loading) {
+      return;
+    }
+    if (connected) {
+      sendResize();
+      return;
+    }
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+    reconnecting = true;
+    void reconnectActiveTab(tab.id, currentSession.id);
+  };
+
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      recoverActiveTab();
+    }
+  };
+
   const initialiseTerminal = async () => {
     const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
       import('@xterm/xterm'),
@@ -544,9 +700,16 @@
     resizeObserver = new ResizeObserver(fitTerminal);
     resizeObserver.observe(terminalHost!);
     window.addEventListener('resize', fitTerminal);
+    window.visualViewport?.addEventListener('resize', scheduleTerminalFit);
+    window.visualViewport?.addEventListener('scroll', scheduleTerminalFit);
+    window.addEventListener('online', recoverActiveTab);
+    window.addEventListener('focus', recoverActiveTab);
+    window.addEventListener('pageshow', recoverActiveTab);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
   };
 
   onMount(() => {
+    destroyed = false;
     void Promise.all([initialiseTerminal(), loadAgents()]).then(async () => {
       loadTabs();
       await tick();
@@ -558,10 +721,19 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     if (typeof window !== 'undefined') {
       window.clearTimeout(resizeTimer);
       window.clearTimeout(socketFallbackTimer);
+      window.clearTimeout(reconnectTimer);
+      window.clearTimeout(lifecycleFitTimer);
       window.removeEventListener('resize', fitTerminal);
+      window.visualViewport?.removeEventListener('resize', scheduleTerminalFit);
+      window.visualViewport?.removeEventListener('scroll', scheduleTerminalFit);
+      window.removeEventListener('online', recoverActiveTab);
+      window.removeEventListener('focus', recoverActiveTab);
+      window.removeEventListener('pageshow', recoverActiveTab);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       disconnectTransport();
       persistTabs();
     }
@@ -599,7 +771,7 @@
                 type="button"
                 class="tab-select"
                 aria-current={tab.id === activeTabId ? 'page' : undefined}
-                title={tab.id === activeTabId ? 'Rename tab' : (tab.session?.cwd || tab.targetLabel)}
+                title={tab.id === activeTabId ? 'Rename tab' : `Switch to ${tab.title || 'Terminal'}`}
                 on:click={() => void startRename(tab)}
               >
                 <span>{tab.title || 'Terminal'}</span>
@@ -700,7 +872,11 @@
   .terminal-shell {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh;
+    height: 100svh;
     height: 100dvh;
+    min-height: 100vh;
+    min-height: 100svh;
     min-height: 100dvh;
     overflow: hidden;
   }
@@ -971,8 +1147,13 @@
   }
 
   :global(.terminal-host .xterm) {
+    width: 100%;
     height: 100%;
     padding: 0.25rem;
+  }
+
+  :global(.terminal-host .xterm-screen) {
+    height: 100%;
   }
 
   :global(.terminal-host .xterm-viewport) {
@@ -1016,8 +1197,12 @@
 
   @media (max-width: 760px) {
     .terminal-shell {
+      height: 100vh;
+      height: 100svh;
       height: 100dvh;
-      min-height: 0;
+      min-height: 100vh;
+      min-height: 100svh;
+      min-height: 100dvh;
     }
 
     .terminal-panel {

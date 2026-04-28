@@ -260,7 +260,7 @@
 </svelte:head>
 
 <div class="chat-shell">
-  <Navbar title="Chat" subtitle="homelabd" current="/chat" />
+  <Navbar title="Chat" subtitle="homelabd" current="/chat" taskApiBase={apiBase} />
 
   <main class="chat-card">
     <section class="messages" bind:this={messagesEl} aria-live="polite">

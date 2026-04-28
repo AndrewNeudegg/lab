@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
 const typedMessage = 'mobile input must keep every typed character 12345';
+const taskLoadTimeoutMs = 15_000;
 
 const mockTaskApi = async (page: Page) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
@@ -32,6 +33,17 @@ const mockTaskApi = async (page: Page) => {
     },
     {
       id: 'task_20260426_150100_22222222',
+      title: 'Resolve blocked dashboard check',
+      goal: 'Investigate the failed dashboard check.',
+      status: 'failed',
+      assigned_to: 'codex',
+      priority: 5,
+      created_at: now,
+      updated_at: now,
+      result: 'check failed'
+    },
+    {
+      id: 'task_20260426_150200_22222222',
       title: 'Run dashboard checks',
       goal: 'Run check and browser tests for the dashboard.',
       status: 'running',
@@ -41,7 +53,7 @@ const mockTaskApi = async (page: Page) => {
       updated_at: now
     },
     {
-      id: 'task_20260426_150200_33333333',
+      id: 'task_20260426_150300_33333333',
       title: 'Document mobile task flow',
       goal: 'Update the dashboard documentation for the mobile task queue.',
       status: 'done',
@@ -117,14 +129,27 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await mockTaskApi(page);
   await page.goto('/tasks');
 
-	const rows = page.locator('.task-row');
-	const queue = page.locator('.task-pane');
-	const detail = page.locator('.workbench');
+  const rows = page.locator('.task-row');
+  const queue = page.locator('.task-pane');
+  const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
-  await expect(rows).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: '2 need action' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  await expect(rows).toHaveCount(2, { timeout: taskLoadTimeoutMs });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
+
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await expect(
+    page.getByRole('link', {
+      name: 'Tasks, 1 urgent item, 1 review item need attention'
+    })
+  ).toBeVisible();
+  await expect(page.locator('.mobile-nav .attention-badge.critical')).toHaveText('1');
+  await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('1');
+  await page.getByRole('button', { name: 'Menu' }).click();
 
   const queueMetrics = await page.evaluate(() => {
     const navbar = document.querySelector('.navbar');
@@ -167,10 +192,10 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   );
   await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
-	await page.getByRole('button', { name: 'Back to queue' }).click();
+  await page.getByRole('button', { name: 'Back to queue' }).click();
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
-  await expect(rows).toHaveCount(1);
+  await expect(rows).toHaveCount(2);
   await expect(rows.first()).toBeVisible();
 
   const overflow = await page.evaluate(() => ({

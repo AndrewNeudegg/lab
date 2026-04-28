@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import {
   needsActionCount,
   pendingActionableApprovals,
+  taskAttentionCounts,
+  taskNeedsCriticalAttention,
+  taskNeedsDashboardAttention,
+  taskNeedsDecisionAttention,
   taskRuntimeMs,
   taskInputText,
   taskIsActive,
@@ -45,8 +49,10 @@ const approval = (
 describe('task queue attention logic', () => {
   test('classifies task statuses by operator action needed', () => {
     expect(taskNeedsAttention(task('blocked', 'blocked'))).toBe(true);
+    expect(taskNeedsCriticalAttention(task('blocked', 'blocked'))).toBe(true);
     expect(taskNeedsAttention(task('conflict', 'conflict_resolution'))).toBe(true);
     expect(taskNeedsAttention(task('review', 'ready_for_review'))).toBe(true);
+    expect(taskNeedsDecisionAttention(task('review', 'ready_for_review'))).toBe(true);
     expect(taskNeedsAttention(task('running', 'running'))).toBe(false);
     expect(taskIsActive(task('queued', 'queued'))).toBe(true);
     expect(taskIsTerminal(task('done', 'done'))).toBe(true);
@@ -84,6 +90,29 @@ describe('task queue attention logic', () => {
     const approvals = [approval('approval_active', 'task_running')];
 
     expect(needsActionCount(tasks, approvals)).toBe(2);
+  });
+
+  test('splits dashboard attention into red and amber navbar counts', () => {
+    const tasks = [
+      task('task_failed', 'failed'),
+      task('task_review', 'ready_for_review'),
+      task('task_running', 'running'),
+      task('task_done', 'done'),
+      {
+        ...task('task_waiting_on_graph', 'blocked'),
+        parent_id: 'task_root',
+        graph_phase: 'implement',
+        blocked_by: ['task_design']
+      }
+    ];
+    const approvals = [
+      approval('approval_running', 'task_running'),
+      approval('approval_done', 'task_done'),
+      approval('approval_external', undefined)
+    ];
+
+    expect(taskNeedsDashboardAttention(tasks[4], approvals)).toBe(false);
+    expect(taskAttentionCounts(tasks, approvals)).toEqual({ red: 1, amber: 3, total: 4 });
   });
 
   test('calculates runtime from task lifecycle timestamps', () => {

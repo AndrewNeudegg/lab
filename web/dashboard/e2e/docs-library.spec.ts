@@ -49,14 +49,18 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Chat Commands', exact: true })).toBeVisible();
   await expect(page.locator('.content pre code').first()).toContainText('reflect on our recent interaction');
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
+  await page.waitForLoadState('networkidle');
 
   await page.getByRole('button', { name: 'Menu' }).click();
   await expect(
     page.getByRole('navigation', { name: 'Primary mobile' }).getByRole('link', { name: 'Docs' })
   ).toHaveAttribute('aria-current', 'page');
   await page.getByRole('button', { name: 'Menu' }).click();
+  await expect(page.getByRole('navigation', { name: 'Primary mobile' })).not.toBeVisible();
 
-  await page.getByRole('combobox', { name: 'Jump to document' }).selectOption('dashboard');
+  const jump = page.getByRole('combobox', { name: 'Jump to document' });
+  await jump.selectOption('dashboard');
+  await jump.dispatchEvent('change');
   await expect(page).toHaveURL(/\/docs\/dashboard$/);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   await expect(page.locator('#docs-list a[aria-current="page"]')).toContainText('Dashboard');

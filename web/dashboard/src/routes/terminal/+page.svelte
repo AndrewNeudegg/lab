@@ -819,7 +819,7 @@
 </svelte:head>
 
 <div class="terminal-shell">
-  <Navbar title="Terminal" subtitle="homelabd" current="/terminal" />
+  <Navbar title="Terminal" subtitle="homelabd" current="/terminal" taskApiBase={apiBase} />
 
   <main class="terminal-panel">
     <header class="terminal-header">

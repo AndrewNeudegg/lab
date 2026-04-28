@@ -241,12 +241,29 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.clippedButtons, JSON.stringify(metrics)).toEqual([]);
 };
 
-const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
-  if (mobile && route !== '/') {
+const expectTaskNavAttention = async (page: Page, mobile: boolean) => {
+  const taskLinkName = 'Tasks, 1 review item needs attention';
+  if (mobile) {
+    await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('1');
     await page.getByRole('button', { name: 'Menu' }).click();
     await expect(page.getByRole('navigation', { name: 'Primary mobile' })).toBeVisible();
+    await expect(
+      page
+        .getByRole('navigation', { name: 'Primary mobile' })
+        .getByRole('link', { name: taskLinkName })
+    ).toBeVisible();
+    await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('1');
     await page.getByRole('button', { name: 'Menu' }).click();
+    return;
   }
+  await expect(
+    page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: taskLinkName })
+  ).toBeVisible();
+  await expect(page.locator('.desktop-nav .attention-badge.warning')).toHaveText('1');
+};
+
+const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
+  await expectTaskNavAttention(page, mobile);
   if (route === '/' || route === '/chat') {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();

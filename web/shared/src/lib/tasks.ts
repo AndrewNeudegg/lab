@@ -11,9 +11,30 @@ const attentionStatuses = new Set([
 
 const activeStatuses = new Set(['queued', 'running']);
 const terminalStatuses = new Set(['done', 'cancelled']);
+const criticalAttentionStatuses = new Set(['blocked', 'conflict_resolution', 'failed']);
+const decisionAttentionStatuses = new Set([
+  'ready_for_review',
+  'awaiting_approval',
+  'awaiting_verification'
+]);
+
+export interface TaskAttentionCounts {
+  red: number;
+  amber: number;
+  total: number;
+}
+
+type TaskAttentionInput = Pick<HomelabdTask, 'id' | 'status'> &
+  Partial<Pick<HomelabdTask, 'parent_id' | 'graph_phase' | 'blocked_by'>>;
 
 export const taskNeedsAttention = (task: Pick<HomelabdTask, 'status'>) =>
   attentionStatuses.has(task.status);
+
+export const taskNeedsCriticalAttention = (task: Pick<HomelabdTask, 'status'>) =>
+  criticalAttentionStatuses.has(task.status);
+
+export const taskNeedsDecisionAttention = (task: Pick<HomelabdTask, 'status'>) =>
+  decisionAttentionStatuses.has(task.status);
 
 export const taskIsActive = (task: Pick<HomelabdTask, 'status'>) => activeStatuses.has(task.status);
 
@@ -167,6 +188,55 @@ export const taskNeedsQueueAction = (
   task: Pick<HomelabdTask, 'id' | 'status'>,
   approvals: HomelabdApproval[]
 ) => taskNeedsAttention(task) || taskHasActionableApproval(task, approvals);
+
+const taskIsGraphParent = (task: TaskAttentionInput) => task.graph_phase === 'root' && !task.parent_id;
+
+const taskIsBlockedByGraphDependency = (task: TaskAttentionInput) =>
+  task.status === 'blocked' &&
+  Boolean(task.parent_id) &&
+  Boolean(task.graph_phase) &&
+  Boolean(task.blocked_by?.length);
+
+export const taskNeedsDashboardAttention = (
+  task: TaskAttentionInput,
+  approvals: HomelabdApproval[]
+) => {
+  if (taskHasActionableApproval(task, approvals)) {
+    return true;
+  }
+  if (taskIsGraphParent(task) || taskIsBlockedByGraphDependency(task)) {
+    return false;
+  }
+  return taskNeedsQueueAction(task, approvals);
+};
+
+export const taskAttentionCounts = (
+  tasks: TaskAttentionInput[],
+  approvals: HomelabdApproval[]
+): TaskAttentionCounts => {
+  const actionableTaskIDs = new Set<string>();
+  const counts = tasks.reduce(
+    (next, task) => {
+      if (!taskNeedsDashboardAttention(task, approvals)) {
+        return next;
+      }
+      actionableTaskIDs.add(task.id);
+      if (taskNeedsCriticalAttention(task)) {
+        next.red += 1;
+      } else {
+        next.amber += 1;
+      }
+      return next;
+    },
+    { red: 0, amber: 0, total: 0 }
+  );
+
+  counts.amber += pendingActionableApprovals(approvals, tasks).filter(
+    (approval) => !approval.task_id || !actionableTaskIDs.has(approval.task_id)
+  ).length;
+  counts.total = counts.red + counts.amber;
+  return counts;
+};
 
 export const needsActionCount = (
   tasks: Pick<HomelabdTask, 'id' | 'status'>[],

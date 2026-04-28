@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
@@ -78,10 +79,11 @@
   $: jumpSlug = selectedSlug;
 
   const openSelectedDoc = (event: Event) => {
-    const slug = (event.currentTarget as HTMLSelectElement).value;
+    const slug =
+      event.currentTarget instanceof HTMLSelectElement ? event.currentTarget.value : jumpSlug;
 
     if (slug && slug !== selectedSlug) {
-      window.location.assign(`/docs/${slug}`);
+      void goto(`/docs/${slug}`);
     }
   };
 </script>
@@ -103,7 +105,12 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:value={jumpSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select
+          id="docs-jump"
+          bind:value={jumpSlug}
+          on:change={openSelectedDoc}
+          aria-label="Jump to document"
+        >
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}

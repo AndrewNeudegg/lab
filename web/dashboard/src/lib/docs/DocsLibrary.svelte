@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { Markdown, Navbar } from '@homelab/shared';
+  import { goto } from '$app/navigation';
+  import { tick } from 'svelte';
+  import { docsURL, Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
   export let docs: DocsEntry[] = [];
@@ -35,6 +37,7 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
+  let selectedSlugSnapshot = selectedSlug;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -75,13 +78,16 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: jumpSlug = selectedSlug;
+  $: if (selectedSlug !== selectedSlugSnapshot) {
+    selectedSlugSnapshot = selectedSlug;
+    jumpSlug = selectedSlug;
+  }
 
-  const openSelectedDoc = (event: Event) => {
-    const slug = (event.currentTarget as HTMLSelectElement).value;
-
+  const openSelectedDoc = async () => {
+    await tick();
+    const slug = jumpSlug;
     if (slug && slug !== selectedSlug) {
-      window.location.assign(`/docs/${slug}`);
+      void goto(docsURL(slug), { keepFocus: true, noScroll: true });
     }
   };
 </script>
@@ -103,7 +109,7 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:value={jumpSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select id="docs-jump" bind:value={jumpSlug} on:change={() => void openSelectedDoc()} aria-label="Jump to document">
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}
@@ -132,7 +138,7 @@
                 {#each group.docs as doc}
                   <a
                     class:selected={doc.slug === selectedSlug}
-                    href={`/docs/${doc.slug}`}
+                    href={docsURL(doc.slug)}
                     aria-current={doc.slug === selectedSlug ? 'page' : undefined}
                   >
                     <span class="doc-title">{doc.title}</span>
@@ -176,14 +182,14 @@
       {#if previousDoc || nextDoc}
         <nav class="doc-pagination" aria-label="Document pagination">
           {#if previousDoc}
-            <a class="previous" href={`/docs/${previousDoc.slug}`}>
+            <a class="previous" href={docsURL(previousDoc.slug)}>
               <span>Previous</span>
               <strong>{previousDoc.title}</strong>
             </a>
           {/if}
 
           {#if nextDoc}
-            <a class="next" href={`/docs/${nextDoc.slug}`}>
+            <a class="next" href={docsURL(nextDoc.slug)}>
               <span>Next</span>
               <strong>{nextDoc.title}</strong>
             </a>

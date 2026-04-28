@@ -226,7 +226,7 @@ test('terminal mobile accepts direct typing and control keys without horizontal 
   await page.goto('/terminal');
   await expect(page.getByText('Operator PTY')).toHaveCount(0);
   await expect(page.getByText('Click in the terminal and type normally')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Terminal 1', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Terminal 1', exact: true })).toBeVisible();
   await expect(page.locator('.xterm')).toBeVisible();
 
   await page.locator('.xterm').click();
@@ -284,30 +284,39 @@ test('terminal tabs can be renamed, added, closed, and reattached after reload',
 
   await page.goto('/terminal');
   await expect(page.locator('.xterm')).toBeVisible();
-  await page.getByRole('button', { name: 'Terminal 1', exact: true }).click();
+  await page.getByRole('link', { name: 'Terminal 1', exact: true }).click();
   await page.getByLabel('Rename terminal tab').fill('Ops');
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('button', { name: 'Ops', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Ops', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Add terminal tab' }).click();
-  await expect(page.getByRole('button', { name: 'Terminal 2', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Terminal 2', exact: true })).toBeVisible();
   await expect.poll(() => state.created).toBe(2);
+  await expect(page).toHaveURL(/\/terminal\?session=term_test_2$/);
 
-  await page.getByRole('button', { name: 'Ops', exact: true }).click();
+  await page.goBack();
+  await expect(page.getByRole('link', { name: 'Ops', exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.getByRole('link', { name: 'Terminal 2', exact: true }).click();
+  await expect(page).toHaveURL(/\/terminal\?session=term_test_2$/);
+  await expect(page.getByRole('link', { name: 'Terminal 2', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  await page.getByRole('link', { name: 'Ops', exact: true }).click();
   await expect(page.getByLabel('Rename terminal tab')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Ops', exact: true })).toHaveAttribute('aria-current', 'page');
-  await page.getByRole('button', { name: 'Ops', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Ops', exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.getByRole('link', { name: 'Ops', exact: true }).click();
   await expect(page.getByLabel('Rename terminal tab')).toBeVisible();
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'Terminal 2', exact: true }).click();
+  await page.getByRole('link', { name: 'Terminal 2', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Terminal 2', exact: true })).toHaveAttribute('aria-current', 'page');
 
   await page.getByRole('button', { name: 'Close Terminal 2' }).click();
-  await expect(page.getByRole('button', { name: 'Terminal 2', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Terminal 2', exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/terminal\?session=term_test$/);
   expect(state.deleted).toContain('term_test_2');
 
   await page.reload();
   await expect(page.locator('.xterm')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Ops', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Ops', exact: true })).toBeVisible();
   await expect.poll(() => state.sessionGets).toBeGreaterThan(0);
 
   const eventSources = await page.evaluate(() => window.__terminalEventSources.map((source) => source.url));

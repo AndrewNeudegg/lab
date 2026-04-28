@@ -551,6 +551,10 @@
     }
 
     .mobile-nav {
+      display: none;
+    }
+
+    .mobile-menu[open] .mobile-nav {
       display: grid;
     }
   }

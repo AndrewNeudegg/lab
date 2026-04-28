@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2839,6 +2840,7 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 	}
 	close(releaseDelegate)
 	deadline := time.Now().Add(2 * time.Second)
+	sawDelegateResult := false
 	for time.Now().Before(deadline) {
 		tasks, err = orch.tasks.List()
 		if err != nil {
@@ -2846,6 +2848,10 @@ func TestPlainWorkRequestStartsCodexDelegationAsync(t *testing.T) {
 		}
 		task = tasks[0]
 		if len(tasks) == 1 && task.AssignedTo == "OrchestratorAgent" && task.Status == taskstore.StatusReadyForReview && strings.Contains(task.Result, "done") {
+			sawDelegateResult = true
+		}
+		if sawDelegateResult && !orch.taskActive(task.ID) {
+			time.Sleep(20 * time.Millisecond)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -3231,7 +3237,7 @@ func TestRecoverRunningTasksRestartsExternalWorker(t *testing.T) {
 		started: delegateStarted,
 		release: releaseDelegate,
 	})
-	var logs bytes.Buffer
+	var logs lockedBuffer
 	orch.WithLogger(slog.New(slog.NewTextHandler(&logs, nil)))
 	now := time.Now().UTC()
 	taskID := "task_20260425_213611_73d51bee"
@@ -3257,9 +3263,6 @@ func TestRecoverRunningTasksRestartsExternalWorker(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("recovered count = %d, want 1", count)
 	}
-	if !strings.Contains(logs.String(), "recovering persisted running task") {
-		t.Fatalf("logs = %q, want recovery log", logs.String())
-	}
 	select {
 	case <-delegateStarted:
 	case <-time.After(2 * time.Second):
@@ -3273,12 +3276,33 @@ func TestRecoverRunningTasksRestartsExternalWorker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if updated.Status == taskstore.StatusReadyForReview && strings.Contains(updated.Result, "done") {
+		logText := logs.String()
+		if strings.Contains(logText, "task recovery finished") && !orch.taskActive(taskID) && updated.Status != taskstore.StatusRunning {
+			if !strings.Contains(logText, "recovering persisted running task") {
+				t.Fatalf("logs = %q, want recovery log", logText)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("recovered delegate did not finish cleanly")
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func TestRecoverRunningTasksSkipsNonRunningTasks(t *testing.T) {

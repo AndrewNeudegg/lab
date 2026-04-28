@@ -204,7 +204,8 @@
 
   onMount(() => {
     messages = loadStoredMessages();
-    draft = readStoredChatDraft();
+    draft = inputEl?.value || readStoredChatDraft();
+    persistChatDraft(draft);
     messageId = messages.length;
     scrollMessages();
     focusInput();

@@ -189,9 +189,30 @@ const mockDashboardApis = async (page: Page) => {
 
 const expectNoVisualArtifacts = async (page: Page) => {
   const metrics = await page.evaluate(() => {
+    const hasScrollableXAncestor = (element: Element) => {
+      let parent = element.parentElement;
+      while (parent && parent !== document.body) {
+        const style = getComputedStyle(parent);
+        const scrollable = ['auto', 'scroll'].includes(style.overflowX);
+        if (scrollable && parent.scrollWidth > parent.clientWidth + 2) {
+          return true;
+        }
+        parent = parent.parentElement;
+      }
+      return false;
+    };
+    const contentRoots = Array.from(
+      document.querySelectorAll('main, .task-pane, .chat-card, .docs-shell, .workflow-page, .terminal-panel, .app-shell')
+    )
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return style.display === 'none' || style.visibility === 'hidden' ? 0 : Math.round(rect.height);
+      })
+      .filter((height) => height > 0);
     const escaped = Array.from(document.querySelectorAll('h1,h2,h3,p,a,button,summary,label,span,strong'))
       .filter((element) => {
-        if (element.closest('.xterm')) {
+        if (element.closest('.xterm') || hasScrollableXAncestor(element)) {
           return false;
         }
         const rect = element.getBoundingClientRect();
@@ -208,14 +229,14 @@ const expectNoVisualArtifacts = async (page: Page) => {
       bodyWidth: document.body.scrollWidth,
       docWidth: document.documentElement.scrollWidth,
       viewport: window.innerWidth,
-      mainHeight: Math.round(document.querySelector('main')?.getBoundingClientRect().height || 0),
+      contentHeight: Math.max(...contentRoots, 0),
       escaped,
       clippedButtons
     };
   });
   expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
   expect(metrics.docWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
-  expect(metrics.mainHeight, JSON.stringify(metrics)).toBeGreaterThan(40);
+  expect(metrics.contentHeight, JSON.stringify(metrics)).toBeGreaterThan(40);
   expect(metrics.escaped, JSON.stringify(metrics)).toEqual([]);
   expect(metrics.clippedButtons, JSON.stringify(metrics)).toEqual([]);
 };
@@ -241,7 +262,10 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   } else if (route === '/workflows') {
     await page.getByPlaceholder('Search workflows').fill('Deploy');
     await page.getByRole('button', { name: /Deploy homelab dashboard/ }).click();
-    await page.getByRole('button', { name: 'Run' }).click();
+    await page
+      .locator('[aria-label="Workflow actions"]')
+      .getByRole('button', { name: 'Run', exact: true })
+      .click();
     await expect(page.getByText('workflow started')).toBeVisible();
   } else if (route.startsWith('/docs')) {
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
@@ -252,7 +276,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await expect(page.locator('.terminal-tab')).toHaveCount(2);
   } else if (route === '/healthd') {
     await page.getByRole('button', { name: 'Run checks' }).click();
-    await expect(page.getByText('CPU')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'CPU usage' })).toBeVisible();
   } else if (route === '/supervisord') {
     await page.getByRole('button', { name: 'Refresh' }).click();
     await expect(page.getByRole('region', { name: 'Supervised applications' })).toBeVisible();

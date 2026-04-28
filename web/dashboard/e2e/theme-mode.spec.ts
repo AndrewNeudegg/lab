@@ -335,15 +335,18 @@ const themePages: ThemePage[] = [
       '.task-pane',
       '.triage button',
       '.task-row.selected',
-      '.task-record',
+      '.record-header',
       '.decision-panel'
     ],
     async ready(page) {
-      await expect(page.getByRole('heading', { name: 'Task queue' })).toBeVisible();
-      await expect(page.getByText('Audit dashboard theme modes')).toBeVisible();
+      await expect(page.getByText('Task queue', { exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Audit dashboard theme modes' })).toBeVisible();
     },
     async prepare(page) {
-      await page.getByRole('button', { name: /All/ }).click();
+      await page
+        .getByRole('region', { name: 'Task filters' })
+        .getByRole('button', { name: /All/ })
+        .click();
       await page.locator('.task-row').first().click();
       await expect(page.locator('.task-row.selected')).toBeVisible();
     }

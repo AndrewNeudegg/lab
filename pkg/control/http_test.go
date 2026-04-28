@@ -471,7 +471,7 @@ func TestCreateRemoteTaskRejectsUnknownAgentAndMissingWorkdir(t *testing.T) {
 	}
 }
 
-func newHTTPTestServer(t *testing.T) (Server, *taskstore.Store, config.Config) {
+func newHTTPTestServer(t *testing.T) (*Server, *taskstore.Store, config.Config) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Default()
@@ -489,10 +489,10 @@ func newHTTPTestServer(t *testing.T) (Server, *taskstore.Store, config.Config) {
 		nil,
 		"",
 	)
-	return Server{Orchestrator: orch}, tasks, cfg
+	return &Server{Orchestrator: orch}, tasks, cfg
 }
 
-func newRemoteControlTestServer(t *testing.T) (Server, *taskstore.Store, *approvalstore.Store, *http.ServeMux) {
+func newRemoteControlTestServer(t *testing.T) (*Server, *taskstore.Store, *approvalstore.Store, *http.ServeMux) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Default()
@@ -512,7 +512,7 @@ func newRemoteControlTestServer(t *testing.T) (Server, *taskstore.Store, *approv
 		nil,
 		"",
 	).WithRemoteAgents(remoteAgents)
-	server := Server{
+	server := &Server{
 		Orchestrator: orch,
 		RemoteAgents: remoteAgents,
 		AgentToken:   "secret",

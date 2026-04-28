@@ -280,7 +280,7 @@ test('terminal reconnects the same session after a dropped event stream', async 
   await page.locator('.xterm').click();
 
   await page.evaluate(() => window.__terminalEventSources[0].fail());
-  await expect(page.getByText('Reconnecting')).toBeVisible();
+  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
   await page.keyboard.type('echo queued while offline');
   await page.keyboard.press('Enter');
   await expect.poll(async () => page.evaluate(() => window.__terminalEventSources.length)).toBeGreaterThan(1);

@@ -1263,19 +1263,23 @@
     }
 
     .terminal-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: stretch;
       gap: 0.35rem;
       min-height: 2.7rem;
-      padding: 0.3rem 0.4rem 0;
+      padding: 0.3rem 0.4rem;
     }
 
     .terminal-actions {
-      flex: 0 0 auto;
+      width: 100%;
       gap: 0.3rem;
-      padding-bottom: 0.3rem;
+      justify-content: space-between;
+      padding-bottom: 0;
     }
 
     .terminal-tabs {
-      min-width: 9rem;
+      min-width: 0;
     }
 
     .terminal-tab {
@@ -1301,14 +1305,21 @@
       font-size: 0.78rem;
     }
 
+    .new-tab-control {
+      flex: 1 1 auto;
+    }
+
     .target-picker {
-      width: 7.8rem;
+      flex: 1 1 auto;
+      width: auto;
+      min-width: 0;
       min-height: 2.15rem;
       padding: 0 0.25rem;
       font-size: 0.72rem;
     }
 
     .tab-add {
+      flex: 0 0 2.15rem;
       width: 2.15rem;
       min-height: 2.15rem;
     }

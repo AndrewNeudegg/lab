@@ -21,6 +21,7 @@ Use the shared responsive navbar on every dashboard page.
 
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
+- Mobile: keep the `Help` button next to `Menu`. It captures browser context, asks for screen-capture permission when the browser supports it, prompts for a short bug note, and creates a task with the captured attachments.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
 - Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
@@ -49,6 +50,9 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
 - GitLab merge request reviews: the changes view is the primary review surface, with review status and merge checks kept close to the diff.
 - CodeMirror and Monaco diff APIs: mature web diff viewers support hidden unchanged regions, gutters, syntax-aware deleted text, inline change highlighting, and unified or side-by-side review modes.
+- Marker.io and Sentry feedback widgets: bug reporting should be available in context, attach screenshots, collect useful browser state, and ask the user for the missing human detail before submission.
+- MDN Screen Capture API guidance: web pages must request screen capture through `getDisplayMedia()`, which prompts the user to select and grant capture permission.
+- Jira attachment guidance: work items can carry files and screenshots when attachments are enabled, and the issue view should make attached evidence visible.
 
 Sources:
 
@@ -77,6 +81,10 @@ Sources:
 - https://docs.gitlab.com/user/project/merge_requests/reviews/
 - https://codemirror.net/docs/ref/#merge.unifiedMergeView
 - https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor.IDiffEditorConstructionOptions.html
+- https://marker.io/features/website-feedback-widget
+- https://sentry.io/changelog/user-feedback-widget-screenshots/
+- https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia
+- https://support.atlassian.com/jira-cloud-administration/docs/configure-file-attachments/
 
 ## Layout Rationale
 
@@ -123,9 +131,12 @@ If a component does not answer one of those questions, it should not be in the p
 - Secondary actions: low-emphasis direct endpoint buttons such as retry, reopen, stop, delete, or deny approval. Destructive actions must remain visually distinct from constructive actions.
 - Retry and reopen forms: short, task-scoped inputs for optional retry instruction or reopen reason. These are structured payloads sent to typed task endpoints.
 - State and context: workflow state, workspace path, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
+- Attachments: selected task records show attached evidence inside `State and context`. Image attachments get a thumbnail and download link; text/context attachments show an inline preview. Keep this visible near state because bug-report attachments explain why the task exists.
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
+- `/chat` attachments: the composer supports desktop file picking, mobile file picking, and drag-and-drop into the composer. Attachment chips show the file name, media type, and size before send; sent messages keep visible attachment metadata. The API receives attachment data with the chat message so task-creation commands and LLM context can include the uploaded evidence.
+- Help task capture: the mobile navbar `Help` button records the current URL, page title, viewport, visible page text, active element, selected text, and recent click/change actions. It attempts a screenshot through the browser screen-capture permission flow and then opens a dialog for the operator's extra detail. `Submit help task` creates a normal local task with `browser-context.json` and any screenshot as task attachments.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
 ## Status Semantics

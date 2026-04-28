@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -130,6 +131,41 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 				t.Fatalf("stdout did not contain pretty JSON response: %q", stdout)
 			}
 		})
+	}
+}
+
+func TestTaskNewAttachesFiles(t *testing.T) {
+	path := t.TempDir() + "/context.txt"
+	if err := os.WriteFile(path, []byte("browser context"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var observed observedRequest
+	_, stderr, code := runAgainstServer(t, []string{"task", "new", "--attach", path, "fix", "the", "bug"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		observed = observeRequest(t, req)
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{"ok": true})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if observed.Method != http.MethodPost || observed.Path != "/tasks" {
+		t.Fatalf("request = %s %s, want POST /tasks", observed.Method, observed.Path)
+	}
+	if observed.Body["goal"] != "fix the bug" {
+		t.Fatalf("goal = %#v, want fix the bug", observed.Body["goal"])
+	}
+	attachments, ok := observed.Body["attachments"].([]any)
+	if !ok || len(attachments) != 1 {
+		t.Fatalf("attachments = %#v, want one attachment", observed.Body["attachments"])
+	}
+	attachment, ok := attachments[0].(map[string]any)
+	if !ok {
+		t.Fatalf("attachment = %#v, want object", attachments[0])
+	}
+	if attachment["name"] != "context.txt" || attachment["text"] != "browser context" {
+		t.Fatalf("attachment = %#v, want named text attachment", attachment)
+	}
+	if !strings.HasPrefix(fmt.Sprint(attachment["data_url"]), "data:text/plain") {
+		t.Fatalf("data_url = %#v, want text/plain data URL", attachment["data_url"])
 	}
 }
 

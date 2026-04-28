@@ -154,12 +154,24 @@ func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string
 }
 
 func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string) (HandleResult, error) {
+	return o.HandleDetailedWithAttachments(ctx, from, message, nil)
+}
+
+func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, message string, attachments []taskstore.Attachment) (HandleResult, error) {
 	message = strings.TrimSpace(message)
+	attachments = prepareTaskAttachments(attachments)
+	if message == "" && len(attachments) > 0 {
+		message = "Review the attached files."
+	}
 	if message == "" {
 		return HandleResult{Reply: "empty message", Source: "program"}, nil
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "user.message", Actor: from, Payload: eventlog.Payload(map[string]any{"message": message})})
-	reply, source, err := o.handleMessage(ctx, message)
+	payload := map[string]any{"message": message}
+	if len(attachments) > 0 {
+		payload["attachments"] = attachments
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "user.message", Actor: from, Payload: eventlog.Payload(payload)})
+	reply, source, err := o.handleMessageWithAttachments(ctx, message, attachments)
 	if err != nil && isUserFacingCommandError(err) {
 		reply = userFacingCommandErrorReply(err)
 		source = "program"
@@ -177,6 +189,10 @@ func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string)
 }
 
 func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, string, error) {
+	return o.handleMessageWithAttachments(ctx, message, nil)
+}
+
+func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message string, attachments []taskstore.Attachment) (string, string, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return programResult("I'm here. Use `help` for commands, or `new <goal>` to create a development task.", nil)
@@ -197,7 +213,7 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		}
 	}
 	if goal, ok := taskCreationGoal(message); ok {
-		return programResult(o.createTask(ctx, goal))
+		return programResult(o.createTaskWithAttachments(ctx, goal, attachments))
 	}
 	if isActiveTaskStatusRequest(message) || isInFlightQuery(message) {
 		return programResult(o.listInFlight())
@@ -222,7 +238,7 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 	case "status":
 		return programResult(o.listInFlight())
 	case "new", "task":
-		return programResult(o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
+		return programResult(o.createTaskWithAttachments(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])), attachments))
 	case "tasks":
 		return programResult(o.listTasks())
 	case "workflow", "workflows":
@@ -364,9 +380,9 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 			return o.reflectOnInteraction(ctx, message)
 		}
 		if isPlainWorkRequest(message) {
-			return programResult(o.startOneShotWork(ctx, message))
+			return programResult(o.startOneShotWorkWithAttachments(ctx, message, attachments))
 		}
-		return o.handleWithLLM(ctx, message)
+		return o.handleWithLLM(ctx, messageWithAttachmentContext(message, attachments))
 	}
 }
 
@@ -982,17 +998,21 @@ func isDelegationTarget(name string) bool {
 }
 
 func (o *Orchestrator) CreateTask(ctx context.Context, goal string) (string, error) {
-	return o.createTask(ctx, goal)
+	return o.createTaskWithAttachments(ctx, goal, nil)
 }
 
 func (o *Orchestrator) CreateTaskWithTarget(ctx context.Context, goal string, target *taskstore.ExecutionTarget) (string, error) {
+	return o.CreateTaskWithTargetAndAttachments(ctx, goal, target, nil)
+}
+
+func (o *Orchestrator) CreateTaskWithTargetAndAttachments(ctx context.Context, goal string, target *taskstore.ExecutionTarget, attachments []taskstore.Attachment) (string, error) {
 	if target == nil || strings.TrimSpace(target.Mode) == "" || strings.EqualFold(target.Mode, "local") {
-		return o.createTask(ctx, goal)
+		return o.createTaskWithAttachments(ctx, goal, attachments)
 	}
 	if !strings.EqualFold(target.Mode, "remote") {
 		return "", fmt.Errorf("unsupported task target mode %q", target.Mode)
 	}
-	task, err := o.createRemoteTaskRecord(ctx, goal, *target)
+	task, err := o.createRemoteTaskRecord(ctx, goal, *target, attachments)
 	if err != nil {
 		return "", err
 	}
@@ -2051,7 +2071,11 @@ func firstJSONObject(s string) string {
 }
 
 func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, error) {
-	created, err := o.createTaskRecord(ctx, goal)
+	return o.createTaskWithAttachments(ctx, goal, nil)
+}
+
+func (o *Orchestrator) createTaskWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (string, error) {
+	created, err := o.createTaskRecordWithAttachments(ctx, goal, attachments)
 	if err != nil {
 		return "", err
 	}
@@ -2099,24 +2123,101 @@ type createdTask struct {
 }
 
 const taskTitleMaxCharacters = 84
+const maxTaskAttachments = 8
+const maxTaskAttachmentDataURLBytes = 8 * 1024 * 1024
+const maxTaskAttachmentTextBytes = 128 * 1024
+
+func prepareTaskAttachments(attachments []taskstore.Attachment) []taskstore.Attachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	out := make([]taskstore.Attachment, 0, min(len(attachments), maxTaskAttachments))
+	for _, attachment := range attachments {
+		if len(out) >= maxTaskAttachments {
+			break
+		}
+		attachment.Name = strings.TrimSpace(attachment.Name)
+		attachment.ContentType = strings.TrimSpace(attachment.ContentType)
+		if attachment.Name == "" {
+			attachment.Name = "attachment"
+		}
+		if attachment.ContentType == "" {
+			attachment.ContentType = "application/octet-stream"
+		}
+		if attachment.ID == "" {
+			attachment.ID = id.New("att")
+		}
+		if attachment.CreatedAt.IsZero() {
+			attachment.CreatedAt = now
+		}
+		if attachment.Size <= 0 && attachment.DataURL != "" {
+			attachment.Size = int64(len(attachment.DataURL))
+		}
+		if len(attachment.DataURL) > maxTaskAttachmentDataURLBytes {
+			attachment.DataURL = ""
+			if strings.TrimSpace(attachment.Text) == "" {
+				attachment.Text = "Attachment content omitted because it exceeded the dashboard task attachment size limit."
+			}
+		}
+		if len(attachment.Text) > maxTaskAttachmentTextBytes {
+			attachment.Text = attachment.Text[:maxTaskAttachmentTextBytes] + "\n\n[truncated]"
+		}
+		out = append(out, attachment)
+	}
+	return out
+}
+
+func messageWithAttachmentContext(message string, attachments []taskstore.Attachment) string {
+	attachments = prepareTaskAttachments(attachments)
+	if len(attachments) == 0 {
+		return message
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(message))
+	b.WriteString("\n\nAttached files supplied with this chat message:")
+	for _, attachment := range attachments {
+		fmt.Fprintf(&b, "\n- %s (%s, %d bytes)", attachment.Name, attachment.ContentType, attachment.Size)
+		if strings.TrimSpace(attachment.Text) != "" {
+			fmt.Fprintf(&b, "\n  Text preview:\n%s", indentBlock(truncateForPrompt(attachment.Text), "  "))
+		} else if attachment.DataURL != "" {
+			b.WriteString("\n  Binary data is attached to the chat request.")
+		}
+	}
+	return b.String()
+}
+
+func indentBlock(value, prefix string) string {
+	lines := strings.Split(value, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
+}
 
 func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (createdTask, error) {
+	return o.createTaskRecordWithAttachments(ctx, goal, nil)
+}
+
+func (o *Orchestrator) createTaskRecordWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (createdTask, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return createdTask{}, nil
 	}
 	taskID := id.New("task")
 	now := time.Now().UTC()
+	attachments = prepareTaskAttachments(attachments)
 	t := taskstore.Task{
-		ID:         taskID,
-		Title:      o.summarizeTaskTitle(ctx, taskID, goal),
-		Goal:       goal,
-		Status:     taskstore.StatusQueued,
-		AssignedTo: "OrchestratorAgent",
-		Priority:   5,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		Result:     "queued for task supervisor",
+		ID:          taskID,
+		Title:       o.summarizeTaskTitle(ctx, taskID, goal),
+		Goal:        goal,
+		Status:      taskstore.StatusQueued,
+		AssignedTo:  "OrchestratorAgent",
+		Priority:    5,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Attachments: attachments,
+		Result:      "queued for task supervisor",
 	}
 	o.ensureTaskPlan(ctx, &t)
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_create", map[string]any{"task_id": t.ID}, t.ID)
@@ -2139,7 +2240,7 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 	return createdTask{Task: t, Branch: out.Branch}, nil
 }
 
-func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, target taskstore.ExecutionTarget) (taskstore.Task, error) {
+func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, target taskstore.ExecutionTarget, attachments []taskstore.Attachment) (taskstore.Task, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return taskstore.Task{}, fmt.Errorf("goal is required")
@@ -2172,6 +2273,7 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 	}
 	taskID := id.New("task")
 	now := time.Now().UTC()
+	attachments = prepareTaskAttachments(attachments)
 	task := taskstore.Task{
 		ID:                 taskID,
 		Title:              o.summarizeTaskTitle(ctx, taskID, goal),
@@ -2182,6 +2284,7 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 		CreatedAt:          now,
 		UpdatedAt:          now,
 		Target:             &target,
+		Attachments:        attachments,
 		Result:             "queued for remote agent " + target.AgentID,
 		AcceptanceCriteria: remoteAcceptanceCriteria(target),
 	}
@@ -2851,6 +2954,7 @@ func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) st
 		"Work this task in the selected remote directory.",
 		"Agent: " + agent.ID + " on " + firstNonEmptyString(agent.Machine, "unknown machine") + ".",
 		"Goal: " + t.Goal,
+		"Attachments: " + formatTaskAttachmentsForPrompt(t.Attachments),
 		"",
 		"Inspect the directory first, make the smallest practical change, run relevant validation, and report changed files plus commands run.",
 	}, "\n")
@@ -2894,6 +2998,9 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 	if len(t.AcceptanceCriteria) > 0 {
 		fmt.Fprintf(&b, "acceptance criteria:\n%s\n", formatAcceptanceCriteria(t.AcceptanceCriteria))
 	}
+	if len(t.Attachments) > 0 {
+		fmt.Fprintf(&b, "attachments:\n%s\n", formatTaskAttachments(t.Attachments))
+	}
 	if t.GraphPhase == "root" {
 		if children, err := o.graphChildren(t.ID); err == nil && len(children) > 0 {
 			fmt.Fprintf(&b, "child phases:\n%s\n", formatGraphChildren(children))
@@ -2906,6 +3013,14 @@ func (o *Orchestrator) showTask(taskID string) (string, error) {
 		fmt.Fprintf(&b, "next: %s", nextActionsForTask(t))
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func formatTaskAttachments(attachments []taskstore.Attachment) string {
+	var b strings.Builder
+	for _, attachment := range attachments {
+		fmt.Fprintf(&b, "- %s (%s, %d bytes)\n", attachment.Name, attachment.ContentType, attachment.Size)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func graphRelationSummary(t taskstore.Task) string {
@@ -3703,7 +3818,11 @@ func shouldIgnoreStaleDelegationResult(t taskstore.Task) bool {
 }
 
 func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (string, error) {
-	created, err := o.createTaskRecord(ctx, goal)
+	return o.startOneShotWorkWithAttachments(ctx, goal, nil)
+}
+
+func (o *Orchestrator) startOneShotWorkWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (string, error) {
+	created, err := o.createTaskRecordWithAttachments(ctx, goal, attachments)
 	if err != nil {
 		return "", err
 	}
@@ -3902,8 +4021,29 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"Reviewed task plan: " + formatTaskPlanForPrompt(t.Plan),
 		"Task graph context: " + formatGraphContextForPrompt(t),
+		"Task attachments: " + formatTaskAttachmentsForPrompt(t.Attachments),
 		"Task goal: " + t.Goal,
 	}, " ")
+}
+
+func formatTaskAttachmentsForPrompt(attachments []taskstore.Attachment) string {
+	if len(attachments) == 0 {
+		return "none"
+	}
+	var b strings.Builder
+	for i, attachment := range attachments {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%s (%s, %d bytes)", attachment.Name, attachment.ContentType, attachment.Size)
+		if strings.TrimSpace(attachment.Text) != "" {
+			b.WriteString(" text=")
+			b.WriteString(truncateForPrompt(strings.TrimSpace(attachment.Text)))
+		} else if attachment.DataURL != "" {
+			b.WriteString(" binary data captured on the task record")
+		}
+	}
+	return b.String()
 }
 
 func formatGraphContextForPrompt(t taskstore.Task) string {
@@ -5413,8 +5553,9 @@ func (o *Orchestrator) handlePolicyDecision(ctx context.Context, actor, taskID, 
 
 func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw json.RawMessage) toolExecution {
 	var req struct {
-		Goal   string                     `json:"goal"`
-		Target *taskstore.ExecutionTarget `json:"target,omitempty"`
+		Goal        string                     `json:"goal"`
+		Target      *taskstore.ExecutionTarget `json:"target,omitempty"`
+		Attachments []taskstore.Attachment     `json:"attachments,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: err.Error()}
@@ -5422,7 +5563,7 @@ func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw 
 	if req.Goal == "" {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: "goal is required"}
 	}
-	resultText, err := o.CreateTaskWithTarget(ctx, req.Goal, req.Target)
+	resultText, err := o.CreateTaskWithTargetAndAttachments(ctx, req.Goal, req.Target, req.Attachments)
 	result := toolExecution{Tool: "task.create", Allowed: true, Result: eventlog.Payload(map[string]any{"message": resultText})}
 	if err != nil {
 		result.Error = err.Error()

@@ -106,6 +106,14 @@ describe('homelabd client', () => {
 
     const response = await client.createTask({
       goal: 'Update the remote checkout',
+      attachments: [
+        {
+          name: 'browser-context.json',
+          content_type: 'application/json',
+          size: 18,
+          text: '{"url":"/tasks"}'
+        }
+      ],
       target: {
         mode: 'remote',
         agent_id: 'desk',
@@ -122,6 +130,14 @@ describe('homelabd client', () => {
     expect(requests[0].init?.method).toBe('POST');
     expect(requests[0].body).toEqual({
       goal: 'Update the remote checkout',
+      attachments: [
+        {
+          name: 'browser-context.json',
+          content_type: 'application/json',
+          size: 18,
+          text: '{"url":"/tasks"}'
+        }
+      ],
       target: {
         mode: 'remote',
         agent_id: 'desk',

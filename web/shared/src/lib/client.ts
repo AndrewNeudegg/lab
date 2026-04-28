@@ -7,6 +7,7 @@ import type {
   HomelabdClientOptions,
   HomelabdCreateTaskRequest,
   HomelabdCreateTaskResponse,
+  HomelabdCreateWorkflowRequest,
   HomelabdEventsResponse,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
@@ -16,6 +17,9 @@ import type {
   HomelabdTaskRetryRequest,
   HomelabdTaskRunsResponse,
   HomelabdTasksResponse,
+  HomelabdWorkflow,
+  HomelabdWorkflowActionResponse,
+  HomelabdWorkflowsResponse,
   SupervisorSnapshot
 } from './types';
 
@@ -76,6 +80,36 @@ export const createHomelabdClient = (
         baseUrl,
         fetcher
       });
+    },
+    createWorkflow(request: HomelabdCreateWorkflowRequest) {
+      return apiFetch<HomelabdWorkflowActionResponse>('/workflows', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
+    listWorkflows() {
+      return apiFetch<HomelabdWorkflowsResponse>('/workflows', {
+        baseUrl,
+        fetcher
+      });
+    },
+    getWorkflow(workflowId: string) {
+      return apiFetch<HomelabdWorkflow>(`/workflows/${encodeURIComponent(workflowId)}`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    runWorkflow(workflowId: string) {
+      return apiFetch<HomelabdWorkflowActionResponse>(
+        `/workflows/${encodeURIComponent(workflowId)}/run`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST'
+        }
+      );
     },
     listAgents() {
       return apiFetch<HomelabdAgentsResponse>('/agents', {

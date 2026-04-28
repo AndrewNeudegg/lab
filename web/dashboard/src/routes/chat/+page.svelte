@@ -14,6 +14,7 @@
   const client = createHomelabdClient({ baseUrl: apiBase });
   const transcriptStorageKey = 'homelabd.dashboard.chatTranscript.v4';
   const taskRefPattern = /(?:[a-f0-9]{6,12}|task_\d{8}_\d{6}_[a-f0-9]{8})/i;
+  const workflowRefPattern = /(?:[a-f0-9]{6,12}|workflow_\d{8}_\d{6}_[a-f0-9]{8})/i;
   const approvalRefPattern = /approval_\d{8}_\d{6}_[a-f0-9]{8}/i;
 
   type PromptAction = {
@@ -43,7 +44,7 @@
   const welcomeMessage: ChatTranscriptMessage = {
     id: 'welcome',
     role: 'assistant',
-    content: 'This is global chat. Use it for direction, planning, and broad commands. Use Tasks for queue state and task-specific actions.',
+    content: 'This is global chat. Use it for direction, planning, workflows, and broad commands. Use Tasks for queue state and task-specific actions.',
     source: 'program',
     actions: ['tasks'],
     time: 'Now'
@@ -125,8 +126,20 @@
       return false;
     }
     const verb = normalized.split(' ')[0]?.toLowerCase() || '';
-    if (['tasks', 'status', 'approvals', 'agents', 'help'].includes(normalized.toLowerCase())) {
+    if (['tasks', 'workflows', 'status', 'approvals', 'agents', 'help'].includes(normalized.toLowerCase())) {
       return true;
+    }
+    if (verb === 'workflow') {
+      const action = normalized.split(' ')[1]?.toLowerCase() || '';
+      if (['list', 'ls'].includes(action)) {
+        return true;
+      }
+      if (['show', 'run', 'start'].includes(action)) {
+        return workflowRefPattern.test(normalized);
+      }
+      if (['new', 'create'].includes(action)) {
+        return normalized.length > 'workflow new '.length;
+      }
     }
     if (['new', 'task'].includes(verb)) {
       return normalized.length > verb.length + 1;

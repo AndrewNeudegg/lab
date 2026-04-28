@@ -33,6 +33,19 @@ run <task_id>
 delegate <task_id> to codex
 ```
 
+## Workflows
+
+Use workflows for repeatable LLM/tool logic that should live outside one chat turn:
+
+```text
+workflows
+workflow new Research bundle: Find current sources and summarise risk
+workflow show workflow_123
+workflow run workflow_123
+```
+
+Workflows expose cost estimates for LLM calls, tool calls, waits, and runtime. The LLM can also use `workflow.create`, `workflow.list`, `workflow.show`, and `workflow.run` as policy-bound tools.
+
 ## UX Agent
 
 Use `UXAgent` when a task changes a page, component, interaction, or visual state and needs a dedicated usability pass:

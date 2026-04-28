@@ -39,6 +39,7 @@ import (
 	tasktools "github.com/andrewneudegg/lab/pkg/tools/task"
 	testtools "github.com/andrewneudegg/lab/pkg/tools/test"
 	texttools "github.com/andrewneudegg/lab/pkg/tools/text"
+	workflowstore "github.com/andrewneudegg/lab/pkg/workflow"
 )
 
 func main() {
@@ -156,6 +157,7 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	registry := tool.NewRegistry()
 	timeout := time.Duration(cfg.Limits.MaxShellSeconds) * time.Second
 	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
+	workflows := workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows"))
 	events := eventlog.NewStore(filepath.Join(cfg.DataDir, "events"))
 	if err := repotools.Register(registry, repotools.Base{Root: cfg.Repo.Root, WorkspaceRoot: cfg.Repo.WorkspaceRoot, MaxFileBytes: cfg.Limits.MaxFileBytes}); err != nil {
 		return runtimeServices{}, err
@@ -211,7 +213,8 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	remoteAgents := remoteagent.NewStore(filepath.Join(cfg.DataDir, "remote_agents"))
 	orch := agent.NewOrchestrator(cfg, events, tasks, approvals, registry, tool.NewPolicy(cfg.Policy.RequireApprovalFor), provider, model).
 		WithLogger(slog.Default()).
-		WithRemoteAgents(remoteAgents)
+		WithRemoteAgents(remoteAgents).
+		WithWorkflows(workflows)
 	return runtimeServices{Orchestrator: orch, RemoteAgents: remoteAgents}, nil
 }
 

@@ -67,6 +67,8 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
+	mux.HandleFunc("/workflows", s.withCORS(s.handleWorkflows))
+	mux.HandleFunc("/workflows/", s.withCORS(s.handleWorkflow))
 	mux.HandleFunc("/agents", s.withCORS(s.handleAgents))
 	mux.HandleFunc("/agents/", s.withCORS(s.handleAgent))
 	mux.HandleFunc("/approvals", s.withCORS(s.handleApprovals))

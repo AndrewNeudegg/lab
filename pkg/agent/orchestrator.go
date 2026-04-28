@@ -22,6 +22,7 @@ import (
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
+	workflowstore "github.com/andrewneudegg/lab/pkg/workflow"
 )
 
 type Orchestrator struct {
@@ -29,6 +30,7 @@ type Orchestrator struct {
 	events       *eventlog.Store
 	tasks        *taskstore.Store
 	approvals    *approvalstore.Store
+	workflows    *workflowstore.Store
 	registry     *tool.Registry
 	policy       tool.Policy
 	provider     llm.Provider
@@ -223,6 +225,8 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		return programResult(o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
 	case "tasks":
 		return programResult(o.listTasks())
+	case "workflow", "workflows":
+		return programResult(o.handleWorkflowCommand(ctx, fields, message))
 	case "agents":
 		return programResult(o.listAgents(ctx))
 	case "cancel", "stop":
@@ -401,6 +405,9 @@ func isUserFacingCommandError(err error) bool {
 	message := err.Error()
 	return strings.HasPrefix(message, "no task matches ") ||
 		strings.HasPrefix(message, "task selector ") ||
+		strings.HasPrefix(message, "no workflow matches ") ||
+		strings.HasPrefix(message, "workflow selector ") ||
+		strings.Contains(message, "workflow id or name is required") ||
 		strings.Contains(message, "task id or title is required")
 }
 
@@ -409,6 +416,11 @@ func userFacingCommandErrorReply(err error) string {
 		return ""
 	}
 	message := err.Error()
+	if strings.HasPrefix(message, "no workflow matches ") ||
+		strings.HasPrefix(message, "workflow selector ") ||
+		strings.Contains(message, "workflow id or name is required") {
+		return "I couldn't match that to a workflow: " + message + ". Use `workflows` to see current workflow IDs."
+	}
 	if strings.HasPrefix(message, "task selector ") {
 		return "I found more than one matching task: " + message + ". Use the exact task ID from `tasks`, or click one of the suggested action buttons."
 	}
@@ -1603,6 +1615,10 @@ func help() string {
 		"commands:",
 		"  new <goal>                 create task and isolated worktree",
 		"  tasks                      list tasks",
+		"  workflows                  list durable LLM/tool workflows",
+		"  workflow new <name>: <goal> create a simple workflow",
+		"  workflow show <workflow_id> show workflow steps, status, and cost estimate",
+		"  workflow run <workflow_id> run a workflow through policy-bound steps",
 		"  status                     show active tasks and next actions",
 		"  what's cooking             show active tasks and next actions",
 		"  show <task_id>             show task",
@@ -1862,6 +1878,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
+		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
 		"Available tools:",
 		o.toolCatalog(),
@@ -1877,14 +1894,34 @@ func (o *Orchestrator) toolCatalog() string {
 	}
 	catalog := []catalogTool{{
 		Name:        "task.create",
-		Description: "Create a development task with an isolated git worktree. Args: {\"goal\":\"...\"}.",
+		Description: "Create a development task with an isolated local worktree or explicit remote target. Args: {\"goal\":\"...\",\"target\":{...}}.",
 		Risk:        tool.RiskLow,
-		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"},"target":{"type":"object"}}}`),
 	}, {
 		Name:        "task.run",
 		Description: "Run CoderAgent on an existing task. Args: {\"task_id\":\"...\"}.",
 		Risk:        tool.RiskLow,
 		Schema:      json.RawMessage(`{"type":"object","required":["task_id"],"properties":{"task_id":{"type":"string"}}}`),
+	}, {
+		Name:        "workflow.create",
+		Description: "Create a durable workflow made of LLM, tool, wait, or workflow steps. Args: {\"name\":\"...\",\"goal\":\"...\",\"steps\":[{\"kind\":\"llm|tool|wait|workflow\",...}]}",
+		Risk:        tool.RiskLow,
+		Schema:      json.RawMessage(`{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"description":{"type":"string"},"goal":{"type":"string"},"steps":{"type":"array","items":{"type":"object"}}}}`),
+	}, {
+		Name:        "workflow.list",
+		Description: "List durable workflow definitions, current status, and cost estimates. Args: {}.",
+		Risk:        tool.RiskReadOnly,
+		Schema:      json.RawMessage(`{"type":"object","properties":{}}`),
+	}, {
+		Name:        "workflow.show",
+		Description: "Show one workflow's steps, latest run, and cost estimate. Args: {\"workflow_id\":\"...\"}.",
+		Risk:        tool.RiskReadOnly,
+		Schema:      json.RawMessage(`{"type":"object","required":["workflow_id"],"properties":{"workflow_id":{"type":"string"}}}`),
+	}, {
+		Name:        "workflow.run",
+		Description: "Run a durable workflow through policy-bound LLM/tool/wait/workflow steps. Args: {\"workflow_id\":\"...\"}.",
+		Risk:        tool.RiskLow,
+		Schema:      json.RawMessage(`{"type":"object","required":["workflow_id"],"properties":{"workflow_id":{"type":"string"}}}`),
 	}}
 	for _, t := range o.registry.List() {
 		catalog = append(catalog, catalogTool{Name: t.Name(), Description: t.Description(), Risk: t.Risk(), Schema: t.Schema()})
@@ -5041,6 +5078,13 @@ func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, ca
 		}
 		return o.executeTaskRun(ctx, actor, raw)
 	}
+	if strings.HasPrefix(name, "workflow.") {
+		decision := o.policy.DecideNamed(actor, name, raw)
+		if !decision.Allowed || decision.NeedsApproval {
+			return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
+		}
+		return o.executeWorkflowTool(ctx, actor, name, raw)
+	}
 	t, ok := o.registry.Get(name)
 	if !ok {
 		result := toolExecution{Tool: name, Allowed: false, Error: "tool not registered"}
@@ -5086,7 +5130,8 @@ func (o *Orchestrator) handlePolicyDecision(ctx context.Context, actor, taskID, 
 
 func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw json.RawMessage) toolExecution {
 	var req struct {
-		Goal string `json:"goal"`
+		Goal   string                     `json:"goal"`
+		Target *taskstore.ExecutionTarget `json:"target,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: err.Error()}
@@ -5094,7 +5139,7 @@ func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw 
 	if req.Goal == "" {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: "goal is required"}
 	}
-	resultText, err := o.createTask(ctx, req.Goal)
+	resultText, err := o.CreateTaskWithTarget(ctx, req.Goal, req.Target)
 	result := toolExecution{Tool: "task.create", Allowed: true, Result: eventlog.Payload(map[string]any{"message": resultText})}
 	if err != nil {
 		result.Error = err.Error()

@@ -89,6 +89,13 @@ func (c cli) dispatch(args []string) error {
 		return c.shell()
 	case "task":
 		return c.task(args[1:])
+	case "workflow":
+		return c.workflow(args[1:])
+	case "workflows":
+		if len(args) == 1 {
+			return c.workflow([]string{"list"})
+		}
+		return c.workflow(args[1:])
 	case "agent":
 		return c.agent(args[1:])
 	case "tasks":
@@ -126,6 +133,54 @@ func (c cli) dispatch(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func (c cli) workflow(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl workflow <new|list|show|run>")
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "new", "create":
+		name, goal := parseWorkflowCreateArgs(args[1:])
+		if name == "" {
+			return fmt.Errorf("usage: homelabctl workflow new <name>: <goal>")
+		}
+		return c.do(http.MethodPost, "/workflows", map[string]any{"name": name, "goal": goal})
+	case "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl workflow list")
+		}
+		return c.do(http.MethodGet, "/workflows", nil)
+	case "show", "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl workflow show <workflow_id>")
+		}
+		return c.do(http.MethodGet, path("workflows", args[1]), nil)
+	case "run", "start":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl workflow run <workflow_id>")
+		}
+		return c.do(http.MethodPost, path("workflows", args[1], "run"), nil)
+	default:
+		return fmt.Errorf("unknown workflow command %q", args[0])
+	}
+}
+
+func parseWorkflowCreateArgs(args []string) (string, string) {
+	text := strings.TrimSpace(strings.Join(args, " "))
+	if text == "" {
+		return "", ""
+	}
+	if name, goal, ok := strings.Cut(text, ":"); ok {
+		name = strings.TrimSpace(name)
+		goal = strings.TrimSpace(goal)
+		if goal == "" {
+			goal = name
+		}
+		return name, goal
+	}
+	return text, text
 }
 
 func (c cli) task(args []string) error {
@@ -659,6 +714,11 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] task cancel <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task retry <task_id> [codex|claude|gemini] [instruction]
   homelabctl [-addr http://127.0.0.1:18080] task delete <task_id>
+
+  homelabctl [-addr http://127.0.0.1:18080] workflow new <name>: <goal>
+  homelabctl [-addr http://127.0.0.1:18080] workflow list
+  homelabctl [-addr http://127.0.0.1:18080] workflow show <workflow_id>
+  homelabctl [-addr http://127.0.0.1:18080] workflow run <workflow_id>
 
   homelabctl [-addr http://127.0.0.1:18080] agent list
   homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>

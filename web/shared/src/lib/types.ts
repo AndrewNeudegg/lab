@@ -143,6 +143,95 @@ export interface HomelabdTaskActionResponse {
   reply: string;
 }
 
+export type WorkflowStatus =
+  | 'draft'
+  | 'running'
+  | 'waiting'
+  | 'awaiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type WorkflowStepKind = 'llm' | 'tool' | 'workflow' | 'wait' | string;
+
+export interface HomelabdWorkflow {
+  id: string;
+  name: string;
+  description?: string;
+  goal?: string;
+  status: WorkflowStatus | string;
+  steps: HomelabdWorkflowStep[];
+  estimate: HomelabdWorkflowEstimate;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+  last_run?: HomelabdWorkflowRun;
+}
+
+export interface HomelabdWorkflowStep {
+  id?: string;
+  name: string;
+  kind: WorkflowStepKind;
+  prompt?: string;
+  tool?: string;
+  args?: unknown;
+  workflow_id?: string;
+  condition?: string;
+  timeout_seconds?: number;
+  depends_on?: string[];
+}
+
+export interface HomelabdWorkflowEstimate {
+  steps: number;
+  estimated_llm_calls: number;
+  estimated_tool_calls: number;
+  workflow_calls: number;
+  waits: number;
+  estimated_seconds: number;
+  estimated_minutes: number;
+  summary: string;
+}
+
+export interface HomelabdWorkflowRun {
+  id: string;
+  workflow_id: string;
+  status: WorkflowStatus | string;
+  current_step: number;
+  started_at: string;
+  finished_at?: string;
+  outputs?: HomelabdWorkflowStepOutput[];
+  error?: string;
+}
+
+export interface HomelabdWorkflowStepOutput {
+  step_id: string;
+  step_name: string;
+  kind: WorkflowStepKind;
+  status: WorkflowStatus | string;
+  summary?: string;
+  tool?: string;
+  result?: unknown;
+  error?: string;
+  started_at: string;
+  finished_at?: string;
+}
+
+export interface HomelabdWorkflowsResponse {
+  workflows: HomelabdWorkflow[];
+}
+
+export interface HomelabdCreateWorkflowRequest {
+  name: string;
+  description?: string;
+  goal?: string;
+  steps?: HomelabdWorkflowStep[];
+}
+
+export interface HomelabdWorkflowActionResponse {
+  reply: string;
+  workflow: HomelabdWorkflow;
+}
+
 export interface HomelabdTaskRetryRequest {
   backend?: string;
   instruction?: string;
@@ -349,6 +438,10 @@ export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;
+  createWorkflow(request: HomelabdCreateWorkflowRequest): Promise<HomelabdWorkflowActionResponse>;
+  listWorkflows(): Promise<HomelabdWorkflowsResponse>;
+  getWorkflow(workflowId: string): Promise<HomelabdWorkflow>;
+  runWorkflow(workflowId: string): Promise<HomelabdWorkflowActionResponse>;
   listAgents(): Promise<HomelabdAgentsResponse>;
   listApprovals(): Promise<HomelabdApprovalsResponse>;
   listEvents(options?: { date?: string; limit?: number }): Promise<HomelabdEventsResponse>;

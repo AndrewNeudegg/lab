@@ -14,7 +14,14 @@ type Toolset struct {
 }
 
 func Register(reg *tool.Registry, store *memstore.Store) error {
-	for _, t := range []tool.Tool{ReadTool{store: store}, ProposeWriteTool{store: store}, CommitWriteTool{store: store}} {
+	for _, t := range []tool.Tool{
+		ListTool{store: store},
+		ReadTool{store: store},
+		RememberTool{store: store},
+		UnlearnTool{store: store},
+		ProposeWriteTool{store: store},
+		CommitWriteTool{store: store},
+	} {
 		if err := reg.Register(t); err != nil {
 			return err
 		}
@@ -23,6 +30,41 @@ func Register(reg *tool.Registry, store *memstore.Store) error {
 }
 
 func schema(v string) json.RawMessage { return json.RawMessage(v) }
+
+type ListTool struct{ store *memstore.Store }
+
+func (ListTool) Name() string { return "memory.list" }
+func (ListTool) Description() string {
+	return "List markdown memory files and durable interaction lessons."
+}
+func (ListTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","properties":{"name":{"type":"string","description":"Optional markdown memory file for lesson entries; defaults to user.md."}}}`)
+}
+func (ListTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (t ListTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &req); err != nil {
+			return nil, err
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	files, err := t.store.List()
+	if err != nil {
+		return nil, err
+	}
+	lessons, err := t.store.ListLessons(req.Name)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"files": files, "lessons": lessons})
+}
 
 type ReadTool struct{ store *memstore.Store }
 
@@ -49,6 +91,72 @@ func (t ReadTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessa
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"name": req.Name, "content": content})
+}
+
+type RememberTool struct{ store *memstore.Store }
+
+func (RememberTool) Name() string { return "memory.remember" }
+func (RememberTool) Description() string {
+	return "Store a distilled durable interaction lesson or user preference."
+}
+func (RememberTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["content"],"properties":{"content":{"type":"string","description":"Short distilled lesson for future decisions, not a transcript."},"kind":{"type":"string","description":"Optional category such as preference, procedure, principle, or fact."},"source":{"type":"string","description":"Optional source label; defaults to chat."},"name":{"type":"string","description":"Optional markdown memory file; defaults to user.md."}}}`)
+}
+func (RememberTool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (t RememberTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+		Kind    string `json:"kind"`
+		Source  string `json:"source"`
+	}
+	if err := json.Unmarshal(input, &req); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	lesson, err := t.store.RememberLesson(req.Name, memstore.Lesson{
+		Content: req.Content,
+		Kind:    req.Kind,
+		Source:  req.Source,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"remembered": lesson})
+}
+
+type UnlearnTool struct{ store *memstore.Store }
+
+func (UnlearnTool) Name() string { return "memory.unlearn" }
+func (UnlearnTool) Description() string {
+	return "Remove durable interaction lessons by id or matching text."
+}
+func (UnlearnTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["selector"],"properties":{"selector":{"type":"string","description":"Memory id or distinctive text to remove."},"name":{"type":"string","description":"Optional markdown memory file; defaults to user.md."}}}`)
+}
+func (UnlearnTool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (t UnlearnTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Name     string `json:"name"`
+		Selector string `json:"selector"`
+	}
+	if err := json.Unmarshal(input, &req); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	removed, err := t.store.UnlearnLesson(req.Name, req.Selector)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"removed": removed})
 }
 
 type ProposeWriteTool struct{ store *memstore.Store }

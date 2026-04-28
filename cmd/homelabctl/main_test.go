@@ -308,6 +308,26 @@ func TestUXShortcutSendsChatCommand(t *testing.T) {
 	}
 }
 
+func TestRememberShortcutSendsChatCommand(t *testing.T) {
+	var observed observedRequest
+	stdout, stderr, code := runAgainstServer(t, []string{"remember", "prefer", "distilled", "lessons"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		observed = observeRequest(t, req)
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "remembered", "source": "program"})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if observed.Method != http.MethodPost || observed.Path != "/message" {
+		t.Fatalf("request = %s %s, want POST /message", observed.Method, observed.Path)
+	}
+	if observed.Body["content"] != "remember prefer distilled lessons" {
+		t.Fatalf("body = %#v", observed.Body)
+	}
+	if stdout != "remembered\n" {
+		t.Fatalf("stdout = %q, want plain reply", stdout)
+	}
+}
+
 func TestParseWorkflowCreateArgs(t *testing.T) {
 	name, goal := parseWorkflowCreateArgs([]string{"Research", "bundle:", "Find", "sources"})
 	if name != "Research bundle" || goal != "Find sources" {

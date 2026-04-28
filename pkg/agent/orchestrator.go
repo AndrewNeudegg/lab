@@ -19,6 +19,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
 	"github.com/andrewneudegg/lab/pkg/llm"
+	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
@@ -36,6 +37,7 @@ type Orchestrator struct {
 	policy       tool.Policy
 	provider     llm.Provider
 	model        string
+	memory       *memstore.Store
 	remoteAgents *remoteagent.Store
 	logger       *slog.Logger
 	activeMu     sync.Mutex
@@ -44,6 +46,11 @@ type Orchestrator struct {
 
 func (o *Orchestrator) WithRemoteAgents(store *remoteagent.Store) *Orchestrator {
 	o.remoteAgents = store
+	return o
+}
+
+func (o *Orchestrator) WithMemory(store *memstore.Store) *Orchestrator {
+	o.memory = store
 	return o
 }
 
@@ -222,6 +229,12 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		return programResult("usage: deep research <query>", nil)
 	case "status":
 		return programResult(o.listInFlight())
+	case "memory", "memories":
+		return programResult(o.listMemoryLessons())
+	case "remember", "learn":
+		return programResult(o.rememberInteractionLesson(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])), cmd))
+	case "forget", "unlearn":
+		return programResult(o.unlearnInteractionLesson(strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
 	case "new", "task":
 		return programResult(o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
 	case "tasks":
@@ -393,6 +406,155 @@ func (o *Orchestrator) appendChatReply(ctx context.Context, to, message string) 
 		Actor:   "OrchestratorAgent",
 		Payload: eventlog.Payload(map[string]any{"message": message, "to": to}),
 	})
+}
+
+type memoryDistillation struct {
+	Lesson string `json:"lesson"`
+	Kind   string `json:"kind"`
+}
+
+func (o *Orchestrator) listMemoryLessons() (string, error) {
+	if o.memory == nil {
+		return "memory store is not configured", nil
+	}
+	lessons, err := o.memory.ListLessons(memstore.DefaultLessonFile)
+	if err != nil {
+		return "", err
+	}
+	if len(lessons) == 0 {
+		return "No durable chat lessons recorded.", nil
+	}
+	var b strings.Builder
+	b.WriteString("Durable chat lessons:")
+	for _, lesson := range lessons {
+		fmt.Fprintf(&b, "\n- %s: %s", lesson.ID, lesson.Content)
+	}
+	return b.String(), nil
+}
+
+func (o *Orchestrator) rememberInteractionLesson(ctx context.Context, text, command string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Sprintf("usage: %s <lesson>", command), nil
+	}
+	if o.memory == nil {
+		return "memory store is not configured", nil
+	}
+
+	lesson, err := o.distillMemoryLesson(ctx, text)
+	if err != nil {
+		return err.Error(), nil
+	}
+	saved, err := o.memory.RememberLesson(memstore.DefaultLessonFile, lesson)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Remembered %s: %s", saved.ID, saved.Content), nil
+}
+
+func (o *Orchestrator) unlearnInteractionLesson(selector string) (string, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return "usage: unlearn <memory_id|text>", nil
+	}
+	if o.memory == nil {
+		return "memory store is not configured", nil
+	}
+	removed, err := o.memory.UnlearnLesson(memstore.DefaultLessonFile, selector)
+	if err != nil {
+		return err.Error(), nil
+	}
+	if len(removed) == 1 {
+		return fmt.Sprintf("Unlearned %s: %s", removed[0].ID, removed[0].Content), nil
+	}
+	return fmt.Sprintf("Unlearned %d lessons.", len(removed)), nil
+}
+
+func (o *Orchestrator) distillMemoryLesson(ctx context.Context, text string) (memstore.Lesson, error) {
+	fromRecentInteraction := wantsRecentInteractionMemory(text)
+	if fromRecentInteraction && (o.provider == nil || o.model == "") {
+		return memstore.Lesson{}, errors.New("I need an LLM provider configured to distil recent interactions. Use `remember <specific lesson>` instead.")
+	}
+	if o.provider == nil || o.model == "" {
+		return memstore.Lesson{Content: text, Kind: "lesson", Source: "chat"}, nil
+	}
+
+	input := "Memory request:\n" + text
+	if fromRecentInteraction {
+		input = "Recent chat history:\n" + o.chatHistoryForMemoryPrompt(time.Now().UTC(), 24)
+	}
+	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
+		Model:       o.model,
+		Temperature: 0,
+		MaxTokens:   512,
+		Messages: []llm.Message{{
+			Role: "system",
+			Content: strings.Join([]string{
+				"You distil durable memory for OrchestratorAgent.",
+				"Return exactly one JSON object and no prose.",
+				`Schema: {"lesson":"one concise future-facing lesson","kind":"preference|procedure|principle|fact|lesson"}`,
+				"The lesson must inform future decisions without mirroring the user's language, slang, or mood.",
+				"Do not store secrets, raw transcripts, transient task state, or facts likely to go stale.",
+				"If there is no durable lesson, return an empty lesson string.",
+			}, "\n"),
+		}, {
+			Role:    "user",
+			Content: input,
+		}},
+	})
+	if err != nil {
+		if fromRecentInteraction {
+			return memstore.Lesson{}, fmt.Errorf("I could not distil recent interactions: %w", err)
+		}
+		return memstore.Lesson{Content: text, Kind: "lesson", Source: "chat"}, nil
+	}
+	var parsed memoryDistillation
+	if err := json.Unmarshal([]byte(extractJSON(resp.Message.Content)), &parsed); err != nil {
+		if fromRecentInteraction {
+			return memstore.Lesson{}, fmt.Errorf("I could not parse the distilled lesson")
+		}
+		return memstore.Lesson{Content: text, Kind: "lesson", Source: "chat"}, nil
+	}
+	if strings.TrimSpace(parsed.Lesson) == "" {
+		return memstore.Lesson{}, errors.New("I did not find a durable lesson to remember.")
+	}
+	return memstore.Lesson{Content: parsed.Lesson, Kind: parsed.Kind, Source: "chat"}, nil
+}
+
+func (o *Orchestrator) chatHistoryForMemoryPrompt(day time.Time, limit int) string {
+	history := o.recentChatHistory(day, limit)
+	var b strings.Builder
+	for _, msg := range history {
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%s: %s\n", msg.Role, truncateForPrompt(content))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (o *Orchestrator) memoryContextPrompt() string {
+	if o.memory == nil {
+		return "No durable memory store configured."
+	}
+	prompt, err := o.memory.LessonPrompt(memstore.DefaultLessonFile, 12)
+	if err != nil {
+		return "Durable memory unavailable: " + err.Error()
+	}
+	return prompt
+}
+
+func wantsRecentInteractionMemory(value string) bool {
+	normalised := strings.ToLower(strings.Join(strings.Fields(strings.Trim(value, " .,!?:;")), " "))
+	switch normalised {
+	case "that", "this", "from that", "from this", "from what just happened",
+		"from our interaction", "from our interactions", "from recent interaction",
+		"from the recent interaction", "from our recent interaction", "from our recent interactions":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCasualMessage(message string) bool {
@@ -1643,6 +1805,9 @@ func help() string {
 		"  workflow run <workflow_id> run a workflow through policy-bound steps",
 		"  status                     show active tasks and next actions",
 		"  what's cooking             show active tasks and next actions",
+		"  memories                   list durable chat lessons",
+		"  remember <lesson>          distil and store a durable chat lesson",
+		"  unlearn <id|text>          remove a durable chat lesson",
 		"  show <task_id>             show task",
 		"  cancel <task_id>           mark task cancelled, keep workspace",
 		"  delete <task_id>           remove task record and worktree",
@@ -1891,6 +2056,8 @@ func chatHistoryEndsWith(history []llm.Message, role, content string) bool {
 func (o *Orchestrator) llmToolPrompt() string {
 	return strings.Join([]string{
 		"You are OrchestratorAgent for a local homelab development runtime.",
+		"Personality: be direct, pragmatic, and decision-oriented. Do not mirror the user's wording, slang, or emotional tone.",
+		"Learning: distil durable feedback into concise lessons that improve future decisions; treat memory as soft guidance below current instructions and repo facts.",
 		"The Go runtime is the authority. You propose actions; tools execute only after policy validation.",
 		"Respond with exactly one JSON object and no prose.",
 		"Protocol:",
@@ -1900,11 +2067,15 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use internet.research for broad, current, multi-source questions before synthesizing advice.",
 		"Use text.correct to fix likely spelling or grammar issues before internet.search when the user query looks typo-prone; preserve exact code symbols and quoted strings.",
 		"Use text.summarize when a long user task or note needs a compact label.",
+		"Use memory.remember only when the user explicitly asks you to remember or learn something, or gives clear future-facing feedback. Store distilled lessons, not transcripts.",
+		"Use memory.unlearn when the user asks you to forget, remove, correct, or stop using a stored lesson.",
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
 		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
+		"Current durable memory:",
+		o.memoryContextPrompt(),
 		"Available tools:",
 		o.toolCatalog(),
 	}, "\n")
@@ -4789,6 +4960,11 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	if err != nil {
 		return "", err
 	}
+	shortID := taskShortID(taskID)
+	if !o.markTaskActive(taskID, "ReviewerAgent") {
+		return fmt.Sprintf("ReviewerAgent: task %s already has an active worker or review. No checks run and no state changed.\nNext: `status` or `show %s`.", shortID, shortID), nil
+	}
+	defer o.clearTaskActive(taskID)
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
@@ -4796,10 +4972,19 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	if remoteTask(t) {
 		return o.reviewRemoteTask(ctx, t)
 	}
-	shortID := taskShortID(taskID)
+	if t.Status != taskstore.StatusReadyForReview {
+		return reviewNotReadyReply(t), nil
+	}
 	diffOut := ""
 	if workspaceHasGit(t.Workspace) {
 		if _, err := commitReviewWorkspaceChanges(ctx, t.Workspace, taskID); err != nil {
+			if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+				return "", currentErr
+			} else if !ok {
+				return reply, nil
+			} else {
+				t = latest
+			}
 			t.Status = taskstore.StatusBlocked
 			t.AssignedTo = "OrchestratorAgent"
 			t.Result = "ReviewerAgent could not commit workspace changes before review: " + err.Error()
@@ -4808,6 +4993,13 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review commit: fail\n%s\nNo approval created.\nNext: `delegate %s to codex fix the workspace git state`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
 		}
 		if mergeOut, err := o.reconcileTaskWorkspaceWithMain(ctx, t.Workspace); err != nil {
+			if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+				return "", currentErr
+			} else if !ok {
+				return reply, nil
+			} else {
+				t = latest
+			}
 			t.Status = taskstore.StatusConflictResolution
 			t.AssignedTo = "OrchestratorAgent"
 			t.Result = "ReviewerAgent could not reconcile task branch with current main before checks: " + err.Error()
@@ -4829,6 +5021,13 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		}
 	}
 	if diffOut == "no diff" {
+		if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+			return "", currentErr
+		} else if !ok {
+			return reply, nil
+		} else {
+			t = latest
+		}
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
 		t.Result = "ReviewerAgent found no diff to approve."
@@ -4840,6 +5039,13 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent", browserUAT)
 	status := "pass"
 	if testErr != nil {
+		if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+			return "", currentErr
+		} else if !ok {
+			return reply, nil
+		} else {
+			t = latest
+		}
 		status = "fail"
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
@@ -4850,6 +5056,13 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	}
 	if _, ok := o.registry.Get("git.merge_check"); ok {
 		if _, err := o.runTool(ctx, "ReviewerAgent", "git.merge_check", map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root}, taskID); err != nil {
+			if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+				return "", currentErr
+			} else if !ok {
+				return reply, nil
+			} else {
+				t = latest
+			}
 			t.Status = taskstore.StatusBlocked
 			t.AssignedTo = "OrchestratorAgent"
 			t.Result = "ReviewerAgent premerge check failed: " + err.Error()
@@ -4862,6 +5075,13 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	approvalID := id.New("approval")
 	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
+	if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+		return "", currentErr
+	} else if !ok {
+		return reply, nil
+	} else {
+		t = latest
+	}
 	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new review approval"); err != nil {
 		return "", err
 	}
@@ -4881,6 +5101,38 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		restartLine = "Restart impact: " + restartPlan
 	}
 	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\nAfter merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, shortID, shortID), nil
+}
+
+func reviewNotReadyReply(t taskstore.Task) string {
+	shortID := taskShortID(t.ID)
+	switch t.Status {
+	case taskstore.StatusRunning:
+		return fmt.Sprintf("ReviewerAgent: task %s is still running on %s. No checks run and no state changed.\nNext: `status` or `show %s`.", shortID, firstNonEmptyString(t.AssignedTo, "a worker"), shortID)
+	case taskstore.StatusQueued:
+		return fmt.Sprintf("ReviewerAgent: task %s is still queued. No checks run and no state changed.\nNext: `run %s`, `delegate %s to codex`, or `show %s`.", shortID, shortID, shortID, shortID)
+	case taskstore.StatusAwaitingApproval:
+		return fmt.Sprintf("ReviewerAgent: task %s has already passed review and is awaiting approval. No checks run and no state changed.\nNext: `approvals` or `show %s`.", shortID, shortID)
+	case taskstore.StatusAwaitingVerification:
+		return fmt.Sprintf("ReviewerAgent: task %s has already merged and is awaiting verification. No checks run and no state changed.\nNext: `accept %s` or `reopen %s <reason>`.", shortID, shortID, shortID)
+	case taskstore.StatusBlocked, taskstore.StatusFailed, taskstore.StatusConflictResolution:
+		return fmt.Sprintf("ReviewerAgent: task %s is %s, not ready for review. No checks run and no state changed.\nNext: `retry %s codex <instruction>`, `diff %s`, or `delete %s`.", shortID, t.Status, shortID, shortID, shortID)
+	case taskstore.StatusDone, taskstore.StatusCancelled:
+		return fmt.Sprintf("ReviewerAgent: task %s is %s. No checks run and no state changed.", shortID, t.Status)
+	default:
+		return fmt.Sprintf("ReviewerAgent: task %s is %s, not %s. No checks run and no state changed.\nNext: `show %s`.", shortID, firstNonEmptyString(t.Status, "unknown"), taskstore.StatusReadyForReview, shortID)
+	}
+}
+
+func (o *Orchestrator) currentReviewTask(taskID string) (taskstore.Task, bool, string, error) {
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return taskstore.Task{}, false, "", err
+	}
+	if t.Status != taskstore.StatusReadyForReview {
+		shortID := taskShortID(taskID)
+		return t, false, fmt.Sprintf("ReviewerAgent: review result for %s was ignored because the task changed to %s while checks were running. No task state changed.\nNext: `status` or `show %s`.", shortID, firstNonEmptyString(t.Status, "unknown"), shortID), nil
+	}
+	return t, true, "", nil
 }
 
 func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (string, error) {
@@ -4928,50 +5180,73 @@ func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, works
 
 func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string, browserUAT string) (string, error) {
 	var outputs []string
+	var failedOutputs []string
 	var firstErr error
 	if exists(filepath.Join(workspace, "go.mod")) {
 		out, err := o.runCheckTool(ctx, actor, "go.test", workspace, taskID)
-		outputs = append(outputs, "go.test:\n"+strings.TrimSpace(out))
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+		output := "go.test:\n" + strings.TrimSpace(out)
+		outputs = append(outputs, output)
+		firstErr = recordProjectCheckFailure("go.test", output, err, firstErr, &failedOutputs)
 	}
 	webDir := filepath.Join(workspace, "web")
 	if exists(filepath.Join(webDir, "package.json")) {
 		out, err := o.runCheckTool(ctx, actor, "bun.check", webDir, taskID)
-		outputs = append(outputs, "bun.check:\n"+strings.TrimSpace(out))
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+		output := "bun.check:\n" + strings.TrimSpace(out)
+		outputs = append(outputs, output)
+		firstErr = recordProjectCheckFailure("bun.check", output, err, firstErr, &failedOutputs)
 		out, err = o.runCheckTool(ctx, actor, "bun.build", webDir, taskID)
-		outputs = append(outputs, "bun.build:\n"+strings.TrimSpace(out))
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+		output = "bun.build:\n" + strings.TrimSpace(out)
+		outputs = append(outputs, output)
+		firstErr = recordProjectCheckFailure("bun.build", output, err, firstErr, &failedOutputs)
 		out, err = o.runCheckTool(ctx, actor, "bun.test", webDir, taskID)
-		outputs = append(outputs, "bun.test:\n"+strings.TrimSpace(out))
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+		output = "bun.test:\n" + strings.TrimSpace(out)
+		outputs = append(outputs, output)
+		firstErr = recordProjectCheckFailure("bun.test", output, err, firstErr, &failedOutputs)
 		switch browserUAT {
 		case "site":
 			out, err = o.runCheckTool(ctx, actor, "bun.uat.site", webDir, taskID)
-			outputs = append(outputs, "bun.uat.site:\n"+strings.TrimSpace(out))
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
+			output = "bun.uat.site:\n" + strings.TrimSpace(out)
+			outputs = append(outputs, output)
+			firstErr = recordProjectCheckFailure("bun.uat.site", output, err, firstErr, &failedOutputs)
 		case "tasks":
 			out, err = o.runCheckTool(ctx, actor, "bun.uat.tasks", webDir, taskID)
-			outputs = append(outputs, "bun.uat.tasks:\n"+strings.TrimSpace(out))
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
+			output = "bun.uat.tasks:\n" + strings.TrimSpace(out)
+			outputs = append(outputs, output)
+			firstErr = recordProjectCheckFailure("bun.uat.tasks", output, err, firstErr, &failedOutputs)
 		}
 	}
 	if len(outputs) == 0 {
 		return "no configured checks found", nil
 	}
+	if len(failedOutputs) > 0 {
+		return truncateForChat(strings.Join(failedOutputs, "\n\n")), firstErr
+	}
 	return truncateForChat(strings.Join(outputs, "\n\n")), firstErr
+}
+
+func recordProjectCheckFailure(name, output string, err error, firstErr error, failedOutputs *[]string) error {
+	if err == nil {
+		return firstErr
+	}
+	*failedOutputs = append(*failedOutputs, truncateFailureForChat(output))
+	if firstErr == nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return firstErr
+}
+
+func truncateFailureForChat(s string) string {
+	const max = 12000
+	if len(s) <= max {
+		return s
+	}
+	const head = 3000
+	marker := fmt.Sprintf("\n...[truncated %d bytes before failing tail]\n", len(s)-max)
+	tail := max - head - len(marker)
+	if tail < 0 {
+		tail = 0
+	}
+	return s[:head] + marker + s[len(s)-tail:]
 }
 
 func browserUATForDiff(diff string) string {
@@ -5309,9 +5584,12 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 	}
 
 	t.Result = lastMessage
+	t.Status = taskstore.StatusReadyForReview
+	t.AssignedTo = "OrchestratorAgent"
 	if err := o.tasks.Save(t); err != nil {
 		return "", err
 	}
+	o.clearTaskActive(taskID)
 	review, err := o.reviewTask(ctx, taskID)
 	status := "reviewed"
 	errorText := ""

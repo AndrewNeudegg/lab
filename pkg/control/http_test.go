@@ -251,7 +251,7 @@ func TestWorkflowHTTPLifecycle(t *testing.T) {
 	create := requestJSON(t, mux, http.MethodPost, "/workflows", `{
 		"name":"Watch deploy",
 		"goal":"Wait until the deployment is healthy",
-		"steps":[{"name":"Health gate","kind":"wait","condition":"healthd reports healthy","timeout_seconds":120}]
+		"steps":[{"name":"Health gate","kind":"wait","condition":"manual deployment gate","timeout_seconds":120}]
 	}`, "", http.StatusCreated)
 	var created struct {
 		Workflow struct {
@@ -278,7 +278,7 @@ func TestWorkflowHTTPLifecycle(t *testing.T) {
 	}
 
 	run := requestJSON(t, mux, http.MethodPost, "/workflows/"+created.Workflow.ID+"/run", `{}`, "", http.StatusOK)
-	if !strings.Contains(run.Body.String(), `"status":"waiting"`) || !strings.Contains(run.Body.String(), "healthd reports healthy") {
+	if !strings.Contains(run.Body.String(), `"status":"waiting"`) || !strings.Contains(run.Body.String(), "manual deployment gate") {
 		t.Fatalf("run response = %s, want waiting workflow run", run.Body.String())
 	}
 }

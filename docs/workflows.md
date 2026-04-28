@@ -44,7 +44,9 @@ The Orchestrator exposes these pseudo-tools to the LLM:
 - `workflow.show`: inspect one workflow before deciding whether to reuse it.
 - `workflow.run`: execute a workflow through the normal policy-bound tool path.
 
-Tool steps run through `OrchestratorAgent` policy checks. A step that needs approval pauses the workflow as `awaiting_approval`; a wait step pauses as `waiting` with its condition recorded.
+Tool steps run through `OrchestratorAgent` policy checks. A step that needs approval pauses the workflow as `awaiting_approval`.
+
+Wait steps are re-checked by `workflow run <workflow_id>`. Known conditions such as `homelabd health is reachable` and `healthd reports healthy` are evaluated automatically. A wait step with no condition acts as a timer and completes after `timeout_seconds`; a conditional wait fails after `timeout_seconds` if the condition is still not met.
 
 ## HTTP And CLI
 
@@ -63,3 +65,5 @@ go run ./cmd/homelabctl workflow list
 go run ./cmd/homelabctl workflow show workflow_123
 go run ./cmd/homelabctl workflow run workflow_123
 ```
+
+Running a waiting workflow resumes its latest waiting run instead of starting over.

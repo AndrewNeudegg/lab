@@ -664,6 +664,116 @@ func TestWorkflowToolStepRunsThroughPolicyBoundTool(t *testing.T) {
 	}
 }
 
+func TestWorkflowWaitStepCompletesForHomelabdHealthCondition(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	item, _, err := orch.CreateWorkflow(context.Background(), workflowstore.CreateRequest{
+		Name: "Health gate",
+		Steps: []workflowstore.Step{{
+			Name:           "Homelabd health",
+			Kind:           workflowstore.StepKindWait,
+			Condition:      "homelabd health is reachable",
+			TimeoutSeconds: 60,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, reply, err := orch.RunWorkflow(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != workflowstore.StatusCompleted || !strings.Contains(reply, "Condition met: homelabd health is reachable") {
+		t.Fatalf("status = %q, reply = %q, want completed health wait", updated.Status, reply)
+	}
+	if updated.LastRun == nil || len(updated.LastRun.Outputs) != 1 || updated.LastRun.Outputs[0].FinishedAt == nil {
+		t.Fatalf("last run = %#v, want one finished wait output", updated.LastRun)
+	}
+}
+
+func TestWorkflowRunResumesTimedWait(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	item, _, err := orch.CreateWorkflow(context.Background(), workflowstore.CreateRequest{
+		Name: "Delay gate",
+		Steps: []workflowstore.Step{{
+			Name:           "Delay",
+			Kind:           workflowstore.StepKindWait,
+			TimeoutSeconds: 5,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waiting, _, err := orch.RunWorkflow(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.Status != workflowstore.StatusWaiting || waiting.LastRun == nil || len(waiting.LastRun.Outputs) != 1 {
+		t.Fatalf("workflow = %#v, want waiting run", waiting)
+	}
+	runID := waiting.LastRun.ID
+
+	store, err := orch.workflowStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting.LastRun.StartedAt = time.Now().UTC().Add(-6 * time.Second)
+	waiting.LastRun.Outputs[0].StartedAt = waiting.LastRun.StartedAt
+	if err := store.Save(waiting); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, reply, err := orch.RunWorkflow(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != workflowstore.StatusCompleted || !strings.Contains(reply, "Wait completed") {
+		t.Fatalf("status = %q, reply = %q, want completed resumed wait", updated.Status, reply)
+	}
+	if updated.LastRun == nil || updated.LastRun.ID != runID || len(updated.LastRun.Outputs) != 1 {
+		t.Fatalf("last run = %#v, want same resumed run with one output", updated.LastRun)
+	}
+}
+
+func TestWorkflowRunFailsExpiredConditionalWait(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	item, _, err := orch.CreateWorkflow(context.Background(), workflowstore.CreateRequest{
+		Name: "Manual gate",
+		Steps: []workflowstore.Step{{
+			Name:           "Manual approval",
+			Kind:           workflowstore.StepKindWait,
+			Condition:      "manual deployment gate",
+			TimeoutSeconds: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waiting, _, err := orch.RunWorkflow(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting.LastRun.StartedAt = time.Now().UTC().Add(-2 * time.Second)
+	waiting.LastRun.Outputs[0].StartedAt = waiting.LastRun.StartedAt
+	store, err := orch.workflowStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(waiting); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, reply, err := orch.RunWorkflow(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != workflowstore.StatusFailed || !strings.Contains(reply, "timed out after 1s waiting for condition: manual deployment gate") {
+		t.Fatalf("status = %q, reply = %q, want timed-out wait failure", updated.Status, reply)
+	}
+}
+
 func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	summarizer := &taskTitleSummaryStub{summary: "Summarise task creation titles"}

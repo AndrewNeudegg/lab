@@ -120,6 +120,8 @@ go run ./cmd/homelabctl workflow show workflow_123
 go run ./cmd/homelabctl workflow run workflow_123
 ```
 
+`workflow run` starts draft/completed workflows and resumes the latest `waiting` run so wait conditions can be re-checked. Built-in wait checks cover `homelabd health is reachable` and `healthd reports healthy`; timer waits complete after `timeout_seconds`.
+
 Use workflows when repeatable logic should be created, estimated, monitored, and invoked outside one chat turn. See `docs/workflows.md`.
 
 ## Remote Agent Commands

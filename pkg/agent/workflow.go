@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -95,22 +97,47 @@ func (o *Orchestrator) runWorkflow(ctx context.Context, selector string, seen ma
 	if err != nil {
 		return workflowstore.Workflow{}, "", err
 	}
+
 	run := workflowstore.Run{
 		ID:         id.New("wfrun"),
 		WorkflowID: item.ID,
 		Status:     workflowstore.StatusRunning,
 		StartedAt:  time.Now().UTC(),
 	}
+	startIndex := 0
+	var resumedStep *workflowstore.StepOutput
+	eventType := "workflow.run.started"
+	if item.LastRun != nil &&
+		item.LastRun.Status == workflowstore.StatusWaiting &&
+		item.LastRun.CurrentStep > 0 &&
+		item.LastRun.CurrentStep <= len(item.Steps) {
+		run = *item.LastRun
+		run.Status = workflowstore.StatusRunning
+		run.Error = ""
+		run.FinishedAt = nil
+		startIndex = run.CurrentStep - 1
+		if len(run.Outputs) > 0 {
+			last := run.Outputs[len(run.Outputs)-1]
+			resumedStep = &last
+			run.Outputs = append([]workflowstore.StepOutput(nil), run.Outputs[:len(run.Outputs)-1]...)
+		}
+		eventType = "workflow.run.resumed"
+	}
 	item.Status = workflowstore.StatusRunning
 	item.LastRun = &run
 	if err := store.Save(item); err != nil {
 		return workflowstore.Workflow{}, "", err
 	}
-	o.appendWorkflowEvent(ctx, "workflow.run.started", item, map[string]any{"run_id": run.ID})
+	o.appendWorkflowEvent(ctx, eventType, item, map[string]any{"run_id": run.ID, "current_step": run.CurrentStep})
 
-	for index, step := range item.Steps {
+	for index := startIndex; index < len(item.Steps); index++ {
+		step := item.Steps[index]
 		run.CurrentStep = index + 1
-		output := o.runWorkflowStep(ctx, item, step, run.Outputs, seen)
+		var previousAttempt *workflowstore.StepOutput
+		if resumedStep != nil && index == startIndex && resumedStep.StepID == step.ID {
+			previousAttempt = resumedStep
+		}
+		output := o.runWorkflowStep(ctx, item, step, run.Outputs, seen, previousAttempt)
 		run.Outputs = append(run.Outputs, output)
 		item.LastRun = &run
 		switch output.Status {
@@ -122,6 +149,7 @@ func (o *Orchestrator) runWorkflow(ctx context.Context, selector string, seen ma
 			if err := store.Save(item); err != nil {
 				return workflowstore.Workflow{}, "", err
 			}
+			item, _ = store.Load(item.ID)
 			o.appendWorkflowEvent(ctx, "workflow.run.paused", item, map[string]any{"run_id": run.ID, "step_id": output.StepID, "status": output.Status, "summary": output.Summary})
 			return item, formatWorkflowRunResult(item), nil
 		default:
@@ -134,6 +162,7 @@ func (o *Orchestrator) runWorkflow(ctx context.Context, selector string, seen ma
 			if err := store.Save(item); err != nil {
 				return workflowstore.Workflow{}, "", err
 			}
+			item, _ = store.Load(item.ID)
 			o.appendWorkflowEvent(ctx, "workflow.run.failed", item, map[string]any{"run_id": run.ID, "step_id": output.StepID, "error": output.Error})
 			return item, formatWorkflowRunResult(item), nil
 		}
@@ -146,12 +175,16 @@ func (o *Orchestrator) runWorkflow(ctx context.Context, selector string, seen ma
 	if err := store.Save(item); err != nil {
 		return workflowstore.Workflow{}, "", err
 	}
+	item, _ = store.Load(item.ID)
 	o.appendWorkflowEvent(ctx, "workflow.run.completed", item, map[string]any{"run_id": run.ID, "steps": len(run.Outputs)})
 	return item, formatWorkflowRunResult(item), nil
 }
 
-func (o *Orchestrator) runWorkflowStep(ctx context.Context, item workflowstore.Workflow, step workflowstore.Step, previous []workflowstore.StepOutput, seen map[string]bool) workflowstore.StepOutput {
+func (o *Orchestrator) runWorkflowStep(ctx context.Context, item workflowstore.Workflow, step workflowstore.Step, previous []workflowstore.StepOutput, seen map[string]bool, previousAttempt *workflowstore.StepOutput) workflowstore.StepOutput {
 	started := time.Now().UTC()
+	if previousAttempt != nil && !previousAttempt.StartedAt.IsZero() {
+		started = previousAttempt.StartedAt
+	}
 	output := workflowstore.StepOutput{
 		StepID:    step.ID,
 		StepName:  step.Name,
@@ -221,14 +254,122 @@ func (o *Orchestrator) runWorkflowStep(ctx context.Context, item workflowstore.W
 		}
 		return finish(nested.Status, "Workflow paused: "+workflowShortID(nested.ID), "", result)
 	case workflowstore.StepKindWait:
-		summary := "Waiting for condition"
-		if step.Condition != "" {
-			summary += ": " + step.Condition
-		}
-		return finish(workflowstore.StatusWaiting, summary, "", eventlog.Payload(map[string]any{"condition": step.Condition, "timeout_seconds": step.TimeoutSeconds}))
+		status, summary, errText, result := o.evaluateWorkflowWait(ctx, step, started)
+		return finish(status, summary, errText, result)
 	default:
 		return finish(workflowstore.StatusFailed, "", "unsupported workflow step kind: "+step.Kind, nil)
 	}
+}
+
+func (o *Orchestrator) evaluateWorkflowWait(ctx context.Context, step workflowstore.Step, started time.Time) (string, string, string, json.RawMessage) {
+	now := time.Now().UTC()
+	elapsed := now.Sub(started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	timeout := time.Duration(step.TimeoutSeconds) * time.Second
+	condition := strings.TrimSpace(step.Condition)
+	payload := map[string]any{
+		"condition":       condition,
+		"timeout_seconds": step.TimeoutSeconds,
+		"elapsed_seconds": int(elapsed.Seconds()),
+		"started_at":      started,
+	}
+
+	if condition == "" {
+		if timeout <= 0 || elapsed >= timeout {
+			payload["condition_met"] = true
+			return workflowstore.StatusCompleted, "Wait completed", "", eventlog.Payload(payload)
+		}
+		payload["condition_met"] = false
+		payload["remaining_seconds"] = int((timeout - elapsed + time.Second - 1) / time.Second)
+		return workflowstore.StatusWaiting, fmt.Sprintf("Waiting for %ds", step.TimeoutSeconds), "", eventlog.Payload(payload)
+	}
+
+	met, note := o.workflowWaitConditionMet(ctx, condition)
+	payload["condition_met"] = met
+	if note != "" {
+		payload["note"] = note
+	}
+	if met {
+		return workflowstore.StatusCompleted, "Condition met: " + condition, "", eventlog.Payload(payload)
+	}
+	if timeout > 0 && elapsed >= timeout {
+		errText := fmt.Sprintf("timed out after %ds waiting for condition: %s", step.TimeoutSeconds, condition)
+		return workflowstore.StatusFailed, "", errText, eventlog.Payload(payload)
+	}
+	summary := "Waiting for condition: " + condition
+	if note != "" {
+		summary += " (" + note + ")"
+	}
+	return workflowstore.StatusWaiting, summary, "", eventlog.Payload(payload)
+}
+
+func (o *Orchestrator) workflowWaitConditionMet(ctx context.Context, condition string) (bool, string) {
+	normalized := strings.Join(strings.Fields(strings.ToLower(condition)), " ")
+	switch normalized {
+	case "true", "ok", "ready", "met", "complete", "completed":
+		return true, "literal condition is true"
+	}
+	if strings.Contains(normalized, "homelabd") &&
+		strings.Contains(normalized, "health") &&
+		(strings.Contains(normalized, "reachable") || strings.Contains(normalized, "healthy") || strings.Contains(normalized, "ok")) {
+		return true, "homelabd health is reachable"
+	}
+	if strings.Contains(normalized, "healthd") &&
+		(strings.Contains(normalized, "health") || strings.Contains(normalized, "healthy") || strings.Contains(normalized, "ok")) {
+		return o.healthdIsHealthy(ctx)
+	}
+	return false, "no automatic evaluator matched"
+}
+
+func (o *Orchestrator) healthdIsHealthy(ctx context.Context) (bool, string) {
+	if o.cfg.Healthd.Enabled != nil && !*o.cfg.Healthd.Enabled {
+		return false, "healthd is disabled"
+	}
+	addr := strings.TrimSpace(o.cfg.Healthd.Addr)
+	if addr == "" {
+		return false, "healthd address is not configured"
+	}
+	timeout := time.Duration(o.cfg.Healthd.RequestTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(workflowHTTPAddr(addr), "/")+"/healthd?window=5m", nil)
+	if err != nil {
+		return false, err.Error()
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, "healthd unreachable: " + err.Error()
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return false, "healthd response unreadable: " + err.Error()
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Sprintf("healthd returned %s", resp.Status)
+	}
+	var snapshot struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		return false, "healthd response invalid: " + err.Error()
+	}
+	status := strings.TrimSpace(snapshot.Status)
+	if status == "" {
+		return false, "healthd status missing"
+	}
+	return status == "healthy", "healthd status: " + status
+}
+
+func workflowHTTPAddr(addr string) string {
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+	return "http://" + addr
 }
 
 func workflowStepPrompt(item workflowstore.Workflow, step workflowstore.Step, previous []workflowstore.StepOutput) string {
@@ -489,7 +630,11 @@ func formatWorkflowRunResult(item workflowstore.Workflow) string {
 			lines = append(lines, line)
 		}
 	}
-	lines = append(lines, "Next: `workflow show "+workflowShortID(item.ID)+"`")
+	if item.Status == workflowstore.StatusWaiting {
+		lines = append(lines, "Next: `workflow run "+workflowShortID(item.ID)+"` to re-check, `workflow show "+workflowShortID(item.ID)+"`")
+	} else {
+		lines = append(lines, "Next: `workflow show "+workflowShortID(item.ID)+"`")
+	}
 	return strings.Join(lines, "\n")
 }
 

@@ -100,6 +100,24 @@ func TestOrchestratorCanReadHealthErrors(t *testing.T) {
 	}
 }
 
+func TestOrchestratorCanManageMemoryLessons(t *testing.T) {
+	policy := NewPolicy(nil)
+	for _, tt := range []struct {
+		name  string
+		risk  RiskLevel
+		input string
+	}{
+		{name: "memory.list", risk: RiskReadOnly, input: `{}`},
+		{name: "memory.remember", risk: RiskLow, input: `{"content":"Prefer distilled lessons."}`},
+		{name: "memory.unlearn", risk: RiskLow, input: `{"selector":"mem_123"}`},
+	} {
+		decision := policy.Decide("OrchestratorAgent", stubTool{name: tt.name, risk: tt.risk}, json.RawMessage(tt.input))
+		if !decision.Allowed || decision.NeedsApproval {
+			t.Fatalf("expected OrchestratorAgent %s to be allowed without approval: %+v", tt.name, decision)
+		}
+	}
+}
+
 func TestOrchestratorCanRequestApprovalGatedGitWorkflow(t *testing.T) {
 	policy := NewPolicy(nil)
 	for _, name := range []string{"git.commit", "git.revert", "git.merge"} {

@@ -17,6 +17,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/llm"
+	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
@@ -1432,6 +1433,158 @@ func TestReviewDoesNotRequestApprovalWhenChecksFail(t *testing.T) {
 	if updated.Status != taskstore.StatusBlocked {
 		t.Fatalf("status = %q, want blocked", updated.Status)
 	}
+	if !strings.Contains(updated.Result, "go.test: go test failed") {
+		t.Fatalf("result = %q, want failing check name", updated.Result)
+	}
+}
+
+func TestReviewRerunsBlockedReviewCheckFailure(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260428_214200_recheck1",
+		Title:      "recheck review infra",
+		Goal:       "recheck review infra",
+		Status:     taskstore.StatusBlocked,
+		AssignedTo: "OrchestratorAgent",
+		Result:     "ReviewerAgent checks failed: bun.uat.site: bun: exit status 1",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  workspace,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Merge approval requested") {
+		t.Fatalf("reply = %q, want blocked check failure to be reviewed again", reply)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusAwaitingApproval {
+		t.Fatalf("status = %q, want awaiting approval", updated.Status)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 || approvals[0].TaskID != task.ID {
+		t.Fatalf("approvals = %#v, want one approval for rechecked task", approvals)
+	}
+}
+
+func TestReviewRunningTaskDoesNotRunChecksOrBlock(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	taskID := "task_20260428_204200_running1"
+	task := taskstore.Task{
+		ID:         taskID,
+		Title:      "running worker",
+		Goal:       "running worker",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "codex",
+		Result:     "delegated to codex; external worker is running",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "still running") || strings.Contains(reply, "Checks:") {
+		t.Fatalf("reply = %q, want running no-op review", reply)
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.Result != task.Result {
+		t.Fatalf("task = %#v, want unchanged running task", updated)
+	}
+}
+
+func TestReviewIgnoresResultWhenTaskChangesDuringChecks(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_20260428_204201_raced001"
+	if err := orch.registry.Register(statusChangingGoTestStub{orch: orch, taskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module reviewrace\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         taskID,
+		Title:      "review race",
+		Goal:       "review race",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  workspace,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "ignored because the task changed to running") {
+		t.Fatalf("reply = %q, want stale review ignored", reply)
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.Result != "worker restarted while review was running" {
+		t.Fatalf("task = %#v, want worker state preserved", updated)
+	}
+}
+
+func TestProjectCheckFailureKeepsFailingToolTail(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(longGoTestFailStub{}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module longfail\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := orch.runProjectChecks(context.Background(), "task_longfail", workspace, "ReviewerAgent", "")
+	if err == nil || !strings.Contains(err.Error(), "go.test: go test failed") {
+		t.Fatalf("err = %v, want named go.test failure", err)
+	}
+	if !strings.Contains(out, "FINAL FAILURE LINE") || !strings.Contains(out, "truncated") {
+		t.Fatalf("output = %q, want failing tail preserved", out)
+	}
 }
 
 func TestReviewPremergeFailureBlocksWithoutAutoDelegating(t *testing.T) {
@@ -2661,6 +2814,84 @@ func TestOpenEndedChatReportsProviderSource(t *testing.T) {
 	}
 }
 
+func TestRememberCommandStoresDistilledLesson(t *testing.T) {
+	provider := &staticProvider{content: `{"lesson":"Prefer durable decision rules over style mimicry.","kind":"preference"}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "remember that feedback should become decision guidance, not copied wording")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Remembered mem_") ||
+		!strings.Contains(reply, "Prefer durable decision rules over style mimicry.") {
+		t.Fatalf("reply = %q, want remembered distilled lesson", reply)
+	}
+
+	list, err := orch.Handle(context.Background(), "test", "memories")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(list, "Prefer durable decision rules over style mimicry.") {
+		t.Fatalf("memories = %q, want stored lesson", list)
+	}
+	if !strings.Contains(orch.llmToolPrompt(), "Prefer durable decision rules over style mimicry.") {
+		t.Fatalf("prompt does not include stored lesson")
+	}
+}
+
+func TestUnlearnCommandRemovesLesson(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	reply, err := orch.Handle(context.Background(), "test", "remember prefer short direct handoffs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Remembered mem_") {
+		t.Fatalf("reply = %q, want remembered", reply)
+	}
+
+	reply, err = orch.Handle(context.Background(), "test", "unlearn short direct handoffs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Unlearned mem_") {
+		t.Fatalf("reply = %q, want unlearned", reply)
+	}
+
+	list, err := orch.Handle(context.Background(), "test", "memories")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(list, "short direct handoffs") {
+		t.Fatalf("memories = %q, want lesson removed", list)
+	}
+}
+
+func TestOpenEndedChatIncludesDurableMemory(t *testing.T) {
+	provider := &recordingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+	if _, err := orch.memory.RememberLesson(memstore.DefaultLessonFile, memstore.Lesson{
+		Content: "Prefer distilled lessons over language mimicry.",
+		Kind:    "preference",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.Handle(context.Background(), "test", "what should you optimise for?"); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(provider.requests))
+	}
+	system := provider.requests[0].Messages[0].Content
+	if !strings.Contains(system, "Prefer distilled lessons over language mimicry.") {
+		t.Fatalf("system prompt missing durable memory: %s", system)
+	}
+}
+
 func TestReflectIncludesActionableNewTaskCommand(t *testing.T) {
 	goal := "Add task-ready action buttons for reflection results"
 	provider := &staticProvider{content: `{"reflection":"Keep improvement ideas task-ready.","task_goal":"` + goal + `"}`}
@@ -3525,8 +3756,8 @@ func TestReviewNoDiffBlocksTask(t *testing.T) {
 		ID:         taskID,
 		Title:      "move chat to /chat",
 		Goal:       "move chat to /chat",
-		Status:     taskstore.StatusRunning,
-		AssignedTo: "CoderAgent",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
 		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
 		CreatedAt:  time.Now().UTC(),
 		UpdatedAt:  time.Now().UTC(),
@@ -3730,7 +3961,9 @@ func newTestOrchestrator(t *testing.T, delegate *delegateStub) *Orchestrator {
 		tool.NewPolicy(nil),
 		nil,
 		"",
-	).WithWorkflows(workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows")))
+	).
+		WithMemory(memstore.NewStore(filepath.Join(cfg.DataDir, "memory"))).
+		WithWorkflows(workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows")))
 }
 
 func gitTestRun(t *testing.T, dir string, args ...string) {
@@ -4051,6 +4284,57 @@ func (goTestFailStub) Run(context.Context, json.RawMessage) (json.RawMessage, er
 	raw, err := json.Marshal(map[string]any{
 		"command": "go test ./cmd/... ./pkg/... ./constraints",
 		"output":  "FAIL\n",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return raw, fmt.Errorf("go test failed")
+}
+
+type statusChangingGoTestStub struct {
+	orch   *Orchestrator
+	taskID string
+}
+
+func (statusChangingGoTestStub) Name() string        { return "go.test" }
+func (statusChangingGoTestStub) Description() string { return "" }
+func (statusChangingGoTestStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (statusChangingGoTestStub) Risk() tool.RiskLevel { return tool.RiskLow }
+func (s statusChangingGoTestStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	t, err := s.orch.tasks.Load(s.taskID)
+	if err != nil {
+		return nil, err
+	}
+	t.Status = taskstore.StatusRunning
+	t.AssignedTo = "codex"
+	t.Result = "worker restarted while review was running"
+	if err := s.orch.tasks.Save(t); err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"command": "go test ./cmd/... ./pkg/... ./constraints",
+		"output":  "FAIL\n",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return raw, fmt.Errorf("go test failed")
+}
+
+type longGoTestFailStub struct{}
+
+func (longGoTestFailStub) Name() string        { return "go.test" }
+func (longGoTestFailStub) Description() string { return "" }
+func (longGoTestFailStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (longGoTestFailStub) Risk() tool.RiskLevel { return tool.RiskLow }
+func (longGoTestFailStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	raw, err := json.Marshal(map[string]any{
+		"command": "go test ./cmd/... ./pkg/... ./constraints",
+		"output":  strings.Repeat("passing package output\n", 900) + "FINAL FAILURE LINE\n",
 	})
 	if err != nil {
 		return nil, err

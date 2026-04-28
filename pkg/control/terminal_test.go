@@ -239,6 +239,108 @@ func TestTerminalEventStreamIncludesRetryAndResumableIDs(t *testing.T) {
 	}
 }
 
+func TestTerminalEventStreamResumesFromLastEventIDHeader(t *testing.T) {
+	session := &terminalSession{
+		exitCode:  -1,
+		listeners: make(map[chan terminalEvent]struct{}),
+	}
+	session.broadcast(terminalEvent{Type: "output", Data: "stale"})
+	session.broadcast(terminalEvent{Type: "output", Data: "fresh"})
+	session.close(0)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/terminal/sessions/term/events", nil)
+	req.Header.Set("Last-Event-ID", "1")
+	server := Server{}
+	server.streamTerminalEvents(recorder, req, session)
+	body := recorder.Body.String()
+	if strings.Contains(body, "stale") {
+		t.Fatalf("event stream replayed output before Last-Event-ID: %q", body)
+	}
+	if !strings.Contains(body, "id: 2\n") || !strings.Contains(body, `"data":"fresh"`) {
+		t.Fatalf("event stream did not resume after Last-Event-ID: %q", body)
+	}
+}
+
+func TestTerminalHTTPAPIReattachesPersistentSessionAfterManagerRestart(t *testing.T) {
+	skipIfNoPTY(t)
+	skipIfNoLoopback(t)
+	t.Setenv("SHELL", "/bin/sh")
+
+	first := Server{}
+	firstMux := http.NewServeMux()
+	first.register(firstMux)
+	firstHTTP := httptest.NewServer(firstMux)
+	defer firstHTTP.Close()
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	resp, err := http.Post(firstHTTP.URL+"/terminal/sessions", "application/json", strings.NewReader(`{"cols":90,"rows":25}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create status = %d: %s", resp.StatusCode, body)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	defer killTerminalTmuxSession(tmuxSessionName(created.ID))
+	defer first.terminals().close(created.ID)
+
+	second := Server{}
+	secondMux := http.NewServeMux()
+	second.register(secondMux)
+	secondHTTP := httptest.NewServer(secondMux)
+	defer secondHTTP.Close()
+	defer second.terminals().close(created.ID)
+
+	resumeResp, err := http.Get(secondHTTP.URL + "/terminal/sessions/" + created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumeResp.Body.Close()
+	if resumeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resumeResp.Body)
+		t.Fatalf("resume status = %d: %s", resumeResp.StatusCode, body)
+	}
+
+	eventsResp, err := http.Get(secondHTTP.URL + "/terminal/sessions/" + created.ID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eventsResp.Body.Close()
+	if eventsResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(eventsResp.Body)
+		t.Fatalf("events status = %d: %s", eventsResp.StatusCode, body)
+	}
+
+	inputResp, err := http.Post(
+		secondHTTP.URL+"/terminal/sessions/"+created.ID+"/input",
+		"application/json",
+		strings.NewReader(`{"data":"echo api-reattach-ok\nexit\n"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inputResp.Body.Close()
+	if inputResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(inputResp.Body)
+		t.Fatalf("input status = %d: %s", inputResp.StatusCode, body)
+	}
+
+	body, err := io.ReadAll(eventsResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "api-reattach-ok") {
+		t.Fatalf("reattached event stream missing command output: %q", string(body))
+	}
+}
+
 func TestTerminalStartupCommandUsesRunShellBootstrap(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/usr/bin/env bash\nexec /bin/sh\n"), 0755); err != nil {

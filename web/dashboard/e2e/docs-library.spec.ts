@@ -48,6 +48,7 @@ test('docs library remains usable on mobile', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: 'Chat Commands', exact: true })).toBeVisible();
   await expect(page.locator('.content pre code').first()).toContainText('reflect on our recent interaction');
+  await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Menu' }).click();
   await expect(
@@ -55,8 +56,20 @@ test('docs library remains usable on mobile', async ({ page }) => {
   ).toHaveAttribute('aria-current', 'page');
   await page.getByRole('button', { name: 'Menu' }).click();
 
+  await page.getByRole('combobox', { name: 'Jump to document' }).selectOption('dashboard');
+  await expect(page).toHaveURL(/\/docs\/dashboard$/);
+  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.locator('#docs-list a[aria-current="page"]')).toContainText('Dashboard');
+
   await page.getByRole('searchbox', { name: 'Search documentation' }).fill('operator interface');
   await expect(page.locator('#docs-list a')).toHaveCount(1);
   await expect(page.locator('#docs-list a')).toContainText('homelabctl');
+  const docsListMetrics = await page.locator('#docs-list').evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth
+  }));
+  expect(docsListMetrics.scrollWidth, JSON.stringify(docsListMetrics)).toBeLessThanOrEqual(
+    docsListMetrics.clientWidth + 2
+  );
   await expectNoHorizontalOverflow(page);
 });

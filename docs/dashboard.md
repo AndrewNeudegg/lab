@@ -27,7 +27,11 @@ Use the shared responsive navbar on every dashboard page.
 
 ## Documentation Library
 
-The `/docs` page imports every Markdown file under `./docs` into the dashboard. It shows a searchable document catalogue, selected document content, heading anchors, and an on-page table of contents. Keep document titles specific and include the terms operators and LLM agents are likely to search for.
+The `/docs` page imports every Markdown file under `./docs` into the dashboard. It shows a searchable, grouped document catalogue, selected document content, heading anchors, an on-page table of contents, and previous/next document links. Keep document titles specific and include the terms operators and LLM agents are likely to search for.
+
+- Desktop: keep local documentation navigation visible on the left, but compact enough that the selected document and on-page table of contents remain the primary reading surface.
+- Mobile: avoid horizontal document carousels. Show a labelled document jump control, visible search, and a vertical document list so operators can discover other pages without guessing that content is off-screen.
+- Search filters titles, paths, summaries, and full Markdown content. Search results show summaries; the default browse view uses short labels for faster scanning.
 
 ## Research Inputs
 
@@ -35,6 +39,9 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Android and Material responsive guidance: use list-detail on wide screens, then adapt to one stacked destination on compact screens.
 - Material navigation guidance: use drawers for compact layouts and keep primary navigation destinations consistent across layouts.
 - NN/g menu guidance: visible navigation performs better for discoverability; hidden hamburger navigation should be reserved for constrained space.
+- Mintlify documentation navigation guidance: organise docs around user goals, keep top-level choices concise, and promote important content before it becomes buried.
+- Docusaurus and Starlight documentation patterns: use sidebars to group related documents, show common navigation across pages, and pair page content with an on-page table of contents.
+- Algolia DocSearch guidance: search should be purpose-built for documentation, keyboard-accessible, and able to surface technical content quickly.
 - Nielsen Norman usability heuristics: always expose system status, speak the operator's language, and keep clear exits for wrong actions.
 - Atlassian/Jira issue views: work-item detail pages have top-level issue actions and an activity feed containing changes, comments, history, and related updates.
 - Slack threads and incident-command tools: conversations need explicit context boundaries; task or incident timelines prevent important work from being buried in a global chat scroll.
@@ -51,6 +58,10 @@ Sources:
 - https://m1.material.io/patterns/navigation-drawer.html
 - https://m1.material.io/layout/structure.html
 - https://media.nngroup.com/media/articles/attachments/PDF_Menu-Design-Checklist.pdf
+- https://www.mintlify.com/docs/guides/navigation
+- https://docusaurus.io/docs/sidebar
+- https://starlight.astro.build/guides/sidebar/
+- https://docsearch.algolia.com/
 - https://www.nngroup.com/articles/ten-usability-heuristics/
 - https://www.nngroup.com/articles/visibility-system-status/
 - https://developer.atlassian.com/cloud/jira/platform/issue-view/

@@ -37,6 +37,7 @@
     type TaskQueueView,
     type WorkerTraceRun
   } from './view-model';
+  import { createCoalescedAsync } from './refresh-state';
   import {
     pendingApprovalForTask,
     primaryTaskAction,
@@ -105,7 +106,7 @@
   let events: HomelabdEvent[] = [];
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
-
+  const coalesceRefreshState = createCoalescedAsync<void>();
   let taskQueueView: TaskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -536,77 +537,79 @@
     }
   };
 
-  const refreshState = async () => {
-    const sequence = (refreshStateSequence += 1);
-    refreshing = true;
-    const refreshErrors: string[] = [];
-    let nextTasks = tasks;
-    const taskRequest = withRefreshTimeout('Tasks', client.listTasks());
-    const approvalRequest = withRefreshTimeout('Approvals', client.listApprovals());
-    const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
-    const agentRequest = withRefreshTimeout('Agents', client.listAgents());
-    try {
-      const taskResult = await Promise.resolve(taskRequest).then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        (reason) => ({ status: 'rejected' as const, reason })
-      );
-      if (sequence !== refreshStateSequence) {
-        void Promise.allSettled([approvalRequest, eventRequest, agentRequest]);
-        return;
-      }
+  const refreshState = () => {
+    return coalesceRefreshState(async () => {
+      const sequence = (refreshStateSequence += 1);
+      refreshing = true;
+      const refreshErrors: string[] = [];
+      let nextTasks = tasks;
+      const taskRequest = withRefreshTimeout('Tasks', client.listTasks());
+      const approvalRequest = withRefreshTimeout('Approvals', client.listApprovals());
+      const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
+      const agentRequest = withRefreshTimeout('Agents', client.listAgents());
+      try {
+        const taskResult = await Promise.resolve(taskRequest).then(
+          (value) => ({ status: 'fulfilled' as const, value }),
+          (reason) => ({ status: 'rejected' as const, reason })
+        );
+        if (sequence !== refreshStateSequence) {
+          void Promise.allSettled([approvalRequest, eventRequest, agentRequest]);
+          return;
+        }
 
-      if (taskResult.status === 'fulfilled') {
-        try {
-          nextTasks = collectionFromResponse<HomelabdTask>('Tasks', 'tasks', taskResult.value).sort(
-            (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
-          );
-          tasks = nextTasks;
-          taskLoadError = '';
-        } catch (err) {
-          taskLoadError = errorMessage(err, 'Unable to load tasks.');
+        if (taskResult.status === 'fulfilled') {
+          try {
+            nextTasks = collectionFromResponse<HomelabdTask>('Tasks', 'tasks', taskResult.value).sort(
+              (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+            );
+            tasks = nextTasks;
+            taskLoadError = '';
+          } catch (err) {
+            taskLoadError = errorMessage(err, 'Unable to load tasks.');
+            refreshErrors.push(taskLoadError);
+          }
+        } else {
+          taskLoadError = errorMessage(taskResult.reason, 'Unable to load tasks.');
           refreshErrors.push(taskLoadError);
         }
-      } else {
-        taskLoadError = errorMessage(taskResult.reason, 'Unable to load tasks.');
-        refreshErrors.push(taskLoadError);
-      }
 
-      const syncSelection = resolveTaskSyncSelection({
-        tasks: nextTasks,
-        approvals,
-        taskFilter,
-        queueFilter,
-        taskSearch,
-        selectedTaskId
-      });
-      selectedTaskId = syncSelection.selectedTaskId;
-      if (!syncSelection.selectedTaskId) {
-        loadedRunsTaskId = '';
-        loadedDiffTaskId = '';
-        selectedDiffFilePath = '';
-      }
-      lastRefresh = syncTimeLabel();
-      void applySecondaryRefresh(
-        sequence,
-        {
-          approvals: approvalRequest,
-          events: eventRequest,
-          agents: agentRequest
-        },
-        nextTasks,
-        refreshErrors
-      );
-      if (syncSelection.shouldLoadRuns) {
-        void refreshSelectedTaskDetails(syncSelection.selectedTaskId, {
-          force: true,
-          task: syncSelection.selectedTask
+        const syncSelection = resolveTaskSyncSelection({
+          tasks: nextTasks,
+          approvals,
+          taskFilter,
+          queueFilter,
+          taskSearch,
+          selectedTaskId
         });
+        selectedTaskId = syncSelection.selectedTaskId;
+        if (!syncSelection.selectedTaskId) {
+          loadedRunsTaskId = '';
+          loadedDiffTaskId = '';
+          selectedDiffFilePath = '';
+        }
+        lastRefresh = syncTimeLabel();
+        void applySecondaryRefresh(
+          sequence,
+          {
+            approvals: approvalRequest,
+            events: eventRequest,
+            agents: agentRequest
+          },
+          nextTasks,
+          refreshErrors
+        );
+        if (syncSelection.shouldLoadRuns) {
+          void refreshSelectedTaskDetails(syncSelection.selectedTaskId, {
+            force: true,
+            task: syncSelection.selectedTask
+          });
+        }
+      } finally {
+        if (sequence === refreshStateSequence) {
+          refreshing = false;
+        }
       }
-    } finally {
-      if (sequence === refreshStateSequence) {
-        refreshing = false;
-      }
-    }
+    });
   };
 
   onMount(() => {

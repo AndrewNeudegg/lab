@@ -27,30 +27,97 @@ export const DEFAULT_HOMELABD_API_BASE = 'http://127.0.0.1:18080';
 export const DEFAULT_HEALTHD_API_BASE = 'http://127.0.0.1:18081';
 export const DEFAULT_SUPERVISORD_API_BASE = 'http://127.0.0.1:18082';
 
+const DEFAULT_SAFE_REQUEST_RETRIES = 2;
+const DEFAULT_RETRY_DELAY_MS = 400;
+const MAX_RETRY_DELAY_MS = 5000;
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+
+class HttpRequestError extends Error {}
+
+const delay = (milliseconds: number) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const requestMethod = (method?: string) => (method || 'GET').toUpperCase();
+
+const isSafeRequestMethod = (method: string) => method === 'GET' || method === 'HEAD';
+
+const isAbortError = (error: unknown) =>
+  error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError');
+
+const retryDelay = (attempt: number, retryAfter: string | null, baseDelayMs: number) => {
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS);
+    }
+    const dateDelay = Date.parse(retryAfter) - Date.now();
+    if (Number.isFinite(dateDelay) && dateDelay > 0) {
+      return Math.min(dateDelay, MAX_RETRY_DELAY_MS);
+    }
+  }
+  return Math.min(baseDelayMs * 2 ** attempt, MAX_RETRY_DELAY_MS);
+};
+
 export const apiFetch: FetchClient = async <TResponse>(
   path: string,
   options: FetchClientOptions = {}
 ): Promise<TResponse> => {
-  const { baseUrl = '/api', fetcher = fetch, headers, ...init } = options;
+  const {
+    baseUrl = '/api',
+    fetcher = fetch,
+    headers,
+    retries,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    ...init
+  } = options;
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const requestHeaders = new Headers(headers);
+  const method = requestMethod(init.method);
+  const maxRetries = Math.max(
+    0,
+    retries === undefined && isSafeRequestMethod(method) ? DEFAULT_SAFE_REQUEST_RETRIES : retries || 0
+  );
 
   if (init.body && !requestHeaders.has('content-type')) {
     requestHeaders.set('content-type', 'application/json');
   }
 
-  const response = await fetcher(`${baseUrl}${normalizedPath}`, {
-    ...init,
-    headers: requestHeaders
-  });
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const response = await fetcher(`${baseUrl}${normalizedPath}`, {
+        ...init,
+        headers: requestHeaders
+      });
 
-  if (!response.ok) {
-    const details = await response.text();
-    const suffix = details ? `: ${details}` : '';
-    throw new Error(`Request failed with ${response.status} ${response.statusText}${suffix}`);
+      if (!response.ok) {
+        const details = await response.text();
+        const suffix = details ? `: ${details}` : '';
+        const message = `Request failed with ${response.status} ${response.statusText}${suffix}`;
+        if (
+          attempt < maxRetries &&
+          RETRYABLE_STATUS_CODES.has(response.status) &&
+          isSafeRequestMethod(method)
+        ) {
+          await delay(retryDelay(attempt, response.headers.get('retry-after'), retryDelayMs));
+          continue;
+        }
+        throw new HttpRequestError(message);
+      }
+
+      return response.json() as Promise<TResponse>;
+    } catch (error) {
+      if (error instanceof HttpRequestError) {
+        throw error;
+      }
+      if (attempt < maxRetries && isSafeRequestMethod(method) && !isAbortError(error)) {
+        await delay(retryDelay(attempt, null, retryDelayMs));
+        continue;
+      }
+      throw error;
+    }
   }
 
-  return response.json() as Promise<TResponse>;
+  throw new Error('Request failed before a response was received.');
 };
 
 export const createHomelabdClient = (

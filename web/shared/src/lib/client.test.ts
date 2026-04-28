@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createHomelabdClient } from './client';
+import { apiFetch, createHomelabdClient } from './client';
 
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -8,6 +8,88 @@ const jsonResponse = (body: unknown, status = 200) =>
   });
 
 describe('homelabd client', () => {
+  test('retries safe reads after transient network failures', async () => {
+    let attempts = 0;
+
+    const response = await apiFetch<{ ok: boolean }>('/tasks', {
+      baseUrl: 'http://homelabd',
+      retryDelayMs: 0,
+      fetcher: async () => {
+        attempts += 1;
+        if (attempts < 3) {
+          throw new TypeError('Failed to fetch');
+        }
+        return jsonResponse({ ok: true });
+      }
+    });
+
+    expect(response.ok).toBe(true);
+    expect(attempts).toBe(3);
+  });
+
+  test('retries safe reads after retryable server responses', async () => {
+    let attempts = 0;
+
+    const response = await apiFetch<{ ok: boolean }>('/tasks', {
+      baseUrl: 'http://homelabd',
+      retryDelayMs: 0,
+      fetcher: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return jsonResponse({ error: 'try again' }, 503);
+        }
+        return jsonResponse({ ok: true });
+      }
+    });
+
+    expect(response.ok).toBe(true);
+    expect(attempts).toBe(2);
+  });
+
+  test('does not retry safe reads after non-retryable server responses', async () => {
+    let attempts = 0;
+    let error: unknown;
+
+    try {
+      await apiFetch<{ ok: boolean }>('/tasks', {
+        baseUrl: 'http://homelabd',
+        retryDelayMs: 0,
+        fetcher: async () => {
+          attempts += 1;
+          return jsonResponse({ error: 'bad request' }, 400);
+        }
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect(attempts).toBe(1);
+  });
+
+  test('does not retry unsafe writes after a network failure', async () => {
+    let attempts = 0;
+    let error: unknown;
+
+    try {
+      await apiFetch<{ reply: string }>('/message', {
+        baseUrl: 'http://homelabd',
+        method: 'POST',
+        body: JSON.stringify({ content: 'status' }),
+        retryDelayMs: 0,
+        fetcher: async () => {
+          attempts += 1;
+          throw new TypeError('Failed to fetch');
+        }
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect(attempts).toBe(1);
+  });
+
   test('creates a remote-targeted task with explicit target metadata', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({

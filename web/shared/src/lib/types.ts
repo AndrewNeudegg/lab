@@ -6,6 +6,8 @@ export interface User {
 export interface FetchClientOptions extends RequestInit {
   baseUrl?: string;
   fetcher?: typeof fetch;
+  retries?: number;
+  retryDelayMs?: number;
 }
 
 export type FetchClient = <TResponse>(

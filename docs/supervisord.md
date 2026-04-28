@@ -8,6 +8,8 @@ It owns three jobs:
 - stop and restart them with graceful `SIGTERM` before forced `SIGKILL`
 - publish its own heartbeat to `healthd`
 
+Do not use `supervisord` restarts as an agent test harness. Agent browser UAT must start an isolated dev server from the task worktree; the production `dashboard`, `homelabd`, `healthd`, and `supervisord` processes should only be restarted after an explicit operator decision. See `docs/agentic-testing.md`.
+
 ## Run
 
 ```sh

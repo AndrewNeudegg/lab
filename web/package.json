@@ -13,6 +13,7 @@
     "test": "bun test $(find shared/src dashboard/src dashboard/scripts -name '*.test.ts' -print)",
     "uat:docs": "bun run --cwd dashboard uat:docs",
     "uat:tasks": "bun run --cwd dashboard uat:tasks",
+    "uat:tasks:live": "bun run --cwd dashboard uat:tasks:live",
     "e2e": "bun run --cwd dashboard e2e"
   },
   "devDependencies": {

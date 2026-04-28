@@ -8,11 +8,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "playwright:install": "playwright install chromium",
     "uat:chat-markdown": "bun scripts/chat-markdown-uat.mjs",
-    "uat:docs": "playwright test e2e/docs-library.spec.ts",
-    "uat:tasks": "bun scripts/tasks-page-uat.mjs",
+    "uat:docs": "bun run playwright:install && playwright test e2e/docs-library.spec.ts",
+    "uat:tasks": "bun run playwright:install && playwright test e2e/chat-tasks-mobile.spec.ts",
+    "uat:tasks:live": "bun scripts/tasks-page-uat.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "e2e": "playwright test"
+    "e2e": "bun run playwright:install && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

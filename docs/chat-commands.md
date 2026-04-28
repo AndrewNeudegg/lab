@@ -62,7 +62,7 @@ ux task_123 check the mobile queue and touch targets
 delegate task_123 to ux audit the empty, loading, keyboard, and mobile states
 ```
 
-`UXAgent` works in the same isolated task worktree as `CoderAgent`, but its prompt requires current UX and accessibility research, focused UI changes, automated regression coverage, and browser-level UAT for changed UI. It should consult sources such as WCAG 2.2, WAI-ARIA APG, official framework or design-system docs, and reputable usability research before making UX decisions.
+`UXAgent` works in the same isolated task worktree as `CoderAgent`, but its prompt requires current UX and accessibility research, focused UI changes, automated regression coverage, and browser-level UAT for changed UI. It should consult sources such as WCAG 2.2, WAI-ARIA APG, official framework or design-system docs, and reputable usability research before making UX decisions. Browser UAT must use the isolated task-worktree server, for example `nix develop -c bun run --cwd web uat:tasks`; it must not restart production `dashboard`, `homelabd`, `healthd`, or `supervisord`.
 
 ## Remote Agent Tasks
 
@@ -77,6 +77,8 @@ homelabctl -addr http://127.0.0.1:18080 task new --agent workstation --workdir r
 `--workdir` names an advertised workdir id. `--workdir-path` may be used for a full advertised path. Unknown workdir ids or paths are rejected so remote tasks do not silently run in a different checkout.
 
 The chat command `agents` lists external CLI backends such as `codex`, `claude`, and `gemini`; it does not list built-in role agents such as `UXAgent`, and it is not the remote-machine inventory. Use the dashboard task queue filters or `homelabctl agent list` for remote agents.
+
+Remote agents validate in their selected remote workdir. They should report exact test commands, ports, and URLs used, and they should not touch the control-plane supervisor for UAT.
 
 ## Search
 

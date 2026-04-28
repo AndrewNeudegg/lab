@@ -1,9 +1,10 @@
 ## Definition of Done
 
-- Do not mark UI work complete from compile/unit checks alone. For changed pages, run a browser-level check against the live page or explicitly state that browser UAT was not possible.
-- For dashboard task-page changes, run `nix develop -c bash -lc 'cd web && bun run uat:tasks'` against the running stack after restarting the dashboard.
+- Do not mark UI work complete from compile/unit checks alone. For changed pages, run a browser-level check against a served page from the changed worktree or explicitly state that browser UAT was not possible.
+- Browser UAT for agent work must use an isolated dev server from the task worktree, not the production dashboard or production `supervisord` stack.
+- For dashboard task-page changes, run `nix develop -c bun run --cwd web uat:tasks`. This starts a per-worktree Playwright/Vite server on an isolated port and uses mocked `homelabd` APIs.
 - Browser UAT must exercise the user-reported interaction, not just page load. Check visible data, button state changes, selected item changes, and mobile viewport behavior when relevant.
-- If the app is served by `supervisord`, restart the affected app before browser UAT so the test is hitting the new bundle.
+- Do not stop or restart production `dashboard`, `homelabd`, `healthd`, or `supervisord` for agent validation. If a supervised service truly needs a restart after merge, report the restart impact and leave it for explicit operator verification.
 - Add automated regression coverage for fixed bugs. Prefer extracting pure view/state logic into testable modules instead of only adding source-string assertions.
 - A final handoff for UI changes must say which browser/UAT command ran and what interaction it verified.
 - Documentation must be written and kept in sync with behaviour, commands, UI, configuration, tools, and workflows in the same change. If no docs update is needed, state why in the handoff.

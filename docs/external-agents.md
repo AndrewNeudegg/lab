@@ -71,6 +71,15 @@ The default external-agent timeout is `18000` seconds, or five hours. Set
 - The human approval gate still controls local merges through `review` and `approve`.
 - Remote agents use these backend commands in their selected remote workdir. Remote review acknowledges the reported result and moves the task to verification; it does not compare or merge the remote checkout with the control-plane repo.
 - Configure exact CLI args per backend; provider-specific headless flags can differ.
+- Browser UAT must run against an isolated dev server from the task worktree or remote workdir. Agents must not restart the production `dashboard`, `homelabd`, `healthd`, or `supervisord` stack as part of validation.
+
+For dashboard task-page changes, the standard completion gate is:
+
+```bash
+nix develop -c bun run --cwd web uat:tasks
+```
+
+This command starts Playwright and Vite in the worker checkout, uses mocked `homelabd` APIs, and leaves the supervised dashboard alone. See `docs/agentic-testing.md`.
 
 ## Run Trace
 

@@ -17,7 +17,16 @@ type Base struct {
 }
 
 func Register(reg *tool.Registry, base Base) error {
-	for _, t := range []tool.Tool{RunTool{timeout: base.Timeout}, GoTestTool{timeout: base.Timeout}, GoBuildTool{timeout: base.Timeout}, GoFmtTool{timeout: base.Timeout}, BunCheckTool{timeout: base.Timeout, repoRoot: base.RepoRoot}, BunBuildTool{timeout: base.Timeout, repoRoot: base.RepoRoot}} {
+	for _, t := range []tool.Tool{
+		RunTool{timeout: base.Timeout},
+		GoTestTool{timeout: base.Timeout},
+		GoBuildTool{timeout: base.Timeout},
+		GoFmtTool{timeout: base.Timeout},
+		BunCheckTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
+		BunBuildTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
+		BunTestTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
+		BunUATTasksTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
+	} {
 		if err := reg.Register(t); err != nil {
 			return err
 		}
@@ -75,6 +84,50 @@ func (t BunBuildTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 	}
 	_ = json.Unmarshal(input, &req)
 	return runBunScript(ctx, t.timeout, t.repoRoot, req.Dir, "build")
+}
+
+type BunTestTool struct {
+	timeout  time.Duration
+	repoRoot string
+}
+
+func (BunTestTool) Name() string        { return "bun.test" }
+func (BunTestTool) Description() string { return "Run bun install and bun run test in a workspace." }
+func (BunTestTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["dir"],"properties":{"dir":{"type":"string"}}}`)
+}
+func (BunTestTool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (t BunTestTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Dir string `json:"dir"`
+	}
+	_ = json.Unmarshal(input, &req)
+	return runBunScript(ctx, t.timeout, t.repoRoot, req.Dir, "test")
+}
+
+type BunUATTasksTool struct {
+	timeout  time.Duration
+	repoRoot string
+}
+
+func (BunUATTasksTool) Name() string { return "bun.uat.tasks" }
+func (BunUATTasksTool) Description() string {
+	return "Run the isolated dashboard task-page Playwright UAT in a workspace."
+}
+func (BunUATTasksTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["dir"],"properties":{"dir":{"type":"string"}}}`)
+}
+func (BunUATTasksTool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (t BunUATTasksTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Dir string `json:"dir"`
+	}
+	_ = json.Unmarshal(input, &req)
+	timeout := t.timeout
+	if timeout < 2*time.Minute {
+		timeout = 2 * time.Minute
+	}
+	return runBunScript(ctx, timeout, t.repoRoot, req.Dir, "uat:tasks")
 }
 
 func schema(v string) json.RawMessage { return json.RawMessage(v) }

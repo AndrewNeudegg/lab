@@ -66,6 +66,20 @@ Remote agents do not need to run in this repository. Each advertised `workdir` c
 
 Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are configured, `homelab-agent` falls back to the configured `repo.root`, which is useful for local development but too easy to point at the wrong tree on a real machine.
 
+## Remote Testing
+
+Remote agents validate in the selected remote workdir. They must not call the control-plane supervisor to restart production services, and they must not assume `127.0.0.1:5173` points at the operator's dashboard.
+
+For dashboard task-page changes in a remote checkout, run:
+
+```sh
+nix develop -c bun run --cwd web uat:tasks
+```
+
+The command starts a Playwright-managed Vite server on that remote machine, chooses a per-worktree port unless `PLAYWRIGHT_PORT` is set, and mocks `homelabd` APIs. The remote completion summary should include the command, the generated local URL when relevant, and whether Chromium came from `CHROME_BIN` or a Playwright browser install.
+
+Use `uat:tasks:live` only when the operator explicitly asks the remote machine to verify a running dashboard URL.
+
 ## Remote Terminals
 
 `homelab-agent` can optionally expose the same PTY terminal API as `homelabd`. Set `remote_agent.terminal_addr` or pass `-terminal-addr` to bind the local terminal server, and set `remote_agent.terminal_public_url` or `-terminal-url` to the browser-reachable base URL that should be advertised in heartbeats.

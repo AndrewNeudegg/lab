@@ -203,6 +203,7 @@ test('tasks mobile has no task chat composer and keeps new-task text stable', as
 });
 
 test('tasks mobile keeps navbar sticky while scrolling', async ({ page }) => {
+  await mockTaskApi(page);
   await page.goto('/tasks');
   await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
 

@@ -75,6 +75,18 @@ go run ./cmd/homelabctl task delete <task_id>
 
 See `docs/homelabctl.md` for the full CLI command surface and the rule that new operator workflows must keep the CLI up to date.
 
+## Agentic Testing
+
+Agent validation must not interrupt the production dashboard or `homelabd` stack. Browser UAT runs from the task worktree with an isolated Playwright/Vite server; agents must not restart `dashboard`, `homelabd`, `healthd`, or `supervisord` to prove their changes.
+
+For dashboard task-page changes, use:
+
+```bash
+nix develop -c bun run --cwd web uat:tasks
+```
+
+The command uses mocked `homelabd` APIs and a per-worktree port, so concurrent local or remote agents do not share a dashboard process. The review gate also runs this isolated task-page UAT when a local diff touches task-page or shared web UI files. See `docs/agentic-testing.md` for the full SDLC and browser reliability notes.
+
 ## Diff Review
 
 Use `diff <task_id>` or `homelabctl task diff <task_id>` when an operator asks what a task branch changes relative to current `main`. The HTTP endpoint is `GET /tasks/{task_id}/diff`; it returns the raw patch, file stats, branch labels, refs, and per-file summaries.

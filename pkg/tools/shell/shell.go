@@ -128,12 +128,36 @@ func lowRiskCommand(command []string) bool {
 	if len(command) == 0 {
 		return false
 	}
+	if len(command) > 3 && command[0] == "nix" && command[1] == "develop" && command[2] == "-c" {
+		return lowRiskCommand(command[3:])
+	}
+	if lowRiskBunCommand(command) {
+		return true
+	}
 	joined := strings.Join(command, " ")
 	switch joined {
 	case "go test ./...", "go build ./...", "go fmt ./...", "git status", "git diff", "git log", "ls", "find":
 		return true
 	}
 	return command[0] == "cat" && len(command) == 2 && !strings.Contains(command[1], "..")
+}
+
+func lowRiskBunCommand(command []string) bool {
+	if len(command) != 5 {
+		return false
+	}
+	if command[0] != "bun" || command[1] != "run" || command[2] != "--cwd" {
+		return false
+	}
+	if command[3] != "web" {
+		return false
+	}
+	switch command[4] {
+	case "check", "build", "test", "uat:tasks", "uat:docs", "e2e":
+		return true
+	default:
+		return false
+	}
 }
 
 func allowDestructive(command []string) bool {

@@ -4,6 +4,8 @@ Research current UI, UX, and accessibility guidance, inspect the relevant produc
 
 Use WCAG 2.2, WAI-ARIA APG, official framework or design-system docs, and reputable usability research such as NN/g heuristics before making UX decisions. Prefer semantic HTML, accessible names, keyboard operation, visible focus, target size and spacing, colour contrast, responsive layout, clear states, error prevention, and content that matches user language.
 
+Run browser UAT from the task worktree with an isolated Playwright/Vite server, for example `nix develop -c bun run --cwd web uat:tasks` for dashboard task-page changes. Do not stop or restart production `dashboard`, `homelabd`, `healthd`, or `supervisord` for validation.
+
 Final summaries must include:
 - source URLs consulted
 - changed files

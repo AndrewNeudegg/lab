@@ -104,9 +104,12 @@ Some orchestrator actions, such as `delegate`, `ux`, `refresh`, and `test`, are 
 go run ./cmd/homelabctl delegate task_123 to codex "finish docs and tests"
 go run ./cmd/homelabctl ux task_123 "run a UX pass with research, regression tests, and browser UAT"
 go run ./cmd/homelabctl refresh task_123
+go run ./cmd/homelabctl test task_123
 ```
 
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
+
+Agent UI validation must not restart production services. For dashboard task-page changes, workers and reviewers should use `nix develop -c bun run --cwd web uat:tasks`, which starts an isolated Playwright/Vite server from the task worktree and mocks `homelabd` APIs. See `docs/agentic-testing.md`.
 
 ## Workflow Commands
 

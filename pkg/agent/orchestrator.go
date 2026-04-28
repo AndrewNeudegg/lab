@@ -3897,6 +3897,8 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Make a minimal patch that satisfies the task goal.",
 		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"Run relevant formatting and tests when available.",
+		"For UI changes, run browser UAT from this task workspace with an isolated dev server, for example `nix develop -c bun run --cwd web uat:tasks`; do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
+		"For remote tasks, run validation on the remote worker in the selected remote workdir and report the exact commands, ports, and URLs used.",
 		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"Reviewed task plan: " + formatTaskPlanForPrompt(t.Plan),
 		"Task graph context: " + formatGraphContextForPrompt(t),
@@ -4292,7 +4294,15 @@ func (o *Orchestrator) testTask(ctx context.Context, selector string) (string, e
 	if remoteTask(t) {
 		return "Remote task checks run on the remote agent. Review the agent result and recorded validation instead of running local repo checks.", nil
 	}
-	return o.runProjectChecks(ctx, taskID, t.Workspace, "CoderAgent")
+	runTaskUAT := false
+	if workspaceHasGit(t.Workspace) {
+		diffOut, err := o.taskBranchDiff(ctx, t.Workspace)
+		if err != nil {
+			return "", err
+		}
+		runTaskUAT = diffRequiresTaskPageUAT(diffOut)
+	}
+	return o.runProjectChecks(ctx, taskID, t.Workspace, "CoderAgent", runTaskUAT)
 }
 
 func (o *Orchestrator) diffTask(ctx context.Context, selector string) (string, error) {
@@ -4402,7 +4412,8 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
 		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
 	}
-	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent")
+	runTaskUAT := diffRequiresTaskPageUAT(diffOut)
+	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent", runTaskUAT)
 	status := "pass"
 	if testErr != nil {
 		status = "fail"
@@ -4491,7 +4502,7 @@ func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, works
 	return string(mergeOut), nil
 }
 
-func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string) (string, error) {
+func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string, runTaskUAT bool) (string, error) {
 	var outputs []string
 	var firstErr error
 	if exists(filepath.Join(workspace, "go.mod")) {
@@ -4513,11 +4524,38 @@ func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, 
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
+		out, err = o.runCheckTool(ctx, actor, "bun.test", webDir, taskID)
+		outputs = append(outputs, "bun.test:\n"+strings.TrimSpace(out))
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if runTaskUAT {
+			out, err = o.runCheckTool(ctx, actor, "bun.uat.tasks", webDir, taskID)
+			outputs = append(outputs, "bun.uat.tasks:\n"+strings.TrimSpace(out))
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
 	if len(outputs) == 0 {
 		return "no configured checks found", nil
 	}
 	return truncateForChat(strings.Join(outputs, "\n\n")), firstErr
+}
+
+func diffRequiresTaskPageUAT(diff string) bool {
+	for _, path := range diffFileList(diff) {
+		if path == "AGENTS.md" || path == "web/package.json" || path == "web/dashboard/package.json" || path == "web/dashboard/playwright.config.ts" {
+			return true
+		}
+		if strings.HasPrefix(path, "web/dashboard/src/routes/tasks/") ||
+			strings.HasPrefix(path, "web/shared/src/") ||
+			strings.HasPrefix(path, "web/dashboard/e2e/") ||
+			strings.HasPrefix(path, "web/dashboard/scripts/tasks-page-uat") {
+			return true
+		}
+	}
+	return false
 }
 
 func workspaceHasGit(workspace string) bool {
@@ -4851,6 +4889,8 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
 		"- If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"- After editing Go code, run go.fmt, go.test, and repo.current_diff.",
+		"- After editing web code, run bun.check, bun.build, bun.test, and a targeted isolated browser UAT when UI changed.",
+		"- Browser UAT must run from the task workspace with an isolated dev server. Do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
 		"- Final done=true message must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
@@ -4859,7 +4899,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
-			"go.fmt": true, "go.test": true, "go.build": true,
+			"go.fmt": true, "go.test": true, "go.build": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true,
 		}),
 	}, "\n")
 }
@@ -4889,8 +4929,9 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
 		"- Add automated regression coverage for fixed UX bugs. Prefer testable view/state logic plus browser-level tests where interaction matters.",
-		"- For changed UI, perform browser-level UAT against the live page when possible. Exercise the reported interaction, visible data, state changes, selected items, and mobile viewport behaviour when relevant.",
-		"- If the dashboard task page changed, run `nix develop -c bash -lc 'cd web && bun run uat:tasks'` against the running stack after restarting the dashboard.",
+		"- For changed UI, perform browser-level UAT against the page served from the isolated task workspace. Exercise the reported interaction, visible data, state changes, selected items, and mobile viewport behaviour when relevant.",
+		"- If the dashboard task page changed, run bun.uat.tasks or `nix develop -c bun run --cwd web uat:tasks`; it starts a per-worktree Playwright/Vite server and mocks homelabd APIs.",
+		"- Do not stop or restart production dashboard, homelabd, healthd, or supervisord for UAT. Report restart impact for explicit operator verification after merge.",
 		"- If browser UAT is not possible, say exactly why and what automated coverage ran instead.",
 		"- If behaviour, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"- Final done=true message must include: source URLs consulted, changed files, automated tests, browser/UAT command and interaction verified, how to use the change, and docs updated or why no docs change was needed.",
@@ -4901,7 +4942,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
-			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true,
+			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true,
 			"shell.run_limited": true,
 		}),
 	}, "\n")

@@ -2672,7 +2672,7 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
 	}
 	system := provider.requests[0].Messages[0].Content
-	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT"} {
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "Do not stop or restart production"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("UX prompt missing %q:\n%s", want, system)
 		}
@@ -2680,6 +2680,40 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 	user := provider.requests[0].Messages[1].Content
 	if !strings.Contains(user, "Human instruction") || !strings.Contains(user, "focus on touch targets") {
 		t.Fatalf("UX user prompt = %q, want human instruction", user)
+	}
+}
+
+func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
+	instruction := defaultDelegationInstruction(taskstore.Task{
+		ID:        "task_20260428_100000_12345678",
+		Goal:      "fix dashboard task page",
+		Workspace: "/tmp/workspaces/task_123",
+	})
+	for _, want := range []string{
+		"isolated dev server",
+		"nix develop -c bun run --cwd web uat:tasks",
+		"do not stop or restart production",
+		"For remote tasks",
+	} {
+		if !strings.Contains(instruction, want) {
+			t.Fatalf("delegation instruction missing %q:\n%s", want, instruction)
+		}
+	}
+}
+
+func TestDiffRequiresTaskPageUAT(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/web/dashboard/src/routes/tasks/+page.svelte b/web/dashboard/src/routes/tasks/+page.svelte",
+		"--- a/web/dashboard/src/routes/tasks/+page.svelte",
+		"+++ b/web/dashboard/src/routes/tasks/+page.svelte",
+		"@@",
+		"+change",
+	}, "\n")
+	if !diffRequiresTaskPageUAT(diff) {
+		t.Fatalf("task-page diff should require isolated task UAT")
+	}
+	if diffRequiresTaskPageUAT("diff --git a/pkg/task/store.go b/pkg/task/store.go\n+++ b/pkg/task/store.go") {
+		t.Fatalf("backend-only diff should not require task-page UAT")
 	}
 }
 

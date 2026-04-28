@@ -27,6 +27,19 @@ func TestLimitedToolReadOnlyCommandDoesNotRequireApproval(t *testing.T) {
 	}
 }
 
+func TestLimitedToolAllowsIsolatedDashboardUATCommand(t *testing.T) {
+	policy := tool.NewPolicy(nil)
+	input := json.RawMessage(`{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:tasks"]}`)
+
+	decision := policy.Decide("UXAgent", LimitedTool{}, input)
+	if !decision.Allowed || decision.NeedsApproval {
+		t.Fatalf("expected isolated dashboard UAT command without approval: %+v", decision)
+	}
+	if !allowed([]string{"nix", "develop", "-c", "bun", "run", "--cwd", "web", "uat:tasks"}) {
+		t.Fatalf("expected command to be allowlisted")
+	}
+}
+
 func TestOrchestratorCanRequestApprovedShellCommand(t *testing.T) {
 	policy := tool.NewPolicy(nil)
 	input := json.RawMessage(`{"dir":"/tmp/workspaces/task_123","command":["rm","-rf","build"],"target":"build"}`)

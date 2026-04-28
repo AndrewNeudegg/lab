@@ -66,7 +66,7 @@ Remote review only acknowledges the remote result and moves the task to verifica
 
 ## Browser Reliability
 
-`uat:tasks`, `uat:docs`, `uat:site`, and `e2e` install the Playwright-managed Chromium build and run `browser:preflight` before running tests. The repo does not use `CHROME_BIN` by default because the system Chromium available in some agent environments can crash before the first page opens. To force a known-good system browser, set `HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME=1` with `CHROME_BIN`, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` directly.
+`uat:tasks`, `uat:docs`, `uat:site`, and `e2e` install the Playwright-managed Chromium build and run `browser:preflight` before running tests. Browser launch prefers `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then `CHROME_BIN`, then a `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable` executable found on `PATH`. This lets NixOS workers use the browser wrapper that already carries runtime libraries when Playwright's downloaded headless shell cannot load system libraries. Set `HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME=0` to force Playwright's managed browser.
 
 Outside Nix, install Playwright browsers and OS dependencies with the official Playwright installer before running custom browser commands.
 

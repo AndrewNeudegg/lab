@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
+test.describe.configure({ timeout: 60_000 });
+
 const now = '2026-04-28T12:00:00.000Z';
 const taskID = 'task_20260428_120000_11111111';
 const workflowID = 'workflow_20260428_120000_22222222';
@@ -271,7 +273,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
     await expect(page.locator('#docs-list')).toBeVisible();
   } else if (route === '/terminal') {
-    await expect(page.locator('.xterm')).toBeVisible();
+    await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: 'Add terminal tab' }).click();
     await expect(page.locator('.terminal-tab')).toHaveCount(2);
   } else if (route === '/healthd') {

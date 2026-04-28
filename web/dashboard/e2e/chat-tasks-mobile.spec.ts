@@ -122,6 +122,9 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
+  await expect(rows.first()).toContainText('Review queue behavior on mobile', {
+    timeout: 15_000
+  });
   await expect(rows).toHaveCount(1);
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();

@@ -42,6 +42,7 @@ Add supervised apps under `supervisord.apps` in `config.json`:
     "heartbeat_interval_seconds": 5,
     "shutdown_timeout_seconds": 10,
     "state_path": "data/supervisord/state.json",
+    "log_dir": "data/supervisord/logs",
     "working_dir": ".",
     "restart_command": "go",
     "restart_args": ["run", "./cmd/supervisord"],
@@ -67,6 +68,8 @@ Run `supervisord` from the same environment that should run the apps. In develop
 
 `restart_command` and `restart_args` describe how `supervisord` restarts itself. In development this should re-run `go run ./cmd/supervisord` from the existing dev shell so code changes are picked up. In production it should point at the installed `supervisord` binary or a service manager wrapper.
 
+`log_dir` stores per-app output logs. Each managed app writes `<app>.stdout.log` and `<app>.stderr.log`; stderr lines are also queued and pushed to `healthd` as application errors. The default is `data/supervisord/logs`.
+
 Restart policies:
 
 - `never`: do not restart after exit.
@@ -89,6 +92,19 @@ POST /supervisord/apps/<name>/adopt  {"pid":1234}
 ```
 
 The dashboard uses these endpoints through `/supervisord`.
+
+## Error Capture
+
+Application stderr is treated as the error stream. `supervisord` appends it to the app's `*.stderr.log`, keeps the latest stderr line on the app status as `last_error`, and sends recent lines to `healthd` when `healthd_url` is configured.
+
+Review recent captured errors through healthd:
+
+```sh
+go run ./cmd/homelabctl healthd errors
+go run ./cmd/homelabctl errors -limit 20 dashboard
+```
+
+Agents can use the read-only `health.errors` tool to inspect the same data before creating follow-up tasks for root-cause fixes.
 
 ## Remote Agent App
 

@@ -88,6 +88,14 @@ func TestOrchestratorCanRemoveTaskWorkspace(t *testing.T) {
 	}
 }
 
+func TestOrchestratorCanReadHealthErrors(t *testing.T) {
+	policy := NewPolicy(nil)
+	decision := policy.Decide("OrchestratorAgent", stubTool{name: "health.errors", risk: RiskReadOnly}, json.RawMessage(`{"limit":10}`))
+	if !decision.Allowed || decision.NeedsApproval {
+		t.Fatalf("expected OrchestratorAgent health.errors to be allowed without approval: %+v", decision)
+	}
+}
+
 func TestOrchestratorCanRequestApprovalGatedGitWorkflow(t *testing.T) {
 	policy := NewPolicy(nil)
 	for _, name := range []string{"git.commit", "git.revert", "git.merge"} {

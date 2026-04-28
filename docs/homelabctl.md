@@ -15,6 +15,8 @@ go run ./cmd/homelabctl -addr http://127.0.0.1:18080 health
 HOMELABD_ADDR=http://127.0.0.1:18080 go run ./cmd/homelabctl tasks
 ```
 
+Healthd has its own API address. Override it for healthd commands with `-healthd-addr` or `HOMELABD_HEALTHD_ADDR`; the default is `http://127.0.0.1:18081`.
+
 ## Operator Rule
 
 Keep this document, `cmd/homelabctl`, and the `homelabd` HTTP API in sync. When a new operator interaction is added to `homelabd`, add or update the matching `homelabctl` command and tests in the same change. If a workflow requires repeated chat, task, approval, event, or terminal interaction and `homelabctl` is not useful enough, extend the CLI rather than bypassing it.
@@ -162,6 +164,18 @@ go run ./cmd/homelabctl events -limit 20
 go run ./cmd/homelabctl events -limit 20 2026-04-26
 ```
 
+## Healthd Error Commands
+
+Read recent application errors captured from supervised app stderr logs:
+
+```bash
+go run ./cmd/homelabctl healthd errors
+go run ./cmd/homelabctl errors -limit 20 dashboard
+go run ./cmd/homelabctl -healthd-addr http://127.0.0.1:18081 healthd errors -source supervisord
+```
+
+The command calls `GET /healthd/errors` on the healthd service. It is useful before creating a root-cause task with `homelabctl task new ...`.
+
 ## Terminal Commands
 
 The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page. Starting a session runs `./run.sh shell` first when the target working directory contains an executable `run.sh`; otherwise it opens the configured interactive shell.
@@ -236,6 +250,10 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /terminal/sessions/{id}/input`
 - `POST /terminal/sessions/{id}/signal`
 - `DELETE /terminal/sessions/{id}`
+
+Healthd commands call the separate healthd API rather than `homelabd`:
+
+- `GET /healthd/errors?limit=N&source=SOURCE&app=APP`
 
 Run the CLI tests after changing the HTTP API or command surface:
 

@@ -46,6 +46,10 @@ workflow run workflow_123
 
 Workflows expose cost estimates for LLM calls, tool calls, waits, and runtime. The LLM can also use `workflow.create`, `workflow.list`, `workflow.show`, and `workflow.run` as policy-bound tools.
 
+## Application Errors
+
+Supervised app stderr is captured by `supervisord`, written to `data/supervisord/logs/<app>.stderr.log`, and pushed to healthd. Use `homelabctl errors` to inspect recent entries from a terminal, or ask chat to diagnose recent application errors. The Orchestrator has the read-only `health.errors` tool and can use it with `task.create` when a root-cause fix should be tracked.
+
 ## UX Agent
 
 Use `UXAgent` when a task changes a page, component, interaction, or visual state and needs a dedicated usability pass:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -33,6 +34,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthd", s.withCORS(s.handleSnapshot))
 	mux.HandleFunc("/healthd/samples", s.withCORS(s.handleSamples))
 	mux.HandleFunc("/healthd/notifications", s.withCORS(s.handleNotifications))
+	mux.HandleFunc("/healthd/errors", s.withCORS(s.handleErrors))
 	mux.HandleFunc("/healthd/processes", s.withCORS(s.handleProcesses))
 	mux.HandleFunc("/healthd/processes/heartbeat", s.withCORS(s.handleProcessHeartbeat))
 	mux.HandleFunc("/healthd/checks/run", s.withCORS(s.handleRunChecks))
@@ -92,6 +94,38 @@ func (s *Server) handleNotifications(rw http.ResponseWriter, req *http.Request) 
 	writeJSON(rw, http.StatusOK, map[string]any{"notifications": snapshot.Notifications})
 }
 
+func (s *Server) handleErrors(rw http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		if s.Monitor == nil {
+			writeError(rw, http.StatusServiceUnavailable, "healthd monitor is not configured")
+			return
+		}
+		filter := ErrorFilter{
+			Limit:  parseLimit(req, 50),
+			Source: req.URL.Query().Get("source"),
+			App:    req.URL.Query().Get("app"),
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"errors": s.Monitor.Errors(filter)})
+	case http.MethodPost:
+		if s.Monitor == nil {
+			writeError(rw, http.StatusServiceUnavailable, "healthd monitor is not configured")
+			return
+		}
+		var in struct {
+			Errors []ApplicationError `json:"errors"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		recorded := s.Monitor.RecordErrors(time.Now().UTC(), in.Errors)
+		writeJSON(rw, http.StatusAccepted, map[string]any{"errors": recorded})
+	default:
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 func (s *Server) handleProcesses(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
@@ -149,6 +183,21 @@ func parseWindow(req *http.Request, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return window
+}
+
+func parseLimit(req *http.Request, fallback int) int {
+	value := req.URL.Query().Get("limit")
+	if value == "" {
+		return fallback
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return fallback
+	}
+	if limit > 500 {
+		return 500
+	}
+	return limit
 }
 
 func writeJSON(rw http.ResponseWriter, status int, v any) {

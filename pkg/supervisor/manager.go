@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"github.com/andrewneudegg/lab/pkg/config"
+	"github.com/andrewneudegg/lab/pkg/healthd"
+	"github.com/andrewneudegg/lab/pkg/id"
 )
 
 const (
@@ -30,26 +33,29 @@ const (
 )
 
 type AppStatus struct {
-	Name        string            `json:"name"`
-	Type        string            `json:"type"`
-	State       string            `json:"state"`
-	Desired     string            `json:"desired"`
-	PID         int               `json:"pid,omitempty"`
-	Restarts    int               `json:"restarts"`
-	ExitCode    int               `json:"exit_code,omitempty"`
-	Message     string            `json:"message"`
-	StartedAt   *time.Time        `json:"started_at,omitempty"`
-	StoppedAt   *time.Time        `json:"stopped_at,omitempty"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	StartOrder  int               `json:"start_order"`
-	Restart     string            `json:"restart"`
-	HealthURL   string            `json:"health_url,omitempty"`
-	LastHealth  string            `json:"last_health,omitempty"`
-	LastOutput  string            `json:"last_output,omitempty"`
-	WorkingDir  string            `json:"working_dir,omitempty"`
-	Command     string            `json:"command"`
-	Args        []string          `json:"args,omitempty"`
-	Environment map[string]string `json:"environment,omitempty"`
+	Name         string            `json:"name"`
+	Type         string            `json:"type"`
+	State        string            `json:"state"`
+	Desired      string            `json:"desired"`
+	PID          int               `json:"pid,omitempty"`
+	Restarts     int               `json:"restarts"`
+	ExitCode     int               `json:"exit_code,omitempty"`
+	Message      string            `json:"message"`
+	StartedAt    *time.Time        `json:"started_at,omitempty"`
+	StoppedAt    *time.Time        `json:"stopped_at,omitempty"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	StartOrder   int               `json:"start_order"`
+	Restart      string            `json:"restart"`
+	HealthURL    string            `json:"health_url,omitempty"`
+	LastHealth   string            `json:"last_health,omitempty"`
+	LastOutput   string            `json:"last_output,omitempty"`
+	LastError    string            `json:"last_error,omitempty"`
+	LogPath      string            `json:"log_path,omitempty"`
+	ErrorLogPath string            `json:"error_log_path,omitempty"`
+	WorkingDir   string            `json:"working_dir,omitempty"`
+	Command      string            `json:"command"`
+	Args         []string          `json:"args,omitempty"`
+	Environment  map[string]string `json:"environment,omitempty"`
 }
 
 type Snapshot struct {
@@ -67,9 +73,10 @@ type Manager struct {
 	client    *http.Client
 	logger    *slog.Logger
 
-	mu           sync.Mutex
-	apps         map[string]*appRuntime
-	restartAfter time.Time
+	mu            sync.Mutex
+	apps          map[string]*appRuntime
+	restartAfter  time.Time
+	pendingErrors []healthd.ApplicationError
 }
 
 type appRuntime struct {
@@ -90,6 +97,9 @@ func NewManager(cfg config.SupervisordConfig, logger *slog.Logger) *Manager {
 	if cfg.HealthdURL == "" {
 		cfg.HealthdURL = "http://127.0.0.1:18081"
 	}
+	if cfg.LogDir == "" && cfg.StatePath != "" {
+		cfg.LogDir = filepath.Join(filepath.Dir(cfg.StatePath), "logs")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -101,6 +111,7 @@ func NewManager(cfg config.SupervisordConfig, logger *slog.Logger) *Manager {
 		apps:      make(map[string]*appRuntime),
 	}
 	for _, app := range cfg.Apps {
+		logPath, errorLogPath := appLogPaths(cfg.LogDir, app.Name)
 		if app.Type == "" {
 			app.Type = "process"
 		}
@@ -114,19 +125,21 @@ func NewManager(cfg config.SupervisordConfig, logger *slog.Logger) *Manager {
 		m.apps[app.Name] = &appRuntime{
 			cfg: app,
 			status: AppStatus{
-				Name:        app.Name,
-				Type:        app.Type,
-				State:       StateStopped,
-				Desired:     StateStopped,
-				Message:     "not started",
-				UpdatedAt:   now,
-				StartOrder:  app.StartOrder,
-				Restart:     app.Restart,
-				HealthURL:   app.HealthURL,
-				WorkingDir:  app.WorkingDir,
-				Command:     app.Command,
-				Args:        append([]string(nil), app.Args...),
-				Environment: copyMap(app.Env),
+				Name:         app.Name,
+				Type:         app.Type,
+				State:        StateStopped,
+				Desired:      StateStopped,
+				Message:      "not started",
+				UpdatedAt:    now,
+				StartOrder:   app.StartOrder,
+				Restart:      app.Restart,
+				HealthURL:    app.HealthURL,
+				LogPath:      logPath,
+				ErrorLogPath: errorLogPath,
+				WorkingDir:   app.WorkingDir,
+				Command:      app.Command,
+				Args:         append([]string(nil), app.Args...),
+				Environment:  copyMap(app.Env),
 			},
 		}
 	}
@@ -268,10 +281,19 @@ func (m *Manager) startApp(ctx context.Context, name string) error {
 	cmd.Env = append(os.Environ(), envList(app.cfg.Env)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output lockedBuffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	var errorOutput lockedBuffer
+	stdoutLog, stderrLog, logPath, errorLogPath, err := m.openAppLogs(name)
+	if err != nil {
+		m.updateFailed(name, fmt.Sprintf("open log files failed: %v", err), output.String(), errorOutput.String())
+		return err
+	}
+	stdoutWriter := &appOutputWriter{buffer: &output, file: stdoutLog}
+	stderrWriter := &appErrorWriter{manager: m, app: name, output: &output, errors: &errorOutput, file: stderrLog, logPath: errorLogPath}
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 	if err := cmd.Start(); err != nil {
-		m.updateFailed(name, fmt.Sprintf("start failed: %v", err), output.String())
+		closeFiles(stdoutLog, stderrLog)
+		m.updateFailed(name, fmt.Sprintf("start failed: %v", err), output.String(), errorOutput.String())
 		return err
 	}
 
@@ -284,11 +306,13 @@ func (m *Manager) startApp(ctx context.Context, name string) error {
 	app.status.StoppedAt = nil
 	app.status.UpdatedAt = startedAt
 	app.status.Message = "running"
+	app.status.LogPath = logPath
+	app.status.ErrorLogPath = errorLogPath
 	_ = m.saveStateLocked()
 	m.mu.Unlock()
 	m.logger.Info("started app", "app", name, "pid", cmd.Process.Pid)
 
-	go m.waitApp(name, cmd, &output)
+	go m.waitApp(name, cmd, &output, &errorOutput, stderrWriter, stdoutLog, stderrLog)
 	return nil
 }
 
@@ -506,8 +530,12 @@ func (m *Manager) forceKillProcessSet(ctx context.Context, name string, processe
 	}
 }
 
-func (m *Manager) waitApp(name string, cmd *exec.Cmd, output *lockedBuffer) {
+func (m *Manager) waitApp(name string, cmd *exec.Cmd, output, errorOutput *lockedBuffer, stderrWriter *appErrorWriter, logFiles ...*os.File) {
 	err := cmd.Wait()
+	if stderrWriter != nil {
+		stderrWriter.Flush()
+	}
+	closeFiles(logFiles...)
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -530,6 +558,7 @@ func (m *Manager) waitApp(name string, cmd *exec.Cmd, output *lockedBuffer) {
 		app.status.StoppedAt = &stoppedAt
 		app.status.UpdatedAt = stoppedAt
 		app.status.LastOutput = tail(output.String(), 4000)
+		app.status.LastError = lastErrorLine(errorOutput.String(), 4000)
 		if app.status.State == StateStopping || app.status.Desired == StateStopped {
 			app.status.State = StateStopped
 			app.status.Message = "stopped"
@@ -561,13 +590,14 @@ func (m *Manager) waitApp(name string, cmd *exec.Cmd, output *lockedBuffer) {
 	}
 }
 
-func (m *Manager) updateFailed(name, message, output string) {
+func (m *Manager) updateFailed(name, message, output, lastError string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if app := m.apps[name]; app != nil {
 		app.status.State = StateFailed
 		app.status.Message = message
 		app.status.LastOutput = tail(output, 4000)
+		app.status.LastError = lastErrorLine(lastError, 4000)
 		app.status.UpdatedAt = time.Now().UTC()
 		_ = m.saveStateLocked()
 	}
@@ -724,6 +754,7 @@ type persistedApp struct {
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	StoppedAt  *time.Time `json:"stopped_at,omitempty"`
 	LastOutput string     `json:"last_output,omitempty"`
+	LastError  string     `json:"last_error,omitempty"`
 }
 
 func (m *Manager) loadState() {
@@ -754,6 +785,7 @@ func (m *Manager) loadState() {
 		app.status.StartedAt = saved.StartedAt
 		app.status.StoppedAt = saved.StoppedAt
 		app.status.LastOutput = saved.LastOutput
+		app.status.LastError = saved.LastError
 		app.status.UpdatedAt = now
 		if saved.PID > 0 && processAlive(saved.PID) && saved.Desired == StateRunning {
 			app.status.State = StateRunning
@@ -788,6 +820,7 @@ func (m *Manager) saveStateLocked() error {
 			StartedAt:  app.status.StartedAt,
 			StoppedAt:  app.status.StoppedAt,
 			LastOutput: app.status.LastOutput,
+			LastError:  app.status.LastError,
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(m.cfg.StatePath), 0o755); err != nil {
@@ -1029,6 +1062,72 @@ func (m *Manager) pushHeartbeat(ctx context.Context) {
 		return
 	}
 	_ = resp.Body.Close()
+	m.pushPendingErrors(ctx)
+}
+
+func (m *Manager) pushPendingErrors(ctx context.Context) {
+	entries := m.pendingAppErrors()
+	if len(entries) == 0 {
+		return
+	}
+	if err := healthd.PushErrors(ctx, m.client, m.cfg.HealthdURL, entries); err != nil {
+		m.logger.Debug("healthd error push failed", "error", err)
+		return
+	}
+	m.markAppErrorsPushed(entries)
+}
+
+func (m *Manager) pendingAppErrors() []healthd.ApplicationError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return healthdCopyErrors(m.pendingErrors)
+}
+
+func (m *Manager) markAppErrorsPushed(entries []healthd.ApplicationError) {
+	if len(entries) == 0 {
+		return
+	}
+	pushed := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		pushed[entry.ID] = true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	remaining := m.pendingErrors[:0]
+	for _, entry := range m.pendingErrors {
+		if !pushed[entry.ID] {
+			remaining = append(remaining, entry)
+		}
+	}
+	m.pendingErrors = remaining
+}
+
+func (m *Manager) recordAppError(name, message, logPath string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	now := time.Now().UTC()
+	entry := healthd.ApplicationError{
+		ID:       id.New("apperr"),
+		Time:     now,
+		Source:   "supervisord",
+		App:      name,
+		Severity: healthd.SeverityWarn,
+		Message:  tail(message, 2000),
+		LogPath:  logPath,
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if app := m.apps[name]; app != nil {
+		app.status.LastError = entry.Message
+		app.status.ErrorLogPath = logPath
+		app.status.UpdatedAt = now
+	}
+	m.pendingErrors = append(m.pendingErrors, entry)
+	if len(m.pendingErrors) > 500 {
+		m.pendingErrors = append([]healthd.ApplicationError(nil), m.pendingErrors[len(m.pendingErrors)-500:]...)
+	}
 }
 
 func (m *Manager) sortedApps() []config.SupervisorAppConfig {
@@ -1048,6 +1147,135 @@ func (m *Manager) sortedAppsReverse() []config.SupervisorAppConfig {
 		apps[i], apps[j] = apps[j], apps[i]
 	}
 	return apps
+}
+
+func (m *Manager) openAppLogs(name string) (*os.File, *os.File, string, string, error) {
+	logPath, errorLogPath := appLogPaths(m.cfg.LogDir, name)
+	if m.cfg.LogDir == "" {
+		return nil, nil, "", "", nil
+	}
+	if err := os.MkdirAll(m.cfg.LogDir, 0o755); err != nil {
+		return nil, nil, "", "", err
+	}
+	stdoutLog, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, nil, "", "", err
+	}
+	stderrLog, err := os.OpenFile(errorLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		_ = stdoutLog.Close()
+		return nil, nil, "", "", err
+	}
+	return stdoutLog, stderrLog, logPath, errorLogPath, nil
+}
+
+func appLogPaths(logDir, name string) (string, string) {
+	if logDir == "" {
+		return "", ""
+	}
+	base := safeLogName(name)
+	return filepath.Join(logDir, base+".stdout.log"), filepath.Join(logDir, base+".stderr.log")
+}
+
+func safeLogName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('_')
+	}
+	if b.Len() == 0 {
+		return "app"
+	}
+	return b.String()
+}
+
+func closeFiles(files ...*os.File) {
+	for _, file := range files {
+		if file != nil {
+			_ = file.Close()
+		}
+	}
+}
+
+func healthdCopyErrors(entries []healthd.ApplicationError) []healthd.ApplicationError {
+	out := make([]healthd.ApplicationError, len(entries))
+	copy(out, entries)
+	return out
+}
+
+type appOutputWriter struct {
+	buffer io.Writer
+	file   *os.File
+}
+
+func (w *appOutputWriter) Write(p []byte) (int, error) {
+	if w.buffer != nil {
+		_, _ = w.buffer.Write(p)
+	}
+	if w.file != nil {
+		_, _ = w.file.Write(p)
+	}
+	return len(p), nil
+}
+
+type appErrorWriter struct {
+	manager *Manager
+	app     string
+	output  io.Writer
+	errors  io.Writer
+	file    *os.File
+	logPath string
+
+	mu      sync.Mutex
+	partial string
+}
+
+func (w *appErrorWriter) Write(p []byte) (int, error) {
+	if w.output != nil {
+		_, _ = w.output.Write(p)
+	}
+	if w.errors != nil {
+		_, _ = w.errors.Write(p)
+	}
+	if w.file != nil {
+		_, _ = w.file.Write(p)
+	}
+	w.captureLines(string(p))
+	return len(p), nil
+}
+
+func (w *appErrorWriter) Flush() {
+	w.mu.Lock()
+	partial := w.partial
+	w.partial = ""
+	w.mu.Unlock()
+	w.record(partial)
+}
+
+func (w *appErrorWriter) captureLines(chunk string) {
+	w.mu.Lock()
+	text := w.partial + chunk
+	lines := strings.SplitAfter(text, "\n")
+	if strings.HasSuffix(text, "\n") {
+		w.partial = ""
+	} else {
+		w.partial = lines[len(lines)-1]
+		lines = lines[:len(lines)-1]
+	}
+	w.mu.Unlock()
+	for _, line := range lines {
+		w.record(line)
+	}
+}
+
+func (w *appErrorWriter) record(line string) {
+	if w.manager == nil {
+		return
+	}
+	w.manager.recordAppError(w.app, line, w.logPath)
 }
 
 type lockedBuffer struct {
@@ -1095,4 +1323,19 @@ func tail(s string, limit int) string {
 		return s
 	}
 	return s[len(s)-limit:]
+}
+
+func lastErrorLine(s string, limit int) string {
+	s = strings.TrimSpace(tail(s, limit))
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }

@@ -126,6 +126,7 @@ type SupervisordConfig struct {
 	HeartbeatIntervalSeconds int                   `json:"heartbeat_interval_seconds"`
 	ShutdownTimeoutSeconds   int                   `json:"shutdown_timeout_seconds"`
 	StatePath                string                `json:"state_path,omitempty"`
+	LogDir                   string                `json:"log_dir,omitempty"`
 	WorkingDir               string                `json:"working_dir,omitempty"`
 	RestartCommand           string                `json:"restart_command,omitempty"`
 	RestartArgs              []string              `json:"restart_args,omitempty"`
@@ -272,6 +273,7 @@ func Default() Config {
 			HeartbeatIntervalSeconds: 5,
 			ShutdownTimeoutSeconds:   10,
 			StatePath:                filepath.Join("data", "supervisord", "state.json"),
+			LogDir:                   filepath.Join("data", "supervisord", "logs"),
 			WorkingDir:               ".",
 			RestartCommand:           "go",
 			RestartArgs:              []string{"run", "./cmd/supervisord"},
@@ -504,6 +506,9 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Supervisord.StatePath == "" {
 		c.Supervisord.StatePath = filepath.Join(c.DataDir, "supervisord", "state.json")
+	}
+	if c.Supervisord.LogDir == "" {
+		c.Supervisord.LogDir = filepath.Join(c.DataDir, "supervisord", "logs")
 	}
 	if c.Supervisord.WorkingDir == "" {
 		c.Supervisord.WorkingDir = d.Supervisord.WorkingDir

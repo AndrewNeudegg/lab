@@ -111,6 +111,7 @@
     "heartbeat_interval_seconds": 5,
     "shutdown_timeout_seconds": 10,
     "state_path": "data/supervisord/state.json",
+    "log_dir": "data/supervisord/logs",
     "working_dir": ".",
     "restart_command": "go",
     "restart_args": ["run", "./cmd/supervisord"],

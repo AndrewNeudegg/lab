@@ -19,6 +19,12 @@ type observedRequest struct {
 	Body   map[string]any
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -178,6 +184,29 @@ func TestApprovalCommandsUseApprovalEndpoints(t *testing.T) {
 				t.Fatalf("request = %s %s, want %s %s", observed.Method, observed.Path, tt.wantMethod, tt.wantPath)
 			}
 		})
+	}
+}
+
+func TestHealthdErrorsCommandUsesHealthdEndpoint(t *testing.T) {
+	var observed observedRequest
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		observed = observeRequest(t, req)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"errors":[{"app":"dashboard","message":"boom"}]}`)),
+		}, nil
+	})}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-healthd-addr", "http://healthd.test", "healthd", "errors", "-limit", "3", "-source", "supervisord", "dashboard"}, strings.NewReader(""), &stdout, &stderr, func(string) string { return "" }, client)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
+	}
+	if observed.Method != http.MethodGet || observed.Path != "/healthd/errors" || observed.Query != "app=dashboard&limit=3&source=supervisord" {
+		t.Fatalf("request = %s %s?%s, want GET /healthd/errors?app=dashboard&limit=3&source=supervisord", observed.Method, observed.Path, observed.Query)
+	}
+	if !strings.Contains(stdout.String(), `"message": "boom"`) {
+		t.Fatalf("stdout = %q, want pretty error JSON", stdout.String())
 	}
 }
 

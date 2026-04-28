@@ -31,6 +31,7 @@ import (
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
 	externalagenttools "github.com/andrewneudegg/lab/pkg/tools/externalagent"
 	gittools "github.com/andrewneudegg/lab/pkg/tools/git"
+	healthdtools "github.com/andrewneudegg/lab/pkg/tools/healthd"
 	internettools "github.com/andrewneudegg/lab/pkg/tools/internet"
 	memtools "github.com/andrewneudegg/lab/pkg/tools/memory"
 	repotools "github.com/andrewneudegg/lab/pkg/tools/repo"
@@ -172,6 +173,9 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 		return runtimeServices{}, err
 	}
 	if err := internettools.Register(registry, internettools.Base{}); err != nil {
+		return runtimeServices{}, err
+	}
+	if err := healthdtools.Register(registry, healthdtools.Base{Addr: cfg.Healthd.Addr}); err != nil {
 		return runtimeServices{}, err
 	}
 	if err := texttools.Register(registry); err != nil {

@@ -2767,6 +2767,40 @@ func TestOpenEndedChatReportsProviderSource(t *testing.T) {
 	}
 }
 
+func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
+	search := &repoSearchStub{}
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"Searching","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"orchestrator"}}]}`,
+		`{"message":"Found it.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+	if err := orch.registry.Register(search); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := orch.HandleDetailed(context.Background(), "test", "where is orchestrator search handled?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reply != "Found it." {
+		t.Fatalf("reply = %q, want final scripted response", result.Reply)
+	}
+	if result.Stats.ModelTurns != 2 {
+		t.Fatalf("model turns = %d, want 2", result.Stats.ModelTurns)
+	}
+	if result.Stats.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d, want 1", result.Stats.ToolCalls)
+	}
+	if result.Stats.InputTokens != 30 || result.Stats.OutputTokens != 12 || result.Stats.TotalTokens != 42 {
+		t.Fatalf("usage stats = %#v, want aggregated token usage", result.Stats)
+	}
+	if search.query != "orchestrator" {
+		t.Fatalf("repo search query = %q, want orchestrator", search.query)
+	}
+}
+
 func TestRememberCommandStoresDistilledLesson(t *testing.T) {
 	provider := &staticProvider{content: `{"lesson":"Prefer durable decision rules over style mimicry.","kind":"preference"}`}
 	orch := newTestOrchestrator(t, nil)
@@ -3768,6 +3802,34 @@ func (p *staticProvider) Complete(_ context.Context, req llm.CompletionRequest) 
 		Message: llm.Message{
 			Role:    "assistant",
 			Content: p.content,
+		},
+		Provider: p.Name(),
+	}, nil
+}
+
+type scriptedProvider struct {
+	contents []string
+	requests []llm.CompletionRequest
+}
+
+func (p *scriptedProvider) Name() string { return "scripted" }
+
+func (p *scriptedProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.requests = append(p.requests, req)
+	index := len(p.requests) - 1
+	content := `{"message":"done","done":true,"tool_calls":[]}`
+	if index >= 0 && index < len(p.contents) {
+		content = p.contents[index]
+	}
+	return llm.CompletionResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: content,
+		},
+		Usage: llm.Usage{
+			InputTokens:  10 + index*10,
+			OutputTokens: 4 + index*4,
+			TotalTokens:  14 + index*14,
 		},
 		Provider: p.Name(),
 	}, nil

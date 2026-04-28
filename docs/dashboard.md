@@ -96,6 +96,7 @@ For `/chat`, every visible component must answer one of these questions:
 2. What did homelabd say back?
 3. Which generated command can I safely click?
 4. Where do I go to inspect task state?
+5. How much orchestration work did this reply take?
 
 For `/workflows`, every visible component must answer one of these questions:
 
@@ -126,6 +127,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
+- Chat message footers: small, persistent metadata at the bottom of each bubble. The footer shows the exchange number, and assistant replies also show returned orchestration stats such as model turns, tool calls, and token count when available. Keep it secondary but readable; do not hide these counts behind hover-only controls.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
 ## Status Semantics

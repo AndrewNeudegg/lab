@@ -50,6 +50,12 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(page.locator('.content pre code').first()).toContainText('reflect on our recent interaction');
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
 
+  const searchbox = page.getByRole('searchbox', { name: 'Search documentation' });
+  await searchbox.fill('operator interface');
+  await expect(page.locator('#docs-list a')).toHaveCount(1);
+  await searchbox.fill('');
+  await expect(page.locator('#docs-result-count')).toContainText('9 documents');
+
   await page.getByRole('button', { name: 'Menu' }).click();
   await expect(
     page.getByRole('navigation', { name: 'Primary mobile' }).getByRole('link', { name: 'Docs' })
@@ -61,7 +67,7 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   await expect(page.locator('#docs-list a[aria-current="page"]')).toContainText('Dashboard');
 
-  await page.getByRole('searchbox', { name: 'Search documentation' }).fill('operator interface');
+  await searchbox.fill('operator interface');
   await expect(page.locator('#docs-list a')).toHaveCount(1);
   await expect(page.locator('#docs-list a')).toContainText('homelabctl');
   const docsListMetrics = await page.locator('#docs-list').evaluate((element) => ({

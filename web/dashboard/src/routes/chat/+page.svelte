@@ -6,9 +6,11 @@
     Navbar,
     persistChatDraft,
     readStoredChatDraft,
+    type ChatInteractionStats,
     type ChatRole,
     type ChatTranscriptMessage
   } from '@homelab/shared';
+  import { formatInteractionStats, messageExchangeNumber } from './interaction-stats';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
@@ -85,13 +87,22 @@
       candidate.actions === undefined ||
       (Array.isArray(candidate.actions) &&
         candidate.actions.every((action) => typeof action === 'string'));
+    const validStats =
+      candidate.stats === undefined ||
+      (candidate.stats !== null &&
+        typeof candidate.stats === 'object' &&
+        ['model_turns', 'tool_calls', 'input_tokens', 'output_tokens', 'total_tokens'].every((key) => {
+          const stat = (candidate.stats as Record<string, unknown>)[key];
+          return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
+        }));
 
     return (
       typeof candidate.id === 'string' &&
       validRole &&
       typeof candidate.content === 'string' &&
       typeof candidate.time === 'string' &&
-      validActions
+      validActions &&
+      validStats
     );
   };
 
@@ -185,7 +196,12 @@
     });
   };
 
-  const addMessage = (role: ChatRole, content: string, source?: string) => {
+  const addMessage = (
+    role: ChatRole,
+    content: string,
+    source?: string,
+    stats?: ChatInteractionStats
+  ) => {
     messageId += 1;
     messages = [
       ...messages,
@@ -195,6 +211,7 @@
         content,
         source,
         actions: role === 'assistant' ? extractCommands(content) : undefined,
+        stats,
         time: timeLabel()
       }
     ];
@@ -228,7 +245,12 @@
         from: 'dashboard',
         content: trimmed
       });
-      addMessage('assistant', response.reply || 'No reply returned.', response.source || 'program');
+      addMessage(
+        'assistant',
+        response.reply || 'No reply returned.',
+        response.source || 'program',
+        response.stats
+      );
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to reach homelabd.';
     } finally {
@@ -252,6 +274,9 @@
     draft = (event.currentTarget as HTMLTextAreaElement).value;
     persistChatDraft(draft);
   };
+
+  const messageFooter = (message: ChatTranscriptMessage, index: number) =>
+    formatInteractionStats(message, messageExchangeNumber(messages, index));
 </script>
 
 <svelte:head>
@@ -264,7 +289,7 @@
 
   <main class="chat-card">
     <section class="messages" bind:this={messagesEl} aria-live="polite">
-      {#each messages as message (message.id)}
+      {#each messages as message, index (message.id)}
         <article class="message" class:user={message.role === 'user'}>
           <div class="meta">
             <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
@@ -279,6 +304,9 @@
                 </button>
               {/each}
             </div>
+          {/if}
+          {#if messageFooter(message, index)}
+            <div class="message-footer">{messageFooter(message, index)}</div>
           {/if}
         </article>
       {/each}
@@ -432,6 +460,14 @@
   .meta span {
     color: #243047;
     font-weight: 800;
+  }
+
+  .message-footer {
+    color: #475569;
+    font-size: 0.68rem;
+    font-weight: 650;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .error {

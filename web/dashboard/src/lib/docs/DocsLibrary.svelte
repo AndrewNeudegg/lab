@@ -35,7 +35,8 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
-
+  let syncedSelectedSlug = selectedSlug;
+  let pendingDocPath = '';
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
     ...preferredDocOrder
@@ -75,14 +76,26 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: jumpSlug = selectedSlug;
+  $: if (selectedSlug !== syncedSelectedSlug) {
+    syncedSelectedSlug = selectedSlug;
+    pendingDocPath = '';
+    jumpSlug = selectedSlug;
+  }
 
-  const openSelectedDoc = (event: Event) => {
-    const slug = (event.currentTarget as HTMLSelectElement).value;
+  const selectedDocPath = (slug: string) => {
+    return slug && slug !== selectedSlug ? `/docs/${slug}` : '';
+  };
 
-    if (slug && slug !== selectedSlug) {
-      window.location.assign(`/docs/${slug}`);
+  const openSelectedDoc = (event?: Event) => {
+    const slug =
+      event?.currentTarget instanceof HTMLSelectElement ? event.currentTarget.value : jumpSlug;
+    jumpSlug = slug;
+    const path = selectedDocPath(slug);
+    if (!path || path === pendingDocPath) {
+      return;
     }
+    pendingDocPath = path;
+    window.location.assign(path);
   };
 </script>
 
@@ -103,7 +116,13 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:value={jumpSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select
+          id="docs-jump"
+          bind:value={jumpSlug}
+          oninput={openSelectedDoc}
+          onchange={openSelectedDoc}
+          aria-label="Jump to document"
+        >
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}

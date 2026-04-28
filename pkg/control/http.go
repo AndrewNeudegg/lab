@@ -140,7 +140,11 @@ func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	_ = s.appendChat("http", "out", "homelabd", from, result.Reply, true)
-	writeJSON(rw, http.StatusOK, map[string]any{"id": id.New("msg"), "reply": result.Reply, "source": result.Source})
+	response := map[string]any{"id": id.New("msg"), "reply": result.Reply, "source": result.Source}
+	if result.Stats.HasValues() {
+		response["stats"] = result.Stats
+	}
+	writeJSON(rw, http.StatusOK, response)
 }
 
 func (s *Server) appendChat(adapter, direction, from, to, content string, addressed bool) error {

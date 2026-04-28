@@ -35,7 +35,7 @@ Approvals are single-use decisions tied to the task state at the time they were 
 
 ## Task Records
 
-New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.
+New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. The durable `title` is generated through the LLM-backed `text.summarize` tool with an 84-character task-pane limit, while `goal` preserves the full user input for execution context. If the summariser cannot run, task creation continues with a clipped extractive fallback title. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.
 
 Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat. Long diagnostics such as worker output, activity, the reviewed plan, and the original prompt are collapsible so they remain available without dominating the decision flow.
 

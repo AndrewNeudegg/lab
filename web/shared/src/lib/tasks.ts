@@ -110,7 +110,7 @@ export const taskSummaryTitle = (
   task: Pick<HomelabdTask, 'id' | 'title' | 'goal'>,
   maxLength = 96
 ) => {
-  const source = normalizedTaskText(task.goal) || normalizedTaskText(task.title) || task.id;
+  const source = normalizedTaskText(task.title) || normalizedTaskText(task.goal) || task.id;
   if (source.length <= maxLength) {
     return source;
   }

@@ -5003,6 +5003,15 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	if remoteTask(t) {
 		return o.reviewRemoteTask(ctx, t)
 	}
+	if taskBlockedByReviewChecks(t) {
+		previousResult := t.Result
+		t.Status = taskstore.StatusReadyForReview
+		t.AssignedTo = "OrchestratorAgent"
+		if err := o.tasks.Save(t); err != nil {
+			return "", err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.requeued", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"previous_result": previousResult})})
+	}
 	if t.Status != taskstore.StatusReadyForReview {
 		return reviewNotReadyReply(t), nil
 	}
@@ -5152,6 +5161,10 @@ func reviewNotReadyReply(t taskstore.Task) string {
 	default:
 		return fmt.Sprintf("ReviewerAgent: task %s is %s, not %s. No checks run and no state changed.\nNext: `show %s`.", shortID, firstNonEmptyString(t.Status, "unknown"), taskstore.StatusReadyForReview, shortID)
 	}
+}
+
+func taskBlockedByReviewChecks(t taskstore.Task) bool {
+	return t.Status == taskstore.StatusBlocked && strings.HasPrefix(strings.TrimSpace(t.Result), "ReviewerAgent checks failed:")
 }
 
 func (o *Orchestrator) currentReviewTask(taskID string) (taskstore.Task, bool, string, error) {

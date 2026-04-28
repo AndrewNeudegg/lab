@@ -1438,6 +1438,53 @@ func TestReviewDoesNotRequestApprovalWhenChecksFail(t *testing.T) {
 	}
 }
 
+func TestReviewRerunsBlockedReviewCheckFailure(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260428_214200_recheck1",
+		Title:      "recheck review infra",
+		Goal:       "recheck review infra",
+		Status:     taskstore.StatusBlocked,
+		AssignedTo: "OrchestratorAgent",
+		Result:     "ReviewerAgent checks failed: bun.uat.site: bun: exit status 1",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  workspace,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Merge approval requested") {
+		t.Fatalf("reply = %q, want blocked check failure to be reviewed again", reply)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusAwaitingApproval {
+		t.Fatalf("status = %q, want awaiting approval", updated.Status)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 || approvals[0].TaskID != task.ID {
+		t.Fatalf("approvals = %#v, want one approval for rechecked task", approvals)
+	}
+}
+
 func TestReviewRunningTaskDoesNotRunChecksOrBlock(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	taskID := "task_20260428_204200_running1"

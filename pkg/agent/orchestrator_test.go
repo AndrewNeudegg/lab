@@ -1176,6 +1176,70 @@ func TestReviewSuccessMovesOwnershipBackToOrchestrator(t *testing.T) {
 	}
 }
 
+func TestReviewSuccessStalesPreviousPendingMergeApproval(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.registry.Register(mergeCheckPassStub{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := taskstore.Task{
+		ID:         "task_20260427_120000_6d41996e",
+		Title:      "retry stale approval",
+		Goal:       "retry stale approval",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "codex",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	oldApproval := approvalstore.Request{
+		ID:        "approval_20260427_120000_old00001",
+		TaskID:    task.ID,
+		Tool:      "git.merge_approved",
+		Args:      json.RawMessage(`{"branch":"homelabd/task_20260427_120000_6d41996e"}`),
+		Reason:    "merge reviewed task branch into repo root",
+		Status:    approvalstore.StatusPending,
+		CreatedAt: now.Add(-time.Minute),
+	}
+	if err := orch.approvals.Save(oldApproval); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), "6d41996e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Merge approval requested") {
+		t.Fatalf("reply = %q, want merge approval", reply)
+	}
+	updatedOldApproval, err := orch.approvals.Load(oldApproval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedOldApproval.Status != approvalstore.StatusStale {
+		t.Fatalf("old approval status = %q, want stale", updatedOldApproval.Status)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := 0
+	for _, approval := range approvals {
+		if approval.TaskID == task.ID && approval.Status == approvalstore.StatusPending {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatalf("pending approvals = %d, want exactly the new review approval", pending)
+	}
+}
+
 func TestReviewWorkspaceCommitFeedsBranchDiff(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
@@ -1641,6 +1705,80 @@ func TestStaleMergeApprovalDoesNotRunForMissingTask(t *testing.T) {
 	}
 	if updatedApproval.Status != approvalstore.StatusStale {
 		t.Fatalf("approval status = %q, want stale", updatedApproval.Status)
+	}
+}
+
+func TestOlderMergeApprovalDoesNotRunWhenNewerApprovalExists(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(mergeShouldNotRunStub{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := taskstore.Task{
+		ID:         "task_20260427_120000_6d41996e",
+		Title:      "retry stale approval",
+		Goal:       "retry stale approval",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	oldApproval := approvalstore.Request{
+		ID:        "approval_20260427_120000_old00001",
+		TaskID:    task.ID,
+		Tool:      "git.merge_approved",
+		Args:      json.RawMessage(`{"branch":"homelabd/task_20260427_120000_6d41996e"}`),
+		Reason:    "merge reviewed task branch into repo root",
+		Status:    approvalstore.StatusPending,
+		CreatedAt: now,
+	}
+	newApproval := approvalstore.Request{
+		ID:        "approval_20260427_120100_new00001",
+		TaskID:    task.ID,
+		Tool:      "git.merge_approved",
+		Args:      json.RawMessage(`{"branch":"homelabd/task_20260427_120000_6d41996e"}`),
+		Reason:    "merge reviewed retry result into repo root",
+		Status:    approvalstore.StatusPending,
+		CreatedAt: now.Add(time.Minute),
+	}
+	if err := orch.approvals.Save(oldApproval); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.approvals.Save(newApproval); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.ResolveApproval(context.Background(), oldApproval.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "is stale") || !strings.Contains(reply, newApproval.ID) || !strings.Contains(reply, "No merge was attempted") {
+		t.Fatalf("reply = %q, want stale older approval explanation", reply)
+	}
+	updatedOldApproval, err := orch.approvals.Load(oldApproval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedOldApproval.Status != approvalstore.StatusStale {
+		t.Fatalf("old approval status = %q, want stale", updatedOldApproval.Status)
+	}
+	updatedNewApproval, err := orch.approvals.Load(newApproval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedNewApproval.Status != approvalstore.StatusPending {
+		t.Fatalf("new approval status = %q, want pending", updatedNewApproval.Status)
+	}
+	updatedTask, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTask.Status != taskstore.StatusAwaitingApproval {
+		t.Fatalf("task status = %q, want awaiting_approval", updatedTask.Status)
 	}
 }
 
@@ -2370,6 +2508,198 @@ func TestStaleDelegateCompletionDoesNotChangeMergedOrDoneTask(t *testing.T) {
 	}
 }
 
+func TestRetryStalesPendingApprovalBeforeStartingWorker(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	now := time.Now().UTC()
+	taskID := "task_20260427_120000_6d41996e"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "retry stale approval",
+		Goal:       "retry stale approval",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	approval := approvalstore.Request{
+		ID:        "approval_20260427_120000_old00001",
+		TaskID:    taskID,
+		Tool:      "git.merge_approved",
+		Args:      json.RawMessage(`{"branch":"homelabd/task_20260427_120000_6d41996e"}`),
+		Reason:    "merge reviewed task branch into repo root",
+		Status:    approvalstore.StatusPending,
+		CreatedAt: now,
+	}
+	if err := orch.approvals.Save(approval); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.RetryTask(context.Background(), taskID, "codex", "rebase and retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Retried 6d41996e on codex") {
+		t.Fatalf("reply = %q, want retry confirmation", reply)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate did not start")
+	}
+	updatedApproval, err := orch.approvals.Load(approval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusStale || !strings.Contains(updatedApproval.Reason, "superseded by a new worker run") {
+		t.Fatalf("approval = %#v, want stale worker-run reason", updatedApproval)
+	}
+	updatedTask, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTask.Status != taskstore.StatusRunning || updatedTask.AssignedTo != "codex" {
+		t.Fatalf("task = %#v, want running codex task", updatedTask)
+	}
+	close(releaseDelegate)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !orch.taskActive(taskID) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("delegate did not finish after release")
+}
+
+func TestReconcileRunningTaskWithGrantedMergeApprovalAwaitsVerification(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: make(chan struct{}),
+	})
+	now := time.Now().UTC()
+	taskID := "task_20260427_120000_6d41996e"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "merged but running",
+		Goal:       "merged but running",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "codex",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		Result:     "delegated to codex; external worker is running",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	approval := approvalstore.Request{
+		ID:        "approval_20260427_120000_granted1",
+		TaskID:    taskID,
+		Tool:      "git.merge_approved",
+		Args:      json.RawMessage(`{"branch":"homelabd/task_20260427_120000_6d41996e"}`),
+		Reason:    "merge reviewed task branch into repo root",
+		Status:    approvalstore.StatusGranted,
+		CreatedAt: now,
+	}
+	if err := orch.approvals.Save(approval); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconciled count = %d, want 1", count)
+	}
+	select {
+	case <-delegateStarted:
+		t.Fatal("granted merge recovery should not restart the worker")
+	default:
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusAwaitingVerification || updated.AssignedTo != "OrchestratorAgent" {
+		t.Fatalf("task = %#v, want awaiting verification owned by orchestrator", updated)
+	}
+	if !strings.Contains(updated.Result, approval.ID) {
+		t.Fatalf("result = %q, want granted approval context", updated.Result)
+	}
+}
+
+func TestReconcileRunningTaskIgnoresGrantedMergeApprovalFromPreviousRun(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: make(chan struct{}),
+	})
+	now := time.Now().UTC()
+	taskID := "task_20260427_120000_6d41996e"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "reopened after merge",
+		Goal:       "reopened after merge",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "codex",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		Result:     "delegated to codex; external worker is running",
+		CreatedAt:  now.Add(-time.Hour),
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	running, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.StartedAt == nil {
+		t.Fatal("running task has no started_at")
+	}
+	approval := approvalstore.Request{
+		ID:        "approval_20260427_110000_granted1",
+		TaskID:    taskID,
+		Tool:      "git.merge_approved",
+		Args:      json.RawMessage(`{"branch":"homelabd/task_20260427_120000_6d41996e"}`),
+		Reason:    "previous run merge approval",
+		Status:    approvalstore.StatusGranted,
+		CreatedAt: running.StartedAt.Add(-time.Hour),
+		UpdatedAt: running.StartedAt.Add(-time.Hour),
+	}
+	if err := writeApprovalRecord(orch, approval); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("reconciled count = %d, want 0", count)
+	}
+	select {
+	case <-delegateStarted:
+		t.Fatal("fresh running task should not restart before stale threshold")
+	default:
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning {
+		t.Fatalf("task status = %q, want running", updated.Status)
+	}
+}
+
 func TestRecoverRunningTasksRestartsExternalWorker(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
@@ -2797,6 +3127,18 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func writeApprovalRecord(orch *Orchestrator, approval approvalstore.Request) error {
+	dir := filepath.Join(orch.cfg.DataDir, "approvals")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(approval, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, approval.ID+".json"), append(b, '\n'), 0o644)
 }
 
 type worktreeCreateStub struct {

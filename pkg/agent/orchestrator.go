@@ -1041,6 +1041,9 @@ func (o *Orchestrator) AssignTaskTarget(ctx context.Context, selector string, ta
 	if target.Workdir == "" {
 		return "", fmt.Errorf("remote working directory is required")
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "task assigned to a remote target"); err != nil {
+		return "", err
+	}
 	target.Mode = "remote"
 	t.Target = target
 	t.Workspace = ""
@@ -1286,6 +1289,26 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		}
 		if remoteTask(t) {
 			continue
+		}
+		if t.Status == taskstore.StatusRunning {
+			if approval, ok, err := o.latestApprovalForTask(t.ID, "git.merge_approved", approvalstore.StatusGranted); err != nil {
+				o.log().Error("task approval reconciliation failed", "task_id", t.ID, "error", err)
+				continue
+			} else if ok && approvalGrantedDuringCurrentRun(approval, t) {
+				t.Status = taskstore.StatusAwaitingVerification
+				t.AssignedTo = "OrchestratorAgent"
+				t.Result = appendResultLine(t.Result, "merge approval "+approval.ID+" was already granted; awaiting human verification")
+				if err := o.tasks.Save(t); err != nil {
+					o.log().Error("task approval reconciliation save failed", "task_id", t.ID, "error", err)
+					continue
+				}
+				recovered++
+				_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+					"approval": approval.ID,
+					"reason":   "granted merge approval found while task was still marked running",
+				})})
+				continue
+			}
 		}
 		if len(t.DependsOn) > 0 {
 			unresolved, err := o.unresolvedDependencies(t)
@@ -2602,7 +2625,7 @@ func taskStateTransitions(status string) string {
 	case taskstore.StatusBlocked:
 		return "blocked -> running, cancelled, or deleted"
 	case taskstore.StatusAwaitingApproval:
-		return "awaiting_approval -> awaiting_verification, conflict_resolution, or blocked"
+		return "awaiting_approval -> awaiting_verification, conflict_resolution, blocked, or running"
 	case taskstore.StatusAwaitingVerification:
 		return "awaiting_verification -> done or queued"
 	case taskstore.StatusDone, taskstore.StatusCancelled:
@@ -2812,6 +2835,9 @@ func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string,
 	if t.Status == taskstore.StatusDone || t.Status == taskstore.StatusCancelled {
 		return fmt.Sprintf("Task %s is already %s.", taskID, t.Status), nil
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "task cancelled by human"); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusCancelled
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = "cancelled by human"
@@ -2883,6 +2909,9 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 	if t.Status == taskstore.StatusCancelled {
 		return fmt.Sprintf("Task %s is cancelled; reopen it before accepting.", taskID), nil
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "task accepted by human"); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusDone
 	t.AssignedTo = "OrchestratorAgent"
 	t.AcceptanceCriteria = markAcceptanceCriteria(t.AcceptanceCriteria, "accepted")
@@ -2931,6 +2960,9 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 	} else {
 		reason = "reopened by human: " + reason
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, reason); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusQueued
 	t.AssignedTo = "OrchestratorAgent"
 	if strings.TrimSpace(t.Result) == "" {
@@ -2978,6 +3010,9 @@ func (o *Orchestrator) refreshTaskWorkspace(ctx context.Context, selector string
 	cleanOut, err := exec.CommandContext(ctx, "git", "-C", t.Workspace, "clean", "-fd", "-e", ".codex", "-e", ".git-local", "-e", ".artifacts", "--", ".").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git clean task workspace: %w: %s", err, strings.TrimSpace(string(cleanOut)))
+	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "workspace refreshed to current main"); err != nil {
+		return "", err
 	}
 	t.Status = taskstore.StatusBlocked
 	t.AssignedTo = "OrchestratorAgent"
@@ -3601,6 +3636,9 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 	if strings.TrimSpace(instruction) == "" {
 		instruction = defaultDelegationInstruction(t)
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new worker run"); err != nil {
+		return delegationRun{}, err
+	}
 	t.Status = taskstore.StatusRunning
 	t.AssignedTo = backend
 	t.Result = fmt.Sprintf("delegated to %s; external worker is running", backend)
@@ -4151,6 +4189,9 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	approvalID := id.New("approval")
 	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new review approval"); err != nil {
+		return "", err
+	}
 	if err := o.approvals.Save(req); err != nil {
 		return "", err
 	}
@@ -4446,6 +4487,9 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 		return "", fmt.Errorf("no LLM provider configured")
 	}
 	o.ensureTaskPlan(ctx, &t)
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new worker run"); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusRunning
 	t.AssignedTo = agent.Name
 	if err := o.tasks.Save(t); err != nil {
@@ -4749,6 +4793,17 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "task_status": task.Status})})
 			return fmt.Sprintf("Approval %s is stale: task %s is %s, not %s. No merge was attempted.", approvalID, taskShortID(req.TaskID), task.Status, taskstore.StatusAwaitingApproval), nil
 		}
+		if newer, ok, err := o.newerPendingApprovalForTask(req); err != nil {
+			return "", err
+		} else if ok {
+			req.Status = approvalstore.StatusStale
+			req.Reason = appendApprovalReason(req.Reason, "stale: superseded by "+newer.ID)
+			if err := o.approvals.Save(req); err != nil {
+				return "", err
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "superseded_by": newer.ID})})
+			return fmt.Sprintf("Approval %s is stale: task %s has a newer pending merge approval %s. No merge was attempted.", approvalID, taskShortID(req.TaskID), newer.ID), nil
+		}
 		if reconcileOut, err := o.reconcileApprovedTaskBranch(ctx, task); err != nil {
 			req.Status = approvalstore.StatusFailed
 			req.Reason = appendApprovalReason(req.Reason, "auto-rebase failed: "+err.Error())
@@ -4827,6 +4882,94 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 		}
 	}
 	return "Approved and executed " + approvalID, nil
+}
+
+func (o *Orchestrator) stalePendingTaskApprovals(ctx context.Context, taskID, reason string) error {
+	if strings.TrimSpace(taskID) == "" {
+		return nil
+	}
+	requests, err := o.approvals.List()
+	if err != nil {
+		return err
+	}
+	for _, req := range requests {
+		if req.TaskID != taskID || req.Status != approvalstore.StatusPending {
+			continue
+		}
+		req.Status = approvalstore.StatusStale
+		req.Reason = appendApprovalReason(req.Reason, "stale: "+reason)
+		if err := o.approvals.Save(req); err != nil {
+			return err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"approval": req, "reason": reason})})
+	}
+	return nil
+}
+
+func (o *Orchestrator) newerPendingApprovalForTask(req approvalstore.Request) (approvalstore.Request, bool, error) {
+	if req.TaskID == "" || req.Tool == "" {
+		return approvalstore.Request{}, false, nil
+	}
+	requests, err := o.approvals.List()
+	if err != nil {
+		return approvalstore.Request{}, false, err
+	}
+	for _, candidate := range requests {
+		if candidate.ID == req.ID ||
+			candidate.TaskID != req.TaskID ||
+			candidate.Tool != req.Tool ||
+			candidate.Status != approvalstore.StatusPending {
+			continue
+		}
+		if approvalCreatedAfter(candidate, req) {
+			return candidate, true, nil
+		}
+	}
+	return approvalstore.Request{}, false, nil
+}
+
+func (o *Orchestrator) latestApprovalForTask(taskID, toolName, status string) (approvalstore.Request, bool, error) {
+	requests, err := o.approvals.List()
+	if err != nil {
+		return approvalstore.Request{}, false, err
+	}
+	var latest approvalstore.Request
+	for _, candidate := range requests {
+		if candidate.TaskID != taskID || candidate.Tool != toolName || candidate.Status != status {
+			continue
+		}
+		if latest.ID == "" || approvalCreatedAfter(candidate, latest) {
+			latest = candidate
+		}
+	}
+	return latest, latest.ID != "", nil
+}
+
+func approvalCreatedAfter(left, right approvalstore.Request) bool {
+	if left.CreatedAt.Equal(right.CreatedAt) {
+		return left.ID > right.ID
+	}
+	if right.CreatedAt.IsZero() {
+		return !left.CreatedAt.IsZero() || left.ID > right.ID
+	}
+	if left.CreatedAt.IsZero() {
+		return false
+	}
+	return left.CreatedAt.After(right.CreatedAt)
+}
+
+func approvalGrantedDuringCurrentRun(approval approvalstore.Request, t taskstore.Task) bool {
+	if t.StartedAt == nil {
+		return true
+	}
+	grantedAt := approval.UpdatedAt
+	if grantedAt.IsZero() {
+		grantedAt = approval.CreatedAt
+	}
+	if grantedAt.IsZero() {
+		return false
+	}
+	return !grantedAt.Before(*t.StartedAt)
 }
 
 func (o *Orchestrator) loadApprovalTask(req approvalstore.Request) (taskstore.Task, bool, error) {

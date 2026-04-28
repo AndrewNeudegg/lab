@@ -55,6 +55,18 @@
     code?: number;
   };
 
+  class TerminalRequestError extends Error {
+    status: number;
+    body: string;
+
+    constructor(status: number, body: string) {
+      super(body || `Request failed with ${status}`);
+      this.name = 'TerminalRequestError';
+      this.status = status;
+      this.body = body;
+    }
+  }
+
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const controls: ControlButton[] = [
     { label: 'Ctrl-C', hint: 'Interrupt foreground job', value: '\u0003' },
@@ -115,7 +127,7 @@
     const response = await fetch(endpoint(base, path), { ...init, headers });
     if (!response.ok) {
       const details = await response.text();
-      throw new Error(details || `Request failed with ${response.status}`);
+      throw new TerminalRequestError(response.status, details || `Request failed with ${response.status}`);
     }
     return (await response.json()) as T;
   }
@@ -573,8 +585,12 @@
         const resumed = await requestForTab<TerminalSession>(tab, `/terminal/sessions/${encodeURIComponent(tab.session.id)}`);
         updateTab(tab.id, (current) => ({ ...current, session: resumed }));
         return resumed;
-      } catch {
-        updateTab(tab.id, (current) => ({ ...current, session: undefined }));
+      } catch (err) {
+        if (err instanceof TerminalRequestError && err.status === 404) {
+          updateTab(tab.id, (current) => ({ ...current, session: undefined }));
+        } else {
+          throw err;
+        }
       }
     }
     const created = await requestForTab<TerminalSession>(tab, '/terminal/sessions', {
@@ -605,6 +621,9 @@
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to connect terminal.';
       writeNotice(`[${error}]`);
+      if (tab.session) {
+        scheduleReconnect(tab.id, tab.session.id);
+      }
     } finally {
       loading = false;
       terminal?.focus();

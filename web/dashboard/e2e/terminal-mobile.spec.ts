@@ -5,11 +5,13 @@ const installTerminalMocks = async (page) => {
     created: 0,
     deleted: [] as string[],
     sessionGets: 0,
-    sent: [] as string[]
+    sent: [] as string[],
+    resumeFailuresRemaining: 0,
+    resumeFailureStatus: 503
   };
   const sessions = new Map();
 
-  await page.addInitScript(() => {
+  await page.context().addInitScript(() => {
     const encoder = new TextEncoder();
     window.__terminalSockets = [];
     window.__terminalEventSources = [];
@@ -98,7 +100,7 @@ const installTerminalMocks = async (page) => {
     window.WebSocket = MockWebSocket;
   });
 
-  await page.route('**/api/terminal/sessions', async (route) => {
+  await page.context().route('**/api/terminal/sessions', async (route) => {
     state.created += 1;
     const id = state.created === 1 ? 'term_test' : `term_test_${state.created}`;
     const session = {
@@ -116,20 +118,29 @@ const installTerminalMocks = async (page) => {
     });
   });
 
-  await page.route('**/api/terminal/sessions/*/resize', async (route) => {
+  await page.context().route('**/api/terminal/sessions/*/resize', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"cols":100,"rows":30}' });
   });
 
-  await page.route('**/api/terminal/sessions/*/input', async (route) => {
+  await page.context().route('**/api/terminal/sessions/*/input', async (route) => {
     const body = JSON.parse(route.request().postData() || '{}');
     state.sent.push(String(body.data || ''));
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
   });
 
-  await page.route(/\/api\/terminal\/sessions\/[^/]+$/, async (route) => {
+  await page.context().route(/\/api\/terminal\/sessions\/[^/]+$/, async (route) => {
     const id = route.request().url().split('/').pop();
     if (route.request().method() === 'GET') {
       state.sessionGets += 1;
+      if (state.resumeFailuresRemaining > 0) {
+        state.resumeFailuresRemaining -= 1;
+        await route.fulfill({
+          status: state.resumeFailureStatus,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'temporary terminal API outage' })
+        });
+        return;
+      }
       const session = sessions.get(id);
       await route.fulfill({
         status: session ? 200 : 404,
@@ -147,7 +158,7 @@ const installTerminalMocks = async (page) => {
     await route.fulfill({ status: 405, contentType: 'application/json', body: '{"error":"method not allowed"}' });
   });
 
-  await page.route('**/api/agents', async (route) => {
+  await page.context().route('**/api/agents', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -171,6 +182,38 @@ const installTerminalMocks = async (page) => {
           }
         ]
       })
+    });
+  });
+
+  await page.context().route('**/api/tasks', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        tasks: [
+          {
+            id: 'task_terminal_nav',
+            title: 'Terminal navigation check',
+            goal: 'Exercise route changes while a terminal is alive.',
+            status: 'queued',
+            assigned_to: 'codex',
+            created_at: '2026-04-28T00:00:00Z',
+            updated_at: '2026-04-28T00:00:00Z'
+          }
+        ]
+      })
+    });
+  });
+
+  await page.context().route('**/api/tasks/*/runs', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"runs":[]}' });
+  });
+
+  await page.context().route('**/api/tasks/*/diff', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: '{"task_id":"task_terminal_nav","raw_diff":"","summary":{"files":0,"additions":0,"deletions":0},"files":[]}'
     });
   });
 
@@ -294,6 +337,96 @@ test('terminal reconnects the same session after a dropped event stream', async 
 
   const eventSources = await page.evaluate(() => window.__terminalEventSources.map((source) => source.url));
   expect(eventSources.filter((url) => url.includes('/api/terminal/sessions/term_test/events')).length).toBeGreaterThan(1);
+});
+
+test('terminal reattaches the same session after navigating to tasks and back', async ({ page }) => {
+  const state = await installTerminalMocks(page);
+
+  await page.goto('/terminal');
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible();
+  await expect.poll(() => state.created).toBe(1);
+
+  await page.evaluate(() => window.__terminalEventSources[0].emit('before tasks nav\r\n'));
+  await page.goto('/tasks');
+  await expect(page.getByRole('complementary', { name: 'Task queue' })).toBeVisible();
+
+  await page.goto('/terminal');
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible();
+  await expect.poll(() => state.sessionGets).toBeGreaterThan(0);
+  expect(state.created).toBe(1);
+
+  await page.locator('.xterm').click();
+  await page.keyboard.type('echo after tasks page');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => state.sent.join('')).toContain('echo after tasks page');
+
+  const eventSources = await page.evaluate(() => window.__terminalEventSources.map((source) => source.url));
+  expect(eventSources.some((url) => url.includes('/api/terminal/sessions/term_test/events')), JSON.stringify(eventSources)).toBe(true);
+});
+
+test('terminal reopens the same session after the browser window closes', async ({ page, context }) => {
+  const state = await installTerminalMocks(page);
+
+  await page.goto('/terminal');
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible();
+  await expect.poll(() => state.created).toBe(1);
+
+  await page.close();
+  const reopened = await context.newPage();
+  await reopened.goto('/terminal');
+  await expect(reopened.locator('.xterm')).toBeVisible();
+  await expect(reopened.getByText('Connected')).toBeVisible();
+  await expect.poll(() => state.sessionGets).toBeGreaterThan(0);
+  expect(state.created).toBe(1);
+
+  await reopened.locator('.xterm').click();
+  await reopened.keyboard.type('echo after browser reopen');
+  await reopened.keyboard.press('Enter');
+  await expect.poll(() => state.sent.join('')).toContain('echo after browser reopen');
+});
+
+test('terminal preserves a stored session through initial API outages', async ({ page }) => {
+  const state = await installTerminalMocks(page);
+
+  await page.goto('/terminal');
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible();
+  await expect.poll(() => state.created).toBe(1);
+
+  state.resumeFailuresRemaining = 2;
+  await page.reload();
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible({ timeout: 8_000 });
+  await expect.poll(() => state.sessionGets).toBeGreaterThanOrEqual(3);
+  expect(state.created).toBe(1);
+
+  const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem('homelab-terminal-tabs:v1') || '{}'));
+  expect(stored.tabs?.[0]?.session?.id).toBe('term_test');
+});
+
+test('terminal queues input while the browser is offline and flushes on online recovery', async ({ page, context }) => {
+  const state = await installTerminalMocks(page);
+
+  await page.goto('/terminal');
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible();
+  await page.locator('.xterm').click();
+
+  await context.setOffline(true);
+  await page.evaluate(() => window.__terminalEventSources[0].fail());
+  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
+  await page.keyboard.type('echo typed with no signal');
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('Connected', { exact: true })).toHaveCount(0);
+
+  await context.setOffline(false);
+  await expect(page.getByText('Connected')).toBeVisible({ timeout: 8_000 });
+  await expect.poll(() => state.sent.join('')).toContain('echo typed with no signal');
+  expect(state.created).toBe(1);
 });
 
 test('terminal keeps large du-style output inside the terminal viewport', async ({ page }) => {

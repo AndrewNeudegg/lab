@@ -88,3 +88,43 @@ func TestAllowedStillRejectsUnknownCommands(t *testing.T) {
 		t.Fatalf("unexpectedly allowed unknown command")
 	}
 }
+
+func TestLimitedToolAllowsReadOnlySearchCommands(t *testing.T) {
+	policy := tool.NewPolicy(nil)
+	for _, command := range [][]string{
+		{"pwd"},
+		{"ls", "-la", "."},
+		{"find", ".", "-name", "*.go"},
+		{"grep", "-R", "TODO", "."},
+		{"rg", "TODO", "pkg"},
+		{"nix", "develop", "-c", "rg", "TODO", "pkg"},
+	} {
+		input, err := json.Marshal(map[string]any{
+			"dir":     "/tmp/workspaces/task_123",
+			"command": command,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision := policy.Decide("CoderAgent", LimitedTool{}, input)
+		if !decision.Allowed || decision.NeedsApproval {
+			t.Fatalf("expected read-only search command %v without approval: %+v", command, decision)
+		}
+		if !allowed(command) {
+			t.Fatalf("expected command to be allowlisted: %v", command)
+		}
+	}
+}
+
+func TestLimitedToolRejectsSearchCommandsWithExecutionHooks(t *testing.T) {
+	for _, command := range [][]string{
+		{"find", ".", "-exec", "rm", "{}", ";"},
+		{"find", ".", "-delete"},
+		{"rg", "--pre", "sh", "TODO"},
+		{"rg", "--pre=sh", "TODO"},
+	} {
+		if allowed(command) {
+			t.Fatalf("unexpectedly allowed command with execution hook: %v", command)
+		}
+	}
+}

@@ -3974,7 +3974,16 @@ func (o *Orchestrator) searchRepo(ctx context.Context, query string) (string, er
 		return "", err
 	}
 	var out struct {
-		Matches []map[string]any `json:"matches"`
+		Matches []struct {
+			Path    string `json:"path"`
+			Line    int    `json:"line"`
+			Text    string `json:"text"`
+			Context []struct {
+				Line  int    `json:"line"`
+				Text  string `json:"text"`
+				Match bool   `json:"match"`
+			} `json:"context"`
+		} `json:"matches"`
 	}
 	_ = json.Unmarshal(raw, &out)
 	if len(out.Matches) == 0 {
@@ -3982,7 +3991,18 @@ func (o *Orchestrator) searchRepo(ctx context.Context, query string) (string, er
 	}
 	var b strings.Builder
 	for _, m := range out.Matches {
-		fmt.Fprintf(&b, "%s:%v: %s\n", m["path"], m["line"], m["text"])
+		if len(m.Context) == 0 {
+			fmt.Fprintf(&b, "%s:%d: %s\n", m.Path, m.Line, m.Text)
+			continue
+		}
+		fmt.Fprintf(&b, "%s:%d:\n", m.Path, m.Line)
+		for _, line := range m.Context {
+			marker := " "
+			if line.Match {
+				marker = ">"
+			}
+			fmt.Fprintf(&b, "%s %d: %s\n", marker, line.Line, line.Text)
+		}
 	}
 	return strings.TrimSpace(b.String()), nil
 }
@@ -4917,6 +4937,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		mustJSON(t),
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
+		"- repo.search returns grep-like context by default; use path, context_lines, and max_results to keep searches focused.",
 		"- Use internet.research for broad, current, multi-source questions before implementation choices.",
 		"- Use text.correct before internet.search when a natural-language query appears misspelled or grammatically ambiguous; preserve exact code symbols.",
 		"- Use internet.search when current external documentation, public web context, or academic papers are required.",
@@ -4924,6 +4945,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Use internet.fetch on promising result URLs before relying on details; prefer official, primary, or scholarly sources.",
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
+		"- Use shell.run_limited with dir set to the task workspace for allowlisted command arrays when a dedicated repo or test tool is too narrow.",
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
 		"- If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"- After editing Go code, run go.fmt, go.test, and repo.current_diff.",
@@ -4939,6 +4961,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
 			"go.fmt": true, "go.test": true, "go.build": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true, "bun.uat.site": true,
+			"shell.run_limited": true,
 		}),
 	}, "\n")
 }

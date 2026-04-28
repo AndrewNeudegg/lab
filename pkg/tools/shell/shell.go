@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -145,10 +146,10 @@ func lowRiskCommand(command []string) bool {
 		"make test",
 		"make build",
 		"make fmt",
-		"git status", "git diff", "git log", "ls", "find":
+		"git status", "git diff", "git log":
 		return true
 	}
-	return command[0] == "cat" && len(command) == 2 && !strings.Contains(command[1], "..")
+	return readOnlyCommand(command)
 }
 
 func lowRiskBunCommand(command []string) bool {
@@ -167,6 +168,73 @@ func lowRiskBunCommand(command []string) bool {
 	default:
 		return false
 	}
+}
+
+func readOnlyCommand(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	switch command[0] {
+	case "pwd":
+		return len(command) == 1
+	case "cat":
+		return len(command) == 2 && safeReadPathArg(command[1])
+	case "ls", "wc", "head", "tail", "grep":
+		return safeReadOnlyArgs(command[1:])
+	case "rg":
+		return safeRipgrepArgs(command[1:])
+	case "find":
+		return safeFindArgs(command[1:])
+	default:
+		return false
+	}
+}
+
+func safeReadOnlyArgs(args []string) bool {
+	for _, arg := range args {
+		if !safeReadPathArg(arg) {
+			return false
+		}
+	}
+	return true
+}
+
+func safeReadPathArg(arg string) bool {
+	if arg == "" {
+		return true
+	}
+	if filepath.IsAbs(arg) || arg == ".." || strings.HasPrefix(arg, "../") || strings.Contains(arg, "/../") || strings.HasSuffix(arg, "/..") {
+		return false
+	}
+	return true
+}
+
+func safeRipgrepArgs(args []string) bool {
+	for i, arg := range args {
+		if !safeReadPathArg(arg) {
+			return false
+		}
+		if arg == "--pre" || arg == "--pre-glob" || strings.HasPrefix(arg, "--pre=") || strings.HasPrefix(arg, "--pre-glob=") {
+			return false
+		}
+		if arg == "-g" && i+1 >= len(args) {
+			return false
+		}
+	}
+	return true
+}
+
+func safeFindArgs(args []string) bool {
+	for _, arg := range args {
+		if !safeReadPathArg(arg) {
+			return false
+		}
+		switch arg {
+		case "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls":
+			return false
+		}
+	}
+	return true
 }
 
 func allowDestructive(command []string) bool {

@@ -88,6 +88,8 @@ Use repo search when you want to inspect local code:
 search orchestrator
 ```
 
+Repo search returns grep-like context by default, including repository-relative paths and line numbers. LLM agents can also call `repo.search` directly with `workspace`, `path`, `context_lines`, and `max_results` when they need focused code context before editing.
+
 Use web search when you need current external information:
 
 ```text

@@ -95,6 +95,18 @@ POST /supervisord/apps/<name>/adopt  {"pid":1234}
 
 The dashboard uses these endpoints through `/supervisord`.
 
+For interactive operation, prefer `homelabctl` over raw HTTP calls:
+
+```sh
+go run ./cmd/homelabctl supervisor status
+go run ./cmd/homelabctl supervisor apps
+go run ./cmd/homelabctl supervisor restart homelabd
+go run ./cmd/homelabctl supervisor restart dashboard
+go run ./cmd/homelabctl supervisor app adopt dashboard 1234
+```
+
+Use `go run ./cmd/homelabctl supervisor restart` only when the explicit intent is to restart `supervisord` itself. Add `-supervisord-addr` or `HOMELABD_SUPERVISORD_ADDR` when the control API is not on `http://127.0.0.1:18082`.
+
 ## Error Capture
 
 Application stderr is treated as the error stream. `supervisord` appends it to the app's `*.stderr.log`, keeps the latest stderr line on the app status as `last_error`, and sends recent lines to `healthd` when `healthd_url` is configured.

@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	defaultAddr        = "http://127.0.0.1:18080"
-	defaultHealthdAddr = "http://127.0.0.1:18081"
-	defaultFrom        = "homelabctl"
+	defaultAddr            = "http://127.0.0.1:18080"
+	defaultHealthdAddr     = "http://127.0.0.1:18081"
+	defaultSupervisordAddr = "http://127.0.0.1:18082"
+	defaultFrom            = "homelabctl"
 )
 
 func main() {
@@ -26,14 +27,15 @@ func main() {
 }
 
 type cli struct {
-	base        string
-	healthdBase string
-	http        *http.Client
-	in          io.Reader
-	out         io.Writer
-	err         io.Writer
-	from        string
-	json        bool
+	base            string
+	healthdBase     string
+	supervisordBase string
+	http            *http.Client
+	in              io.Reader
+	out             io.Writer
+	err             io.Writer
+	from            string
+	json            bool
 }
 
 func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string) string, httpClient *http.Client) int {
@@ -44,6 +46,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string)
 	flags.SetOutput(errOut)
 	addr := flags.String("addr", envDefault(getenv, "HOMELABD_ADDR", defaultAddr), "homelabd base URL")
 	healthdAddr := flags.String("healthd-addr", envDefault(getenv, "HOMELABD_HEALTHD_ADDR", defaultHealthdAddr), "healthd base URL")
+	supervisordAddr := flags.String("supervisord-addr", envDefault(getenv, "HOMELABD_SUPERVISORD_ADDR", defaultSupervisordAddr), "supervisord base URL")
 	from := flags.String("from", envDefault(getenv, "HOMELABCTL_FROM", defaultFrom), "sender name for chat messages")
 	timeout := flags.Duration("timeout", 30*time.Second, "HTTP request timeout")
 	jsonOutput := flags.Bool("json", false, "print the full JSON response for chat commands")
@@ -63,14 +66,15 @@ func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string)
 		httpClient = &copy
 	}
 	c := cli{
-		base:        strings.TrimRight(*addr, "/"),
-		healthdBase: strings.TrimRight(*healthdAddr, "/"),
-		http:        httpClient,
-		in:          in,
-		out:         out,
-		err:         errOut,
-		from:        *from,
-		json:        *jsonOutput,
+		base:            strings.TrimRight(*addr, "/"),
+		healthdBase:     strings.TrimRight(*healthdAddr, "/"),
+		supervisordBase: strings.TrimRight(*supervisordAddr, "/"),
+		http:            httpClient,
+		in:              in,
+		out:             out,
+		err:             errOut,
+		from:            *from,
+		json:            *jsonOutput,
 	}
 	if err := c.dispatch(rest); err != nil {
 		fmt.Fprintln(errOut, "homelabctl:", err)
@@ -122,6 +126,8 @@ func (c cli) dispatch(args []string) error {
 		return c.healthd(args[1:])
 	case "errors", "error":
 		return c.healthd(withAction("errors", args[1:]))
+	case "supervisor", "supervisord":
+		return c.supervisor(args[1:])
 	case "terminal", "term":
 		return c.terminal(args[1:])
 	case "new":
@@ -412,6 +418,76 @@ func (c cli) healthd(args []string) error {
 	default:
 		return fmt.Errorf("unknown healthd command %q", args[0])
 	}
+}
+
+func (c cli) supervisor(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl supervisor <status|apps|start|stop|restart|app>")
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "status", "show", "snapshot":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl supervisor status")
+		}
+		return c.doAt(c.supervisordBase, http.MethodGet, "/supervisord", nil)
+	case "apps", "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl supervisor apps")
+		}
+		return c.doAt(c.supervisordBase, http.MethodGet, "/supervisord/apps", nil)
+	case "start":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl supervisor start <app>")
+		}
+		return c.supervisorAppAction("start", args[1], 0)
+	case "stop", "restart":
+		switch len(args) {
+		case 1:
+			return c.doAt(c.supervisordBase, http.MethodPost, path("supervisord", action), nil)
+		case 2:
+			return c.supervisorAppAction(action, args[1], 0)
+		default:
+			return fmt.Errorf("usage: homelabctl supervisor %s [app]", action)
+		}
+	case "app":
+		return c.supervisorApp(args[1:])
+	default:
+		return fmt.Errorf("unknown supervisor command %q", args[0])
+	}
+}
+
+func (c cli) supervisorApp(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl supervisor app <start|stop|restart|adopt> <app> [pid]")
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "start", "stop", "restart":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl supervisor app %s <app>", action)
+		}
+		return c.supervisorAppAction(action, args[1], 0)
+	case "adopt":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: homelabctl supervisor app adopt <app> <pid>")
+		}
+		pid, err := strconv.Atoi(args[2])
+		if err != nil || pid <= 0 {
+			return fmt.Errorf("pid must be a positive integer")
+		}
+		return c.supervisorAppAction(action, args[1], pid)
+	default:
+		return fmt.Errorf("unknown supervisor app command %q", args[0])
+	}
+}
+
+func (c cli) supervisorAppAction(action, app string, pid int) error {
+	var body any
+	if action == "adopt" {
+		body = map[string]any{"pid": pid}
+	}
+	return c.doAt(c.supervisordBase, http.MethodPost, path("supervisord", "apps", app, action), body)
 }
 
 func (c cli) terminal(args []string) error {
@@ -782,6 +858,12 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] approval deny <approval_id>
   homelabctl [-addr http://127.0.0.1:18080] events [-limit N] [YYYY-MM-DD]
   homelabctl [-healthd-addr http://127.0.0.1:18081] healthd errors [-limit N] [-source SOURCE] [app]
+  homelabctl [-supervisord-addr http://127.0.0.1:18082] supervisor status
+  homelabctl [-supervisord-addr http://127.0.0.1:18082] supervisor apps
+  homelabctl [-supervisord-addr http://127.0.0.1:18082] supervisor start <app>
+  homelabctl [-supervisord-addr http://127.0.0.1:18082] supervisor stop [app]
+  homelabctl [-supervisord-addr http://127.0.0.1:18082] supervisor restart [app]
+  homelabctl [-supervisord-addr http://127.0.0.1:18082] supervisor app adopt <app> <pid>
 
   homelabctl [-addr http://127.0.0.1:18080] terminal start [cwd]
   homelabctl [-addr http://127.0.0.1:18080] terminal show <session_id>
@@ -796,5 +878,6 @@ Top-level shortcuts:
   homelabctl run|review|accept|reopen|cancel|retry|delete <task_id> [...]
   homelabctl approve|deny <approval_id>
   homelabctl errors [-limit N] [app]
+  homelabctl supervisor restart dashboard
   homelabctl status|agents|delegate|ux|refresh|diff|test ...`)
 }

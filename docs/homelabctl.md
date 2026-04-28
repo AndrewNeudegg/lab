@@ -84,6 +84,8 @@ go run ./cmd/homelabctl task delete task_123
 
 `task retry` preserves the previous task result as retry context. For `conflict_resolution` tasks, or blocked tasks whose result is a premerge/rebase failure, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
 
+`task review` is valid only after a local worker has moved the task to `ready_for_review`. It owns the task while checks run; concurrent run, retry, or delegation attempts are rejected, and a stale review result is ignored if the task state changes before checks finish.
+
 The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
 
 Top-level aliases are available for common task actions:

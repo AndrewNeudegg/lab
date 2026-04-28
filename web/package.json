@@ -11,8 +11,10 @@
     "build": "bun run --cwd dashboard build",
     "check": "bun run --cwd shared check && bun run --cwd dashboard check",
     "test": "bun test $(find shared/src dashboard/src dashboard/scripts -name '*.test.ts' -print)",
+    "browser:preflight": "bun run --cwd dashboard browser:preflight",
     "uat:docs": "bun run --cwd dashboard uat:docs",
     "uat:tasks": "bun run --cwd dashboard uat:tasks",
+    "uat:site": "bun run --cwd dashboard uat:site",
     "uat:tasks:live": "bun run --cwd dashboard uat:tasks:live",
     "e2e": "bun run --cwd dashboard e2e"
   },

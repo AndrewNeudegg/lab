@@ -79,7 +79,13 @@ For dashboard task-page changes, the standard completion gate is:
 nix develop -c bun run --cwd web uat:tasks
 ```
 
-This command starts Playwright and Vite in the worker checkout, uses mocked `homelabd` APIs, and leaves the supervised dashboard alone. See `docs/agentic-testing.md`.
+For broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use:
+
+```bash
+nix develop -c bun run --cwd web uat:site
+```
+
+These commands start Playwright and Vite in the worker checkout, use mocked APIs, and leave the supervised dashboard alone. If `browser:preflight` fails on a remote worker, fix the worker browser environment or move the task to a browser-capable worker rather than restarting production services. See `docs/agentic-testing.md`.
 
 ## Run Trace
 

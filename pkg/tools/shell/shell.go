@@ -136,7 +136,16 @@ func lowRiskCommand(command []string) bool {
 	}
 	joined := strings.Join(command, " ")
 	switch joined {
-	case "go test ./...", "go build ./...", "go fmt ./...", "git status", "git diff", "git log", "ls", "find":
+	case "go test ./...",
+		"go test ./cmd/... ./pkg/... ./constraints",
+		"go build ./...",
+		"go build ./cmd/... ./pkg/... ./constraints",
+		"go fmt ./...",
+		"go fmt ./cmd/... ./pkg/... ./constraints",
+		"make test",
+		"make build",
+		"make fmt",
+		"git status", "git diff", "git log", "ls", "find":
 		return true
 	}
 	return command[0] == "cat" && len(command) == 2 && !strings.Contains(command[1], "..")
@@ -153,7 +162,7 @@ func lowRiskBunCommand(command []string) bool {
 		return false
 	}
 	switch command[4] {
-	case "check", "build", "test", "uat:tasks", "uat:docs", "e2e":
+	case "check", "build", "test", "browser:preflight", "uat:tasks", "uat:site", "uat:docs", "e2e":
 		return true
 	default:
 		return false

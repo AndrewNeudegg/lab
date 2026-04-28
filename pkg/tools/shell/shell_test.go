@@ -29,14 +29,16 @@ func TestLimitedToolReadOnlyCommandDoesNotRequireApproval(t *testing.T) {
 
 func TestLimitedToolAllowsIsolatedDashboardUATCommand(t *testing.T) {
 	policy := tool.NewPolicy(nil)
-	input := json.RawMessage(`{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:tasks"]}`)
+	for _, script := range []string{"browser:preflight", "uat:tasks", "uat:site"} {
+		input := json.RawMessage(`{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","` + script + `"]}`)
 
-	decision := policy.Decide("UXAgent", LimitedTool{}, input)
-	if !decision.Allowed || decision.NeedsApproval {
-		t.Fatalf("expected isolated dashboard UAT command without approval: %+v", decision)
-	}
-	if !allowed([]string{"nix", "develop", "-c", "bun", "run", "--cwd", "web", "uat:tasks"}) {
-		t.Fatalf("expected command to be allowlisted")
+		decision := policy.Decide("UXAgent", LimitedTool{}, input)
+		if !decision.Allowed || decision.NeedsApproval {
+			t.Fatalf("expected isolated dashboard UAT command without approval: %+v", decision)
+		}
+		if !allowed([]string{"nix", "develop", "-c", "bun", "run", "--cwd", "web", script}) {
+			t.Fatalf("expected command to be allowlisted")
+		}
 	}
 }
 

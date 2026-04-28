@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -459,6 +460,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.RequestURI())
 		}
 	}
+	skipIfNoLoopback(t)
 	server := httptest.NewServer(http.HandlerFunc(handler))
 	defer server.Close()
 
@@ -528,11 +530,21 @@ func TestInvalidEventsLimitFailsBeforeHTTP(t *testing.T) {
 
 func runAgainstServer(t *testing.T, args []string, stdin string, handler http.HandlerFunc) (string, string, int) {
 	t.Helper()
+	skipIfNoLoopback(t)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	var stdout, stderr bytes.Buffer
 	code := run(append([]string{"-addr", server.URL}, args...), strings.NewReader(stdin), &stdout, &stderr, func(string) string { return "" }, server.Client())
 	return stdout.String(), stderr.String(), code
+}
+
+func skipIfNoLoopback(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listener unavailable in this test environment: %v", err)
+	}
+	_ = ln.Close()
 }
 
 func observeRequest(t *testing.T, req *http.Request) observedRequest {

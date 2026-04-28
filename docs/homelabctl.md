@@ -109,7 +109,7 @@ go run ./cmd/homelabctl test task_123
 
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
 
-Agent UI validation must not restart production services. For dashboard task-page changes, workers and reviewers should use `nix develop -c bun run --cwd web uat:tasks`, which starts an isolated Playwright/Vite server from the task worktree and mocks `homelabd` APIs. See `docs/agentic-testing.md`.
+Agent UI validation must not restart production services. For dashboard task-page changes, workers and reviewers should use `nix develop -c bun run --cwd web uat:tasks`; for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use `nix develop -c bun run --cwd web uat:site`. Both start an isolated Playwright/Vite server from the task worktree and mock production APIs. See `docs/agentic-testing.md`.
 
 ## Workflow Commands
 

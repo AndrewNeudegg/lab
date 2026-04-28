@@ -126,7 +126,7 @@
   :global(html[data-theme='dark'] .task-record),
   :global(html[data-theme='dark'] .record-header),
   :global(html[data-theme='dark'] .record-summary),
-  :global(html[data-theme='dark'] .command-panel),
+  :global(html[data-theme='dark'] .decision-panel),
   :global(html[data-theme='dark'] .message),
   :global(html[data-theme='dark'] .toolbar),
 	  :global(html[data-theme='dark'] .metric),
@@ -158,6 +158,7 @@
   :global(html[data-theme='dark'] .terminal-composer),
   :global(html[data-theme='dark'] .terminal-actions button),
   :global(html[data-theme='dark'] input),
+  :global(html[data-theme='dark'] select),
   :global(html[data-theme='dark'] textarea) {
     color: var(--text) !important;
     border-color: var(--border-soft) !important;

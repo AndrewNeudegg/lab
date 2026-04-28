@@ -3897,7 +3897,7 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Make a minimal patch that satisfies the task goal.",
 		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"Run relevant formatting and tests when available.",
-		"For UI changes, run browser UAT from this task workspace with an isolated dev server, for example `nix develop -c bun run --cwd web uat:tasks`; do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
+		"For UI changes, run browser UAT from this task workspace with an isolated dev server, for example `nix develop -c bun run --cwd web uat:tasks` for task-page changes or `nix develop -c bun run --cwd web uat:site` for site-wide changes. If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure; do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
 		"For remote tasks, run validation on the remote worker in the selected remote workdir and report the exact commands, ports, and URLs used.",
 		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"Reviewed task plan: " + formatTaskPlanForPrompt(t.Plan),
@@ -4294,15 +4294,15 @@ func (o *Orchestrator) testTask(ctx context.Context, selector string) (string, e
 	if remoteTask(t) {
 		return "Remote task checks run on the remote agent. Review the agent result and recorded validation instead of running local repo checks.", nil
 	}
-	runTaskUAT := false
+	browserUAT := ""
 	if workspaceHasGit(t.Workspace) {
 		diffOut, err := o.taskBranchDiff(ctx, t.Workspace)
 		if err != nil {
 			return "", err
 		}
-		runTaskUAT = diffRequiresTaskPageUAT(diffOut)
+		browserUAT = browserUATForDiff(diffOut)
 	}
-	return o.runProjectChecks(ctx, taskID, t.Workspace, "CoderAgent", runTaskUAT)
+	return o.runProjectChecks(ctx, taskID, t.Workspace, "CoderAgent", browserUAT)
 }
 
 func (o *Orchestrator) diffTask(ctx context.Context, selector string) (string, error) {
@@ -4412,8 +4412,8 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
 		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
 	}
-	runTaskUAT := diffRequiresTaskPageUAT(diffOut)
-	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent", runTaskUAT)
+	browserUAT := browserUATForDiff(diffOut)
+	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent", browserUAT)
 	status := "pass"
 	if testErr != nil {
 		status = "fail"
@@ -4502,7 +4502,7 @@ func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, works
 	return string(mergeOut), nil
 }
 
-func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string, runTaskUAT bool) (string, error) {
+func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string, browserUAT string) (string, error) {
 	var outputs []string
 	var firstErr error
 	if exists(filepath.Join(workspace, "go.mod")) {
@@ -4529,7 +4529,14 @@ func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, 
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if runTaskUAT {
+		switch browserUAT {
+		case "site":
+			out, err = o.runCheckTool(ctx, actor, "bun.uat.site", webDir, taskID)
+			outputs = append(outputs, "bun.uat.site:\n"+strings.TrimSpace(out))
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		case "tasks":
 			out, err = o.runCheckTool(ctx, actor, "bun.uat.tasks", webDir, taskID)
 			outputs = append(outputs, "bun.uat.tasks:\n"+strings.TrimSpace(out))
 			if err != nil && firstErr == nil {
@@ -4543,15 +4550,46 @@ func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, 
 	return truncateForChat(strings.Join(outputs, "\n\n")), firstErr
 }
 
+func browserUATForDiff(diff string) string {
+	if diffRequiresSiteUAT(diff) {
+		return "site"
+	}
+	if diffRequiresTaskPageUAT(diff) {
+		return "tasks"
+	}
+	return ""
+}
+
 func diffRequiresTaskPageUAT(diff string) bool {
 	for _, path := range diffFileList(diff) {
-		if path == "AGENTS.md" || path == "web/package.json" || path == "web/dashboard/package.json" || path == "web/dashboard/playwright.config.ts" {
+		if path == "web/dashboard/e2e/chat-tasks-mobile.spec.ts" {
 			return true
 		}
 		if strings.HasPrefix(path, "web/dashboard/src/routes/tasks/") ||
-			strings.HasPrefix(path, "web/shared/src/") ||
-			strings.HasPrefix(path, "web/dashboard/e2e/") ||
 			strings.HasPrefix(path, "web/dashboard/scripts/tasks-page-uat") {
+			return true
+		}
+	}
+	return false
+}
+
+func diffRequiresSiteUAT(diff string) bool {
+	for _, path := range diffFileList(diff) {
+		switch path {
+		case "web/package.json",
+			"web/dashboard/package.json",
+			"web/dashboard/playwright.config.ts":
+			return true
+		}
+		if strings.HasPrefix(path, "web/shared/src/") ||
+			strings.HasPrefix(path, "web/dashboard/src/lib/") ||
+			strings.HasPrefix(path, "web/dashboard/src/app.") ||
+			strings.HasPrefix(path, "web/dashboard/e2e/") ||
+			strings.HasPrefix(path, "web/dashboard/scripts/browser-preflight") {
+			return true
+		}
+		if strings.HasPrefix(path, "web/dashboard/src/routes/") &&
+			!strings.HasPrefix(path, "web/dashboard/src/routes/tasks/") {
 			return true
 		}
 	}
@@ -4889,7 +4927,8 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
 		"- If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"- After editing Go code, run go.fmt, go.test, and repo.current_diff.",
-		"- After editing web code, run bun.check, bun.build, bun.test, and a targeted isolated browser UAT when UI changed.",
+		"- After editing web code, run bun.check, bun.build, bun.test, and a targeted isolated browser UAT when UI changed; use bun.uat.site for broad dashboard shell, navigation, theme, or multi-page changes.",
+		"- If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure.",
 		"- Browser UAT must run from the task workspace with an isolated dev server. Do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
 		"- Final done=true message must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
@@ -4899,7 +4938,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
-			"go.fmt": true, "go.test": true, "go.build": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true,
+			"go.fmt": true, "go.test": true, "go.build": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true, "bun.uat.site": true,
 		}),
 	}, "\n")
 }
@@ -4931,6 +4970,8 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Add automated regression coverage for fixed UX bugs. Prefer testable view/state logic plus browser-level tests where interaction matters.",
 		"- For changed UI, perform browser-level UAT against the page served from the isolated task workspace. Exercise the reported interaction, visible data, state changes, selected items, and mobile viewport behaviour when relevant.",
 		"- If the dashboard task page changed, run bun.uat.tasks or `nix develop -c bun run --cwd web uat:tasks`; it starts a per-worktree Playwright/Vite server and mocks homelabd APIs.",
+		"- For site-wide dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, run bun.uat.site or `nix develop -c bun run --cwd web uat:site`; review desktop and mobile screenshots for visual artefacts, not just pass/fail output.",
+		"- If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure.",
 		"- Do not stop or restart production dashboard, homelabd, healthd, or supervisord for UAT. Report restart impact for explicit operator verification after merge.",
 		"- If browser UAT is not possible, say exactly why and what automated coverage ran instead.",
 		"- If behaviour, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
@@ -4942,7 +4983,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
-			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true,
+			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true, "bun.uat.site": true,
 			"shell.run_limited": true,
 		}),
 	}, "\n")

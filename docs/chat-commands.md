@@ -62,7 +62,7 @@ ux task_123 check the mobile queue and touch targets
 delegate task_123 to ux audit the empty, loading, keyboard, and mobile states
 ```
 
-`UXAgent` works in the same isolated task worktree as `CoderAgent`, but its prompt requires current UX and accessibility research, focused UI changes, automated regression coverage, and browser-level UAT for changed UI. It should consult sources such as WCAG 2.2, WAI-ARIA APG, official framework or design-system docs, and reputable usability research before making UX decisions. Browser UAT must use the isolated task-worktree server, for example `nix develop -c bun run --cwd web uat:tasks`; it must not restart production `dashboard`, `homelabd`, `healthd`, or `supervisord`.
+`UXAgent` works in the same isolated task worktree as `CoderAgent`, but its prompt requires current UX and accessibility research, focused UI changes, automated regression coverage, and browser-level UAT for changed UI. It should consult sources such as WCAG 2.2, WAI-ARIA APG, official framework or design-system docs, and reputable usability research before making UX decisions. Browser UAT must use the isolated task-worktree server: use `nix develop -c bun run --cwd web uat:tasks` for task-page changes and `nix develop -c bun run --cwd web uat:site` for broad shell, navigation, theme, or multi-page changes. If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure. It must not restart production `dashboard`, `homelabd`, `healthd`, or `supervisord`.
 
 ## Remote Agent Tasks
 

@@ -3,12 +3,14 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
 func TestOpenAICompatibleUsesMaxCompletionTokensForOpenAI(t *testing.T) {
+	skipIfNoLoopback(t)
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -34,4 +36,13 @@ func TestOpenAICompatibleUsesMaxCompletionTokensForOpenAI(t *testing.T) {
 	if resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 2 || resp.Usage.TotalTokens != 5 {
 		t.Fatalf("usage = %+v", resp.Usage)
 	}
+}
+
+func skipIfNoLoopback(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listener unavailable in this test environment: %v", err)
+	}
+	_ = ln.Close()
 }

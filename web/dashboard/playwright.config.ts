@@ -5,7 +5,11 @@ const baseURL = `http://127.0.0.1:${port}`;
 const executablePath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
   (process.env.HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME === '1' ? process.env.CHROME_BIN : undefined);
-const launchOptions = executablePath ? { executablePath } : undefined;
+const launchOptions = {
+  ...(executablePath ? { executablePath } : {}),
+  chromiumSandbox: false,
+  args: ['--disable-breakpad', '--disable-crash-reporter', '--disable-dev-shm-usage']
+};
 
 function worktreePort(cwd: string) {
   let hash = 0;

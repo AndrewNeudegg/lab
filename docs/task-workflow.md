@@ -85,7 +85,13 @@ For dashboard task-page changes, use:
 nix develop -c bun run --cwd web uat:tasks
 ```
 
-The command uses mocked `homelabd` APIs and a per-worktree port, so concurrent local or remote agents do not share a dashboard process. The review gate also runs this isolated task-page UAT when a local diff touches task-page or shared web UI files. See `docs/agentic-testing.md` for the full SDLC and browser reliability notes.
+For broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use:
+
+```bash
+nix develop -c bun run --cwd web uat:site
+```
+
+Both commands use mocked APIs and a per-worktree port, so concurrent local or remote agents do not share a dashboard process. The review gate runs task-page UAT for task-page-only diffs and site-wide UAT for shared UI, shell, route, Playwright, or browser tooling diffs. See `docs/agentic-testing.md` for the full SDLC and browser reliability notes.
 
 ## Diff Review
 

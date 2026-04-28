@@ -2672,7 +2672,7 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
 	}
 	system := provider.requests[0].Messages[0].Content
-	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "Do not stop or restart production"} {
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("UX prompt missing %q:\n%s", want, system)
 		}
@@ -2692,6 +2692,8 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 	for _, want := range []string{
 		"isolated dev server",
 		"nix develop -c bun run --cwd web uat:tasks",
+		"nix develop -c bun run --cwd web uat:site",
+		"nix develop -c bun run --cwd web browser:preflight",
 		"do not stop or restart production",
 		"For remote tasks",
 	} {
@@ -2714,6 +2716,41 @@ func TestDiffRequiresTaskPageUAT(t *testing.T) {
 	}
 	if diffRequiresTaskPageUAT("diff --git a/pkg/task/store.go b/pkg/task/store.go\n+++ b/pkg/task/store.go") {
 		t.Fatalf("backend-only diff should not require task-page UAT")
+	}
+}
+
+func TestBrowserUATForDiffSelectsSiteUATForBroadDashboardChanges(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/web/shared/src/lib/Navbar.svelte b/web/shared/src/lib/Navbar.svelte",
+		"--- a/web/shared/src/lib/Navbar.svelte",
+		"+++ b/web/shared/src/lib/Navbar.svelte",
+		"@@",
+		"+change",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(shared nav) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/web/dashboard/src/routes/terminal/+page.svelte b/web/dashboard/src/routes/terminal/+page.svelte",
+		"--- a/web/dashboard/src/routes/terminal/+page.svelte",
+		"+++ b/web/dashboard/src/routes/terminal/+page.svelte",
+		"@@",
+		"+change",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(terminal route) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/web/dashboard/src/routes/tasks/+page.svelte b/web/dashboard/src/routes/tasks/+page.svelte",
+		"--- a/web/dashboard/src/routes/tasks/+page.svelte",
+		"+++ b/web/dashboard/src/routes/tasks/+page.svelte",
+		"@@",
+		"+change",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "tasks" {
+		t.Fatalf("browserUATForDiff(task route) = %q, want tasks", got)
 	}
 }
 
@@ -3894,7 +3931,7 @@ func (goTestFailStub) Schema() json.RawMessage {
 func (goTestFailStub) Risk() tool.RiskLevel { return tool.RiskLow }
 func (goTestFailStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
 	raw, err := json.Marshal(map[string]any{
-		"command": "go test ./...",
+		"command": "go test ./cmd/... ./pkg/... ./constraints",
 		"output":  "FAIL\n",
 	})
 	if err != nil {

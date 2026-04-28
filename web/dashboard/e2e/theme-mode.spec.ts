@@ -182,6 +182,36 @@ const mockTasks = [
 ];
 
 const mockDashboardApis = async (page: Page) => {
+  await page.addInitScript(() => {
+    class MockEventSource extends EventTarget {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      readyState = MockEventSource.CONNECTING;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      url: string;
+      constructor(url: string) {
+        super();
+        this.url = url;
+        setTimeout(() => {
+          if (this.readyState === MockEventSource.CLOSED) {
+            return;
+          }
+          this.readyState = MockEventSource.OPEN;
+          this.onopen?.(new Event('open'));
+          this.dispatchEvent(new MessageEvent('output', {
+            data: JSON.stringify({ type: 'output', seq: 1, data: 'ready\\r\\n' })
+          }));
+        }, 20);
+      }
+      close() {
+        this.readyState = MockEventSource.CLOSED;
+      }
+    }
+    window.EventSource = MockEventSource as typeof EventSource;
+  });
+
   await page.route(/\/api\/message$/, async (route) => {
     await route.fulfill({ json: { reply: 'theme check acknowledged', source: 'program' } });
   });
@@ -228,14 +258,14 @@ const mockDashboardApis = async (page: Page) => {
     await route.fulfill({ json: { events: [] } });
   });
 
-  await page.route(/\/terminal\/sessions$/, async (route) => {
+  await page.route(/\/api\/terminal\/sessions$/, async (route) => {
     await route.fulfill({
       status: 201,
       contentType: 'application/json',
       body: JSON.stringify({ id: 'term_theme', shell: '/bin/sh', cwd: '/workspace' })
     });
   });
-  await page.route(/\/terminal\/sessions\/term_theme\/events$/, async (route) => {
+  await page.route(/\/api\/terminal\/sessions\/term_theme\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'text/event-stream',
@@ -250,13 +280,20 @@ const mockDashboardApis = async (page: Page) => {
       ].join('\n')
     });
   });
-  await page.route(/\/terminal\/sessions\/term_theme\/input$/, async (route) => {
+  await page.route(/\/api\/terminal\/sessions\/term_theme\/input$/, async (route) => {
     await route.fulfill({ json: { ok: true } });
   });
-  await page.route(/\/terminal\/sessions\/term_theme\/signal$/, async (route) => {
+  await page.route(/\/api\/terminal\/sessions\/term_theme\/resize$/, async (route) => {
     await route.fulfill({ json: { ok: true } });
   });
-  await page.route(/\/terminal\/sessions\/term_theme$/, async (route) => {
+  await page.route(/\/api\/terminal\/sessions\/term_theme\/signal$/, async (route) => {
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.route(/\/api\/terminal\/sessions\/term_theme$/, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ json: { id: 'term_theme', shell: '/bin/sh', cwd: '/workspace' } });
+      return;
+    }
     await route.fulfill({ json: { closed: true } });
   });
 
@@ -299,7 +336,7 @@ const themePages: ThemePage[] = [
       '.triage button',
       '.task-row.selected',
       '.task-record',
-      '.command-panel'
+      '.decision-panel'
     ],
     async ready(page) {
       await expect(page.getByRole('heading', { name: 'Task queue' })).toBeVisible();
@@ -314,11 +351,11 @@ const themePages: ThemePage[] = [
   {
     name: 'terminal',
     path: '/terminal',
-    surfaces: ['.terminal-panel', '.terminal-header', '.terminal-notice', '.terminal-composer'],
+    surfaces: ['.terminal-header', '.target-picker'],
     async ready(page) {
-      await expect(page.getByText('Operator shell')).toBeVisible();
-      await expect(page.getByRole('heading', { name: '/workspace' })).toBeVisible();
-      await expect(page.getByText('ready')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Terminal 1', exact: true })).toBeVisible();
+      await expect(page.locator('.xterm')).toBeVisible();
+      await expect(page.getByText('Connected')).toBeVisible();
     }
   },
   {

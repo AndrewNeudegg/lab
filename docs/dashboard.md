@@ -13,7 +13,7 @@ The dashboard has these primary operator surfaces:
 Do not collapse these into one surface. Chat and tasks represent different mental models.
 Healthd is also deliberately separate: its API is served by the `healthd` Go service, not by `homelabd`.
 
-Agent browser testing is deliberately separate from the supervised dashboard. Use `nix develop -c bun run --cwd web uat:tasks` for task-page UAT; it starts an isolated Playwright/Vite server from the task worktree and uses mocked APIs. Do not restart the production dashboard or `homelabd` stack for agent validation. See `docs/agentic-testing.md`.
+Agent browser testing is deliberately separate from the supervised dashboard. Use `nix develop -c bun run --cwd web uat:tasks` for task-page UAT and `nix develop -c bun run --cwd web uat:site` for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes. Both start an isolated Playwright/Vite server from the task worktree and use mocked APIs. Do not restart the production dashboard or `homelabd` stack for agent validation. See `docs/agentic-testing.md`.
 
 ## Navigation
 

@@ -76,7 +76,13 @@ For dashboard task-page changes in a remote checkout, run:
 nix develop -c bun run --cwd web uat:tasks
 ```
 
-The command starts a Playwright-managed Vite server on that remote machine, chooses a per-worktree port unless `PLAYWRIGHT_PORT` is set, and mocks `homelabd` APIs. The remote completion summary should include the command, the generated local URL when relevant, and whether Chromium came from `CHROME_BIN` or a Playwright browser install.
+For broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, run:
+
+```sh
+nix develop -c bun run --cwd web uat:site
+```
+
+Both commands start a Playwright-managed Vite server on that remote machine, choose a per-worktree port unless `PLAYWRIGHT_PORT` is set, and mock `homelabd` APIs. `uat:site` also mocks `healthd` and `supervisord`, covers every primary page on desktop and mobile, and attaches screenshots. The remote completion summary should include the command, the generated local URL when relevant, and whether Chromium came from `CHROME_BIN` or a Playwright browser install. If `browser:preflight` fails because the remote sandbox cannot launch Chromium, report that infrastructure failure instead of touching production services.
 
 Use `uat:tasks:live` only when the operator explicitly asks the remote machine to verify a running dashboard URL.
 

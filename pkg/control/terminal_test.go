@@ -325,6 +325,7 @@ func TestTerminalOnlyServerExposesOnlyTerminalRoutes(t *testing.T) {
 
 func testTerminalWebSocketEndpointBridgesShell(t *testing.T, createPath, socketPath string) {
 	skipIfNoPTY(t)
+	skipIfNoLoopback(t)
 	t.Setenv("SHELL", "/bin/sh")
 	server := Server{}
 	mux := http.NewServeMux()
@@ -429,7 +430,9 @@ func skipIfNoPTY(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PTY tests are unix-only")
 	}
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
 	t.Setenv("HOMELAB_WEB_TERMINAL_SKIP_RUN_SH_SHELL", "1")
+	skipIfNoTmux(t)
 }
 
 func skipIfNoTmux(t *testing.T) {
@@ -437,6 +440,21 @@ func skipIfNoTmux(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is required for persistent terminal reattach coverage")
 	}
+	probeName := "homelab_test_tmux_probe"
+	cmd := terminalTmuxCommand("new-session", "-d", "-s", probeName, "true")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("tmux cannot create a session in this test environment: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	_ = terminalTmuxCommand("kill-session", "-t", probeName).Run()
+}
+
+func skipIfNoLoopback(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listener unavailable in this test environment: %v", err)
+	}
+	_ = ln.Close()
 }
 
 func dialTerminalWebSocket(t *testing.T, baseURL, path string) net.Conn {

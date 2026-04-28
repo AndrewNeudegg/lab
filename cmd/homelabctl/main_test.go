@@ -211,6 +211,63 @@ func TestHealthdErrorsCommandUsesHealthdEndpoint(t *testing.T) {
 	}
 }
 
+func TestSupervisorCommandsUseSupervisorEndpoint(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMethod string
+		wantPath   string
+		wantBody   map[string]any
+	}{
+		{name: "status", args: []string{"supervisor", "status"}, wantMethod: http.MethodGet, wantPath: "/supervisord"},
+		{name: "supervisord alias apps", args: []string{"supervisord", "apps"}, wantMethod: http.MethodGet, wantPath: "/supervisord/apps"},
+		{name: "restart supervisor", args: []string{"supervisor", "restart"}, wantMethod: http.MethodPost, wantPath: "/supervisord/restart"},
+		{name: "stop supervisor", args: []string{"supervisor", "stop"}, wantMethod: http.MethodPost, wantPath: "/supervisord/stop"},
+		{name: "restart app shortcut", args: []string{"supervisor", "restart", "dashboard"}, wantMethod: http.MethodPost, wantPath: "/supervisord/apps/dashboard/restart"},
+		{name: "start app shortcut", args: []string{"supervisor", "start", "healthd"}, wantMethod: http.MethodPost, wantPath: "/supervisord/apps/healthd/start"},
+		{name: "app restart", args: []string{"supervisor", "app", "restart", "homelabd"}, wantMethod: http.MethodPost, wantPath: "/supervisord/apps/homelabd/restart"},
+		{name: "adopt app", args: []string{"supervisor", "app", "adopt", "dashboard", "1234"}, wantMethod: http.MethodPost, wantPath: "/supervisord/apps/dashboard/adopt", wantBody: map[string]any{"pid": float64(1234)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var observed observedRequest
+			stdout, stderr, code := runAgainstSupervisorServer(t, tt.args, func(rw http.ResponseWriter, req *http.Request) {
+				observed = observeRequest(t, req)
+				writeTestJSON(t, rw, http.StatusOK, map[string]any{"ok": true})
+			})
+			if code != 0 {
+				t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+			}
+			if observed.Method != tt.wantMethod || observed.Path != tt.wantPath {
+				t.Fatalf("request = %s %s, want %s %s", observed.Method, observed.Path, tt.wantMethod, tt.wantPath)
+			}
+			if !reflect.DeepEqual(observed.Body, tt.wantBody) {
+				t.Fatalf("body = %#v, want %#v", observed.Body, tt.wantBody)
+			}
+			if !strings.Contains(stdout, `"ok": true`) {
+				t.Fatalf("stdout did not contain pretty JSON response: %q", stdout)
+			}
+		})
+	}
+}
+
+func TestSupervisorAdoptRejectsInvalidPIDBeforeHTTP(t *testing.T) {
+	var called bool
+	_, stderr, code := runAgainstSupervisorServer(t, []string{"supervisor", "app", "adopt", "dashboard", "nope"}, func(rw http.ResponseWriter, req *http.Request) {
+		called = true
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if called {
+		t.Fatal("server was called for invalid PID")
+	}
+	if !strings.Contains(stderr, "pid must be a positive integer") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
 func TestMessagePrintsPlainReplyAndSendsConfiguredSender(t *testing.T) {
 	var observed observedRequest
 	stdout, stderr, code := runAgainstServer(t, []string{"-from", "operator", "message", "status"}, "", func(rw http.ResponseWriter, req *http.Request) {
@@ -535,6 +592,16 @@ func runAgainstServer(t *testing.T, args []string, stdin string, handler http.Ha
 	defer server.Close()
 	var stdout, stderr bytes.Buffer
 	code := run(append([]string{"-addr", server.URL}, args...), strings.NewReader(stdin), &stdout, &stderr, func(string) string { return "" }, server.Client())
+	return stdout.String(), stderr.String(), code
+}
+
+func runAgainstSupervisorServer(t *testing.T, args []string, handler http.HandlerFunc) (string, string, int) {
+	t.Helper()
+	skipIfNoLoopback(t)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	var stdout, stderr bytes.Buffer
+	code := run(append([]string{"-supervisord-addr", server.URL}, args...), strings.NewReader(""), &stdout, &stderr, func(string) string { return "" }, server.Client())
 	return stdout.String(), stderr.String(), code
 }
 

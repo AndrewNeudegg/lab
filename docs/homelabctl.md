@@ -1,6 +1,6 @@
 # homelabctl
 
-`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, workflow, approval, event, chat, and terminal interactions.
+`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, workflow, approval, event, chat, terminal, and supervisor interactions.
 
 Start `homelabd` in HTTP mode before using the CLI:
 
@@ -17,9 +17,11 @@ HOMELABD_ADDR=http://127.0.0.1:18080 go run ./cmd/homelabctl tasks
 
 Healthd has its own API address. Override it for healthd commands with `-healthd-addr` or `HOMELABD_HEALTHD_ADDR`; the default is `http://127.0.0.1:18081`.
 
+Supervisord also has its own API address. Override it for supervisor commands with `-supervisord-addr` or `HOMELABD_SUPERVISORD_ADDR`; the default is `http://127.0.0.1:18082`.
+
 ## Operator Rule
 
-Keep this document, `cmd/homelabctl`, and the `homelabd` HTTP API in sync. When a new operator interaction is added to `homelabd`, add or update the matching `homelabctl` command and tests in the same change. If a workflow requires repeated chat, task, approval, event, or terminal interaction and `homelabctl` is not useful enough, extend the CLI rather than bypassing it.
+Keep this document, `cmd/homelabctl`, and the `homelabd`, `healthd`, and `supervisord` HTTP APIs in sync. When a new operator interaction is added to one of those APIs, add or update the matching `homelabctl` command and tests in the same change. If a workflow requires repeated chat, task, approval, event, terminal, or supervisor interaction and `homelabctl` is not useful enough, extend the CLI rather than bypassing it.
 
 ## Interactive Shell
 
@@ -181,6 +183,35 @@ go run ./cmd/homelabctl -healthd-addr http://127.0.0.1:18081 healthd errors -sou
 
 The command calls `GET /healthd/errors` on the healthd service. It is useful before creating a root-cause task with `homelabctl task new ...`.
 
+## Supervisor Commands
+
+Supervisor commands call the `supervisord` control API directly. Use them for explicit operator restarts after merge or maintenance work instead of raw HTTP calls:
+
+```bash
+go run ./cmd/homelabctl supervisor status
+go run ./cmd/homelabctl supervisor apps
+go run ./cmd/homelabctl supervisor restart homelabd
+go run ./cmd/homelabctl supervisor restart dashboard
+go run ./cmd/homelabctl supervisor app adopt dashboard 1234
+```
+
+The short app forms map to the app endpoints:
+
+```bash
+go run ./cmd/homelabctl supervisor start healthd
+go run ./cmd/homelabctl supervisor stop dashboard
+go run ./cmd/homelabctl supervisor restart dashboard
+```
+
+Running `supervisor restart` or `supervisor stop` without an app name targets `supervisord` itself:
+
+```bash
+go run ./cmd/homelabctl supervisor restart
+go run ./cmd/homelabctl supervisor stop
+```
+
+Use `-supervisord-addr` or `HOMELABD_SUPERVISORD_ADDR` when the control API is not on `http://127.0.0.1:18082`.
+
 ## Terminal Commands
 
 The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page. Starting a session runs `./run.sh shell` first when the target working directory contains an executable `run.sh`; otherwise it opens the configured interactive shell.
@@ -259,6 +290,17 @@ go run ./cmd/homelabctl terminal close term_123
 Healthd commands call the separate healthd API rather than `homelabd`:
 
 - `GET /healthd/errors?limit=N&source=SOURCE&app=APP`
+
+Supervisor commands call the separate `supervisord` API rather than `homelabd`:
+
+- `GET /supervisord`
+- `GET /supervisord/apps`
+- `POST /supervisord/restart`
+- `POST /supervisord/stop`
+- `POST /supervisord/apps/{name}/start`
+- `POST /supervisord/apps/{name}/stop`
+- `POST /supervisord/apps/{name}/restart`
+- `POST /supervisord/apps/{name}/adopt`
 
 Run the CLI tests after changing the HTTP API or command surface:
 

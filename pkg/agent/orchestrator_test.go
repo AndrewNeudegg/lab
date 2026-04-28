@@ -1197,10 +1197,13 @@ func TestBlockedGraphChildCannotDelegateUntilDependencyAccepted(t *testing.T) {
 
 func TestDelegationCreatesReviewedPlanBeforeExecution(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
+	writeTestRepoFile(t, orch.cfg.Repo.Root, "pkg/agent/orchestrator.go", "func ensureTaskPlan() {}\nfunc defaultTaskPlan() {}\n")
+	writeTestRepoFile(t, orch.cfg.Repo.Root, "pkg/agent/orchestrator_test.go", "func TestTaskPlan(t *testing.T) {}\n")
+	writeTestRepoFile(t, orch.cfg.Repo.Root, "docs/task-workflow.md", "## Planning Gate\nTaskPlan records explain task plans.\n")
 	task := taskstore.Task{
 		ID:         "task_20260426_220000_deadbeef",
 		Title:      "add planner",
-		Goal:       "add planner",
+		Goal:       "add repo-aware task planner",
 		Status:     taskstore.StatusQueued,
 		AssignedTo: "OrchestratorAgent",
 		CreatedAt:  time.Now().UTC(),
@@ -1215,8 +1218,13 @@ func TestDelegationCreatesReviewedPlanBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(run.Instruction, "Reviewed task plan:") || !strings.Contains(run.Instruction, "Inspect scope") {
+	if !strings.Contains(run.Instruction, "Reviewed task plan:") || !strings.Contains(run.Instruction, "Inspect repo-grounded scope") {
 		t.Fatalf("instruction = %q, want reviewed plan context", run.Instruction)
+	}
+	for _, want := range []string{"pkg/agent/orchestrator.go", "pkg/agent/orchestrator_test.go", "docs/task-workflow.md", "go test ./pkg/agent"} {
+		if !strings.Contains(run.Instruction, want) {
+			t.Fatalf("instruction = %q, want repo-aware plan detail %q", run.Instruction, want)
+		}
 	}
 	updated, err := orch.tasks.Load(task.ID)
 	if err != nil {
@@ -1227,6 +1235,9 @@ func TestDelegationCreatesReviewedPlanBeforeExecution(t *testing.T) {
 	}
 	if updated.Plan == nil || updated.Plan.Status != "reviewed" {
 		t.Fatalf("plan = %#v, want reviewed plan", updated.Plan)
+	}
+	if updated.Plan.Review != repoAwareTaskPlanReview {
+		t.Fatalf("review = %q, want repo-aware review", updated.Plan.Review)
 	}
 }
 
@@ -1268,11 +1279,54 @@ func TestDelegationRefreshesLegacyGenericPlanBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Plan == nil || updated.Plan.Review != taskSpecificDefaultPlanReview {
+	if updated.Plan == nil || updated.Plan.Review != repoAwareTaskPlanReview {
 		t.Fatalf("plan = %#v, want refreshed task-specific plan", updated.Plan)
 	}
 	if !strings.Contains(updated.Plan.Summary, "inspect phase") {
 		t.Fatalf("summary = %q, want inspect phase", updated.Plan.Summary)
+	}
+}
+
+func TestDelegationRefreshesLegacyTaskSpecificPlanBeforeExecution(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	writeTestRepoFile(t, orch.cfg.Repo.Root, "pkg/agent/orchestrator.go", "func ensureTaskPlan() {}\nfunc taskPlanSteps() {}\n")
+	now := time.Now().UTC()
+	reviewedAt := now
+	task := taskstore.Task{
+		ID:         "task_20260427_001344_deadbeef",
+		Title:      "smarter task plans",
+		Goal:       "make task plans inspect the repo first",
+		Status:     taskstore.StatusQueued,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+		Plan: &taskstore.TaskPlan{
+			Status:     "reviewed",
+			Summary:    "Plan to satisfy: make task plans inspect the repo first",
+			Steps:      []taskstore.TaskPlanStep{{Title: "Inspect scope"}},
+			Review:     legacyTaskSpecificDefaultPlanReview,
+			CreatedAt:  now,
+			ReviewedAt: &reviewedAt,
+		},
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := orch.prepareDelegationForTask(context.Background(), task.ID, "codex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(run.Instruction, "pkg/agent/orchestrator.go") {
+		t.Fatalf("instruction = %q, want refreshed repo-aware plan", run.Instruction)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Plan == nil || updated.Plan.Review != repoAwareTaskPlanReview {
+		t.Fatalf("plan = %#v, want repo-aware plan", updated.Plan)
 	}
 }
 
@@ -3785,6 +3839,17 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func writeTestRepoFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeApprovalRecord(orch *Orchestrator, approval approvalstore.Request) error {

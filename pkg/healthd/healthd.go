@@ -318,6 +318,9 @@ func (m *Monitor) RecordErrors(now time.Time, entries []ApplicationError) []Appl
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.errors = append(recorded, m.errors...)
+	sort.SliceStable(m.errors, func(i, j int) bool {
+		return m.errors[i].Time.After(m.errors[j].Time)
+	})
 	if len(m.errors) > 500 {
 		m.errors = m.errors[:500]
 	}

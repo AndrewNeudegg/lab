@@ -208,6 +208,9 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	if err != nil {
 		return runtimeServices{}, err
 	}
+	if err := texttools.RegisterSummarizer(registry, provider, model); err != nil {
+		return runtimeServices{}, err
+	}
 	remoteAgents := remoteagent.NewStore(filepath.Join(cfg.DataDir, "remote_agents"))
 	orch := agent.NewOrchestrator(cfg, events, tasks, approvals, registry, tool.NewPolicy(cfg.Policy.RequireApprovalFor), provider, model).
 		WithLogger(slog.Default()).

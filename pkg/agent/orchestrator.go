@@ -1859,6 +1859,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use tools for inspection before answering repo-specific questions.",
 		"Use internet.research for broad, current, multi-source questions before synthesizing advice.",
 		"Use text.correct to fix likely spelling or grammar issues before internet.search when the user query looks typo-prone; preserve exact code symbols and quoted strings.",
+		"Use text.summarize when a long user task or note needs a compact label.",
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
@@ -2037,14 +2038,18 @@ type createdTask struct {
 	Children []taskstore.Task
 }
 
+const taskTitleMaxCharacters = 84
+
 func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (createdTask, error) {
+	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return createdTask{}, nil
 	}
+	taskID := id.New("task")
 	now := time.Now().UTC()
 	t := taskstore.Task{
-		ID:         id.New("task"),
-		Title:      firstLine(goal),
+		ID:         taskID,
+		Title:      o.summarizeTaskTitle(ctx, taskID, goal),
 		Goal:       goal,
 		Status:     taskstore.StatusQueued,
 		AssignedTo: "OrchestratorAgent",
@@ -2105,10 +2110,11 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 	if target.Workdir == "" {
 		return taskstore.Task{}, fmt.Errorf("remote working directory is required")
 	}
+	taskID := id.New("task")
 	now := time.Now().UTC()
 	task := taskstore.Task{
-		ID:                 id.New("task"),
-		Title:              firstLine(goal),
+		ID:                 taskID,
+		Title:              o.summarizeTaskTitle(ctx, taskID, goal),
 		Goal:               goal,
 		Status:             taskstore.StatusQueued,
 		AssignedTo:         "remote:" + target.AgentID,
@@ -2131,6 +2137,81 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 		"backend":  target.Backend,
 	})})
 	return task, nil
+}
+
+func (o *Orchestrator) summarizeTaskTitle(ctx context.Context, taskID, goal string) string {
+	fallback := fallbackTaskTitle(goal, taskTitleMaxCharacters)
+	if o.registry == nil {
+		return fallback
+	}
+	if _, ok := o.registry.Get("text.summarize"); !ok {
+		return fallback
+	}
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "text.summarize", map[string]any{
+		"text":           goal,
+		"purpose":        "task_title",
+		"max_characters": taskTitleMaxCharacters,
+	}, taskID)
+	if err != nil {
+		o.log().Warn("task title summarisation failed", "task_id", taskID, "error", err)
+		return fallback
+	}
+	var out struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		o.log().Warn("task title summarisation returned invalid JSON", "task_id", taskID, "error", err)
+		return fallback
+	}
+	title := cleanTaskTitle(out.Summary, taskTitleMaxCharacters)
+	if title == "" {
+		return fallback
+	}
+	return title
+}
+
+func fallbackTaskTitle(goal string, maxCharacters int) string {
+	title := firstLine(goal)
+	if title == "" {
+		title = "untitled task"
+	}
+	return cleanTaskTitle(title, maxCharacters)
+}
+
+func cleanTaskTitle(value string, maxCharacters int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	value = strings.Trim(value, " \t\r\n\"'`")
+	for {
+		lower := strings.ToLower(value)
+		switch {
+		case strings.HasPrefix(lower, "summary:"):
+			value = strings.TrimSpace(value[len("summary:"):])
+		case strings.HasPrefix(lower, "title:"):
+			value = strings.TrimSpace(value[len("title:"):])
+		default:
+			return clipTaskTitle(value, maxCharacters)
+		}
+	}
+}
+
+func clipTaskTitle(value string, maxCharacters int) string {
+	if maxCharacters <= 0 || len([]rune(value)) <= maxCharacters {
+		return value
+	}
+	runes := []rune(value)
+	if maxCharacters <= 3 {
+		return string(runes[:maxCharacters])
+	}
+	limit := maxCharacters - 3
+	clipped := strings.TrimSpace(string(runes[:limit]))
+	if boundary := strings.LastIndex(clipped, " "); boundary >= limit*3/5 {
+		clipped = clipped[:boundary]
+	}
+	clipped = strings.TrimRight(strings.TrimSpace(clipped), ".,;:-")
+	if clipped == "" {
+		return strings.TrimSpace(string(runes[:maxCharacters]))
+	}
+	return clipped + "..."
 }
 
 func (o *Orchestrator) createTaskGraphChildren(ctx context.Context, parent taskstore.Task, now time.Time) ([]taskstore.Task, string, error) {
@@ -4617,7 +4698,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
-			"text.correct":    true,
+			"text.correct": true, "text.summarize": true,
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
@@ -4659,7 +4740,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available UXAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
-			"text.correct":    true,
+			"text.correct": true, "text.summarize": true,
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,

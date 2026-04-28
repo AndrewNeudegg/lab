@@ -26,7 +26,7 @@
     {
       id: 'agents-runtime',
       label: 'Agents and runtime',
-      slugs: ['remote-agents', 'external-agents', 'agentic-testing', 'supervisord']
+      slugs: ['remote-agents', 'external-agents', 'agent-tools', 'agentic-testing', 'supervisord']
     }
   ];
 
@@ -35,6 +35,7 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
+  let lastJumpSourceSlug = selectedSlug;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -75,7 +76,10 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: jumpSlug = selectedSlug;
+  $: if (selectedSlug !== lastJumpSourceSlug) {
+    jumpSlug = selectedSlug;
+    lastJumpSourceSlug = selectedSlug;
+  }
 
   const openSelectedDoc = (event: Event) => {
     const slug = (event.currentTarget as HTMLSelectElement).value;

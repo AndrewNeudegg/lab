@@ -4,6 +4,7 @@ The dashboard has these primary operator surfaces:
 
 - `/chat`: global conversation, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
+- `/workflows`: durable LLM/tool workflow creation, cost estimates, run status, and latest outputs.
 - `/docs`: searchable documentation library generated from Markdown files in `./docs`.
 - `/terminal`: browser terminal backed by a homelabd shell session for direct operator commands.
 - `/supervisord`: supervised application status and start, stop, restart controls.
@@ -19,7 +20,7 @@ Use the shared responsive navbar on every dashboard page.
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Chat`, `Tasks`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
+- Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 
 ## Documentation Library
@@ -82,6 +83,13 @@ For `/chat`, every visible component must answer one of these questions:
 2. What did homelabd say back?
 3. Which generated command can I safely click?
 4. Where do I go to inspect task state?
+
+For `/workflows`, every visible component must answer one of these questions:
+
+1. What workflow can I reuse?
+2. What will it cost in LLM calls, tool calls, waits, and estimated runtime?
+3. Which step is encoded?
+4. What happened on the latest run?
 
 If a component does not answer one of those questions, it should not be in the primary surface.
 

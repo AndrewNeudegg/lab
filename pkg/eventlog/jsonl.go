@@ -2,8 +2,11 @@ package eventlog
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,14 +60,23 @@ func (s *Store) ReadDay(day time.Time) ([]Event, error) {
 	}
 	defer f.Close()
 	var events []Event
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		var event Event
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return nil, err
+	reader := bufio.NewReader(f)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			var event Event
+			if decodeErr := json.Unmarshal(line, &event); decodeErr != nil {
+				return nil, decodeErr
+			}
+			events = append(events, event)
 		}
-		events = append(events, event)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		return nil, err
 	}
-	return events, scanner.Err()
+	return events, nil
 }

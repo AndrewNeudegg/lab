@@ -20,6 +20,7 @@ import (
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
+	workflowstore "github.com/andrewneudegg/lab/pkg/workflow"
 )
 
 func TestExtractJSONUsesFirstBalancedObject(t *testing.T) {
@@ -564,6 +565,82 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	}
 	if !sawCreated || !sawReviewed {
 		t.Fatalf("plan events created=%v reviewed=%v, want both", sawCreated, sawReviewed)
+	}
+}
+
+func TestWorkflowChatCommandsCreateListAndRun(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = &staticProvider{content: "Research summary ready."}
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "workflow new Research releases: Find release notes and summarise risk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created workflow") || !strings.Contains(reply, "workflow run") {
+		t.Fatalf("reply = %q, want workflow creation with run command", reply)
+	}
+	workflows, err := orch.ListWorkflows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workflows) != 1 {
+		t.Fatalf("workflow count = %d, want 1", len(workflows))
+	}
+
+	reply, err = orch.Handle(context.Background(), "test", "workflows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Research releases") || !strings.Contains(reply, "tool call") {
+		t.Fatalf("reply = %q, want workflow list with estimate", reply)
+	}
+
+	reply, err = orch.Handle(context.Background(), "test", "workflow run "+workflowShortID(workflows[0].ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "completed") || !strings.Contains(reply, "Research summary ready") {
+		t.Fatalf("reply = %q, want completed workflow run", reply)
+	}
+	updated, err := orch.LoadWorkflow(workflows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != workflowstore.StatusCompleted || updated.LastRun == nil || len(updated.LastRun.Outputs) != 1 {
+		t.Fatalf("workflow = %#v, want completed run output", updated)
+	}
+}
+
+func TestWorkflowToolStepRunsThroughPolicyBoundTool(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(workflowTextCorrectStub{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(orch.toolCatalog(), "workflow.run") {
+		t.Fatal("workflow.run missing from LLM tool catalog")
+	}
+	item, _, err := orch.CreateWorkflow(context.Background(), workflowstore.CreateRequest{
+		Name: "Correct query",
+		Steps: []workflowstore.Step{{
+			Name: "Correct text",
+			Kind: workflowstore.StepKindTool,
+			Tool: "text.correct",
+			Args: json.RawMessage(`{"text":"kittens in pijamas","mode":"search_query"}`),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, reply, err := orch.RunWorkflow(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != workflowstore.StatusCompleted {
+		t.Fatalf("status = %q, reply = %q, want completed", updated.Status, reply)
+	}
+	if updated.LastRun == nil || len(updated.LastRun.Outputs) != 1 || updated.LastRun.Outputs[0].Tool != "text.correct" {
+		t.Fatalf("last run = %#v, want text.correct output", updated.LastRun)
 	}
 }
 
@@ -3059,6 +3136,18 @@ func (p *staticProvider) Complete(_ context.Context, req llm.CompletionRequest) 
 	}, nil
 }
 
+type workflowTextCorrectStub struct{}
+
+func (workflowTextCorrectStub) Name() string        { return "text.correct" }
+func (workflowTextCorrectStub) Description() string { return "correct text" }
+func (workflowTextCorrectStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}}}`)
+}
+func (workflowTextCorrectStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (workflowTextCorrectStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"corrected_text":"kittens in pajamas"}`), nil
+}
+
 func assertContainsLLMMessage(t *testing.T, messages []llm.Message, want llm.Message) {
 	t.Helper()
 	for _, msg := range messages {
@@ -3188,7 +3277,7 @@ func newTestOrchestrator(t *testing.T, delegate *delegateStub) *Orchestrator {
 		tool.NewPolicy(nil),
 		nil,
 		"",
-	)
+	).WithWorkflows(workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows")))
 }
 
 func gitTestRun(t *testing.T, dir string, args ...string) {

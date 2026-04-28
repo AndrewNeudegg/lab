@@ -494,6 +494,51 @@ const assertDarkSurfaces = async (page: Page, routeName: string, selectors: stri
   return styles;
 };
 
+const collectTerminalTabVisuals = async (page: Page) =>
+  page.evaluate(() => {
+    const parseRuntimeColor = (value: string) => {
+      const parts = value.match(/[\d.]+/g)?.map(Number) ?? [0, 0, 0];
+      return {
+        r: parts[0] ?? 0,
+        g: parts[1] ?? 0,
+        b: parts[2] ?? 0
+      };
+    };
+    const luminance = ({ r, g, b }: ReturnType<typeof parseRuntimeColor>) => {
+      const channels = [r, g, b].map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.03928
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    const contrast = (left: number, right: number) => {
+      const [lighter, darker] = left >= right ? [left, right] : [right, left];
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+    const inspect = (selector: string) => {
+      const element = document.querySelector(selector) as HTMLElement | null;
+      if (!element) {
+        return { found: false, backgroundColor: '', color: '', backgroundLuminance: 0, contrast: 0 };
+      }
+      const styles = getComputedStyle(element);
+      const backgroundLuminance = luminance(parseRuntimeColor(styles.backgroundColor));
+      const textLuminance = luminance(parseRuntimeColor(styles.color));
+      return {
+        found: true,
+        backgroundColor: styles.backgroundColor,
+        color: styles.color,
+        backgroundLuminance,
+        contrast: contrast(backgroundLuminance, textLuminance)
+      };
+    };
+    return {
+      active: inspect('.terminal-tab.active'),
+      inactive: inspect('.terminal-tab:not(.active)')
+    };
+  });
+
 test.describe('dashboard theme modes on desktop', () => {
   test.use({ viewport: { width: 1280, height: 900 }, isMobile: false, hasTouch: false });
 
@@ -536,6 +581,38 @@ test.describe('dashboard theme modes on desktop', () => {
       );
     });
   }
+});
+
+test('terminal tab emphasis stays clear in light and dark themes', async ({ page }) => {
+  await mockDashboardApis(page);
+  await initLightTheme(page);
+  await page.goto('/terminal');
+  await expect(page.getByRole('button', { name: 'Terminal 1', exact: true })).toBeVisible();
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible();
+  await page.getByRole('button', { name: 'Add terminal tab' }).click();
+  await expect(page.locator('.terminal-tab')).toHaveCount(2);
+
+  const assertTabEmphasis = async (mode: string) => {
+    const visuals = await collectTerminalTabVisuals(page);
+    expect(visuals.active.found, `${mode} active terminal tab missing`).toBe(true);
+    expect(visuals.inactive.found, `${mode} inactive terminal tab missing`).toBe(true);
+    expect(visuals.active.contrast, `${mode} active tab text contrast: ${JSON.stringify(visuals)}`).toBeGreaterThan(3);
+    expect(visuals.inactive.contrast, `${mode} inactive tab text contrast: ${JSON.stringify(visuals)}`).toBeGreaterThan(3);
+    expect(
+      visuals.active.backgroundLuminance,
+      `${mode} selected terminal tab should be more prominent than inactive tabs: ${JSON.stringify(visuals)}`
+    ).toBeGreaterThan(visuals.inactive.backgroundLuminance + 0.015);
+  };
+
+  await assertTabEmphasis('light');
+  await page.getByRole('button', { name: 'Menu' }).click();
+  const darkToggle = await readyThemeToggle(page, 'Switch to dark mode');
+  await darkToggle.click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await waitForThemeRuntime(page, 'dark');
+  await page.waitForTimeout(180);
+  await assertTabEmphasis('dark');
 });
 
 test.describe('dashboard theme modes on mobile', () => {

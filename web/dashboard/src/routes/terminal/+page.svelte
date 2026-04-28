@@ -941,6 +941,17 @@
   }
 
   .terminal-shell {
+    --terminal-tab-chrome: #e8edf4;
+    --terminal-tab-bg: #dbe3ef;
+    --terminal-tab-hover: #edf2f8;
+    --terminal-tab-text: #334155;
+    --terminal-tab-border: #b6c2d2;
+    --terminal-tab-active-bg: #ffffff;
+    --terminal-tab-active-hover: #f8fafc;
+    --terminal-tab-active-text: #0f172a;
+    --terminal-tab-active-border: #94a3b8;
+    --terminal-tab-button-hover: rgb(255 255 255 / 0.5);
+    --terminal-tab-active-button-hover: rgb(15 23 42 / 0.06);
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     height: 100vh;
@@ -950,6 +961,20 @@
     min-height: 100svh;
     min-height: 100dvh;
     overflow: hidden;
+  }
+
+  :global(html[data-theme='dark']) .terminal-shell {
+    --terminal-tab-chrome: #111827;
+    --terminal-tab-bg: #101827;
+    --terminal-tab-hover: #1b2535;
+    --terminal-tab-text: #b6c4d7;
+    --terminal-tab-border: #2b3648;
+    --terminal-tab-active-bg: #243047;
+    --terminal-tab-active-hover: #2b3953;
+    --terminal-tab-active-text: #f8fafc;
+    --terminal-tab-active-border: #60a5fa;
+    --terminal-tab-button-hover: rgb(255 255 255 / 0.06);
+    --terminal-tab-active-button-hover: rgb(255 255 255 / 0.08);
   }
 
   .terminal-panel {
@@ -977,7 +1002,12 @@
     padding: 0.35rem 0.55rem 0;
     overflow: hidden;
     border-bottom: 1px solid #07130e;
-    background: #e8edf4;
+    background: var(--terminal-tab-chrome);
+  }
+
+  :global(html[data-theme='dark']) .terminal-header {
+    border-color: #07130e !important;
+    background: var(--terminal-tab-chrome) !important;
   }
 
   .terminal-tabs {
@@ -999,11 +1029,11 @@
     max-width: 14rem;
     overflow: hidden;
     margin-bottom: -1px;
-    color: #243047;
-    border: 1px solid #aab6c7;
+    color: var(--terminal-tab-text);
+    border: 1px solid var(--terminal-tab-border);
     border-bottom: 0;
     border-radius: 0.48rem 0.48rem 0 0;
-    background: #dbe3ef;
+    background: var(--terminal-tab-bg);
     transition:
       border-color 120ms ease,
       background 120ms ease,
@@ -1011,9 +1041,9 @@
   }
 
   .terminal-tab.active {
-    color: #d8f3dc;
-    border-color: #07130e;
-    background: #07130e;
+    color: var(--terminal-tab-active-text);
+    border-color: var(--terminal-tab-active-border);
+    background: var(--terminal-tab-active-bg);
   }
 
   .tab-select,
@@ -1062,20 +1092,20 @@
   }
 
   .terminal-tab:not(.active):hover {
-    border-color: #7d8ca3;
-    background: #edf2f8;
+    border-color: var(--terminal-tab-active-border);
+    background: var(--terminal-tab-hover);
   }
 
   .terminal-tab.active:hover {
-    background: #0b1f17;
+    background: var(--terminal-tab-active-hover);
   }
 
   .tab-select:hover {
-    background: rgb(255 255 255 / 0.45);
+    background: var(--terminal-tab-button-hover);
   }
 
   .terminal-tab.active .tab-select:hover {
-    background: rgb(255 255 255 / 0.08);
+    background: var(--terminal-tab-active-button-hover);
   }
 
   .tab-close:hover {

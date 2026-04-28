@@ -66,6 +66,119 @@ func TestSearchToolReturnsLimitedResults(t *testing.T) {
 	}
 }
 
+func TestSearchToolUsesSearXNGByDefaultAndAggregatesInstances(t *testing.T) {
+	requestsByHost := map[string]int{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requestsByHost[r.URL.Host]++
+		if r.URL.Path != "/search" {
+			t.Fatalf("expected /search path, got %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("format") != "json" {
+			t.Fatalf("expected SearXNG json format")
+		}
+		if r.URL.Query().Get("q") != "golang docs" {
+			t.Fatalf("unexpected query: %q", r.URL.Query().Get("q"))
+		}
+		if r.URL.Query().Get("time_range") != "month" {
+			t.Fatalf("expected SearXNG time_range=month")
+		}
+		if r.URL.Query().Get("language") != "en" {
+			t.Fatalf("expected SearXNG language=en")
+		}
+		body := `{"answers":["Go documentation"],"suggestions":["golang testing"],"results":[
+			{"title":"Go docs","url":"https://go.dev/doc/","content":"Official Go documentation.","engine":"duckduckgo","engines":["duckduckgo","brave"],"category":"general","score":2.4},
+			{"title":"Package testing","url":"https://pkg.go.dev/testing?utm_source=tracker","content":"Testing package docs.","engine":"brave","category":"general"}
+		]}`
+		if r.URL.Host == "two.example" {
+			body = `{"results":[
+				{"title":"Package testing duplicate","url":"https://pkg.go.dev/testing","content":"Duplicate without tracker."},
+				{"title":"Effective Go","url":"https://go.dev/doc/effective_go","content":"Writing clear Go."}
+			]}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	raw, err := SearchTool{base: Base{SearXNGInstances: []string{"https://one.example/", "https://two.example/"}, Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"golang docs","max_results":3,"time_range":"month","language":"en"}`))
+	if err != nil {
+		t.Fatalf("run searxng search: %v", err)
+	}
+	if requestsByHost["one.example"] != 1 || requestsByHost["two.example"] != 1 {
+		t.Fatalf("expected both SearXNG instances queried, got %+v", requestsByHost)
+	}
+	var result struct {
+		Source      string           `json:"source"`
+		Provider    string           `json:"provider"`
+		Answer      string           `json:"answer"`
+		Answers     []string         `json:"answers"`
+		Suggestions []string         `json:"suggestions"`
+		Results     []map[string]any `json:"results"`
+		Instances   []string         `json:"instances"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.Source != "searxng" || result.Provider != "searxng" || result.Answer != "Go documentation" {
+		t.Fatalf("unexpected metadata: %+v", result)
+	}
+	if len(result.Results) != 3 {
+		t.Fatalf("expected 3 deduplicated results, got %d: %+v", len(result.Results), result.Results)
+	}
+	if result.Results[0]["source_instance"] != "one.example" || result.Results[2]["source_instance"] != "two.example" {
+		t.Fatalf("expected source instance metadata, got %+v", result.Results)
+	}
+	if len(result.Instances) != 2 || len(result.Answers) != 1 || len(result.Suggestions) != 1 {
+		t.Fatalf("expected instance and answer metadata, got %+v", result)
+	}
+}
+
+func TestSearchToolFallsBackToSearXNGHTMLWhenJSONDisabled(t *testing.T) {
+	var formats []string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		formats = append(formats, r.URL.Query().Get("format"))
+		if r.URL.Query().Get("format") == "json" {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Status:     "403 Forbidden",
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+				Body:       io.NopCloser(strings.NewReader("json disabled")),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body: io.NopCloser(strings.NewReader(`<html><body>
+				<article class="result result-default">
+					<h3><a href="https://docs.example.com/guide">Docs &amp; guide</a></h3>
+					<p class="content">Useful &amp; current documentation.</p>
+				</article>
+			</body></html>`)),
+		}, nil
+	})}
+
+	raw, err := SearchTool{base: Base{SearXNGInstances: []string{"https://html.example/"}, Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"docs","provider":"searxng"}`))
+	if err != nil {
+		t.Fatalf("run html fallback search: %v", err)
+	}
+	if len(formats) != 2 || formats[0] != "json" || formats[1] != "" {
+		t.Fatalf("expected json request followed by html request, got %+v", formats)
+	}
+	var result struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0]["title"] != "Docs & guide" || result.Results[0]["url"] != "https://docs.example.com/guide" {
+		t.Fatalf("unexpected html fallback result: %+v", result.Results)
+	}
+}
+
 func TestSearchToolReturnsAcademicResults(t *testing.T) {
 	var gotSearch string
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

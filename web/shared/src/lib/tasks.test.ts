@@ -108,10 +108,22 @@ describe('task queue attention logic', () => {
     expect(taskRuntimeMs(legacy)).toBe(240000);
   });
 
-  test('summarizes selected task titles from full task input', () => {
+  test('uses stored task titles for task pane summaries', () => {
     const detailed = timedTask({
       id: 'task_long',
-      title: 'Work this task to completion if possible. Inspect the task workspace before editing',
+      title: 'Expose full input below activity',
+      goal:
+        'Work this task to completion if possible. Inspect the task workspace before editing. Make a minimal patch that satisfies the task goal.\nTask goal: expose the full input below activity.'
+    });
+
+    expect(taskSummaryTitle(detailed)).toBe('Expose full input below activity');
+    expect(taskInputText(detailed)).toContain('Task goal: expose the full input below activity.');
+  });
+
+  test('summarizes full task input when no title exists', () => {
+    const detailed = timedTask({
+      id: 'task_long',
+      title: '',
       goal:
         'Work this task to completion if possible. Inspect the task workspace before editing. Make a minimal patch that satisfies the task goal.\nTask goal: expose the full input below activity.'
     });
@@ -119,7 +131,6 @@ describe('task queue attention logic', () => {
     expect(taskSummaryTitle(detailed)).toBe(
       'Work this task to completion if possible. Inspect the task workspace before editing.'
     );
-    expect(taskInputText(detailed)).toContain('Task goal: expose the full input below activity.');
   });
 
   test('falls back to title and id for task display text', () => {

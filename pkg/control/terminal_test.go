@@ -13,6 +13,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -58,14 +61,78 @@ func TestTerminalSessionPreservesAnsiSequences(t *testing.T) {
 
 	events := session.subscribe()
 	defer session.unsubscribe(events)
+	waitForTerminalOutput(t, events, "$", 5*time.Second)
 
 	if err := session.write("printf '\\033[31mred\\033[0m\\n'\nexit\n"); err != nil {
 		t.Fatalf("write terminal input: %v", err)
 	}
 
 	output := collectTerminalOutput(t, events, 5*time.Second)
-	if !strings.Contains(output, "\x1b[31mred\x1b[0m") {
+	if !strings.Contains(output, "\x1b[31m") || !strings.Contains(output, "red") {
 		t.Fatalf("terminal output stripped ANSI colour sequences: %q", output)
+	}
+}
+
+func TestTerminalSessionHandlesCursorKeyInput(t *testing.T) {
+	skipIfNoPTY(t)
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is required for readline cursor-key coverage")
+	}
+	t.Setenv("SHELL", bash)
+	manager := newTerminalManager()
+	session, err := manager.create("")
+	if err != nil {
+		t.Fatalf("create terminal session: %v", err)
+	}
+	defer manager.close(session.id)
+
+	events := session.subscribe()
+	defer session.unsubscribe(events)
+
+	waitForTerminalOutput(t, events, "$", 5*time.Second)
+	for _, input := range []string{"printf 'ab'", "\x1b[D", "c\nexit\n"} {
+		if err := session.write(input); err != nil {
+			t.Fatalf("write cursor-key input %q: %v", input, err)
+		}
+	}
+
+	output := collectTerminalOutput(t, events, 5*time.Second)
+	if !strings.Contains(output, "abc") {
+		t.Fatalf("cursor-key editing was not applied: %q", output)
+	}
+}
+
+func TestTerminalManagerReattachesPersistentTmuxSession(t *testing.T) {
+	skipIfNoPTY(t)
+	skipIfNoTmux(t)
+	t.Setenv("SHELL", "/bin/sh")
+	firstManager := newTerminalManager()
+	session, err := firstManager.create("")
+	if err != nil {
+		t.Fatalf("create terminal session: %v", err)
+	}
+	defer firstManager.close(session.id)
+	defer killTerminalTmuxSession(tmuxSessionName(session.id))
+
+	secondManager := newTerminalManager()
+	reattached, ok, err := secondManager.getOrAttach(session.id, terminalSize{Cols: 90, Rows: 24})
+	if err != nil {
+		t.Fatalf("reattach terminal session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("persistent tmux session %s was not found", session.id)
+	}
+	events := reattached.subscribe()
+	defer reattached.unsubscribe(events)
+
+	if err := reattached.write("echo reattach-ok\nexit\n"); err != nil {
+		t.Fatalf("write reattached input: %v", err)
+	}
+
+	output := collectTerminalOutput(t, events, 5*time.Second)
+	if !strings.Contains(output, "reattach-ok") {
+		t.Fatalf("reattached terminal output missing shell result: %q", output)
 	}
 }
 
@@ -106,6 +173,95 @@ func TestNormalizeTerminalSizeClampsUnsafeValues(t *testing.T) {
 	size = normalizeTerminalSize(terminalSize{Cols: 1, Rows: 1})
 	if size.Cols != 20 || size.Rows != 5 {
 		t.Fatalf("minimum normalized size = %+v", size)
+	}
+}
+
+func TestTerminalSessionSubscribeSinceReplaysOnlyNewEvents(t *testing.T) {
+	session := &terminalSession{
+		exitCode:  -1,
+		listeners: make(map[chan terminalEvent]struct{}),
+	}
+	session.broadcast(terminalEvent{Type: "output", Data: "old"})
+	session.broadcast(terminalEvent{Type: "output", Data: "new"})
+
+	events := session.subscribeSince(1)
+	defer session.unsubscribe(events)
+	select {
+	case event := <-events:
+		if event.Data != "new" || event.Seq != 2 {
+			t.Fatalf("first replayed event = %+v, want only seq 2 output", event)
+		}
+	default:
+		t.Fatalf("subscribeSince did not replay newer output")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("unexpected extra replayed event: %+v", event)
+	default:
+	}
+
+	session.close(0)
+	closedEvents := session.subscribeSince(2)
+	event, ok := <-closedEvents
+	if !ok || event.Type != "exit" || event.Seq != 3 {
+		t.Fatalf("closed subscribe event = %+v ok=%v, want seq 3 exit", event, ok)
+	}
+	if _, ok := <-closedEvents; ok {
+		t.Fatalf("closed subscribe channel stayed open")
+	}
+}
+
+func TestTerminalStartupCommandUsesRunShellBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/usr/bin/env bash\nexec /bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := terminalCommand(dir, "/bin/sh")
+	if cmd.Path != "./run.sh" || strings.Join(cmd.Args, " ") != "./run.sh shell" {
+		t.Fatalf("terminal command = path %q args %q, want ./run.sh shell", cmd.Path, cmd.Args)
+	}
+	if got := terminalStartupCommand(dir, "/bin/sh"); got != "'./run.sh' shell" {
+		t.Fatalf("tmux startup command = %q, want ./run.sh shell", got)
+	}
+
+	t.Setenv("HOMELAB_WEB_TERMINAL_SKIP_RUN_SH_SHELL", "1")
+	if got := terminalStartupCommand(dir, "/bin/sh"); got == "'./run.sh' shell" {
+		t.Fatalf("startup command used run.sh despite skip env")
+	}
+}
+
+func TestTerminalProbeResponseDetection(t *testing.T) {
+	probe := "\x1b[?1;2c\x1b[>0;276;0c\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b]11;rgb:0000/0000/0000\a"
+	if !terminalProbeResponse(probe) {
+		t.Fatalf("probe response was not detected")
+	}
+	if terminalProbeResponse("\x1b[D") {
+		t.Fatalf("cursor key was misclassified as a probe response")
+	}
+	if terminalProbeResponse("printf ok\n") {
+		t.Fatalf("shell input was misclassified as a probe response")
+	}
+}
+
+func TestTerminalFilterProbeResponsesStripsMixedAndSplitInput(t *testing.T) {
+	filtered, pending := terminalFilterProbeResponses("", "printf ok\n\x1b[?1;2c\x1b[>0;276;0c")
+	if filtered != "printf ok\n" || pending != "" {
+		t.Fatalf("filtered mixed input = %q pending %q, want shell input only", filtered, pending)
+	}
+
+	filtered, pending = terminalFilterProbeResponses("", "\x1b[?")
+	if filtered != "" || pending != "\x1b[?" {
+		t.Fatalf("filtered partial probe = %q pending %q", filtered, pending)
+	}
+	filtered, pending = terminalFilterProbeResponses(pending, "1;2c0")
+	if filtered != "0" || pending != "" {
+		t.Fatalf("filtered completed partial probe = %q pending %q", filtered, pending)
+	}
+
+	filtered, pending = terminalFilterProbeResponses("\x1b[", "D")
+	if filtered != "\x1b[D" || pending != "" {
+		t.Fatalf("split cursor key was altered: %q pending %q", filtered, pending)
 	}
 }
 
@@ -243,10 +399,43 @@ func collectTerminalOutput(t *testing.T, events <-chan terminalEvent, timeout ti
 	}
 }
 
+func waitForTerminalOutput(t *testing.T, events <-chan terminalEvent, needle string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.After(timeout)
+	var output strings.Builder
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				t.Fatalf("terminal event stream closed before %q appeared", needle)
+			}
+			if event.Type == "output" {
+				output.WriteString(event.Data)
+				if strings.Contains(output.String(), needle) {
+					return output.String()
+				}
+			}
+			if event.Type == "exit" {
+				t.Fatalf("terminal exited before %q appeared: %q", needle, output.String())
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q in terminal output: %q", needle, output.String())
+		}
+	}
+}
+
 func skipIfNoPTY(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("PTY tests are unix-only")
+	}
+	t.Setenv("HOMELAB_WEB_TERMINAL_SKIP_RUN_SH_SHELL", "1")
+}
+
+func skipIfNoTmux(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is required for persistent terminal reattach coverage")
 	}
 }
 

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'bun:test';
 import {
   buildTerminalTargets,
   clampTerminalGeometry,
+  defaultTerminalTabTitle,
   endpoint,
+  normaliseStoredTerminalTabs,
+  terminalReconnectDelay,
   terminalBaseFromAgent,
   terminalStatusLabel,
   websocketEndpoint
@@ -40,7 +43,14 @@ describe('terminal client helpers', () => {
   it('reports concise connection status labels', () => {
     expect(terminalStatusLabel(true, false)).toBe('Connected');
     expect(terminalStatusLabel(false, true)).toBe('Starting');
+    expect(terminalStatusLabel(false, true, true)).toBe('Reconnecting');
     expect(terminalStatusLabel(false, false)).toBe('Disconnected');
+  });
+
+  it('backs off reconnect attempts without growing unbounded', () => {
+    expect(terminalReconnectDelay(0)).toBe(500);
+    expect(terminalReconnectDelay(1)).toBe(1000);
+    expect(terminalReconnectDelay(20)).toBe(10000);
   });
 
   it('builds local and online remote terminal targets', () => {
@@ -96,5 +106,49 @@ describe('terminal client helpers', () => {
         metadata: { terminal_url: 'http://nuc.local:18083/' }
       })
     ).toBe('http://nuc.local:18083');
+  });
+
+  it('normalises persisted terminal tabs for reload reattachment', () => {
+    const state = normaliseStoredTerminalTabs(
+      {
+        activeTabId: 'tab_two',
+        tabs: [
+          {
+            id: 'tab_one',
+            title: 'Build',
+            targetId: 'local',
+            targetLabel: 'homelabd local',
+            apiBase: '/api/',
+            session: {
+              id: 'term_existing',
+              shell: '/run/current-system/sw/bin/bash',
+              cwd: '/home/lab/lab',
+              created_at: '2026-04-27T00:00:00Z',
+              persistent: true
+            }
+          },
+          {
+            id: 'tab_two',
+            title: '',
+            targetId: '',
+            targetLabel: '',
+            apiBase: ''
+          }
+        ]
+      },
+      {
+        id: 'local',
+        label: 'homelabd local',
+        detail: 'Control plane shell',
+        apiBase: '/api',
+        status: 'online'
+      }
+    );
+
+    expect(state.activeTabId).toBe('tab_two');
+    expect(state.tabs[0].apiBase).toBe('/api');
+    expect(state.tabs[0].session?.id).toBe('term_existing');
+    expect(state.tabs[1].title).toBe(defaultTerminalTabTitle(1));
+    expect(state.tabs[1].targetId).toBe('local');
   });
 });

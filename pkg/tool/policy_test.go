@@ -109,7 +109,7 @@ func TestReviewerCanRunPremergeCheck(t *testing.T) {
 func TestAgentsCanUseInternetReadTools(t *testing.T) {
 	policy := NewPolicy(nil)
 	for _, agent := range []string{"OrchestratorAgent", "CoderAgent", "UXAgent", "ResearchAgent", "ReviewerAgent"} {
-		for _, name := range []string{"internet.search", "internet.fetch", "internet.research"} {
+		for _, name := range []string{"text.correct", "text.summarize", "internet.search", "internet.fetch", "internet.research"} {
 			decision := policy.Decide(agent, stubTool{name: name, risk: RiskReadOnly}, json.RawMessage(`{"query":"golang","url":"https://example.com"}`))
 			if !decision.Allowed || decision.NeedsApproval {
 				t.Fatalf("expected %s %s to be allowed without approval: %+v", agent, name, decision)
@@ -135,5 +135,9 @@ func TestPseudoToolAllowlist(t *testing.T) {
 	decision = policy.DecideNamed("OrchestratorAgent", "task.run", json.RawMessage(`{"task_id":"task_123"}`))
 	if !decision.Allowed {
 		t.Fatalf("expected OrchestratorAgent task.run pseudo-tool to be allowed: %s", decision.Reason)
+	}
+	decision = policy.DecideNamed("OrchestratorAgent", "workflow.run", json.RawMessage(`{"workflow_id":"workflow_123"}`))
+	if !decision.Allowed {
+		t.Fatalf("expected OrchestratorAgent workflow.run pseudo-tool to be allowed: %s", decision.Reason)
 	}
 }

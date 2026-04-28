@@ -89,6 +89,13 @@ func (c cli) dispatch(args []string) error {
 		return c.shell()
 	case "task":
 		return c.task(args[1:])
+	case "workflow":
+		return c.workflow(args[1:])
+	case "workflows":
+		if len(args) == 1 {
+			return c.workflow([]string{"list"})
+		}
+		return c.workflow(args[1:])
 	case "agent":
 		return c.agent(args[1:])
 	case "tasks":
@@ -117,9 +124,9 @@ func (c cli) dispatch(args []string) error {
 		return c.task(withAction("runs", args[1:]))
 	case "diff":
 		return c.task(withAction("diff", args[1:]))
-	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry":
+	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
 		return c.task(withAction(cmd, args[1:]))
-	case "status", "agents", "delete", "remove", "rm", "refresh", "rebase", "sync",
+	case "status", "agents", "refresh", "rebase", "sync",
 		"delegate", "escalate", "codex", "claude", "gemini", "ux", "test", "patch",
 		"search", "web", "internet", "research", "read", "reflect", "deep", "work", "start":
 		return c.message(strings.Join(args, " "))
@@ -128,9 +135,57 @@ func (c cli) dispatch(args []string) error {
 	}
 }
 
+func (c cli) workflow(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl workflow <new|list|show|run>")
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "new", "create":
+		name, goal := parseWorkflowCreateArgs(args[1:])
+		if name == "" {
+			return fmt.Errorf("usage: homelabctl workflow new <name>: <goal>")
+		}
+		return c.do(http.MethodPost, "/workflows", map[string]any{"name": name, "goal": goal})
+	case "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl workflow list")
+		}
+		return c.do(http.MethodGet, "/workflows", nil)
+	case "show", "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl workflow show <workflow_id>")
+		}
+		return c.do(http.MethodGet, path("workflows", args[1]), nil)
+	case "run", "start":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl workflow run <workflow_id>")
+		}
+		return c.do(http.MethodPost, path("workflows", args[1], "run"), nil)
+	default:
+		return fmt.Errorf("unknown workflow command %q", args[0])
+	}
+}
+
+func parseWorkflowCreateArgs(args []string) (string, string) {
+	text := strings.TrimSpace(strings.Join(args, " "))
+	if text == "" {
+		return "", ""
+	}
+	if name, goal, ok := strings.Cut(text, ":"); ok {
+		name = strings.TrimSpace(name)
+		goal = strings.TrimSpace(goal)
+		if goal == "" {
+			goal = name
+		}
+		return name, goal
+	}
+	return text, text
+}
+
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|reopen|cancel|retry>")
+		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|reopen|cancel|retry|delete>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -180,6 +235,11 @@ func (c cli) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task cancel <task_id>")
 		}
 		return c.do(http.MethodPost, path("tasks", args[1], "cancel"), nil)
+	case "delete", "remove", "rm":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl task delete <task_id>")
+		}
+		return c.do(http.MethodPost, path("tasks", args[1], "delete"), nil)
 	case "reopen":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: homelabctl task reopen <task_id> [reason]")
@@ -310,7 +370,7 @@ func (c cli) events(args []string) error {
 
 func (c cli) terminal(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl terminal <start|send|input|stream|signal|close>")
+		return fmt.Errorf("usage: homelabctl terminal <start|show|send|input|stream|signal|close>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -323,6 +383,11 @@ func (c cli) terminal(args []string) error {
 			body["cwd"] = args[1]
 		}
 		return c.do(http.MethodPost, "/terminal/sessions", body)
+	case "show", "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl terminal show <session_id>")
+		}
+		return c.do(http.MethodGet, path("terminal", "sessions", args[1]), nil)
 	case "send":
 		if len(args) < 3 {
 			return fmt.Errorf("usage: homelabctl terminal send <session_id> <text>")
@@ -648,6 +713,12 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] task reopen <task_id> [reason]
   homelabctl [-addr http://127.0.0.1:18080] task cancel <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task retry <task_id> [codex|claude|gemini] [instruction]
+  homelabctl [-addr http://127.0.0.1:18080] task delete <task_id>
+
+  homelabctl [-addr http://127.0.0.1:18080] workflow new <name>: <goal>
+  homelabctl [-addr http://127.0.0.1:18080] workflow list
+  homelabctl [-addr http://127.0.0.1:18080] workflow show <workflow_id>
+  homelabctl [-addr http://127.0.0.1:18080] workflow run <workflow_id>
 
   homelabctl [-addr http://127.0.0.1:18080] agent list
   homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>
@@ -658,6 +729,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] events [-limit N] [YYYY-MM-DD]
 
   homelabctl [-addr http://127.0.0.1:18080] terminal start [cwd]
+  homelabctl [-addr http://127.0.0.1:18080] terminal show <session_id>
   homelabctl [-addr http://127.0.0.1:18080] terminal stream <session_id>
   homelabctl [-addr http://127.0.0.1:18080] terminal send <session_id> <text>
   homelabctl [-addr http://127.0.0.1:18080] terminal input <session_id> <text>
@@ -666,7 +738,7 @@ func usage(out io.Writer) {
 
 Top-level shortcuts:
   homelabctl new <goal>
-  homelabctl run|review|accept|reopen|cancel|retry <task_id> [...]
+  homelabctl run|review|accept|reopen|cancel|retry|delete <task_id> [...]
   homelabctl approve|deny <approval_id>
-  homelabctl status|agents|delegate|ux|refresh|diff|test|delete ...`)
+  homelabctl status|agents|delegate|ux|refresh|diff|test ...`)
 }

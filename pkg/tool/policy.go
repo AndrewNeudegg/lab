@@ -84,8 +84,10 @@ func defaultAgentTools() map[string]map[string]bool {
 	return map[string]map[string]bool{
 		"OrchestratorAgent": allow(
 			"task.create", "task.run", "task.list",
+			"workflow.create", "workflow.list", "workflow.show", "workflow.run",
 			"agent.list", "agent.delegate",
 			"memory.read", "memory.propose_write",
+			"text.correct", "text.summarize",
 			"internet.search", "internet.fetch", "internet.research",
 			"repo.list", "repo.search", "repo.read", "repo.current_diff",
 			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
@@ -94,6 +96,7 @@ func defaultAgentTools() map[string]map[string]bool {
 			"shell.run_limited", "shell.run_approved",
 		),
 		"CoderAgent": allow(
+			"text.correct", "text.summarize",
 			"internet.search", "internet.fetch", "internet.research",
 			"repo.list", "repo.search", "repo.read", "repo.write_patch", "repo.current_diff",
 			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
@@ -101,14 +104,15 @@ func defaultAgentTools() map[string]map[string]bool {
 			"shell.run_limited",
 		),
 		"UXAgent": allow(
+			"text.correct", "text.summarize",
 			"internet.search", "internet.fetch", "internet.research",
 			"repo.list", "repo.search", "repo.read", "repo.write_patch", "repo.current_diff",
 			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
 			"go.fmt", "go.test", "go.build", "test.run", "bun.check", "bun.build",
 			"shell.run_limited",
 		),
-		"ResearchAgent": allow("internet.search", "internet.fetch", "internet.research", "memory.propose_write"),
-		"ReviewerAgent": allow("internet.search", "internet.fetch", "internet.research", "repo.read", "repo.search", "repo.current_diff", "git.diff", "git.status", "git.branch", "git.describe", "git.log", "git.show", "git.merge_check", "go.test", "go.build", "test.run", "bun.check", "bun.build"),
+		"ResearchAgent": allow("text.correct", "text.summarize", "internet.search", "internet.fetch", "internet.research", "memory.propose_write"),
+		"ReviewerAgent": allow("text.correct", "text.summarize", "internet.search", "internet.fetch", "internet.research", "repo.read", "repo.search", "repo.current_diff", "git.diff", "git.status", "git.branch", "git.describe", "git.log", "git.show", "git.merge_check", "go.test", "go.build", "test.run", "bun.check", "bun.build"),
 		"OpsAgent":      allow("service.status"),
 		"homelabd":      allow("*"),
 		"human":         allow("*"),

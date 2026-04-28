@@ -4,6 +4,7 @@ The dashboard has these primary operator surfaces:
 
 - `/chat`: global conversation, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
+- `/workflows`: durable LLM/tool workflow creation, cost estimates, run status, and latest outputs.
 - `/docs`: searchable documentation library generated from Markdown files in `./docs`.
 - `/terminal`: browser terminal backed by a homelabd shell session for direct operator commands.
 - `/supervisord`: supervised application status and start, stop, restart controls.
@@ -19,7 +20,7 @@ Use the shared responsive navbar on every dashboard page.
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Chat`, `Tasks`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
+- Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 
 ## Documentation Library
@@ -35,7 +36,7 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Nielsen Norman usability heuristics: always expose system status, speak the operator's language, and keep clear exits for wrong actions.
 - Atlassian/Jira issue views: work-item detail pages have top-level issue actions and an activity feed containing changes, comments, history, and related updates.
 - Slack threads and incident-command tools: conversations need explicit context boundaries; task or incident timelines prevent important work from being buried in a global chat scroll.
-- Atlassian dashboard and status guidance: centralize task visibility, make bottlenecks obvious, use semantic color roles, and pair color with text.
+- Atlassian dashboard and status guidance: centralize task visibility, make bottlenecks obvious, use semantic colour roles, and pair colour with text.
 - GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
 - GitLab merge request reviews: the changes view is the primary review surface, with review status and merge checks kept close to the diff.
 - CodeMirror and Monaco diff APIs: mature web diff viewers support hidden unchanged regions, gutters, syntax-aware deleted text, inline change highlighting, and unified or side-by-side review modes.
@@ -83,31 +84,34 @@ For `/chat`, every visible component must answer one of these questions:
 3. Which generated command can I safely click?
 4. Where do I go to inspect task state?
 
+For `/workflows`, every visible component must answer one of these questions:
+
+1. What workflow can I reuse?
+2. What will it cost in LLM calls, tool calls, waits, and estimated runtime?
+3. Which step is encoded?
+4. What happened on the latest run?
+
 If a component does not answer one of those questions, it should not be in the primary surface.
 
 ## Component Placement
 
 - `/tasks` left pane: task queue. It is the navigation model, because the operator supervises work by task rather than by chat transcript.
-- Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current.
-- Triage buttons: `Needs action`, `Running`, and `All`. They double as counts and filters so the operator can shift attention without extra controls.
+- Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current. The `Synced` timestamp includes seconds so a manual reload is visible even when repeated within the same minute.
+- Triage buttons: `Needs action`, `Running`, and `All`. The page opens on `Needs action` because this page is primarily an operator console; `All` remains one tap away for audit and search. The buttons double as counts and filters so the operator can shift attention without extra controls.
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
-- Decision block: pending approvals appear before the task list because they are human-blocked work.
-- Task rows: colored dot plus text status. Color gives scan speed; text keeps it accessible and unambiguous.
-- Right pane: selected task record. It is not a chat transcript. Selecting a different task changes the record, summary, result, and activity timeline.
-- Selected task title: use a compact summary derived from the task input so long prompts do not dominate the top of the record.
-- Task summary: ID, status, owner, started time, runtime, and update time. This answers what object is selected and how long it has been running before asking the operator to act.
-- Primary action: one emphasized button derived from task state. The UI should not make the operator infer the next command from raw status.
-- Secondary actions: show, `ux <task_id>`, delegate, delete, or reopen. Use the UX action when a task needs a researched UI/accessibility pass, automated regression coverage, and browser-level UAT.
-- Next-step panel: explains why the primary action is recommended. This is the guardrail against blind clicking.
-- Workspace path: shown only for selected tasks because it is supporting implementation context, not queue-level navigation.
-- Remote execution context: shown as a warning-colored block for remote tasks. It must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
-- Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. Use this before review, conflict-resolution delegation, or approval.
-- Result block: shown only when a task has a stored result.
-- Worker trace: groups external worker output by run id, combines live `agent.delegate.output`
-  events with completed artifacts from `data/runs`, and exposes direct stop/retry controls.
-- Task activity: event-log timeline filtered to the selected task. This is the task-scoped history equivalent to issue activity or incident timelines.
-- Reviewed plan: shown directly above the original input so the operator can see the task-, phase-, or target-specific execution path before rereading the full prompt.
-- Original input: shown below task activity, preserving the full task goal text for reference after the timeline.
+- Task list: appears immediately after search. Rows are the main navigation and must stay fast to scan even when remote queues are present. Approval state belongs on the task row and in the selected task decision panel, not in a separate queue pop-out.
+- Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous.
+- Right pane: selected task record. It is not a chat transcript and has no task chat composer. Selecting a different task changes the record, summary, result, action buttons, diff, worker trace, and activity timeline.
+- Manual `Sync` refreshes tasks, approvals, events, and remote agents first, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current.
+- Task sync failures are shown inside the task pane. The queue must never make a failed `/api/tasks` request look like a real empty result.
+- Selected task title: use the stored compact task title generated at creation time, so long prompts do not dominate the queue or the top of the record. The original input remains available in the detail disclosures.
+- Task summary: ID, status, owner, started time, runtime, and update time. Keep this as a compact metadata strip, not separate cards; it identifies the selected object without taking attention away from the decision.
+- Decision panel: one emphasized workflow-forward button derived from task state. Retry/reopen inputs and secondary task endpoint buttons live inside this same panel so the operator sees one coherent action area. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
+- Secondary actions: low-emphasis direct endpoint buttons such as retry, reopen, stop, delete, or deny approval. Destructive actions must remain visually distinct from constructive actions.
+- Retry and reopen forms: short, task-scoped inputs for optional retry instruction or reopen reason. These are structured payloads sent to typed task endpoints.
+- State and context: workflow state, workspace path, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
+- Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
+- Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
@@ -121,7 +125,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Green: done. No action required unless the result is wrong.
 - Gray: unknown or neutral state.
 
-Do not rely on color alone. Always show the status text next to the colored indicator.
+Do not rely on colour alone. Always show the status text next to the coloured indicator.
 
 ## Network Resilience
 
@@ -160,11 +164,12 @@ Local tasks use isolated local worktrees. Remote tasks do not create local workt
 
 On compact screens `/tasks` stacks:
 
-1. Task queue first, capped to the top portion of the viewport and collapsible from the queue header.
-2. Selected-task record below it.
-3. Global command panel below the selected-task record.
+1. `Queue` is the parent view. It shows filters, search, task rows, execution queues, and new-task creation.
+2. Tapping a task opens the selected task record as a child view.
+3. The selected task record starts at the top, shows the decision panel first, and exposes a clear `Back to queue` control.
+4. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.
 
-The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Task selection itself must not hide the queue: the operator should still see queue position, counts, and nearby work after tapping a row. The `Hide queue` / `Show queue` control is a manual escape hatch when the selected-task record needs more vertical room.
+The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Do not add a separate `Task` tab for the current selection; it behaves like saved state rather than navigation and is easy to misread. The Tasks page does not render a global command panel on mobile.
 
 On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
 
@@ -172,11 +177,13 @@ On compact screens `/terminal` keeps the xterm viewport as the primary scroll ar
 
 ## Terminal Runtime
 
-The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts the user's shell in the homelabd working directory inside a Linux PTY. The browser renders the session with xterm.js, connects terminal bytes over `GET /terminal/sessions/{id}/ws`, and sends terminal resize updates with `POST /terminal/sessions/{id}/resize`.
+The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts `./run.sh shell` when an executable `run.sh` exists in the homelabd working directory; otherwise it starts the user's shell inside a Linux PTY. When `tmux` is available, homelabd starts the shell inside a hidden tmux session and attaches the browser PTY to it, so the dashboard can reload and reattach without losing the running shell. `GET /terminal/sessions/{id}` reattaches homelabd to an existing tmux-backed session and returns current metadata.
 
-Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colors, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
+The browser renders each session with xterm.js, streams terminal output over `GET /terminal/sessions/{id}/events`, sends keyboard input with `POST /terminal/sessions/{id}/input`, and sends terminal resize updates with `POST /terminal/sessions/{id}/resize`. The event stream includes SSE event ids and reconnects from the last seen event after mobile sleep, tab switching, or brief network loss. `GET /terminal/sessions/{id}/ws` remains available for WebSocket clients.
 
-The Terminal page has a session target picker. `homelabd local` opens a PTY on the control plane. Online remote agents appear when their heartbeat metadata includes `terminal_base_url`; choosing one starts the session through that agent's browser-reachable terminal API.
+Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colours, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
+
+The Terminal page has persistent tabs. Use the `+` button beside the session target picker to add a shell, click an inactive tab once to switch to it, click the active tab name to rename it, and close a tab to delete its backend session. Reloading the dashboard keeps local tab metadata and reattaches to the stored session ids. The session target picker chooses the target for the next new tab: `homelabd local` opens a PTY on the control plane, while online remote agents appear when their heartbeat metadata includes `terminal_base_url`.
 
 This is an operator shell. Run it only where the homelabd HTTP API is already trusted, because anyone who can reach the endpoint can execute commands as the homelabd process user.
 

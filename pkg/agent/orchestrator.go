@@ -22,6 +22,7 @@ import (
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
+	workflowstore "github.com/andrewneudegg/lab/pkg/workflow"
 )
 
 type Orchestrator struct {
@@ -29,6 +30,7 @@ type Orchestrator struct {
 	events       *eventlog.Store
 	tasks        *taskstore.Store
 	approvals    *approvalstore.Store
+	workflows    *workflowstore.Store
 	registry     *tool.Registry
 	policy       tool.Policy
 	provider     llm.Provider
@@ -223,6 +225,8 @@ func (o *Orchestrator) handleMessage(ctx context.Context, message string) (strin
 		return programResult(o.createTask(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
 	case "tasks":
 		return programResult(o.listTasks())
+	case "workflow", "workflows":
+		return programResult(o.handleWorkflowCommand(ctx, fields, message))
 	case "agents":
 		return programResult(o.listAgents(ctx))
 	case "cancel", "stop":
@@ -387,7 +391,7 @@ func (o *Orchestrator) appendChatReply(ctx context.Context, to, message string) 
 func isCasualMessage(message string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(strings.Trim(message, ".,!?")))
 	switch normalized {
-	case "hi", "hello", "hey", "yo", "andrew", "element-bot", "eelement-bot", "ping":
+	case "hi", "hello", "hey", "yo", "andrew", "ping":
 		return true
 	default:
 		return false
@@ -401,6 +405,9 @@ func isUserFacingCommandError(err error) bool {
 	message := err.Error()
 	return strings.HasPrefix(message, "no task matches ") ||
 		strings.HasPrefix(message, "task selector ") ||
+		strings.HasPrefix(message, "no workflow matches ") ||
+		strings.HasPrefix(message, "workflow selector ") ||
+		strings.Contains(message, "workflow id or name is required") ||
 		strings.Contains(message, "task id or title is required")
 }
 
@@ -409,6 +416,11 @@ func userFacingCommandErrorReply(err error) string {
 		return ""
 	}
 	message := err.Error()
+	if strings.HasPrefix(message, "no workflow matches ") ||
+		strings.HasPrefix(message, "workflow selector ") ||
+		strings.Contains(message, "workflow id or name is required") {
+		return "I couldn't match that to a workflow: " + message + ". Use `workflows` to see current workflow IDs."
+	}
 	if strings.HasPrefix(message, "task selector ") {
 		return "I found more than one matching task: " + message + ". Use the exact task ID from `tasks`, or click one of the suggested action buttons."
 	}
@@ -1041,6 +1053,9 @@ func (o *Orchestrator) AssignTaskTarget(ctx context.Context, selector string, ta
 	if target.Workdir == "" {
 		return "", fmt.Errorf("remote working directory is required")
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "task assigned to a remote target"); err != nil {
+		return "", err
+	}
 	target.Mode = "remote"
 	t.Target = target
 	t.Workspace = ""
@@ -1065,6 +1080,10 @@ func (o *Orchestrator) CancelTask(ctx context.Context, taskID string) (string, e
 
 func (o *Orchestrator) RetryTask(ctx context.Context, taskID, backend, instruction string) (string, error) {
 	return o.retryTask(ctx, taskID, backend, instruction)
+}
+
+func (o *Orchestrator) DeleteTask(ctx context.Context, taskID string) (string, error) {
+	return o.deleteTask(ctx, taskID)
 }
 
 func (o *Orchestrator) ListApprovals() ([]approvalstore.Request, error) {
@@ -1282,6 +1301,26 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		}
 		if remoteTask(t) {
 			continue
+		}
+		if t.Status == taskstore.StatusRunning {
+			if approval, ok, err := o.latestApprovalForTask(t.ID, "git.merge_approved", approvalstore.StatusGranted); err != nil {
+				o.log().Error("task approval reconciliation failed", "task_id", t.ID, "error", err)
+				continue
+			} else if ok && approvalGrantedDuringCurrentRun(approval, t) {
+				t.Status = taskstore.StatusAwaitingVerification
+				t.AssignedTo = "OrchestratorAgent"
+				t.Result = appendResultLine(t.Result, "merge approval "+approval.ID+" was already granted; awaiting human verification")
+				if err := o.tasks.Save(t); err != nil {
+					o.log().Error("task approval reconciliation save failed", "task_id", t.ID, "error", err)
+					continue
+				}
+				recovered++
+				_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+					"approval": approval.ID,
+					"reason":   "granted merge approval found while task was still marked running",
+				})})
+				continue
+			}
 		}
 		if len(t.DependsOn) > 0 {
 			unresolved, err := o.unresolvedDependencies(t)
@@ -1576,6 +1615,10 @@ func help() string {
 		"commands:",
 		"  new <goal>                 create task and isolated worktree",
 		"  tasks                      list tasks",
+		"  workflows                  list durable LLM/tool workflows",
+		"  workflow new <name>: <goal> create a simple workflow",
+		"  workflow show <workflow_id> show workflow steps, status, and cost estimate",
+		"  workflow run <workflow_id> run a workflow through policy-bound steps",
 		"  status                     show active tasks and next actions",
 		"  what's cooking             show active tasks and next actions",
 		"  show <task_id>             show task",
@@ -1831,9 +1874,12 @@ func (o *Orchestrator) llmToolPrompt() string {
 		`{"message":"final answer","done":true,"tool_calls":[]}`,
 		"Use tools for inspection before answering repo-specific questions.",
 		"Use internet.research for broad, current, multi-source questions before synthesizing advice.",
+		"Use text.correct to fix likely spelling or grammar issues before internet.search when the user query looks typo-prone; preserve exact code symbols and quoted strings.",
+		"Use text.summarize when a long user task or note needs a compact label.",
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
+		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
 		"Available tools:",
 		o.toolCatalog(),
@@ -1849,14 +1895,34 @@ func (o *Orchestrator) toolCatalog() string {
 	}
 	catalog := []catalogTool{{
 		Name:        "task.create",
-		Description: "Create a development task with an isolated git worktree. Args: {\"goal\":\"...\"}.",
+		Description: "Create a development task with an isolated local worktree or explicit remote target. Args: {\"goal\":\"...\",\"target\":{...}}.",
 		Risk:        tool.RiskLow,
-		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"},"target":{"type":"object"}}}`),
 	}, {
 		Name:        "task.run",
 		Description: "Run CoderAgent on an existing task. Args: {\"task_id\":\"...\"}.",
 		Risk:        tool.RiskLow,
 		Schema:      json.RawMessage(`{"type":"object","required":["task_id"],"properties":{"task_id":{"type":"string"}}}`),
+	}, {
+		Name:        "workflow.create",
+		Description: "Create a durable workflow made of LLM, tool, wait, or workflow steps. Args: {\"name\":\"...\",\"goal\":\"...\",\"steps\":[{\"kind\":\"llm|tool|wait|workflow\",...}]}",
+		Risk:        tool.RiskLow,
+		Schema:      json.RawMessage(`{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"description":{"type":"string"},"goal":{"type":"string"},"steps":{"type":"array","items":{"type":"object"}}}}`),
+	}, {
+		Name:        "workflow.list",
+		Description: "List durable workflow definitions, current status, and cost estimates. Args: {}.",
+		Risk:        tool.RiskReadOnly,
+		Schema:      json.RawMessage(`{"type":"object","properties":{}}`),
+	}, {
+		Name:        "workflow.show",
+		Description: "Show one workflow's steps, latest run, and cost estimate. Args: {\"workflow_id\":\"...\"}.",
+		Risk:        tool.RiskReadOnly,
+		Schema:      json.RawMessage(`{"type":"object","required":["workflow_id"],"properties":{"workflow_id":{"type":"string"}}}`),
+	}, {
+		Name:        "workflow.run",
+		Description: "Run a durable workflow through policy-bound LLM/tool/wait/workflow steps. Args: {\"workflow_id\":\"...\"}.",
+		Risk:        tool.RiskLow,
+		Schema:      json.RawMessage(`{"type":"object","required":["workflow_id"],"properties":{"workflow_id":{"type":"string"}}}`),
 	}}
 	for _, t := range o.registry.List() {
 		catalog = append(catalog, catalogTool{Name: t.Name(), Description: t.Description(), Risk: t.Risk(), Schema: t.Schema()})
@@ -2009,14 +2075,18 @@ type createdTask struct {
 	Children []taskstore.Task
 }
 
+const taskTitleMaxCharacters = 84
+
 func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (createdTask, error) {
+	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return createdTask{}, nil
 	}
+	taskID := id.New("task")
 	now := time.Now().UTC()
 	t := taskstore.Task{
-		ID:         id.New("task"),
-		Title:      firstLine(goal),
+		ID:         taskID,
+		Title:      o.summarizeTaskTitle(ctx, taskID, goal),
 		Goal:       goal,
 		Status:     taskstore.StatusQueued,
 		AssignedTo: "OrchestratorAgent",
@@ -2077,10 +2147,11 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 	if target.Workdir == "" {
 		return taskstore.Task{}, fmt.Errorf("remote working directory is required")
 	}
+	taskID := id.New("task")
 	now := time.Now().UTC()
 	task := taskstore.Task{
-		ID:                 id.New("task"),
-		Title:              firstLine(goal),
+		ID:                 taskID,
+		Title:              o.summarizeTaskTitle(ctx, taskID, goal),
 		Goal:               goal,
 		Status:             taskstore.StatusQueued,
 		AssignedTo:         "remote:" + target.AgentID,
@@ -2103,6 +2174,81 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 		"backend":  target.Backend,
 	})})
 	return task, nil
+}
+
+func (o *Orchestrator) summarizeTaskTitle(ctx context.Context, taskID, goal string) string {
+	fallback := fallbackTaskTitle(goal, taskTitleMaxCharacters)
+	if o.registry == nil {
+		return fallback
+	}
+	if _, ok := o.registry.Get("text.summarize"); !ok {
+		return fallback
+	}
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "text.summarize", map[string]any{
+		"text":           goal,
+		"purpose":        "task_title",
+		"max_characters": taskTitleMaxCharacters,
+	}, taskID)
+	if err != nil {
+		o.log().Warn("task title summarisation failed", "task_id", taskID, "error", err)
+		return fallback
+	}
+	var out struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		o.log().Warn("task title summarisation returned invalid JSON", "task_id", taskID, "error", err)
+		return fallback
+	}
+	title := cleanTaskTitle(out.Summary, taskTitleMaxCharacters)
+	if title == "" {
+		return fallback
+	}
+	return title
+}
+
+func fallbackTaskTitle(goal string, maxCharacters int) string {
+	title := firstLine(goal)
+	if title == "" {
+		title = "untitled task"
+	}
+	return cleanTaskTitle(title, maxCharacters)
+}
+
+func cleanTaskTitle(value string, maxCharacters int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	value = strings.Trim(value, " \t\r\n\"'`")
+	for {
+		lower := strings.ToLower(value)
+		switch {
+		case strings.HasPrefix(lower, "summary:"):
+			value = strings.TrimSpace(value[len("summary:"):])
+		case strings.HasPrefix(lower, "title:"):
+			value = strings.TrimSpace(value[len("title:"):])
+		default:
+			return clipTaskTitle(value, maxCharacters)
+		}
+	}
+}
+
+func clipTaskTitle(value string, maxCharacters int) string {
+	if maxCharacters <= 0 || len([]rune(value)) <= maxCharacters {
+		return value
+	}
+	runes := []rune(value)
+	if maxCharacters <= 3 {
+		return string(runes[:maxCharacters])
+	}
+	limit := maxCharacters - 3
+	clipped := strings.TrimSpace(string(runes[:limit]))
+	if boundary := strings.LastIndex(clipped, " "); boundary >= limit*3/5 {
+		clipped = clipped[:boundary]
+	}
+	clipped = strings.TrimRight(strings.TrimSpace(clipped), ".,;:-")
+	if clipped == "" {
+		return strings.TrimSpace(string(runes[:maxCharacters]))
+	}
+	return clipped + "..."
 }
 
 func (o *Orchestrator) createTaskGraphChildren(ctx context.Context, parent taskstore.Task, now time.Time) ([]taskstore.Task, string, error) {
@@ -2597,7 +2743,7 @@ func taskStateTransitions(status string) string {
 	case taskstore.StatusBlocked:
 		return "blocked -> running, cancelled, or deleted"
 	case taskstore.StatusAwaitingApproval:
-		return "awaiting_approval -> awaiting_verification, conflict_resolution, or blocked"
+		return "awaiting_approval -> awaiting_verification, conflict_resolution, blocked, or running"
 	case taskstore.StatusAwaitingVerification:
 		return "awaiting_verification -> done or queued"
 	case taskstore.StatusDone, taskstore.StatusCancelled:
@@ -2807,6 +2953,9 @@ func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string,
 	if t.Status == taskstore.StatusDone || t.Status == taskstore.StatusCancelled {
 		return fmt.Sprintf("Task %s is already %s.", taskID, t.Status), nil
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "task cancelled by human"); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusCancelled
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = "cancelled by human"
@@ -2878,6 +3027,9 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 	if t.Status == taskstore.StatusCancelled {
 		return fmt.Sprintf("Task %s is cancelled; reopen it before accepting.", taskID), nil
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "task accepted by human"); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusDone
 	t.AssignedTo = "OrchestratorAgent"
 	t.AcceptanceCriteria = markAcceptanceCriteria(t.AcceptanceCriteria, "accepted")
@@ -2926,6 +3078,9 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 	} else {
 		reason = "reopened by human: " + reason
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, reason); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusQueued
 	t.AssignedTo = "OrchestratorAgent"
 	if strings.TrimSpace(t.Result) == "" {
@@ -2973,6 +3128,9 @@ func (o *Orchestrator) refreshTaskWorkspace(ctx context.Context, selector string
 	cleanOut, err := exec.CommandContext(ctx, "git", "-C", t.Workspace, "clean", "-fd", "-e", ".codex", "-e", ".git-local", "-e", ".artifacts", "--", ".").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git clean task workspace: %w: %s", err, strings.TrimSpace(string(cleanOut)))
+	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "workspace refreshed to current main"); err != nil {
+		return "", err
 	}
 	t.Status = taskstore.StatusBlocked
 	t.AssignedTo = "OrchestratorAgent"
@@ -3596,6 +3754,9 @@ func (o *Orchestrator) prepareDelegationForTask(ctx context.Context, taskID, bac
 	if strings.TrimSpace(instruction) == "" {
 		instruction = defaultDelegationInstruction(t)
 	}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new worker run"); err != nil {
+		return delegationRun{}, err
+	}
 	t.Status = taskstore.StatusRunning
 	t.AssignedTo = backend
 	t.Result = fmt.Sprintf("delegated to %s; external worker is running", backend)
@@ -3705,22 +3866,77 @@ func (o *Orchestrator) searchRepo(ctx context.Context, query string) (string, er
 }
 
 func (o *Orchestrator) searchInternet(ctx context.Context, query, source string) (string, error) {
-	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.search", map[string]any{"query": query, "source": source, "max_results": 5}, "")
+	correction := o.correctExternalSearchQuery(ctx, query)
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.search", map[string]any{"query": correction.Query, "source": source, "max_results": 8}, "")
 	if err != nil {
 		return "", err
 	}
-	return formatInternetSearchResult(raw), nil
+	result := formatInternetSearchResult(raw)
+	if correction.Note != "" {
+		return correction.Note + "\n" + result, nil
+	}
+	return result, nil
 }
 
 func (o *Orchestrator) researchInternet(ctx context.Context, query, source, depth string) (string, error) {
 	if source == "" || source == "web" {
 		source = "all"
 	}
-	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.research", map[string]any{"query": query, "source": source, "depth": depth}, "")
+	correction := o.correctExternalSearchQuery(ctx, query)
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "internet.research", map[string]any{"query": correction.Query, "source": source, "depth": depth}, "")
 	if err != nil {
 		return "", err
 	}
-	return formatInternetResearchResult(raw), nil
+	result := formatInternetResearchResult(raw)
+	if correction.Note != "" {
+		return correction.Note + "\n" + result, nil
+	}
+	return result, nil
+}
+
+type externalSearchCorrection struct {
+	Query string
+	Note  string
+}
+
+func (o *Orchestrator) correctExternalSearchQuery(ctx context.Context, query string) externalSearchCorrection {
+	out := externalSearchCorrection{Query: query}
+	if _, ok := o.registry.Get("text.correct"); !ok {
+		return out
+	}
+	raw, err := o.runTool(ctx, "OrchestratorAgent", "text.correct", map[string]any{"text": query, "mode": "search_query", "max_variants": 3}, "")
+	if err != nil {
+		return out
+	}
+	var corrected struct {
+		Corrected     string   `json:"corrected_text"`
+		Changed       bool     `json:"changed"`
+		SearchQueries []string `json:"search_queries"`
+	}
+	if err := json.Unmarshal(raw, &corrected); err != nil {
+		return out
+	}
+	correctedText := strings.TrimSpace(corrected.Corrected)
+	if !corrected.Changed || correctedText == "" || strings.EqualFold(correctedText, query) {
+		return out
+	}
+	out.Query = correctedText
+	var variants []string
+	for _, variant := range corrected.SearchQueries {
+		variant = strings.TrimSpace(variant)
+		if variant == "" || strings.EqualFold(variant, query) || strings.EqualFold(variant, correctedText) {
+			continue
+		}
+		variants = append(variants, variant)
+		if len(variants) >= 2 {
+			break
+		}
+	}
+	out.Note = fmt.Sprintf("Corrected search query: %s -> %s", query, correctedText)
+	if len(variants) > 0 {
+		out.Note += "\nOther query variants: " + strings.Join(variants, "; ")
+	}
+	return out
 }
 
 func formatInternetResearchResult(raw json.RawMessage) string {
@@ -3805,10 +4021,14 @@ func formatInternetSearchResult(raw json.RawMessage) string {
 	var out struct {
 		Query       string           `json:"query"`
 		Source      string           `json:"source"`
+		Provider    string           `json:"provider"`
 		Answer      string           `json:"answer"`
+		Answers     []string         `json:"answers"`
 		Abstract    string           `json:"abstract"`
 		AbstractURL string           `json:"abstract_url"`
 		Results     []map[string]any `json:"results"`
+		Suggestions []string         `json:"suggestions"`
+		Errors      []string         `json:"errors"`
 		Web         *json.RawMessage `json:"web"`
 		Academic    []map[string]any `json:"academic"`
 		WebError    string           `json:"web_error"`
@@ -3827,8 +4047,16 @@ func formatInternetSearchResult(raw json.RawMessage) string {
 		source = "internet"
 	}
 	fmt.Fprintf(&b, "Internet search (%s): %s\n", source, query)
+	if out.Provider != "" && out.Provider != source {
+		fmt.Fprintf(&b, "Provider: %s\n", out.Provider)
+	}
 	if out.Answer != "" {
 		fmt.Fprintf(&b, "Answer: %s\n", out.Answer)
+	}
+	for _, answer := range out.Answers {
+		if answer != "" && answer != out.Answer {
+			fmt.Fprintf(&b, "Answer: %s\n", answer)
+		}
 	}
 	if out.Abstract != "" {
 		fmt.Fprintf(&b, "Abstract: %s\n", out.Abstract)
@@ -3851,6 +4079,18 @@ func formatInternetSearchResult(raw json.RawMessage) string {
 	}
 	if out.AcademicErr != "" {
 		fmt.Fprintf(&b, "Academic error: %s\n", out.AcademicErr)
+	}
+	if len(out.Errors) > 0 {
+		fmt.Fprintln(&b, "Search errors:")
+		for _, err := range out.Errors {
+			fmt.Fprintf(&b, "- %s\n", err)
+		}
+	}
+	if len(out.Suggestions) > 0 {
+		fmt.Fprintln(&b, "Suggestions:")
+		for _, suggestion := range out.Suggestions {
+			fmt.Fprintf(&b, "- %s\n", suggestion)
+		}
 	}
 	result := strings.TrimSpace(b.String())
 	if result == fmt.Sprintf("Internet search (%s): %s", source, query) {
@@ -4067,6 +4307,9 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	approvalID := id.New("approval")
 	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new review approval"); err != nil {
+		return "", err
+	}
 	if err := o.approvals.Save(req); err != nil {
 		return "", err
 	}
@@ -4362,6 +4605,9 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 		return "", fmt.Errorf("no LLM provider configured")
 	}
 	o.ensureTaskPlan(ctx, &t)
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "superseded by a new worker run"); err != nil {
+		return "", err
+	}
 	t.Status = taskstore.StatusRunning
 	t.AssignedTo = agent.Name
 	if err := o.tasks.Save(t); err != nil {
@@ -4476,6 +4722,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
 		"- Use internet.research for broad, current, multi-source questions before implementation choices.",
+		"- Use text.correct before internet.search when a natural-language query appears misspelled or grammatically ambiguous; preserve exact code symbols.",
 		"- Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"- Use internet.search with source academic for papers or source all when both web and scholarly context matter.",
 		"- Use internet.fetch on promising result URLs before relying on details; prefer official, primary, or scholarly sources.",
@@ -4488,6 +4735,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
+			"text.correct": true, "text.summarize": true,
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
@@ -4515,6 +4763,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
 		"- Use internet.research for broad or current UX/accessibility questions before implementation choices.",
+		"- Use text.correct before internet.search when a natural-language query appears misspelled or grammatically ambiguous; preserve exact code symbols.",
 		"- Use internet.search for precise current documentation lookups and internet.fetch before citing or relying on details.",
 		"- Prefer official standards, primary framework docs, design-system docs, and reputable UX research. Mention source URLs in the final message.",
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
@@ -4528,6 +4777,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available UXAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
+			"text.correct": true, "text.summarize": true,
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
@@ -4661,6 +4911,17 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "task_status": task.Status})})
 			return fmt.Sprintf("Approval %s is stale: task %s is %s, not %s. No merge was attempted.", approvalID, taskShortID(req.TaskID), task.Status, taskstore.StatusAwaitingApproval), nil
 		}
+		if newer, ok, err := o.newerPendingApprovalForTask(req); err != nil {
+			return "", err
+		} else if ok {
+			req.Status = approvalstore.StatusStale
+			req.Reason = appendApprovalReason(req.Reason, "stale: superseded by "+newer.ID)
+			if err := o.approvals.Save(req); err != nil {
+				return "", err
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "superseded_by": newer.ID})})
+			return fmt.Sprintf("Approval %s is stale: task %s has a newer pending merge approval %s. No merge was attempted.", approvalID, taskShortID(req.TaskID), newer.ID), nil
+		}
 		if reconcileOut, err := o.reconcileApprovedTaskBranch(ctx, task); err != nil {
 			req.Status = approvalstore.StatusFailed
 			req.Reason = appendApprovalReason(req.Reason, "auto-rebase failed: "+err.Error())
@@ -4741,6 +5002,94 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 	return "Approved and executed " + approvalID, nil
 }
 
+func (o *Orchestrator) stalePendingTaskApprovals(ctx context.Context, taskID, reason string) error {
+	if strings.TrimSpace(taskID) == "" {
+		return nil
+	}
+	requests, err := o.approvals.List()
+	if err != nil {
+		return err
+	}
+	for _, req := range requests {
+		if req.TaskID != taskID || req.Status != approvalstore.StatusPending {
+			continue
+		}
+		req.Status = approvalstore.StatusStale
+		req.Reason = appendApprovalReason(req.Reason, "stale: "+reason)
+		if err := o.approvals.Save(req); err != nil {
+			return err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"approval": req, "reason": reason})})
+	}
+	return nil
+}
+
+func (o *Orchestrator) newerPendingApprovalForTask(req approvalstore.Request) (approvalstore.Request, bool, error) {
+	if req.TaskID == "" || req.Tool == "" {
+		return approvalstore.Request{}, false, nil
+	}
+	requests, err := o.approvals.List()
+	if err != nil {
+		return approvalstore.Request{}, false, err
+	}
+	for _, candidate := range requests {
+		if candidate.ID == req.ID ||
+			candidate.TaskID != req.TaskID ||
+			candidate.Tool != req.Tool ||
+			candidate.Status != approvalstore.StatusPending {
+			continue
+		}
+		if approvalCreatedAfter(candidate, req) {
+			return candidate, true, nil
+		}
+	}
+	return approvalstore.Request{}, false, nil
+}
+
+func (o *Orchestrator) latestApprovalForTask(taskID, toolName, status string) (approvalstore.Request, bool, error) {
+	requests, err := o.approvals.List()
+	if err != nil {
+		return approvalstore.Request{}, false, err
+	}
+	var latest approvalstore.Request
+	for _, candidate := range requests {
+		if candidate.TaskID != taskID || candidate.Tool != toolName || candidate.Status != status {
+			continue
+		}
+		if latest.ID == "" || approvalCreatedAfter(candidate, latest) {
+			latest = candidate
+		}
+	}
+	return latest, latest.ID != "", nil
+}
+
+func approvalCreatedAfter(left, right approvalstore.Request) bool {
+	if left.CreatedAt.Equal(right.CreatedAt) {
+		return left.ID > right.ID
+	}
+	if right.CreatedAt.IsZero() {
+		return !left.CreatedAt.IsZero() || left.ID > right.ID
+	}
+	if left.CreatedAt.IsZero() {
+		return false
+	}
+	return left.CreatedAt.After(right.CreatedAt)
+}
+
+func approvalGrantedDuringCurrentRun(approval approvalstore.Request, t taskstore.Task) bool {
+	if t.StartedAt == nil {
+		return true
+	}
+	grantedAt := approval.UpdatedAt
+	if grantedAt.IsZero() {
+		grantedAt = approval.CreatedAt
+	}
+	if grantedAt.IsZero() {
+		return false
+	}
+	return !grantedAt.Before(*t.StartedAt)
+}
+
 func (o *Orchestrator) loadApprovalTask(req approvalstore.Request) (taskstore.Task, bool, error) {
 	if req.TaskID == "" {
 		return taskstore.Task{}, false, nil
@@ -4810,6 +5159,13 @@ func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, ca
 		}
 		return o.executeTaskRun(ctx, actor, raw)
 	}
+	if strings.HasPrefix(name, "workflow.") {
+		decision := o.policy.DecideNamed(actor, name, raw)
+		if !decision.Allowed || decision.NeedsApproval {
+			return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
+		}
+		return o.executeWorkflowTool(ctx, actor, name, raw)
+	}
 	t, ok := o.registry.Get(name)
 	if !ok {
 		result := toolExecution{Tool: name, Allowed: false, Error: "tool not registered"}
@@ -4855,7 +5211,8 @@ func (o *Orchestrator) handlePolicyDecision(ctx context.Context, actor, taskID, 
 
 func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw json.RawMessage) toolExecution {
 	var req struct {
-		Goal string `json:"goal"`
+		Goal   string                     `json:"goal"`
+		Target *taskstore.ExecutionTarget `json:"target,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: err.Error()}
@@ -4863,7 +5220,7 @@ func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw 
 	if req.Goal == "" {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: "goal is required"}
 	}
-	resultText, err := o.createTask(ctx, req.Goal)
+	resultText, err := o.CreateTaskWithTarget(ctx, req.Goal, req.Target)
 	result := toolExecution{Tool: "task.create", Allowed: true, Result: eventlog.Payload(map[string]any{"message": resultText})}
 	if err != nil {
 		result.Error = err.Error()

@@ -57,12 +57,39 @@ const mockTaskApi = async (page: Page) => {
     await route.fulfill({ json: { tasks } });
   });
   await page.route('**/api/approvals', async (route) => {
-    await route.fulfill({ json: { approvals: [] } });
+    await route.fulfill({ json: { approvals: [approvalFor(tasks[0].id)] } });
   });
   await page.route('**/api/events?**', async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
+  await page.route('**/api/agents', async (route) => {
+    await route.fulfill({ json: { agents: [] } });
+  });
+  await page.route('**/api/tasks/*/runs', async (route) => {
+    await route.fulfill({ json: { runs: [] } });
+  });
+  await page.route('**/api/tasks/*/diff', async (route) => {
+    await route.fulfill({
+      json: {
+        task_id: tasks[0].id,
+        raw_diff: '',
+        summary: { files: 0, additions: 0, deletions: 0 },
+        files: [],
+        generated_at: now
+      }
+    });
+  });
 };
+
+const approvalFor = (taskID: string) => ({
+  id: 'approval_20260426_150000_11111111',
+  task_id: taskID,
+  tool: 'git.merge_approved',
+  reason: 'merge reviewed task branch into repo root',
+  status: 'pending',
+  created_at: '2026-04-26T15:00:00Z',
+  updated_at: '2026-04-26T15:00:00Z'
+});
 
 
 test('chat mobile keeps typed draft text through layout changes', async ({ page }) => {
@@ -86,35 +113,63 @@ test('chat mobile keeps typed draft text through layout changes', async ({ page 
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 });
 
-test('tasks mobile keeps the queue visible after task selection', async ({ page }) => {
+test('tasks mobile switches between queue and selected task detail', async ({ page }) => {
   await mockTaskApi(page);
   await page.goto('/tasks');
 
-  const rows = page.locator('.task-row');
-  const queue = page.locator('.task-pane');
+	const rows = page.locator('.task-row');
+	const queue = page.locator('.task-pane');
+	const detail = page.locator('.workbench');
+  await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
+  await expect(page.getByText('Pending approvals')).toHaveCount(0);
   await expect(rows).toHaveCount(1);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
 
-  const queueBox = await queue.boundingBox();
-  const viewport = page.viewportSize();
-  expect(queueBox?.height ?? 0).toBeGreaterThan(0);
-  expect(queueBox?.height ?? 0).toBeLessThanOrEqual((viewport?.height ?? 844) * 0.56);
-
-  await rows.first().click();
-  await expect(queue).not.toHaveClass(/collapsed/);
-  await expect(rows).toHaveCount(1);
-  await expect(page.getByRole('button', { name: /Hide queue/ })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Task plan' })).toContainText('Reviewed plan');
-  await expect(page.getByRole('region', { name: 'Task plan' })).toContainText(
-    'Inspect mobile layout'
+  const queueMetrics = await page.evaluate(() => {
+    const navbar = document.querySelector('.navbar');
+    const heading = document.querySelector('.task-header h1');
+    const sync = document.querySelector('.task-header button');
+    return {
+      navbarBottom: navbar?.getBoundingClientRect().bottom ?? 0,
+      headingTop: heading?.getBoundingClientRect().top ?? 0,
+      syncTop: sync?.getBoundingClientRect().top ?? 0
+    };
+  });
+  expect(queueMetrics.headingTop, JSON.stringify(queueMetrics)).toBeGreaterThanOrEqual(
+    queueMetrics.navbarBottom
+  );
+  expect(queueMetrics.syncTop, JSON.stringify(queueMetrics)).toBeGreaterThanOrEqual(
+    queueMetrics.navbarBottom
   );
 
-  await page.getByRole('button', { name: /Hide queue/ }).click();
-  await expect(queue).toHaveClass(/collapsed/);
-  await expect(page.getByRole('button', { name: /Show queue/ })).toBeVisible();
-  await expect(rows.first()).not.toBeVisible();
+  await rows.first().click();
+  await expect(queue).not.toBeVisible();
+  await expect(detail).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Task actions', exact: true })).toContainText(
+    'Approve merge'
+  );
+  await expect(page.getByRole('button', { name: 'Back to queue' })).toBeVisible();
+  const backStyle = await page.locator('.back-to-queue').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      background: style.backgroundColor,
+      borderTopWidth: style.borderTopWidth
+    };
+  });
+  expect(backStyle.borderTopWidth).toBe('0px');
+  expect(backStyle.background).toBe('rgba(0, 0, 0, 0)');
+  await expect(page.locator('[aria-label="Worker runs"]')).not.toHaveAttribute('open', '');
+  await page.locator('[aria-label="Task plan"] summary').click();
+  await expect(page.locator('[aria-label="Task plan"]')).toContainText('Reviewed plan');
+  await expect(page.locator('[aria-label="Task plan"]')).toContainText(
+    'Inspect mobile layout'
+  );
+  await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
-  await page.getByRole('button', { name: /Show queue/ }).click();
-  await expect(queue).not.toHaveClass(/collapsed/);
+	await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toBeVisible();
 
@@ -125,24 +180,19 @@ test('tasks mobile keeps the queue visible after task selection', async ({ page 
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 });
 
-test('tasks mobile keeps command text while changing queue selection', async ({ page }) => {
+test('tasks mobile has no task chat composer and keeps new-task text stable', async ({ page }) => {
+  await mockTaskApi(page);
   await page.goto('/tasks');
-  await expect(page.getByRole('textbox', { name: 'Task command' })).toBeVisible();
+  await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
-  const input = page.getByRole('textbox', { name: 'Task command' });
-  await input.fill('');
-  await input.pressSequentially(typedMessage);
-  await expect(input).toHaveValue(typedMessage);
+  await page.locator('.target-create summary').click();
+  const goal = page.getByRole('textbox', { name: 'New task goal' });
+  await goal.fill('');
+  await goal.pressSequentially(typedMessage);
+  await expect(goal).toHaveValue(typedMessage);
 
-  const allButton = page.getByRole('button', { name: /All/ });
-  await allButton.click();
-  await expect(input).toHaveValue(typedMessage);
-
-  const firstTask = page.locator('.task-row').first();
-  if (await firstTask.count()) {
-    await firstTask.click();
-    await expect(input).toHaveValue(typedMessage);
-  }
+  await page.locator('.triage button').filter({ hasText: 'All' }).click();
+  await expect(page.locator('#new-task-goal')).toHaveValue(typedMessage);
 
   await expect(page.locator('.draft-preview')).toHaveCount(0);
   const overflow = await page.evaluate(() => ({

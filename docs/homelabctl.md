@@ -1,6 +1,6 @@
 # homelabctl
 
-`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, approval, event, chat, and terminal interactions.
+`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, workflow, approval, event, chat, and terminal interactions.
 
 Start `homelabd` in HTTP mode before using the CLI:
 
@@ -71,6 +71,7 @@ go run ./cmd/homelabctl task accept task_123
 go run ./cmd/homelabctl task reopen task_123 "needs rework"
 go run ./cmd/homelabctl task cancel task_123
 go run ./cmd/homelabctl task retry task_123 codex "retry from the current workspace state"
+go run ./cmd/homelabctl task delete task_123
 ```
 
 The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
@@ -86,22 +87,36 @@ go run ./cmd/homelabctl accept task_123
 go run ./cmd/homelabctl reopen task_123 "needs mobile UAT"
 go run ./cmd/homelabctl cancel task_123
 go run ./cmd/homelabctl retry task_123
+go run ./cmd/homelabctl delete task_123
 go run ./cmd/homelabctl runs task_123
 go run ./cmd/homelabctl diff task_123
 ```
 
 `task diff` and its top-level `diff` alias call `GET /tasks/{task_id}/diff`. Plain output starts with a compact file/addition/deletion summary and then prints the raw patch. Add `-json` to inspect the structured response used by the dashboard diff viewer.
 
-Some orchestrator actions, such as `delegate`, `ux`, `refresh`, `test`, and `delete`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
+Some orchestrator actions, such as `delegate`, `ux`, `refresh`, and `test`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
 
 ```bash
 go run ./cmd/homelabctl delegate task_123 to codex "finish docs and tests"
 go run ./cmd/homelabctl ux task_123 "run a UX pass with research, regression tests, and browser UAT"
 go run ./cmd/homelabctl refresh task_123
-go run ./cmd/homelabctl delete task_123
 ```
 
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
+
+## Workflow Commands
+
+Workflow commands use typed HTTP endpoints for durable LLM/tool workflows:
+
+```bash
+go run ./cmd/homelabctl workflow new "Research bundle: Find current sources"
+go run ./cmd/homelabctl workflow list
+go run ./cmd/homelabctl workflows
+go run ./cmd/homelabctl workflow show workflow_123
+go run ./cmd/homelabctl workflow run workflow_123
+```
+
+Use workflows when repeatable logic should be created, estimated, monitored, and invoked outside one chat turn. See `docs/workflows.md`.
 
 ## Remote Agent Commands
 
@@ -147,7 +162,7 @@ go run ./cmd/homelabctl events -limit 20 2026-04-26
 
 ## Terminal Commands
 
-The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page.
+The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page. Starting a session runs `./run.sh shell` first when the target working directory contains an executable `run.sh`; otherwise it opens the configured interactive shell.
 
 Create a shell session:
 
@@ -156,7 +171,13 @@ go run ./cmd/homelabctl terminal start
 go run ./cmd/homelabctl terminal start /home/lab/lab
 ```
 
-Stream session output:
+Show session metadata and reattach homelabd to an existing persistent terminal session:
+
+```bash
+go run ./cmd/homelabctl terminal show term_123
+```
+
+Stream session output. The underlying event stream emits SSE ids so clients can resume with `GET /terminal/sessions/{id}/events?after=N` or the `Last-Event-ID` header after a disconnect:
 
 ```bash
 go run ./cmd/homelabctl terminal stream term_123
@@ -196,6 +217,11 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks/{id}/reopen`
 - `POST /tasks/{id}/cancel`
 - `POST /tasks/{id}/retry`
+- `POST /tasks/{id}/delete`
+- `GET /workflows`
+- `POST /workflows`
+- `GET /workflows/{id}`
+- `POST /workflows/{id}/run`
 - `GET /agents`
 - `GET /agents/{id}`
 - `GET /approvals`
@@ -203,7 +229,8 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /approvals/{id}/deny`
 - `GET /events?date=YYYY-MM-DD&limit=N`
 - `POST /terminal/sessions`
-- `GET /terminal/sessions/{id}/events`
+- `GET /terminal/sessions/{id}`
+- `GET /terminal/sessions/{id}/events`, including optional `after=N` resume support
 - `POST /terminal/sessions/{id}/input`
 - `POST /terminal/sessions/{id}/signal`
 - `DELETE /terminal/sessions/{id}`

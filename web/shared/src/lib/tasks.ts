@@ -60,7 +60,7 @@ export const taskStateTransitions = (status = '') => {
     case 'conflict_resolution':
       return 'conflict resolution → running, ready for review, cancelled, or deleted';
     case 'awaiting_approval':
-      return 'awaiting approval → awaiting verification, conflict resolution, or blocked';
+      return 'awaiting approval → awaiting verification, conflict resolution, blocked, or running';
     case 'awaiting_verification':
       return 'awaiting verification → done or queued';
     case 'done':
@@ -110,7 +110,7 @@ export const taskSummaryTitle = (
   task: Pick<HomelabdTask, 'id' | 'title' | 'goal'>,
   maxLength = 96
 ) => {
-  const source = normalizedTaskText(task.goal) || normalizedTaskText(task.title) || task.id;
+  const source = normalizedTaskText(task.title) || normalizedTaskText(task.goal) || task.id;
   if (source.length <= maxLength) {
     return source;
   }

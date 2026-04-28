@@ -131,7 +131,7 @@
         "name": "homelabd",
         "type": "daemon",
         "command": "go",
-        "args": ["run", "./cmd/homelabd", "-mode", "matrix"],
+        "args": ["run", "./cmd/homelabd", "-mode", "http"],
         "working_dir": ".",
         "start_order": 20,
         "auto_start": false,
@@ -143,7 +143,7 @@
         "name": "dashboard",
         "type": "web",
         "command": "bun",
-        "args": ["run", "dev", "--", "--host", "0.0.0.0"],
+        "args": ["run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"],
         "working_dir": "web/dashboard",
         "start_order": 30,
         "auto_start": false,
@@ -163,15 +163,6 @@
         "shutdown_timeout_seconds": 15
       }
     ]
-  },
-  "matrix": {
-    "homeserver": "http://lab:8008",
-    "user": "${ELEMENT_BOT_USERNAME}",
-    "password": "${ELEMENT_BOT_PASSWORD}",
-    "room_name": "first",
-    "require_prefix": true,
-    "prefix": "!agent",
-    "sync_timeout_ms": 30000
   },
   "external_agents": {
     "codex": {

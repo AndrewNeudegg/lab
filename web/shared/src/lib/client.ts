@@ -7,14 +7,19 @@ import type {
   HomelabdClientOptions,
   HomelabdCreateTaskRequest,
   HomelabdCreateTaskResponse,
+  HomelabdCreateWorkflowRequest,
   HomelabdEventsResponse,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
   HomelabdTaskActionResponse,
   HomelabdTaskDiffResponse,
+  HomelabdTaskReopenRequest,
   HomelabdTaskRetryRequest,
   HomelabdTaskRunsResponse,
   HomelabdTasksResponse,
+  HomelabdWorkflow,
+  HomelabdWorkflowActionResponse,
+  HomelabdWorkflowsResponse,
   SupervisorSnapshot
 } from './types';
 
@@ -143,6 +148,36 @@ export const createHomelabdClient = (
         fetcher
       });
     },
+    createWorkflow(request: HomelabdCreateWorkflowRequest) {
+      return apiFetch<HomelabdWorkflowActionResponse>('/workflows', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
+    listWorkflows() {
+      return apiFetch<HomelabdWorkflowsResponse>('/workflows', {
+        baseUrl,
+        fetcher
+      });
+    },
+    getWorkflow(workflowId: string) {
+      return apiFetch<HomelabdWorkflow>(`/workflows/${encodeURIComponent(workflowId)}`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    runWorkflow(workflowId: string) {
+      return apiFetch<HomelabdWorkflowActionResponse>(
+        `/workflows/${encodeURIComponent(workflowId)}/run`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST'
+        }
+      );
+    },
     listAgents() {
       return apiFetch<HomelabdAgentsResponse>('/agents', {
         baseUrl,
@@ -161,6 +196,35 @@ export const createHomelabdClient = (
         fetcher
       });
     },
+    runTask(taskId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/run`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    reviewTask(taskId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/review`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    acceptTask(taskId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/accept`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    reopenTask(taskId: string, request: HomelabdTaskReopenRequest = {}) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/reopen`, {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
     cancelTask(taskId: string) {
       return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/cancel`, {
         baseUrl,
@@ -174,6 +238,27 @@ export const createHomelabdClient = (
         fetcher,
         method: 'POST',
         body: JSON.stringify(request)
+      });
+    },
+    deleteTask(taskId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/delete`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    approveApproval(approvalId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/approvals/${encodeURIComponent(approvalId)}/approve`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
+    denyApproval(approvalId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/approvals/${encodeURIComponent(approvalId)}/deny`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
       });
     },
     listApprovals() {

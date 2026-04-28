@@ -67,6 +67,8 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
+	mux.HandleFunc("/workflows", s.withCORS(s.handleWorkflows))
+	mux.HandleFunc("/workflows/", s.withCORS(s.handleWorkflow))
 	mux.HandleFunc("/agents", s.withCORS(s.handleAgents))
 	mux.HandleFunc("/agents/", s.withCORS(s.handleAgent))
 	mux.HandleFunc("/approvals", s.withCORS(s.handleApprovals))
@@ -277,6 +279,8 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 				_ = json.NewDecoder(req.Body).Decode(&in)
 			}
 			reply, err = s.Orchestrator.RetryTask(req.Context(), taskID, in.Backend, in.Instruction)
+		case "delete":
+			reply, err = s.Orchestrator.DeleteTask(req.Context(), taskID)
 		default:
 			writeError(rw, http.StatusNotFound, "unknown task action")
 			return
@@ -585,12 +589,7 @@ func (s *Server) handleTerminalSessions(rw http.ResponseWriter, req *http.Reques
 		writeError(rw, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(rw, http.StatusCreated, map[string]any{
-		"id":         session.id,
-		"shell":      session.shell,
-		"cwd":        session.cwd,
-		"created_at": session.created,
-	})
+	writeJSON(rw, http.StatusCreated, terminalSessionResponse(session))
 }
 
 func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request) {
@@ -608,11 +607,28 @@ func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request
 		writeJSON(rw, http.StatusOK, map[string]any{"closed": true})
 		return
 	}
+	if len(parts) == 1 && req.Method == http.MethodGet {
+		session, ok, err := s.terminals().getOrAttach(parts[0], terminalSize{Cols: defaultTerminalCols, Rows: defaultTerminalRows})
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !ok {
+			writeError(rw, http.StatusNotFound, "terminal session not found")
+			return
+		}
+		writeJSON(rw, http.StatusOK, terminalSessionResponse(session))
+		return
+	}
 	if len(parts) != 2 {
 		writeError(rw, http.StatusNotFound, "terminal action not found")
 		return
 	}
-	session, ok := s.terminals().get(parts[0])
+	session, ok, err := s.terminals().getOrAttach(parts[0], terminalSize{Cols: defaultTerminalCols, Rows: defaultTerminalRows})
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if !ok {
 		writeError(rw, http.StatusNotFound, "terminal session not found")
 		return
@@ -684,6 +700,16 @@ func (s *Server) handleTerminalSession(rw http.ResponseWriter, req *http.Request
 	}
 }
 
+func terminalSessionResponse(session *terminalSession) map[string]any {
+	return map[string]any{
+		"id":         session.id,
+		"shell":      session.shell,
+		"cwd":        session.cwd,
+		"created_at": session.created,
+		"persistent": session.tmux != "",
+	}
+}
+
 func normalizeTerminalPath(path string) string {
 	return strings.TrimPrefix(path, "/api")
 }
@@ -698,7 +724,7 @@ func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request,
 	rw.Header().Set("Cache-Control", "no-cache")
 	rw.Header().Set("Connection", "keep-alive")
 
-	events := session.subscribe()
+	events := session.subscribeSince(terminalEventStreamAfter(req))
 	defer session.unsubscribe(events)
 
 	fmt.Fprintf(rw, "event: ready\ndata: {}\n\n")
@@ -715,6 +741,9 @@ func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request,
 			if err != nil {
 				continue
 			}
+			if event.Seq > 0 {
+				fmt.Fprintf(rw, "id: %d\n", event.Seq)
+			}
 			fmt.Fprintf(rw, "event: %s\ndata: %s\n\n", event.Type, b)
 			flusher.Flush()
 			if event.Type == "exit" {
@@ -722,6 +751,19 @@ func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request,
 			}
 		}
 	}
+}
+
+func terminalEventStreamAfter(req *http.Request) int64 {
+	for _, value := range []string{req.URL.Query().Get("after"), req.Header.Get("Last-Event-ID")} {
+		if value == "" {
+			continue
+		}
+		after, err := strconv.ParseInt(value, 10, 64)
+		if err == nil && after > 0 {
+			return after
+		}
+	}
+	return 0
 }
 
 func writeJSON(rw http.ResponseWriter, status int, v any) {

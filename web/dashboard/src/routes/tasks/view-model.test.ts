@@ -3,6 +3,7 @@ import type { HomelabdApproval, HomelabdEvent, HomelabdTask } from '@homelab/sha
 import {
   buildWorkerTraceRuns,
   createTaskQueueView,
+  resolveTaskSyncSelection,
   selectTaskForQueue,
   type TaskFilter,
   type TaskQueueFilter
@@ -287,6 +288,55 @@ describe('task queue selection helper', () => {
 
     expect(selectTaskForQueue(tasks, [], 'active', 'all', '', 'task_review')).toBe('task_running');
     expect(selectTaskForQueue(tasks, [], 'attention', 'all', '', 'task_running')).toBe('task_review');
+  });
+
+  test('normalises stale selected task ids after a sync and refreshes the visible local task details', () => {
+    const tasks = [task('task_done', 'done', '04'), task('task_review', 'ready_for_review', '05')];
+    const result = resolveTaskSyncSelection({
+      tasks,
+      approvals: [],
+      taskFilter: 'attention',
+      queueFilter: 'all',
+      taskSearch: '',
+      selectedTaskId: 'task_done'
+    });
+
+    expect(result.selectedTaskId).toBe('task_review');
+    expect(result.selectedTask?.id).toBe('task_review');
+    expect(result.shouldLoadRuns).toBe(true);
+    expect(result.shouldLoadDiff).toBe(true);
+  });
+
+  test('keeps remote task sync from asking the local diff endpoint', () => {
+    const tasks = [remoteTask('task_desk', 'running', '04', 'desk')];
+    const result = resolveTaskSyncSelection({
+      tasks,
+      approvals: [],
+      taskFilter: 'active',
+      queueFilter: 'agent:desk',
+      taskSearch: '',
+      selectedTaskId: ''
+    });
+
+    expect(result.selectedTaskId).toBe('task_desk');
+    expect(result.shouldLoadRuns).toBe(true);
+    expect(result.shouldLoadDiff).toBe(false);
+  });
+
+  test('clears selected task detail refreshes when a sync leaves no visible task', () => {
+    const result = resolveTaskSyncSelection({
+      tasks: [task('task_done', 'done', '04')],
+      approvals: [],
+      taskFilter: 'active',
+      queueFilter: 'all',
+      taskSearch: '',
+      selectedTaskId: 'task_done'
+    });
+
+    expect(result.selectedTaskId).toBe('');
+    expect(result.selectedTask).toBeUndefined();
+    expect(result.shouldLoadRuns).toBe(false);
+    expect(result.shouldLoadDiff).toBe(false);
   });
 });
 

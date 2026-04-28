@@ -20,25 +20,35 @@ import (
 )
 
 const (
-	defaultEndpoint         = "https://api.duckduckgo.com/"
-	defaultAcademicEndpoint = "https://api.openalex.org/works"
-	defaultBraveEndpoint    = "https://api.search.brave.com/res/v1/web/search"
-	defaultTavilyEndpoint   = "https://api.tavily.com/search"
-	defaultTimeout          = 10 * time.Second
-	defaultUserAgent        = "Mozilla/5.0 (compatible; homelabd/1.0; +https://github.com/andrewneudegg/lab)"
+	defaultEndpoint             = "https://api.duckduckgo.com/"
+	defaultSearXNGDiscoveryURL  = "https://searx.space/data/instances.json"
+	defaultAcademicEndpoint     = "https://api.openalex.org/works"
+	defaultBraveEndpoint        = "https://api.search.brave.com/res/v1/web/search"
+	defaultTavilyEndpoint       = "https://api.tavily.com/search"
+	defaultTimeout              = 10 * time.Second
+	defaultUserAgent            = "Mozilla/5.0 (compatible; homelabd/1.0; +https://github.com/andrewneudegg/lab)"
+	maxSearXNGInstancesPerQuery = 6
+	searxNGDiscoveryTTL         = 6 * time.Hour
 )
 
 type Base struct {
-	Endpoint         string
-	AcademicEndpoint string
-	SearchProvider   string
-	BraveEndpoint    string
-	BraveAPIKey      string
-	TavilyEndpoint   string
-	TavilyAPIKey     string
-	Timeout          time.Duration
-	UserAgent        string
-	Client           *http.Client
+	Endpoint            string
+	SearXNGEndpoint     string
+	SearXNGInstances    []string
+	SearXNGDiscoveryURL string
+	AcademicEndpoint    string
+	SearchProvider      string
+	BraveEndpoint       string
+	BraveAPIKey         string
+	TavilyEndpoint      string
+	TavilyAPIKey        string
+	Timeout             time.Duration
+	UserAgent           string
+	Client              *http.Client
+}
+
+var defaultSearXNGInstances = []string{
+	"https://searxng.website/",
 }
 
 func Register(reg *tool.Registry, base Base) error {
@@ -59,10 +69,10 @@ type SearchTool struct {
 
 func (SearchTool) Name() string { return "internet.search" }
 func (SearchTool) Description() string {
-	return "Search the public internet or academic papers and return concise results with URLs. Supports Brave or Tavily via environment keys, with DuckDuckGo fallback."
+	return "Search the public internet through SearXNG, or search academic papers, and return multiple concise results with URLs. Supports explicit Brave, Tavily, or DuckDuckGo fallback overrides."
 }
 func (SearchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"source":{"type":"string","enum":["web","academic","all"],"description":"web searches public web snippets; academic searches scholarly papers; all returns both"},"provider":{"type":"string","enum":["auto","brave","tavily","duckduckgo"],"description":"optional web search backend override"},"max_results":{"type":"integer","minimum":1,"maximum":10}}}`)
+	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"source":{"type":"string","enum":["web","academic","all"],"description":"web searches public web snippets; academic searches scholarly papers; all returns both"},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"],"description":"optional web search backend override; auto defaults to SearXNG"},"max_results":{"type":"integer","minimum":1,"maximum":20},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"}}}`)
 }
 func (SearchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t SearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -71,6 +81,8 @@ func (t SearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMes
 		Source     string `json:"source"`
 		Provider   string `json:"provider"`
 		MaxResults int    `json:"max_results"`
+		TimeRange  string `json:"time_range"`
+		Language   string `json:"language"`
 	}
 	if err := json.Unmarshal(input, &req); err != nil {
 		return nil, err
@@ -81,36 +93,67 @@ func (t SearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMes
 	}
 	limit := req.MaxResults
 	if limit <= 0 {
-		limit = 5
+		limit = 8
 	}
-	if limit > 10 {
-		limit = 10
+	if limit > 20 {
+		limit = 20
 	}
 	source := strings.ToLower(strings.TrimSpace(req.Source))
 	if source == "" {
 		source = "web"
 	}
+	options := webSearchOptions{
+		Provider:  req.Provider,
+		TimeRange: req.TimeRange,
+		Language:  req.Language,
+	}
 	switch source {
 	case "web":
-		return t.searchWeb(ctx, req.Query, limit, req.Provider)
+		return t.searchWeb(ctx, req.Query, limit, options)
 	case "academic":
 		return t.searchAcademic(ctx, req.Query, limit)
 	case "all":
-		return t.searchAll(ctx, req.Query, limit, req.Provider)
+		return t.searchAll(ctx, req.Query, limit, options)
 	default:
 		return nil, fmt.Errorf("source must be web, academic, or all")
 	}
 }
 
-func (t SearchTool) searchWeb(ctx context.Context, query string, limit int, providerOverride string) (json.RawMessage, error) {
-	provider := t.base.webSearchProvider(providerOverride)
+type webSearchOptions struct {
+	Provider  string
+	TimeRange string
+	Language  string
+}
+
+func (t SearchTool) searchWeb(ctx context.Context, query string, limit int, options webSearchOptions) (json.RawMessage, error) {
+	provider := t.base.webSearchProvider(options.Provider)
+	forcedProvider := t.base.explicitWebSearchProvider(options.Provider)
 	switch provider {
+	case "searxng":
+		raw, err := t.searchSearXNG(ctx, query, limit, options)
+		if err == nil {
+			return raw, nil
+		}
+		if forcedProvider {
+			return nil, err
+		}
+		if t.base.braveAPIKey() != "" {
+			if raw, fallbackErr := t.searchBrave(ctx, query, limit); fallbackErr == nil {
+				return raw, nil
+			}
+		}
+		if t.base.tavilyAPIKey() != "" {
+			if raw, fallbackErr := t.searchTavily(ctx, query, limit); fallbackErr == nil {
+				return raw, nil
+			}
+		}
+		return t.searchDuckDuckGo(ctx, query, limit)
 	case "brave":
 		raw, err := t.searchBrave(ctx, query, limit)
 		if err == nil {
 			return raw, nil
 		}
-		if strings.TrimSpace(providerOverride) != "" {
+		if forcedProvider {
 			return nil, err
 		}
 	case "tavily":
@@ -118,13 +161,174 @@ func (t SearchTool) searchWeb(ctx context.Context, query string, limit int, prov
 		if err == nil {
 			return raw, nil
 		}
-		if strings.TrimSpace(providerOverride) != "" {
+		if forcedProvider {
 			return nil, err
 		}
 	case "duckduckgo":
 		return t.searchDuckDuckGo(ctx, query, limit)
 	}
-	return t.searchDuckDuckGo(ctx, query, limit)
+	return t.searchSearXNG(ctx, query, limit, options)
+}
+
+func (t SearchTool) searchSearXNG(ctx context.Context, query string, limit int, options webSearchOptions) (json.RawMessage, error) {
+	instances := t.searxNGInstances(ctx)
+	if len(instances) == 0 {
+		return nil, fmt.Errorf("no SearXNG instances configured or discovered")
+	}
+	if len(instances) > maxSearXNGInstancesPerQuery {
+		instances = instances[:maxSearXNGInstancesPerQuery]
+	}
+	minInstances := minInt(2, len(instances))
+	results := make([]map[string]any, 0, limit)
+	answers := make([]string, 0, 2)
+	suggestions := make([]string, 0, 4)
+	seenResults := map[string]bool{}
+	seenAnswers := map[string]bool{}
+	seenSuggestions := map[string]bool{}
+	var attempted []string
+	var successful []string
+	var errors []string
+
+	for i, instance := range instances {
+		attempted = append(attempted, instance)
+		pageResults, meta, err := t.fetchSearXNGPage(ctx, instance, query, 1, options)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", searxNGDisplayInstance(instance), err))
+		} else {
+			successful = append(successful, instance)
+			for _, answer := range meta.Answers {
+				addUniqueString(&answers, seenAnswers, answer)
+			}
+			for _, suggestion := range meta.Suggestions {
+				addUniqueString(&suggestions, seenSuggestions, suggestion)
+			}
+			for _, result := range pageResults {
+				if addSearchResult(&results, seenResults, result) && len(results) >= limit && i+1 >= minInstances {
+					break
+				}
+			}
+		}
+		if i+1 >= minInstances && len(results) >= limit {
+			break
+		}
+		if limit > 10 && err == nil && len(results) < limit {
+			pageResults, meta, err := t.fetchSearXNGPage(ctx, instance, query, 2, options)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("%s page 2: %v", searxNGDisplayInstance(instance), err))
+			} else {
+				for _, answer := range meta.Answers {
+					addUniqueString(&answers, seenAnswers, answer)
+				}
+				for _, suggestion := range meta.Suggestions {
+					addUniqueString(&suggestions, seenSuggestions, suggestion)
+				}
+				for _, result := range pageResults {
+					addSearchResult(&results, seenResults, result)
+					if len(results) >= limit {
+						break
+					}
+				}
+			}
+		}
+	}
+	if len(results) == 0 && len(answers) == 0 {
+		return nil, fmt.Errorf("searxng search returned no usable results: %s", strings.Join(errors, "; "))
+	}
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	out := map[string]any{
+		"query":               query,
+		"source":              "searxng",
+		"provider":            "searxng",
+		"results":             results,
+		"answers":             answers,
+		"suggestions":         suggestions,
+		"attempted_instances": attempted,
+		"instances":           successful,
+	}
+	if len(answers) > 0 {
+		out["answer"] = answers[0]
+	}
+	if len(errors) > 0 {
+		out["errors"] = errors
+	}
+	return json.Marshal(out)
+}
+
+type searxNGPageMeta struct {
+	Answers     []string
+	Suggestions []string
+}
+
+func (t SearchTool) fetchSearXNGPage(ctx context.Context, endpoint, query string, page int, options webSearchOptions) ([]map[string]any, searxNGPageMeta, error) {
+	raw, status, contentType, err := t.getSearXNG(ctx, endpoint, query, page, options, true)
+	if err != nil {
+		return nil, searxNGPageMeta{}, err
+	}
+	if status >= 200 && status < 300 {
+		results, meta, err := searxNGJSONResults(raw, endpoint, page)
+		if err == nil {
+			return results, meta, nil
+		}
+		if !strings.Contains(strings.ToLower(contentType), "html") && !looksLikeHTML(raw) {
+			return nil, searxNGPageMeta{}, err
+		}
+	}
+	if status != http.StatusForbidden && status != http.StatusNotAcceptable && status < 300 {
+		return nil, searxNGPageMeta{}, fmt.Errorf("search failed: HTTP %d", status)
+	}
+	raw, status, _, err = t.getSearXNG(ctx, endpoint, query, page, options, false)
+	if err != nil {
+		return nil, searxNGPageMeta{}, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, searxNGPageMeta{}, fmt.Errorf("search failed: HTTP %d", status)
+	}
+	return searxNGHTMLResults(raw, endpoint, page), searxNGPageMeta{}, nil
+}
+
+func (t SearchTool) getSearXNG(ctx context.Context, endpoint, query string, page int, options webSearchOptions, jsonFormat bool) ([]byte, int, string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	q := u.Query()
+	q.Set("q", query)
+	q.Set("pageno", fmt.Sprintf("%d", page))
+	if jsonFormat {
+		q.Set("format", "json")
+	}
+	timeRange := strings.ToLower(strings.TrimSpace(options.TimeRange))
+	if timeRange == "day" || timeRange == "month" || timeRange == "year" {
+		q.Set("time_range", timeRange)
+	}
+	if language := strings.TrimSpace(options.Language); language != "" {
+		q.Set("language", language)
+	}
+	u.RawQuery = q.Encode()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if jsonFormat {
+		httpReq.Header.Set("Accept", "application/json")
+	} else {
+		httpReq.Header.Set("Accept", "text/html,application/xhtml+xml")
+	}
+	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.8")
+	httpReq.Header.Set("User-Agent", t.base.userAgent())
+	resp, err := t.base.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, resp.StatusCode, resp.Header.Get("Content-Type"), err
+	}
+	return body, resp.StatusCode, resp.Header.Get("Content-Type"), nil
 }
 
 func (t SearchTool) searchDuckDuckGo(ctx context.Context, query string, limit int) (json.RawMessage, error) {
@@ -311,8 +515,8 @@ func (t SearchTool) searchAcademic(ctx context.Context, query string, limit int)
 	})
 }
 
-func (t SearchTool) searchAll(ctx context.Context, query string, limit int, providerOverride string) (json.RawMessage, error) {
-	webRaw, webErr := t.searchWeb(ctx, query, limit, providerOverride)
+func (t SearchTool) searchAll(ctx context.Context, query string, limit int, options webSearchOptions) (json.RawMessage, error) {
+	webRaw, webErr := t.searchWeb(ctx, query, limit, options)
 	academic, academicErr := t.openAlexResults(ctx, query, limit)
 	if webErr != nil && academicErr != nil {
 		return nil, fmt.Errorf("web search failed: %v; academic search failed: %v", webErr, academicErr)
@@ -346,7 +550,7 @@ func (ResearchTool) Description() string {
 	return "Run a bounded multi-query research fan-out: plan subqueries, search web and/or academic sources, fetch top pages, deduplicate evidence, and return a source bundle for the LLM to synthesize."
 }
 func (ResearchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","brave","tavily","duckduckgo"]},"max_searches":{"type":"integer","minimum":1,"maximum":8},"max_sources":{"type":"integer","minimum":1,"maximum":20},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
+	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"]},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web fan-out searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"},"max_searches":{"type":"integer","minimum":1,"maximum":8},"max_sources":{"type":"integer","minimum":1,"maximum":20},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
 }
 func (ResearchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -355,6 +559,8 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 		Source         string   `json:"source"`
 		Depth          string   `json:"depth"`
 		Provider       string   `json:"provider"`
+		TimeRange      string   `json:"time_range"`
+		Language       string   `json:"language"`
 		MaxSearches    int      `json:"max_searches"`
 		MaxSources     int      `json:"max_sources"`
 		Fetch          *bool    `json:"fetch"`
@@ -394,7 +600,8 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 
 	subqueries := researchSubqueries(req.Query, source, req.TrustedDomains, maxSearches)
 	search := SearchTool{base: t.base}
-	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, req.Provider, maxSources)
+	options := webSearchOptions{Provider: req.Provider, TimeRange: req.TimeRange, Language: req.Language}
+	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options, maxSources)
 	sources := candidates
 	if len(sources) > maxSources {
 		sources = sources[:maxSources]
@@ -437,7 +644,7 @@ type ResearchSource struct {
 	Truncated   bool   `json:"truncated,omitempty"`
 }
 
-func (t ResearchTool) collectResearchCandidates(ctx context.Context, search SearchTool, subqueries []string, source, provider string, maxSources int) ([]*ResearchSource, []string) {
+func (t ResearchTool) collectResearchCandidates(ctx context.Context, search SearchTool, subqueries []string, source string, options webSearchOptions, maxSources int) ([]*ResearchSource, []string) {
 	type searchJob struct {
 		query  string
 		source string
@@ -473,9 +680,9 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 			var raw json.RawMessage
 			var err error
 			if job.source == "web" {
-				raw, err = search.searchWeb(ctx, job.query, minInt(maxSources, 10), provider)
+				raw, err = search.searchWeb(ctx, job.query, minInt(maxSources, 20), options)
 			} else {
-				raw, err = search.searchAcademic(ctx, job.query, minInt(maxSources, 10))
+				raw, err = search.searchAcademic(ctx, job.query, minInt(maxSources, 20))
 			}
 			if err != nil {
 				results <- searchResult{err: fmt.Sprintf("%s search for %q failed: %v", job.source, job.query, err)}
@@ -855,6 +1062,24 @@ type duckDuckGoResponse struct {
 	RelatedTopics []duckDuckGoTopic `json:"RelatedTopics"`
 }
 
+type searxNGResponse struct {
+	Answers     []string        `json:"answers"`
+	Suggestions []string        `json:"suggestions"`
+	Corrections []string        `json:"corrections"`
+	Results     []searxNGResult `json:"results"`
+}
+
+type searxNGResult struct {
+	URL           string   `json:"url"`
+	Title         string   `json:"title"`
+	Content       string   `json:"content"`
+	Engine        string   `json:"engine"`
+	Engines       []string `json:"engines"`
+	Category      string   `json:"category"`
+	PublishedDate string   `json:"publishedDate"`
+	Score         float64  `json:"score"`
+}
+
 type duckDuckGoTopic struct {
 	Text     string            `json:"Text"`
 	FirstURL string            `json:"FirstURL"`
@@ -913,6 +1138,39 @@ type openAlexAuthor struct {
 	} `json:"author"`
 }
 
+type searxSpaceResponse struct {
+	Instances map[string]searxSpaceInstance `json:"instances"`
+}
+
+type searxSpaceInstance struct {
+	Analytics   bool   `json:"analytics"`
+	Main        bool   `json:"main"`
+	NetworkType string `json:"network_type"`
+	Generator   string `json:"generator"`
+	HTTP        struct {
+		StatusCode int `json:"status_code"`
+	} `json:"http"`
+	Timing struct {
+		Initial searxSpaceTiming `json:"initial"`
+		Search  searxSpaceTiming `json:"search"`
+	} `json:"timing"`
+}
+
+type searxSpaceTiming struct {
+	SuccessPercentage float64 `json:"success_percentage"`
+	All               struct {
+		Value float64 `json:"value"`
+	} `json:"all"`
+}
+
+type searxNGDiscoveryCache struct {
+	mu        sync.Mutex
+	fetchedAt time.Time
+	instances []string
+}
+
+var globalSearXNGDiscoveryCache searxNGDiscoveryCache
+
 func (b Base) httpClient() *http.Client {
 	if b.Client != nil {
 		return b.Client
@@ -927,21 +1185,26 @@ func (b Base) httpClient() *http.Client {
 func (b Base) webSearchProvider(override string) string {
 	provider := strings.ToLower(strings.TrimSpace(override))
 	switch provider {
-	case "brave", "tavily", "duckduckgo":
+	case "auto":
+		provider = ""
+	case "searxng", "brave", "tavily", "duckduckgo":
 		return provider
 	}
 	provider = strings.ToLower(strings.TrimSpace(firstNonEmpty(b.SearchProvider, os.Getenv("HOMELABD_SEARCH_PROVIDER"))))
 	switch provider {
-	case "brave", "tavily", "duckduckgo":
+	case "auto":
+		return "searxng"
+	case "searxng", "brave", "tavily", "duckduckgo":
 		return provider
 	}
-	if b.braveAPIKey() != "" {
-		return "brave"
+	return "searxng"
+}
+
+func (b Base) explicitWebSearchProvider(override string) bool {
+	if explicitProvider(override) {
+		return true
 	}
-	if b.tavilyAPIKey() != "" {
-		return "tavily"
-	}
-	return "duckduckgo"
+	return explicitProvider(firstNonEmpty(b.SearchProvider, os.Getenv("HOMELABD_SEARCH_PROVIDER")))
 }
 
 func (b Base) braveAPIKey() string {
@@ -958,6 +1221,203 @@ func (b Base) userAgent() string {
 		return defaultUserAgent
 	}
 	return userAgent
+}
+
+func (t SearchTool) searxNGInstances(ctx context.Context) []string {
+	configured := t.base.configuredSearXNGInstances()
+	if len(configured) > 0 {
+		return configured
+	}
+	instances := append([]string{}, defaultSearXNGInstances...)
+	if discovered := t.discoverSearXNGInstances(ctx); len(discovered) > 0 {
+		instances = append(instances, discovered...)
+	}
+	return normalizeSearXNGInstances(instances)
+}
+
+func (b Base) configuredSearXNGInstances() []string {
+	var values []string
+	if b.SearXNGEndpoint != "" {
+		values = append(values, b.SearXNGEndpoint)
+	}
+	values = append(values, b.SearXNGInstances...)
+	for _, value := range splitList(os.Getenv("HOMELABD_SEARXNG_INSTANCES")) {
+		values = append(values, value)
+	}
+	if endpoint := strings.TrimSpace(os.Getenv("HOMELABD_SEARXNG_ENDPOINT")); endpoint != "" {
+		values = append(values, endpoint)
+	}
+	return normalizeSearXNGInstances(values)
+}
+
+func (t SearchTool) discoverSearXNGInstances(ctx context.Context) []string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("HOMELABD_SEARXNG_DISCOVERY")), "0") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("HOMELABD_SEARXNG_DISCOVERY")), "false") {
+		return nil
+	}
+	discoveryURL := firstNonEmpty(t.base.SearXNGDiscoveryURL, os.Getenv("HOMELABD_SEARXNG_DISCOVERY_URL"), defaultSearXNGDiscoveryURL)
+	globalSearXNGDiscoveryCache.mu.Lock()
+	if time.Since(globalSearXNGDiscoveryCache.fetchedAt) < searxNGDiscoveryTTL && len(globalSearXNGDiscoveryCache.instances) > 0 {
+		instances := append([]string{}, globalSearXNGDiscoveryCache.instances...)
+		globalSearXNGDiscoveryCache.mu.Unlock()
+		return instances
+	}
+	globalSearXNGDiscoveryCache.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", t.base.userAgent())
+	resp, err := t.base.httpClient().Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil
+	}
+	var data searxSpaceResponse
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil
+	}
+	candidates := make([]searxSpaceCandidate, 0, len(data.Instances))
+	for endpoint, instance := range data.Instances {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" || !strings.HasPrefix(strings.ToLower(endpoint), "https://") {
+			continue
+		}
+		if instance.Analytics || instance.NetworkType != "normal" || instance.HTTP.StatusCode != http.StatusOK {
+			continue
+		}
+		success := instance.Timing.Search.SuccessPercentage
+		if success <= 0 {
+			continue
+		}
+		candidates = append(candidates, searxSpaceCandidate{
+			Endpoint: endpoint,
+			Success:  success,
+			Latency:  firstPositiveFloat(instance.Timing.Search.All.Value, instance.Timing.Initial.All.Value),
+			Main:     instance.Main,
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Success != candidates[j].Success {
+			return candidates[i].Success > candidates[j].Success
+		}
+		if candidates[i].Main != candidates[j].Main {
+			return candidates[i].Main
+		}
+		return candidates[i].Latency < candidates[j].Latency
+	})
+	instances := make([]string, 0, minInt(24, len(candidates)))
+	for _, candidate := range candidates {
+		instances = append(instances, candidate.Endpoint)
+		if len(instances) >= 24 {
+			break
+		}
+	}
+	instances = normalizeSearXNGInstances(instances)
+	if len(instances) > 0 {
+		globalSearXNGDiscoveryCache.mu.Lock()
+		globalSearXNGDiscoveryCache.fetchedAt = time.Now()
+		globalSearXNGDiscoveryCache.instances = append([]string{}, instances...)
+		globalSearXNGDiscoveryCache.mu.Unlock()
+	}
+	return instances
+}
+
+type searxSpaceCandidate struct {
+	Endpoint string
+	Success  float64
+	Latency  float64
+	Main     bool
+}
+
+func searxNGJSONResults(raw []byte, instance string, page int) ([]map[string]any, searxNGPageMeta, error) {
+	var api searxNGResponse
+	if err := json.Unmarshal(raw, &api); err != nil {
+		return nil, searxNGPageMeta{}, err
+	}
+	results := make([]map[string]any, 0, len(api.Results))
+	for index, item := range api.Results {
+		rawURL := strings.TrimSpace(item.URL)
+		title := compactWhitespace(html.UnescapeString(item.Title))
+		snippet := compactWhitespace(html.UnescapeString(item.Content))
+		if rawURL == "" && title == "" && snippet == "" {
+			continue
+		}
+		result := map[string]any{
+			"title":           firstNonEmpty(title, rawURL, snippet),
+			"snippet":         snippet,
+			"url":             rawURL,
+			"domain":          domainForURL(rawURL),
+			"provider":        "searxng",
+			"source_instance": searxNGDisplayInstance(instance),
+			"rank":            ((page - 1) * 10) + index + 1,
+		}
+		if item.Engine != "" {
+			result["engine"] = strings.TrimSpace(item.Engine)
+		}
+		if len(item.Engines) > 0 {
+			result["engines"] = cleanStringSlice(item.Engines)
+		}
+		if item.Category != "" {
+			result["category"] = strings.TrimSpace(item.Category)
+		}
+		if item.PublishedDate != "" {
+			result["published_date"] = strings.TrimSpace(item.PublishedDate)
+		}
+		if item.Score != 0 {
+			result["score"] = item.Score
+		}
+		results = append(results, result)
+	}
+	meta := searxNGPageMeta{
+		Answers:     cleanStringSlice(api.Answers),
+		Suggestions: append(cleanStringSlice(api.Suggestions), cleanStringSlice(api.Corrections)...),
+	}
+	return results, meta, nil
+}
+
+func searxNGHTMLResults(raw []byte, instance string, page int) []map[string]any {
+	baseURL, _ := url.Parse(instance)
+	matches := searxNGHTMLResultRE.FindAllSubmatch(raw, -1)
+	results := make([]map[string]any, 0, len(matches))
+	for index, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		body := string(match[1])
+		link := searxNGHTMLLinkRE.FindStringSubmatch(body)
+		if len(link) < 3 {
+			continue
+		}
+		rawURL := cleanSearXNGResultURL(html.UnescapeString(link[1]), baseURL)
+		title := htmlToText(link[2])
+		snippet := ""
+		if content := searxNGHTMLContentRE.FindStringSubmatch(body); len(content) >= 2 {
+			snippet = htmlToText(content[1])
+		}
+		if rawURL == "" && title == "" && snippet == "" {
+			continue
+		}
+		results = append(results, map[string]any{
+			"title":           firstNonEmpty(title, rawURL, snippet),
+			"snippet":         snippet,
+			"url":             rawURL,
+			"domain":          domainForURL(rawURL),
+			"provider":        "searxng",
+			"source_instance": searxNGDisplayInstance(instance),
+			"rank":            ((page - 1) * 10) + index + 1,
+		})
+	}
+	return results
 }
 
 func (r duckDuckGoResponse) results(limit int) []map[string]string {
@@ -1016,10 +1476,13 @@ func titleFromText(text string) string {
 }
 
 var (
-	htmlCommentRE = regexp.MustCompile(`(?is)<!--.*?-->`)
-	htmlDropRE    = regexp.MustCompile(`(?is)<(script|style|noscript|svg|canvas|template|iframe|head|nav|footer|form|button)\b[^>]*>.*?</\s*(script|style|noscript|svg|canvas|template|iframe|head|nav|footer|form|button)\s*>`)
-	htmlTagRE     = regexp.MustCompile(`(?is)<[^>]+>`)
-	htmlTitleRE   = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
+	htmlCommentRE        = regexp.MustCompile(`(?is)<!--.*?-->`)
+	htmlDropRE           = regexp.MustCompile(`(?is)<(script|style|noscript|svg|canvas|template|iframe|head|nav|footer|form|button)\b[^>]*>.*?</\s*(script|style|noscript|svg|canvas|template|iframe|head|nav|footer|form|button)\s*>`)
+	htmlTagRE            = regexp.MustCompile(`(?is)<[^>]+>`)
+	htmlTitleRE          = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
+	searxNGHTMLResultRE  = regexp.MustCompile(`(?is)<article\b[^>]*class=["'][^"']*\bresult\b[^"']*["'][^>]*>(.*?)</article>`)
+	searxNGHTMLLinkRE    = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>`)
+	searxNGHTMLContentRE = regexp.MustCompile(`(?is)<p\b[^>]*class=["'][^"']*\bcontent\b[^"']*["'][^>]*>(.*?)</p>`)
 )
 
 func extractTitle(raw string) string {
@@ -1088,6 +1551,183 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func explicitProvider(provider string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	return provider != "" && provider != "auto"
+}
+
+func firstPositiveFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 999
+}
+
+func splitList(value string) []string {
+	value = strings.NewReplacer("\n", ",", "\t", ",", " ", ",", ";", ",").Replace(value)
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func normalizeSearXNGInstances(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		endpoint := normalizeSearXNGEndpoint(value)
+		if endpoint == "" || seen[endpoint] {
+			continue
+		}
+		seen[endpoint] = true
+		out = append(out, endpoint)
+	}
+	return out
+}
+
+func normalizeSearXNGEndpoint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return ""
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	path := strings.TrimRight(u.Path, "/")
+	if path == "" {
+		path = "/search"
+	} else if !strings.HasSuffix(path, "/search") {
+		path += "/search"
+	}
+	u.Path = path
+	return u.String()
+}
+
+func searxNGDisplayInstance(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return strings.TrimSpace(endpoint)
+	}
+	return u.Host
+}
+
+func cleanSearXNGResultURL(raw string, baseURL *url.URL) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.HasPrefix(raw, "#") {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if baseURL != nil {
+		u = baseURL.ResolveReference(u)
+	}
+	if u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	if baseURL != nil && strings.EqualFold(u.Host, baseURL.Host) {
+		if target := u.Query().Get("url"); target != "" {
+			return cleanSearXNGResultURL(target, nil)
+		}
+		return ""
+	}
+	u.Fragment = ""
+	return u.String()
+}
+
+func cleanStringSlice(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = compactWhitespace(html.UnescapeString(value))
+		key := strings.ToLower(value)
+		if value == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func looksLikeHTML(raw []byte) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return strings.HasPrefix(trimmed, "<!doctype") ||
+		strings.HasPrefix(trimmed, "<html") ||
+		strings.HasPrefix(trimmed, "<body") ||
+		strings.HasPrefix(trimmed, "<article")
+}
+
+func addUniqueString(values *[]string, seen map[string]bool, value string) {
+	value = compactWhitespace(html.UnescapeString(value))
+	key := strings.ToLower(value)
+	if value == "" || seen[key] {
+		return
+	}
+	seen[key] = true
+	*values = append(*values, value)
+}
+
+func addSearchResult(results *[]map[string]any, seen map[string]bool, result map[string]any) bool {
+	key := searchResultKey(result)
+	if key == "" || seen[key] {
+		return false
+	}
+	seen[key] = true
+	*results = append(*results, result)
+	return true
+}
+
+func searchResultKey(result map[string]any) string {
+	rawURL := stringFromAny(result["url"])
+	if normalized := normalizeResultURL(rawURL); normalized != "" {
+		return normalized
+	}
+	title := strings.ToLower(firstNonEmpty(stringFromAny(result["title"]), stringFromAny(result["snippet"])))
+	return compactWhitespace(title)
+}
+
+func normalizeResultURL(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Fragment = ""
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	q := u.Query()
+	for key := range q {
+		lower := strings.ToLower(key)
+		if strings.HasPrefix(lower, "utm_") ||
+			lower == "fbclid" ||
+			lower == "gclid" ||
+			lower == "dclid" ||
+			lower == "mc_cid" ||
+			lower == "mc_eid" {
+			q.Del(key)
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func stringFromMap(values map[string]any, keys ...string) string {

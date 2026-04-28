@@ -9,14 +9,14 @@
 - `ready_for_review`: local work is staged in the task worktree, or a remote agent result has been recorded for human acknowledgement. Local next transition: `ready_for_review -> awaiting_approval` when checks and premerge pass, `ready_for_review -> conflict_resolution` when the task branch cannot reconcile with current `main`, or `ready_for_review -> blocked` for other failures. Remote next transition: `ready_for_review -> awaiting_verification` when review acknowledges the remote result.
 - `conflict_resolution`: a local task branch conflicts with current `main` and needs manual fixes in the task worktree. Next transition: `conflict_resolution -> running` after delegation, `conflict_resolution -> ready_for_review` after manual resolution, or deletion/cancellation.
 - `blocked`: review or execution stopped and no worker should be running automatically. Next transition: `blocked -> running` only after an explicit `delegate`, `run`, or `reopen`.
-- `awaiting_approval`: checks and premerge passed and a merge approval exists. When approval is triggered, the Orchestrator first tries to reconcile the local task branch with current `main`. Next transition: `awaiting_approval -> awaiting_verification` after approved merge, `awaiting_approval -> conflict_resolution` if auto-rebase fails, or `awaiting_approval -> blocked` for other merge failures.
+- `awaiting_approval`: checks and premerge passed and a merge approval exists. When approval is triggered, the Orchestrator first tries to reconcile the local task branch with current `main`. Next transition: `awaiting_approval -> awaiting_verification` after approved merge, `awaiting_approval -> conflict_resolution` if auto-rebase fails, `awaiting_approval -> blocked` for other merge failures, or `awaiting_approval -> running` when an operator explicitly retries or delegates more work. Starting that new run marks the old pending approvals stale.
 - `awaiting_verification`: local task merge has landed in the main repo, or remote task review acknowledged the remote result. The human still needs to verify the running app or the named remote machine/directory. Next transition: `awaiting_verification -> done` via `accept`, or `awaiting_verification -> queued` via `reopen`.
 - `done`: the human accepted the merged result. Terminal state.
 - `cancelled`: work was intentionally stopped. Terminal state.
 
 ## Planning Gate
 
-Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is also visible in the `/tasks` selected-task pane above the original input. The default planning gate derives the plan from task metadata, so local tasks, remote tasks, and legacy graph phases get distinct summaries, steps, and risks. It records:
+Every task record carries a durable reviewed plan before execution starts. The plan is stored in the task JSON under `plan` and is visible in the `/tasks` selected-task pane as a collapsible reviewed-plan section. The default planning gate derives the plan from task metadata, so local tasks, remote tasks, and legacy graph phases get distinct summaries, steps, and risks. It records:
 
 - a concise task-, phase-, or target-specific plan summary
 - ordered execution steps for the current task, legacy graph phase, or execution target
@@ -31,13 +31,13 @@ Task records include run lifecycle timestamps. `started_at` is set when a task e
 
 The review gate must not silently restart a worker. If checks or diff validation fail, the task stays `blocked`; if branch reconciliation fails, it moves to `conflict_resolution`. In either case, the failure reason is stored in the task result and task activity. A human or orchestrator command must explicitly choose the next action.
 
-Approvals are single-use decisions tied to the task state at the time they were requested. A merge approval for a task that is no longer `awaiting_approval` is stale and must not run. When a merge approval is approved, the Orchestrator automatically merges current `main` into the task worktree before executing the approved merge. If that reconciliation conflicts, the approval is marked `failed`, the task moves to `conflict_resolution`, and the operator gets conflict-resolution actions instead of a raw HTTP error.
+Approvals are single-use decisions tied to the task state at the time they were requested. A merge approval for a task that is no longer `awaiting_approval` is stale and must not run. Retrying, delegating, assigning, reopening, refreshing, cancelling, or accepting a task stales its pending approvals; a later review also stales older pending approvals before requesting a new merge approval. If more than one pending merge approval exists for legacy data, only the newest one can run. When a merge approval is approved, the Orchestrator automatically merges current `main` into the task worktree before executing the approved merge. If that reconciliation conflicts, the approval is marked `failed`, the task moves to `conflict_resolution`, and the operator gets conflict-resolution actions instead of a raw HTTP error.
 
 ## Task Records
 
-New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.
+New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. The durable `title` is generated through the LLM-backed `text.summarize` tool with an 84-character task-pane limit, while `goal` preserves the full user input for execution context. If the summariser cannot run, task creation continues with a clipped extractive fallback title. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.
 
-Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result.
+Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `delegate <task_id> to codex` to use an external worker, and `accept <task_id>` after verifying the merged result. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat. Long diagnostics such as worker output, activity, the reviewed plan, and the original prompt are collapsible so they remain available without dominating the decision flow.
 
 Older task records may still contain graph metadata from the previous workflow:
 
@@ -70,6 +70,7 @@ go run ./cmd/homelabctl task review <task_id>
 go run ./cmd/homelabctl approve <approval_id>
 go run ./cmd/homelabctl task accept <task_id>
 go run ./cmd/homelabctl task reopen <task_id> "needs rework"
+go run ./cmd/homelabctl task delete <task_id>
 ```
 
 See `docs/homelabctl.md` for the full CLI command surface and the rule that new operator workflows must keep the CLI up to date.
@@ -91,6 +92,8 @@ On startup, `homelabd` scans durable task records. Any task still marked `runnin
 - tasks assigned to `UXAgent` restart through the built-in UX loop so UI research, tests, and browser-UAT expectations are preserved
 - tasks assigned to `OrchestratorAgent` prefer `codex` when it is configured, otherwise they use `CoderAgent`
 
+If a legacy task is still marked `running` but already has a granted `git.merge_approved` approval, recovery treats the merge as landed and moves the task to `awaiting_verification` instead of starting another worker.
+
 Remote tasks are excluded from local restart recovery. A remote task stays in its target queue for the selected `homelab-agent`, and a running remote task is completed or failed only by that agent's completion callback.
 
 Recovery decisions are written to the JSONL event log as `task.recovery.*` events and to the daemon logs with structured `slog` fields including task ID, short ID, title, workspace, strategy, and backend.
@@ -99,7 +102,7 @@ Recovery decisions are written to the JSONL event log as `task.recovery.*` event
 
 When a task changes user-facing behavior, commands, UI, configuration, tools, or workflow, the worker should update relevant docs or help text in the same patch.
 
-When an external coding worker finishes a local task, `homelabd` automatically runs the review gate. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, and only then creates a merge approval. A task branch that cannot merge cleanly moves to `conflict_resolution` with an explicit premerge failure; approval is not created, no worker is restarted implicitly, and the main repository must not be left in a conflicted state.
+When an external coding worker finishes a local task, `homelabd` automatically runs the review gate. The review gate runs project checks, verifies the task branch can merge cleanly into the current repository state, stales any older pending approvals for the task, and only then creates a merge approval. A task branch that cannot merge cleanly moves to `conflict_resolution` with an explicit premerge failure; approval is not created, no worker is restarted implicitly, and the main repository must not be left in a conflicted state.
 
 When a remote agent finishes, `homelabd` records the remote result and moves the task to `ready_for_review`. Reviewing a remote task acknowledges the result and moves it to `awaiting_verification`; it does not run local project checks, compare local and remote `HEAD`, create a merge approval, or touch the control-plane checkout.
 

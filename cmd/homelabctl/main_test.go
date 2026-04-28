@@ -62,6 +62,12 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantPath:   "/tasks/task_123/cancel",
 		},
 		{
+			name:       "task delete",
+			args:       []string{"delete", "task_123"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/tasks/task_123/delete",
+		},
+		{
 			name:       "task retry with backend",
 			args:       []string{"retry", "task_123", "codex", "inspect", "again"},
 			wantMethod: http.MethodPost,
@@ -81,6 +87,19 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantMethod: http.MethodGet,
 			wantPath:   "/events",
 			wantQuery:  "date=2026-04-26&limit=2",
+		},
+		{
+			name:       "workflow create",
+			args:       []string{"workflow", "new", "Research", "bundle:", "Find", "sources"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/workflows",
+			wantBody:   map[string]any{"name": "Research bundle", "goal": "Find sources"},
+		},
+		{
+			name:       "workflow run",
+			args:       []string{"workflow", "run", "workflow_123"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/workflows/workflow_123/run",
 		},
 	}
 
@@ -202,6 +221,17 @@ func TestUXShortcutSendsChatCommand(t *testing.T) {
 	}
 }
 
+func TestParseWorkflowCreateArgs(t *testing.T) {
+	name, goal := parseWorkflowCreateArgs([]string{"Research", "bundle:", "Find", "sources"})
+	if name != "Research bundle" || goal != "Find sources" {
+		t.Fatalf("parseWorkflowCreateArgs = (%q, %q), want Research bundle / Find sources", name, goal)
+	}
+	name, goal = parseWorkflowCreateArgs([]string{"Watch", "deploy"})
+	if name != "Watch deploy" || goal != "Watch deploy" {
+		t.Fatalf("parseWorkflowCreateArgs = (%q, %q), want same name and goal", name, goal)
+	}
+}
+
 func TestTaskDiffCommandPrintsRawPatch(t *testing.T) {
 	var observed observedRequest
 	stdout, stderr, code := runAgainstServer(t, []string{"diff", "task_123"}, "", func(rw http.ResponseWriter, req *http.Request) {
@@ -298,6 +328,12 @@ func TestTerminalCommandsUseHTTPAPI(t *testing.T) {
 			wantBody:   map[string]any{"data": "ls -la\n"},
 		},
 		{
+			name:       "show",
+			args:       []string{"terminal", "show", "term_1"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/terminal/sessions/term_1",
+		},
+		{
 			name:       "input",
 			args:       []string{"terminal", "input", "term_1", "\u0003"},
 			wantMethod: http.MethodPost,
@@ -370,7 +406,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"tasks": []map[string]any{{"id": "task_1", "status": "queued"}}})
 		case "/tasks/task_1":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"id": "task_1", "status": "queued"})
-		case "/tasks/task_1/run", "/tasks/task_1/review", "/tasks/task_1/accept", "/tasks/task_1/reopen", "/tasks/task_1/cancel":
+		case "/tasks/task_1/run", "/tasks/task_1/review", "/tasks/task_1/accept", "/tasks/task_1/reopen", "/tasks/task_1/cancel", "/tasks/task_1/delete":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "ok"})
 		case "/tasks/task_1/runs":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"runs": []any{}})
@@ -408,6 +444,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		{"accept", "task_1"},
 		{"reopen", "task_1", "needs", "work"},
 		{"cancel", "task_1"},
+		{"delete", "task_1"},
 		{"agent", "list"},
 		{"agent", "show", "desk"},
 		{"approvals"},
@@ -432,6 +469,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		"POST /tasks/task_1/accept",
 		"POST /tasks/task_1/reopen",
 		"POST /tasks/task_1/cancel",
+		"POST /tasks/task_1/delete",
 		"GET /agents",
 		"GET /agents/desk",
 		"GET /approvals",

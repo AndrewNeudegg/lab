@@ -2468,7 +2468,7 @@ func (o *Orchestrator) ensureTaskPlan(ctx context.Context, t *taskstore.Task) bo
 		return false
 	}
 	now := time.Now().UTC()
-	plan := defaultTaskPlan(*t, now)
+	plan := defaultTaskPlan(*t, now, o.taskPlanContext(ctx, *t))
 	t.Plan = &plan
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.plan.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(plan)})
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.plan.reviewed", Actor: "ReviewerAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"status": plan.Status, "review": plan.Review})})
@@ -2479,7 +2479,9 @@ func taskPlanReviewed(plan *taskstore.TaskPlan) bool {
 	return plan != nil && strings.TrimSpace(plan.Summary) != "" && len(plan.Steps) > 0 && strings.EqualFold(plan.Status, "reviewed") && !legacyDefaultTaskPlan(plan)
 }
 
-const taskSpecificDefaultPlanReview = "OrchestratorAgent generated this task-specific default plan and ReviewerAgent checked it includes the required execution stages before execution."
+const repoAwareTaskPlanReview = "OrchestratorAgent inspected repository context, generated a task-specific plan inside the default execution stages, and ReviewerAgent checked it before execution."
+
+const legacyTaskSpecificDefaultPlanReview = "OrchestratorAgent generated this task-specific default plan and ReviewerAgent checked it includes the required execution stages before execution."
 
 const legacyDefaultTaskPlanReview = "OrchestratorAgent generated this default plan and ReviewerAgent checked it includes inspect, change, validate, and handoff stages before execution."
 
@@ -2488,42 +2490,367 @@ func legacyDefaultTaskPlan(plan *taskstore.TaskPlan) bool {
 		return false
 	}
 	review := strings.TrimSpace(plan.Review)
-	return review == legacyDefaultTaskPlanReview || (strings.Contains(review, "generated this default plan") && strings.Contains(review, "inspect, change, validate, and handoff"))
+	return review == legacyDefaultTaskPlanReview ||
+		review == legacyTaskSpecificDefaultPlanReview ||
+		(strings.Contains(review, "generated this default plan") && strings.Contains(review, "inspect, change, validate, and handoff")) ||
+		strings.Contains(review, "generated this task-specific default plan")
 }
 
-func defaultTaskPlan(t taskstore.Task, now time.Time) taskstore.TaskPlan {
+func defaultTaskPlan(t taskstore.Task, now time.Time, planContext taskPlanContext) taskstore.TaskPlan {
 	reviewedAt := now
 	return taskstore.TaskPlan{
 		Status:     "reviewed",
-		Summary:    taskPlanSummary(t),
-		Steps:      taskPlanSteps(t),
-		Risks:      taskPlanRisks(t),
-		Review:     taskSpecificDefaultPlanReview,
+		Summary:    taskPlanSummary(t, planContext),
+		Steps:      taskPlanSteps(t, planContext),
+		Risks:      taskPlanRisks(t, planContext),
+		Review:     repoAwareTaskPlanReview,
 		CreatedAt:  now,
 		ReviewedAt: &reviewedAt,
 	}
 }
 
-func taskPlanSummary(t taskstore.Task) string {
+type taskPlanContext struct {
+	Files    []string
+	Docs     []string
+	Tests    []string
+	Commands []string
+}
+
+func (c taskPlanContext) Empty() bool {
+	return len(c.Files) == 0 && len(c.Docs) == 0 && len(c.Tests) == 0 && len(c.Commands) == 0
+}
+
+func (o *Orchestrator) taskPlanContext(ctx context.Context, t taskstore.Task) taskPlanContext {
+	if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
+		return taskPlanContext{}
+	}
+	root := strings.TrimSpace(t.Workspace)
+	if root == "" || !pathExists(root) {
+		root = strings.TrimSpace(o.cfg.Repo.Root)
+	}
+	if root == "" || !pathExists(root) {
+		return taskPlanContext{}
+	}
+	terms := taskPlanSearchTerms(t)
+	if len(terms) == 0 {
+		return taskPlanContext{}
+	}
+	scores := map[string]int{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if entry.IsDir() {
+			if skipTaskPlanDir(root, path, entry.Name(), o.cfg.Repo.WorkspaceRoot, o.cfg.DataDir) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		score := scoreTaskPlanPath(rel, "", terms)
+		info, err := entry.Info()
+		if err == nil && planTextFile(rel, info.Size()) {
+			if b, err := os.ReadFile(path); err == nil {
+				score += scoreTaskPlanPath(rel, strings.ToLower(string(b)), terms)
+			}
+		}
+		if score > 0 {
+			scores[rel] = score
+		}
+		return nil
+	})
+	if err != nil {
+		o.log().Warn("task plan repository scan failed", "task_id", t.ID, "error", err)
+	}
+	planContext := taskPlanContext{
+		Files: rankedTaskPlanPaths(scores, func(path string) bool {
+			return !taskPlanDocPath(path) && !taskPlanTestPath(path)
+		}, 4),
+		Docs: rankedTaskPlanPaths(scores, taskPlanDocPath, 3),
+		Tests: rankedTaskPlanPaths(scores, func(path string) bool {
+			return taskPlanTestPath(path)
+		}, 3),
+	}
+	planContext.Commands = taskPlanValidationCommands(planContext)
+	return planContext
+}
+
+func pathExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func skipTaskPlanDir(root, path, name, workspaceRoot, dataDir string) bool {
+	switch name {
+	case ".git", "node_modules", "dist", "build", ".svelte-kit", "coverage", ".cache", "vendor":
+		return true
+	}
+	for _, external := range []string{workspaceRoot, dataDir} {
+		if external == "" {
+			continue
+		}
+		rel, err := filepath.Rel(root, external)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			continue
+		}
+		externalInRoot := filepath.Join(root, rel)
+		if samePath(path, externalInRoot) {
+			return true
+		}
+	}
+	return false
+}
+
+func samePath(a, b string) bool {
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return aa == bb
+}
+
+func planTextFile(path string, size int64) bool {
+	if size <= 0 || size > 128*1024 {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".go", ".ts", ".js", ".mjs", ".svelte", ".css", ".html", ".md", ".json", ".nix", ".sh", ".yaml", ".yml", ".toml", ".txt":
+		return true
+	default:
+		return false
+	}
+}
+
+func scoreTaskPlanPath(path, content string, terms []string) int {
+	lowerPath := strings.ToLower(path)
+	score := 0
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" {
+			continue
+		}
+		if strings.Contains(lowerPath, term) {
+			if strings.Contains(term, "/") || strings.Contains(term, ".") {
+				score += 14
+			} else {
+				score += 7
+			}
+		}
+		if content != "" && strings.Contains(content, term) {
+			if strings.Contains(term, " ") || strings.Contains(term, ".") {
+				score += 8
+			} else {
+				score += 3
+			}
+		}
+	}
+	if score > 0 && strings.HasPrefix(path, "docs/") {
+		score += 2
+	}
+	if score > 0 && taskPlanTestPath(path) {
+		score += 2
+	}
+	return score
+}
+
+func taskPlanSearchTerms(t taskstore.Task) []string {
+	var raw strings.Builder
+	raw.WriteString(t.Title)
+	raw.WriteByte(' ')
+	raw.WriteString(t.Goal)
+	for _, criterion := range t.AcceptanceCriteria {
+		raw.WriteByte(' ')
+		raw.WriteString(criterion.Description)
+	}
+	text := strings.ToLower(raw.String())
+	seen := map[string]bool{}
+	var terms []string
+	add := func(term string) {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" || seen[term] {
+			return
+		}
+		seen[term] = true
+		terms = append(terms, term)
+	}
+	for _, token := range strings.FieldsFunc(text, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '/' && r != '.' && r != '_' && r != '-'
+	}) {
+		token = strings.Trim(token, ".,:;()[]{}'\"`")
+		if taskPlanStopWord(token) {
+			continue
+		}
+		add(token)
+		if len(token) > 5 && strings.HasSuffix(token, "s") {
+			add(strings.TrimSuffix(token, "s"))
+		}
+	}
+	if strings.Contains(text, "task plan") || strings.Contains(text, "planner") || strings.Contains(text, "planning") || strings.Contains(text, " plan") {
+		add("taskplan")
+		add("task plan")
+		add("ensuretaskplan")
+		add("defaulttaskplan")
+		add("taskplansteps")
+		add("planning gate")
+	}
+	if strings.Contains(text, "agent") || strings.Contains(text, "orchestrator") {
+		add("orchestratoragent")
+		add("pkg/agent")
+		add("prompts/orchestrator")
+	}
+	if strings.Contains(text, "repo") || strings.Contains(text, "repository") {
+		add("repo.search")
+		add("repo.read")
+		add("repository agent tools")
+		add("pkg/tools/repo")
+	}
+	if strings.Contains(text, "internet") || strings.Contains(text, "online") || strings.Contains(text, "research") {
+		add("internet.search")
+		add("internet.research")
+	}
+	if strings.Contains(text, "dashboard") || strings.Contains(text, "ui") || strings.Contains(text, "browser") {
+		add("web/dashboard")
+		add("uat:tasks")
+		add("svelte")
+	}
+	if strings.Contains(text, "homelabctl") || strings.Contains(text, "cli") || strings.Contains(text, "command") {
+		add("cmd/homelabctl")
+		add("docs/homelabctl.md")
+	}
+	if len(terms) > 32 {
+		return terms[:32]
+	}
+	return terms
+}
+
+func taskPlanStopWord(token string) bool {
+	if len(token) < 4 {
+		return true
+	}
+	switch token {
+	case "about", "after", "also", "because", "before", "best", "build", "change", "completion", "context", "default", "does", "doing", "done", "find", "fine", "from", "have", "into", "like", "look", "looks", "make", "mostly", "need", "possible", "really", "same", "seem", "seems", "sensible", "some", "task", "that", "their", "them", "then", "there", "this", "want", "within", "with", "work", "would":
+		return true
+	default:
+		return false
+	}
+}
+
+func rankedTaskPlanPaths(scores map[string]int, include func(string) bool, limit int) []string {
+	type scoredPath struct {
+		Path  string
+		Score int
+	}
+	var paths []scoredPath
+	for path, score := range scores {
+		if score <= 0 || !include(path) {
+			continue
+		}
+		paths = append(paths, scoredPath{Path: path, Score: score})
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		if paths[i].Score == paths[j].Score {
+			return paths[i].Path < paths[j].Path
+		}
+		return paths[i].Score > paths[j].Score
+	})
+	if len(paths) > limit {
+		paths = paths[:limit]
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, path.Path)
+	}
+	return out
+}
+
+func taskPlanDocPath(path string) bool {
+	return strings.HasPrefix(path, "docs/") && strings.EqualFold(filepath.Ext(path), ".md")
+}
+
+func taskPlanTestPath(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, "_test.go") ||
+		strings.HasSuffix(lower, ".test.ts") ||
+		strings.HasSuffix(lower, ".spec.ts") ||
+		strings.Contains(lower, "/e2e/")
+}
+
+func taskPlanValidationCommands(planContext taskPlanContext) []string {
+	seen := map[string]bool{}
+	var commands []string
+	add := func(command string) {
+		if command == "" || seen[command] {
+			return
+		}
+		seen[command] = true
+		commands = append(commands, command)
+	}
+	for _, path := range append(append([]string{}, planContext.Files...), planContext.Tests...) {
+		if strings.HasSuffix(path, ".go") {
+			if pkg := goTestPackageForPath(path); pkg != "" {
+				add("go test " + pkg)
+			}
+		}
+		if strings.HasPrefix(path, "web/") {
+			add("nix develop -c bun run --cwd web check")
+			if strings.Contains(path, "routes/tasks") {
+				add("nix develop -c bun run --cwd web uat:tasks")
+			} else if strings.Contains(path, "routes/") || strings.Contains(path, "dashboard/src/") {
+				add("nix develop -c bun run --cwd web uat:site")
+			}
+		}
+	}
+	if len(planContext.Docs) > 0 {
+		add("review docs diff")
+	}
+	if len(commands) > 4 {
+		return commands[:4]
+	}
+	return commands
+}
+
+func goTestPackageForPath(path string) string {
+	dir := filepath.ToSlash(filepath.Dir(path))
+	if dir == "." || dir == "" {
+		return "./..."
+	}
+	return "./" + dir
+}
+
+func taskPlanSummary(t taskstore.Task, planContext taskPlanContext) string {
 	subject := firstLine(t.Goal)
 	if subject == "" {
 		subject = "the task goal"
 	}
+	context := taskPlanContextLabel(planContext)
 	switch strings.ToLower(strings.TrimSpace(t.GraphPhase)) {
 	case "root":
 		return "Plan to coordinate the task graph for: " + subject
 	case "inspect":
-		return "Plan for the inspect phase: " + subject
+		return appendTaskPlanContextLabel("Plan for the inspect phase: "+subject, context)
 	case "design":
-		return "Plan for the design phase: " + subject
+		return appendTaskPlanContextLabel("Plan for the design phase: "+subject, context)
 	case "implement":
-		return "Plan for the implement phase: " + subject
+		return appendTaskPlanContextLabel("Plan for the implement phase: "+subject, context)
 	case "test":
-		return "Plan for the test phase: " + subject
+		return appendTaskPlanContextLabel("Plan for the test phase: "+subject, context)
 	case "docs":
-		return "Plan for the docs phase: " + subject
+		return appendTaskPlanContextLabel("Plan for the docs phase: "+subject, context)
 	case "review":
-		return "Plan for the review phase: " + subject
+		return appendTaskPlanContextLabel("Plan for the review phase: "+subject, context)
 	}
 	if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
 		target := firstNonEmptyString(t.Target.Workdir, t.Target.WorkdirID, t.Target.AgentID)
@@ -2532,10 +2859,29 @@ func taskPlanSummary(t taskstore.Task) string {
 		}
 		return "Plan to complete the remote task: " + subject
 	}
-	return "Plan to satisfy: " + subject
+	return appendTaskPlanContextLabel("Plan to satisfy: "+subject, context)
 }
 
-func taskPlanSteps(t taskstore.Task) []taskstore.TaskPlanStep {
+func taskPlanContextLabel(planContext taskPlanContext) string {
+	for _, group := range [][]string{planContext.Files, planContext.Docs, planContext.Tests} {
+		if len(group) > 0 {
+			if len(group) == 1 {
+				return group[0]
+			}
+			return group[0] + ", " + group[1]
+		}
+	}
+	return ""
+}
+
+func appendTaskPlanContextLabel(summary, context string) string {
+	if context == "" {
+		return summary
+	}
+	return summary + " (repo scan: " + context + ")"
+}
+
+func taskPlanSteps(t taskstore.Task, planContext taskPlanContext) []taskstore.TaskPlanStep {
 	switch strings.ToLower(strings.TrimSpace(t.GraphPhase)) {
 	case "root":
 		return []taskstore.TaskPlanStep{
@@ -2596,61 +2942,96 @@ func taskPlanSteps(t taskstore.Task) []taskstore.TaskPlanStep {
 		}
 	}
 	return []taskstore.TaskPlanStep{
-		{Title: "Inspect scope", Detail: "Read the task goal, relevant repo files, current task state, and recent context before editing."},
-		{Title: "Make a minimal workspace change", Detail: "Apply the smallest practical patch inside the isolated task worktree; do not edit the live repo."},
-		{Title: "Validate the change", Detail: "Run targeted formatting, build, tests, or browser checks that match the files touched."},
+		{Title: "Inspect repo-grounded scope", Detail: taskPlanInspectDetail(planContext)},
+		{Title: "Make a minimal workspace change", Detail: taskPlanChangeDetail(planContext)},
+		{Title: "Validate the change", Detail: taskPlanValidationDetail(planContext)},
 		{Title: "Summarize and hand off", Detail: "Report changed files, validation results, how to use the change, docs updates, and remaining risks before merge approval."},
 	}
 }
 
-func taskPlanRisks(t taskstore.Task) []string {
+func taskPlanInspectDetail(planContext taskPlanContext) string {
+	if planContext.Empty() {
+		return "Read the task goal, current task state, repository search results, and recent context before editing."
+	}
+	return "Start with the repository scan: " + taskPlanPathSentence(planContext.Files, "likely code") + taskPlanPathSentence(planContext.Docs, "docs") + taskPlanPathSentence(planContext.Tests, "tests") + " Confirm the actual affected surface before editing."
+}
+
+func taskPlanChangeDetail(planContext taskPlanContext) string {
+	if len(planContext.Files) == 0 {
+		return "Apply the smallest practical patch inside the isolated task worktree after confirming the affected files."
+	}
+	return "Keep edits centred on " + strings.Join(planContext.Files, ", ") + " unless inspection proves another path owns the behaviour."
+}
+
+func taskPlanValidationDetail(planContext taskPlanContext) string {
+	if len(planContext.Commands) == 0 {
+		return "Run targeted formatting, build, tests, or browser checks that match the files touched."
+	}
+	return "Start with " + strings.Join(planContext.Commands, "; ") + ", then add any checks required by the final diff."
+}
+
+func taskPlanPathSentence(paths []string, label string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	return " " + label + ": " + strings.Join(paths, ", ") + "."
+}
+
+func taskPlanRisks(t taskstore.Task, planContext taskPlanContext) []string {
+	var risks []string
 	switch strings.ToLower(strings.TrimSpace(t.GraphPhase)) {
 	case "root":
-		return []string{
+		risks = []string{
 			"Child phases can drift from the original goal if dependencies or acceptance criteria are unclear.",
 			"The graph parent must remain blocked until phase results are accepted or explicitly waived.",
 		}
 	case "inspect":
-		return []string{
+		risks = []string{
 			"Affected files and components may be broader than the initial task wording suggests.",
 			"Inspection should avoid speculative edits unless a minimal fix is clearly required.",
 		}
 	case "design":
-		return []string{
+		risks = []string{
 			"The design may miss hidden contracts if inspection findings are incomplete.",
 			"Validation needs must be explicit before implementation starts.",
 		}
 	case "implement":
-		return []string{
+		risks = []string{
 			"Unrelated workspace changes must be preserved while applying the patch.",
 			"Behaviour changes need matching tests and docs/help text updates.",
 		}
 	case "test":
-		return []string{
+		risks = []string{
 			"Environment limits can block full validation and must be recorded clearly.",
 			"UI changes require browser-level checks, not compile checks alone.",
 		}
 	case "docs":
-		return []string{
+		risks = []string{
 			"Docs can become misleading if examples or command names drift from the implementation.",
 			"Operator-facing workflow changes need discoverable help text as well as prose docs.",
 		}
 	case "review":
-		return []string{
+		risks = []string{
 			"Approval should not proceed if checks, docs, or merge readiness are unclear.",
 			"Remaining risks must be visible before final acceptance.",
 		}
-	}
-	if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
-		return []string{
-			"Remote execution can affect a checkout outside the local control-plane repository.",
-			"Local review acknowledges the remote result but cannot compare or merge that checkout.",
+	default:
+		if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
+			risks = []string{
+				"Remote execution can affect a checkout outside the local control-plane repository.",
+				"Local review acknowledges the remote result but cannot compare or merge that checkout.",
+			}
+		} else {
+			risks = []string{
+				"Affected files and components are unknown until inspection finishes.",
+				"The task must stay inside its workspace until review and approval gates pass.",
+			}
 		}
 	}
-	return []string{
-		"Affected files and components are unknown until inspection finishes.",
-		"The task must stay inside its workspace until review and approval gates pass.",
+	if !planContext.Empty() && (t.Target == nil || !strings.EqualFold(t.Target.Mode, "remote")) {
+		risks = append(risks, "The repository scan is only a starting point; imports, callers, generated code, and UI flows still need verification before editing.")
 	}
+	return risks
 }
 
 func (o *Orchestrator) listTasks() (string, error) {

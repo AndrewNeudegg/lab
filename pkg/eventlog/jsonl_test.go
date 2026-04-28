@@ -11,7 +11,8 @@ import (
 func TestReadDayHandlesLargeEvents(t *testing.T) {
 	store := NewStore(t.TempDir())
 	day := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
-	payload := Payload(map[string]any{"message": strings.Repeat("x", 128*1024)})
+	messageLength := 9 * 1024 * 1024
+	payload := Payload(map[string]any{"message": strings.Repeat("x", messageLength)})
 	event := Event{
 		ID:      "evt_large",
 		Time:    day,
@@ -36,7 +37,7 @@ func TestReadDayHandlesLargeEvents(t *testing.T) {
 	if err := json.Unmarshal(events[0].Payload, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Message) != 128*1024 {
-		t.Fatalf("message length = %d, want %d", len(got.Message), 128*1024)
+	if len(got.Message) != messageLength {
+		t.Fatalf("message length = %d, want %d", len(got.Message), messageLength)
 	}
 }

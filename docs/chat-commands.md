@@ -107,6 +107,12 @@ Spelling and grammar cleanup runs through `text.correct`. It is a local, depende
 
 The result includes `corrected_text`, a correction list, and `search_queries` such as `kittens in pajamas` and `kittens in pyjamas`.
 
+Task title summarisation runs through `text.summarize`. It is a read-only helper backed by the configured LLM provider and is used automatically when local or remote tasks are created. The Orchestrator calls it with `purpose: "task_title"` and an 84-character limit so `/tasks` rows stay scannable while the full `goal` remains on the task record:
+
+```json
+{"text":"Work this task to completion... Task goal: fix active task list labels","purpose":"task_title","max_characters":84}
+```
+
 Use research when a quick search result is not enough and the agent needs a source bundle to reason from:
 
 ```text

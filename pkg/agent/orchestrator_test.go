@@ -644,6 +644,95 @@ func TestWorkflowToolStepRunsThroughPolicyBoundTool(t *testing.T) {
 	}
 }
 
+func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	summarizer := &taskTitleSummaryStub{summary: "Summarise task creation titles"}
+	if err := orch.registry.Register(summarizer); err != nil {
+		t.Fatal(err)
+	}
+	goal := "Work this task to completion if possible. Inspect the task workspace before editing. Task goal: when tasks are created their title should be derived from an automatic LLM summarisation of the user's input"
+
+	if _, err := orch.Handle(context.Background(), "test", "new "+goal); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Title != "Summarise task creation titles" {
+		t.Fatalf("title = %q, want summarized title", tasks[0].Title)
+	}
+	if summarizer.text != goal {
+		t.Fatalf("summarizer text = %q, want original goal", summarizer.text)
+	}
+	if summarizer.purpose != "task_title" || summarizer.maxCharacters != taskTitleMaxCharacters {
+		t.Fatalf("summarizer request purpose=%q max=%d", summarizer.purpose, summarizer.maxCharacters)
+	}
+}
+
+func TestCreateTaskClipsSummarizedTitleToTaskPaneLimit(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	summarizer := &taskTitleSummaryStub{summary: strings.Repeat("title ", 40)}
+	if err := orch.registry.Register(summarizer); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.Handle(context.Background(), "test", "new make task titles fit in the task pane"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if got := len([]rune(tasks[0].Title)); got > taskTitleMaxCharacters {
+		t.Fatalf("title length = %d, want <= %d: %q", got, taskTitleMaxCharacters, tasks[0].Title)
+	}
+}
+
+func TestRemoteTaskUsesSummarizedTitle(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	summarizer := &taskTitleSummaryStub{summary: "Fix remote service"}
+	if err := orch.registry.Register(summarizer); err != nil {
+		t.Fatal(err)
+	}
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Name:    "Workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:    "repo",
+			Path:  "/home/me/project",
+			Label: "Project",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "fix the remote service and update its startup docs", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Title != "Fix remote service" {
+		t.Fatalf("tasks = %#v, want summarized remote title", tasks)
+	}
+}
+
 func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
@@ -3265,6 +3354,32 @@ func (agentListStub) Run(context.Context, json.RawMessage) (json.RawMessage, err
 		"enabled":   true,
 		"available": true,
 	}}})
+}
+
+type taskTitleSummaryStub struct {
+	summary       string
+	text          string
+	purpose       string
+	maxCharacters int
+}
+
+func (taskTitleSummaryStub) Name() string        { return "text.summarize" }
+func (taskTitleSummaryStub) Description() string { return "" }
+func (taskTitleSummaryStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (taskTitleSummaryStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *taskTitleSummaryStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Text          string `json:"text"`
+		Purpose       string `json:"purpose"`
+		MaxCharacters int    `json:"max_characters"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	s.text = req.Text
+	s.purpose = req.Purpose
+	s.maxCharacters = req.MaxCharacters
+	return json.Marshal(map[string]any{"summary": s.summary})
 }
 
 type agentDelegateStub struct {

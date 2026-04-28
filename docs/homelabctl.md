@@ -37,6 +37,8 @@ Inside the shell, enter the same commands accepted by `homelabd` chat, for examp
 status
 tasks
 show task_123
+remember prefer distilled lessons over copied phrasing
+memories
 delegate task_123 to codex fix the failing tests
 ux task_123 audit keyboard and mobile states
 approve app_123
@@ -52,6 +54,8 @@ For one-shot chat commands:
 
 ```bash
 go run ./cmd/homelabctl message "status"
+go run ./cmd/homelabctl remember "prefer concise validation summaries"
+go run ./cmd/homelabctl memories
 go run ./cmd/homelabctl status
 go run ./cmd/homelabctl agents
 ```

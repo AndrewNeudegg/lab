@@ -55,6 +55,35 @@ func TestRunnerExecutesInRequestedWorkspaceWithTaskEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunnerPassesConfiguredAgentEnvironment(t *testing.T) {
+	workspace := t.TempDir()
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"codex": {
+			Enabled: true,
+			Command: "sh",
+			Args: []string{
+				"-c",
+				"printf '%s\\n' \"$CODEX_UNSAFE_ALLOW_NO_SANDBOX\"",
+			},
+			Env:            map[string]string{"CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1"},
+			TimeoutSeconds: 5,
+		},
+	})
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Backend:     "codex",
+		TaskID:      "task_1",
+		Workspace:   workspace,
+		Instruction: "do work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Output) != "1" {
+		t.Fatalf("output = %q, want configured env value", result.Output)
+	}
+}
+
 func TestRunnerRejectsMissingWorkspaceBeforeExecuting(t *testing.T) {
 	runner := NewRunner(map[string]config.ExternalAgentConfig{
 		"codex": {Enabled: true, Command: "sh", Args: []string{"-c", "exit 99"}},

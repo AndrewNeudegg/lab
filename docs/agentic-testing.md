@@ -6,6 +6,8 @@ Agent work must be testable without interrupting the operator's running dashboar
 
 Local tasks run in git worktrees under `repo.workspace_root`. Each task branch is reviewed and merged through `homelabd`; agents should not edit the main checkout directly.
 
+On NixOS, `repo.root` and `repo.workspace_root` must be writable runtime paths, not store paths. `homelabd` creates worktrees before launching local workers, so the `homelabd` service needs write access to the repository Git common directory (`.git`, including `refs` and `worktrees`) and to `repo.workspace_root`. Worker sandboxes may be stricter after the worktree exists, but an outer sandbox must not bind `.git` read-only around the host-side worktree creation step.
+
 Remote tasks run on the selected `homelab-agent` in the selected advertised workdir. The control plane records the result, but it does not create a local worktree, compare remote `HEAD`, or merge remote changes.
 
 Browser UAT starts from the task worktree, not from the supervised dashboard. The default Playwright config derives a stable per-worktree port, starts Vite on `127.0.0.1`, refuses to reuse an existing server on that port, and runs with one worker for reproducibility.

@@ -32,6 +32,41 @@ func TestDefaultExternalAgentsUseFiveHourTimeout(t *testing.T) {
 	}
 }
 
+func TestDefaultCodexAgentBypassesCodexSandboxForTaskWorktrees(t *testing.T) {
+	cfg := Default()
+	codex := cfg.ExternalAgents["codex"]
+	if codex.Command != "codex" {
+		t.Fatalf("codex command = %q, want codex", codex.Command)
+	}
+	gotArgs := strings.Join(codex.Args, " ")
+	if !strings.Contains(gotArgs, "--dangerously-bypass-approvals-and-sandbox") || !strings.Contains(gotArgs, "exec") {
+		t.Fatalf("codex args = %q, want sandbox bypass before exec", gotArgs)
+	}
+	if codex.Env["CODEX_UNSAFE_ALLOW_NO_SANDBOX"] != "1" {
+		t.Fatalf("codex env = %#v, want CODEX_UNSAFE_ALLOW_NO_SANDBOX=1", codex.Env)
+	}
+}
+
+func TestWithDefaultsPreservesCustomCodexArgs(t *testing.T) {
+	cfg := Config{
+		ExternalAgents: map[string]ExternalAgentConfig{
+			"codex": {
+				Enabled: true,
+				Command: "codex",
+				Args:    []string{"exec", "--model", "custom"},
+				Env:     map[string]string{"CODEX_UNSAFE_ALLOW_NO_SANDBOX": "0"},
+			},
+		},
+	}
+	got := cfg.WithDefaults().ExternalAgents["codex"]
+	if strings.Join(got.Args, " ") != "exec --model custom" {
+		t.Fatalf("codex args = %#v, want custom args preserved", got.Args)
+	}
+	if got.Env["CODEX_UNSAFE_ALLOW_NO_SANDBOX"] != "0" {
+		t.Fatalf("codex env = %#v, want custom env preserved", got.Env)
+	}
+}
+
 func TestDefaultSupervisorIncludesDisabledRemoteAgentTemplate(t *testing.T) {
 	cfg := Default()
 	var agentApp *SupervisorAppConfig

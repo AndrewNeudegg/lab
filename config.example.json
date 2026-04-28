@@ -169,9 +169,12 @@
     "codex": {
       "enabled": true,
       "command": "codex",
-      "args": ["exec", "--skip-git-repo-check"],
+      "args": ["--dangerously-bypass-approvals-and-sandbox", "exec", "--skip-git-repo-check"],
+      "env": {
+        "CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1"
+      },
       "timeout_seconds": 18000,
-      "description": "OpenAI Codex CLI worker for coding tasks."
+      "description": "OpenAI Codex CLI worker for trusted isolated task worktrees."
     },
     "claude": {
       "enabled": true,

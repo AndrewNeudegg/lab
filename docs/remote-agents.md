@@ -60,7 +60,7 @@ go run ./cmd/homelab-agent \
   -terminal-url http://workstation:18083
 ```
 
-The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory and sends stdout/stderr back as the task result. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 18,000 seconds, or 5 hours.
+The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory and sends stdout/stderr back as the task result. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 18,000 seconds, or 5 hours. The default Codex backend disables Codex's own sandbox because local tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
 
 Remote agents do not need to run in this repository. Each advertised `workdir` can be a different checkout, a different project, or a non-git directory. `homelabd` stores the path as execution context only; it does not assume that remote path has the same HEAD, branch, or repository root as the control-plane checkout.
 

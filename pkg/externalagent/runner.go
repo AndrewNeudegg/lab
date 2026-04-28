@@ -126,6 +126,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"HOMELABD_WORKSPACE="+req.Workspace,
 		"HOMELABD_BACKEND="+req.Backend,
 	)
+	for key, value := range cfg.Env {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 	cmd.Stdin = strings.NewReader(req.Instruction)
 	result := RunResult{
 		ID:        runID,

@@ -44,8 +44,7 @@ CLAUDE_CMD=claude
 GEMINI_CMD=gemini
 ```
 
-`CODEX_CLI`, `CLAUDE_CLI`, and `GEMINI_CLI` are also accepted. `config.json` can override
-the command, args, timeout, and description:
+`CODEX_CLI`, `CLAUDE_CLI`, and `GEMINI_CLI` are also accepted. The default Codex backend is configured for trusted task worktrees: it passes `--dangerously-bypass-approvals-and-sandbox` and `CODEX_UNSAFE_ALLOW_NO_SANDBOX=1` so Codex does not remount `.git` read-only inside the already-isolated worktree. `config.json` can override the command, args, environment, timeout, and description:
 
 ```json
 {
@@ -53,7 +52,10 @@ the command, args, timeout, and description:
     "codex": {
       "enabled": true,
       "command": "codex",
-      "args": ["exec", "--skip-git-repo-check"],
+      "args": ["--dangerously-bypass-approvals-and-sandbox", "exec", "--skip-git-repo-check"],
+      "env": {
+        "CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1"
+      },
       "timeout_seconds": 18000
     }
   }
@@ -62,6 +64,8 @@ the command, args, timeout, and description:
 
 The default external-agent timeout is `18000` seconds, or five hours. Set
 `timeout_seconds` per backend to shorten or extend a specific CLI worker.
+
+On NixOS, keep `repo.root` and `repo.workspace_root` in a normal writable path such as `/home/lab/lab` and `/home/lab/lab/workspaces`, not `/nix/store`. The `homelabd` process that creates local task worktrees must be able to write the repository's Git common directory (`.git`, including `refs` and `worktrees`) and the workspace root. If an outer service sandbox uses bubblewrap or systemd bind mounts, do not mount `.git` read-only for the host-side `homelabd` process; create the task worktree before entering any stricter worker sandbox.
 
 ## Safety Model
 

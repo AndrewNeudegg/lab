@@ -148,11 +148,12 @@ type SupervisorAppConfig struct {
 }
 
 type ExternalAgentConfig struct {
-	Enabled        bool     `json:"enabled"`
-	Command        string   `json:"command"`
-	Args           []string `json:"args,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
-	Description    string   `json:"description,omitempty"`
+	Enabled        bool              `json:"enabled"`
+	Command        string            `json:"command"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	TimeoutSeconds int               `json:"timeout_seconds"`
+	Description    string            `json:"description,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -331,9 +332,10 @@ func Default() Config {
 			"codex": {
 				Enabled:        true,
 				Command:        getenvAnyDefault("codex", "CODEX_CLI", "CODEX_CMD"),
-				Args:           []string{"exec", "--skip-git-repo-check"},
+				Args:           []string{"--dangerously-bypass-approvals-and-sandbox", "exec", "--skip-git-repo-check"},
+				Env:            map[string]string{"CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1"},
 				TimeoutSeconds: DefaultExternalAgentTimeoutSeconds,
-				Description:    "OpenAI Codex CLI worker for coding tasks.",
+				Description:    "OpenAI Codex CLI worker for trusted isolated task worktrees.",
 			},
 			"claude": {
 				Enabled:        true,
@@ -543,22 +545,39 @@ func (c Config) WithDefaults() Config {
 			}
 		}
 		for name, agent := range c.ExternalAgents {
+			defaultAgent := d.ExternalAgents[name]
 			if agent.Command == "" {
-				agent.Command = d.ExternalAgents[name].Command
+				agent.Command = defaultAgent.Command
 			}
 			if agent.Args == nil {
-				agent.Args = d.ExternalAgents[name].Args
+				agent.Args = defaultAgent.Args
 			}
+			agent.Env = mergeDefaultEnv(agent.Env, defaultAgent.Env)
 			if agent.TimeoutSeconds == 0 {
-				agent.TimeoutSeconds = d.ExternalAgents[name].TimeoutSeconds
+				agent.TimeoutSeconds = defaultAgent.TimeoutSeconds
 			}
 			if agent.Description == "" {
-				agent.Description = d.ExternalAgents[name].Description
+				agent.Description = defaultAgent.Description
 			}
 			c.ExternalAgents[name] = agent
 		}
 	}
 	return c
+}
+
+func mergeDefaultEnv(env, defaults map[string]string) map[string]string {
+	if len(defaults) == 0 {
+		return env
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	for key, value := range defaults {
+		if _, ok := env[key]; !ok {
+			env[key] = value
+		}
+	}
+	return env
 }
 
 func getenvAny(keys ...string) string {

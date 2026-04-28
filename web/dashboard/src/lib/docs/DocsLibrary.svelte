@@ -1,6 +1,5 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { tick } from 'svelte';
   import { docsURL, Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
@@ -36,8 +35,6 @@
   const preferredDocSlugs = new Set(preferredDocOrder);
 
   let search = '';
-  let jumpSlug = selectedSlug;
-  let selectedSlugSnapshot = selectedSlug;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -78,14 +75,8 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: if (selectedSlug !== selectedSlugSnapshot) {
-    selectedSlugSnapshot = selectedSlug;
-    jumpSlug = selectedSlug;
-  }
-
-  const openSelectedDoc = async () => {
-    await tick();
-    const slug = jumpSlug;
+  const openSelectedDoc = (event: Event) => {
+    const slug = (event.currentTarget as HTMLSelectElement).value;
     if (slug && slug !== selectedSlug) {
       void goto(docsURL(slug), { keepFocus: true, noScroll: true });
     }
@@ -109,7 +100,7 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:value={jumpSlug} on:change={() => void openSelectedDoc()} aria-label="Jump to document">
+        <select id="docs-jump" value={selectedSlug} on:change={openSelectedDoc} aria-label="Jump to document">
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}

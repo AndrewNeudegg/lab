@@ -726,13 +726,18 @@ func (s *Server) streamTerminalEvents(rw http.ResponseWriter, req *http.Request,
 
 	events := session.subscribeSince(terminalEventStreamAfter(req))
 	defer session.unsubscribe(events)
+	keepAlive := time.NewTicker(15 * time.Second)
+	defer keepAlive.Stop()
 
-	fmt.Fprintf(rw, "event: ready\ndata: {}\n\n")
+	fmt.Fprintf(rw, "retry: 1000\nevent: ready\ndata: {}\n\n")
 	flusher.Flush()
 	for {
 		select {
 		case <-req.Context().Done():
 			return
+		case <-keepAlive.C:
+			fmt.Fprintf(rw, ": keepalive\n\n")
+			flusher.Flush()
 		case event, ok := <-events:
 			if !ok {
 				return

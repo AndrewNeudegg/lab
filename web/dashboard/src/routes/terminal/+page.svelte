@@ -4,6 +4,7 @@
   import type { HomelabdAgentsResponse, HomelabdRemoteAgent } from '@homelab/shared';
   import '@xterm/xterm/css/xterm.css';
   import {
+    appendQueuedTerminalInput,
     buildTerminalTargets,
     clampTerminalGeometry,
     defaultTerminalTabTitle,
@@ -94,6 +95,8 @@
   let reconnecting = false;
   let destroyed = false;
   const lastEventSeqByTab = new Map<string, number>();
+  const queuedInputByTab = new Map<string, string>();
+  const queuedInputNoticeByTab = new Set<string>();
 
   $: statusLabel = terminalStatusLabel(connected, loading, reconnecting);
   $: terminalTargets = buildTerminalTargets(agents, apiBase);
@@ -283,6 +286,45 @@
     sendResize();
   };
 
+  const flushQueuedInput = (tab: TerminalTab, currentSession: TerminalSession) => {
+    const queued = queuedInputByTab.get(tab.id) || '';
+    if (!queued) {
+      return;
+    }
+    queuedInputByTab.delete(tab.id);
+    queuedInputNoticeByTab.delete(tab.id);
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(queued);
+      return;
+    }
+    void requestForTab(tab, `/terminal/sessions/${encodeURIComponent(currentSession.id)}/input`, {
+      method: 'POST',
+      body: JSON.stringify({ data: queued })
+    }).catch((err) => {
+      queuedInputByTab.set(tab.id, `${queued}${queuedInputByTab.get(tab.id) || ''}`);
+      queuedInputNoticeByTab.add(tab.id);
+      error = err instanceof Error ? err.message : 'Unable to flush queued terminal input.';
+      scheduleReconnect(tab.id, currentSession.id);
+    });
+  };
+
+  const queueInput = (tab: TerminalTab, currentSession: TerminalSession, data: string) => {
+    const result = appendQueuedTerminalInput(queuedInputByTab.get(tab.id) || '', data);
+    if (!result.accepted) {
+      error = 'Terminal is reconnecting and queued input is full.';
+      return;
+    }
+    queuedInputByTab.set(tab.id, result.queued);
+    if (!queuedInputNoticeByTab.has(tab.id)) {
+      writeNotice('[input queued until reconnect]');
+      queuedInputNoticeByTab.add(tab.id);
+    }
+    if (!reconnectTimer && !reconnecting) {
+      reconnecting = true;
+      void reconnectActiveTab(tab.id, currentSession.id);
+    }
+  };
+
   const sendData = (data: string) => {
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(data);
@@ -297,6 +339,10 @@
       }).catch((err) => {
         error = err instanceof Error ? err.message : 'Unable to send terminal input.';
       });
+      return;
+    }
+    if (tab && currentSession) {
+      queueInput(tab, currentSession, data);
       return;
     }
     writeNotice('[terminal is connecting]');
@@ -395,6 +441,8 @@
       case 'exit':
         terminal?.write(`\r\n[process exited ${event.code ?? 0}]\r\n`);
         disconnectTransport();
+        queuedInputByTab.delete(tabId);
+        queuedInputNoticeByTab.delete(tabId);
         updateTab(tabId, (tab) => ({ ...tab, session: undefined }));
         break;
       case 'error':
@@ -424,6 +472,7 @@
       error = '';
       terminal?.focus();
       scheduleTerminalFit();
+      flushQueuedInput(tab, nextSession);
     };
     source.onerror = () => {
       if (eventSource !== source) {
@@ -473,6 +522,7 @@
       error = '';
       terminal?.focus();
       scheduleTerminalFit();
+      flushQueuedInput(tab, nextSession);
     };
     nextSocket.onmessage = (event) => {
       if (socket !== nextSocket) {
@@ -596,6 +646,8 @@
       editingTabId = '';
       editingTitle = '';
     }
+    queuedInputByTab.delete(tabId);
+    queuedInputNoticeByTab.delete(tabId);
     if (wasActive) {
       disconnectTransport();
     }
@@ -821,7 +873,7 @@
       {#each controls as control}
         <button
           type="button"
-          disabled={!session || !connected}
+          disabled={!session || loading}
           title={control.hint}
           aria-label={`${control.label}: ${control.hint}`}
           on:click={() => {

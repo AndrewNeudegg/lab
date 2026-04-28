@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	defaultTerminalCols = 100
-	defaultTerminalRows = 30
-	maxTerminalCols     = 300
-	maxTerminalRows     = 120
-	terminalTmuxSocket  = "homelab-web-terminal"
-	terminalTmuxPrefix  = "homelab_"
+	defaultTerminalCols  = 100
+	defaultTerminalRows  = 30
+	maxTerminalCols      = 300
+	maxTerminalRows      = 120
+	terminalTmuxSocket   = "homelab-web-terminal"
+	terminalTmuxPrefix   = "homelab_"
+	terminalHistoryLimit = 2000
 )
 
 type terminalManager struct {
@@ -727,8 +728,8 @@ func (s *terminalSession) broadcast(event terminalEvent) {
 	s.nextSeq++
 	event.Seq = s.nextSeq
 	s.history = append(s.history, event)
-	if len(s.history) > 500 {
-		s.history = s.history[len(s.history)-500:]
+	if len(s.history) > terminalHistoryLimit {
+		s.history = s.history[len(s.history)-terminalHistoryLimit:]
 	}
 	for ch := range s.listeners {
 		select {

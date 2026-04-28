@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  appendQueuedTerminalInput,
   buildTerminalTargets,
   clampTerminalGeometry,
   defaultTerminalTabTitle,
@@ -51,6 +52,11 @@ describe('terminal client helpers', () => {
     expect(terminalReconnectDelay(0)).toBe(500);
     expect(terminalReconnectDelay(1)).toBe(1000);
     expect(terminalReconnectDelay(20)).toBe(10000);
+  });
+
+  it('buffers reconnect input without exceeding the byte limit', () => {
+    expect(appendQueuedTerminalInput('', 'pwd\n', 8)).toEqual({ queued: 'pwd\n', accepted: true });
+    expect(appendQueuedTerminalInput('abcd', 'é', 5)).toEqual({ queued: 'abcd', accepted: false });
   });
 
   it('builds local and online remote terminal targets', () => {

@@ -211,6 +211,34 @@ func TestTerminalSessionSubscribeSinceReplaysOnlyNewEvents(t *testing.T) {
 	}
 }
 
+func TestTerminalEventStreamIncludesRetryAndResumableIDs(t *testing.T) {
+	session := &terminalSession{
+		exitCode:  -1,
+		listeners: make(map[chan terminalEvent]struct{}),
+	}
+	session.broadcast(terminalEvent{Type: "output", Data: "old"})
+	session.broadcast(terminalEvent{Type: "output", Data: "new"})
+	session.close(0)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/terminal/sessions/term/events?after=1", nil)
+	server := Server{}
+	server.streamTerminalEvents(recorder, req, session)
+	body := recorder.Body.String()
+	if !strings.Contains(body, "retry: 1000\n") {
+		t.Fatalf("event stream did not advertise retry hint: %q", body)
+	}
+	if strings.Contains(body, "old") {
+		t.Fatalf("event stream replayed output before requested event id: %q", body)
+	}
+	if !strings.Contains(body, "id: 2\n") || !strings.Contains(body, `"data":"new"`) {
+		t.Fatalf("event stream did not include resumable output event: %q", body)
+	}
+	if !strings.Contains(body, "id: 3\n") || !strings.Contains(body, `"type":"exit"`) {
+		t.Fatalf("event stream did not include resumable exit event: %q", body)
+	}
+}
+
 func TestTerminalStartupCommandUsesRunShellBootstrap(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/usr/bin/env bash\nexec /bin/sh\n"), 0755); err != nil {

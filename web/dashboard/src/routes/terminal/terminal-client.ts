@@ -43,6 +43,7 @@ export type StoredTerminalTabsState = {
 
 export const defaultTerminalGeometry: TerminalGeometry = { cols: 100, rows: 30 };
 export const terminalTabsStorageKey = 'homelab-terminal-tabs:v1';
+export const maxQueuedTerminalInputBytes = 64 * 1024;
 
 export const clampTerminalGeometry = (geometry: Partial<TerminalGeometry>): TerminalGeometry => {
   const cols = Math.trunc(geometry.cols || defaultTerminalGeometry.cols);
@@ -103,6 +104,14 @@ export const terminalStatusLabel = (connected: boolean, loading: boolean, reconn
 export const terminalReconnectDelay = (attempt: number) => {
   const safeAttempt = Math.max(0, Math.trunc(attempt));
   return Math.min(10_000, 500 * 2 ** safeAttempt);
+};
+
+export const appendQueuedTerminalInput = (queued: string, next: string, maxBytes = maxQueuedTerminalInputBytes) => {
+  const combined = `${queued}${next}`;
+  if (new TextEncoder().encode(combined).byteLength > maxBytes) {
+    return { queued, accepted: false };
+  }
+  return { queued: combined, accepted: true };
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

@@ -198,7 +198,7 @@ Show session metadata and reattach homelabd to an existing persistent terminal s
 go run ./cmd/homelabctl terminal show term_123
 ```
 
-Stream session output. The underlying event stream emits SSE ids so clients can resume with `GET /terminal/sessions/{id}/events?after=N` or the `Last-Event-ID` header after a disconnect:
+Stream session output. The underlying event stream emits SSE ids, a retry hint, and keepalive comments so clients can resume with `GET /terminal/sessions/{id}/events?after=N` or the `Last-Event-ID` header after a disconnect:
 
 ```bash
 go run ./cmd/homelabctl terminal stream term_123

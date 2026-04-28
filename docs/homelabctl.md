@@ -74,6 +74,8 @@ go run ./cmd/homelabctl task retry task_123 codex "retry from the current worksp
 go run ./cmd/homelabctl task delete task_123
 ```
 
+`task retry` preserves the previous task result as retry context. For `conflict_resolution` tasks, or blocked tasks whose result is a premerge/rebase failure, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
+
 The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
 
 Top-level aliases are available for common task actions:

@@ -125,14 +125,22 @@ Research runs through `internet.research`. It creates fan-out queries, searches 
 
 ## Task Worktree Recovery
 
-External coding agents can edit files in local task worktrees, but the runtime owns git state. If a local task branch becomes too stale to rebase cleanly, refresh it from chat:
+External coding agents can edit files in local task worktrees, but the runtime owns git state. If a local task branch becomes too stale to reconcile cleanly, retry it first so the next worker receives the recorded failure text and the prepared conflict state:
+
+```text
+retry 793f04ec codex resolve the main-branch conflict
+```
+
+Use `refresh` only when you want to discard the old task branch work and restart from current `main`:
 
 ```text
 refresh 793f04ec
 delegate 793f04ec to codex implement the task again from current main
 ```
 
-`refresh <task_id>` resets the task worktree branch to the current repository `main` commit and leaves the task blocked for explicit redelegation. Use it when repeated review or approval attempts report premerge conflicts from old branch state.
+`refresh <task_id>` resets the task worktree branch to the current repository `main` commit and leaves the task blocked for explicit redelegation. Use it when repeated review or approval attempts report premerge conflicts from old branch state and the original task changes are no longer worth preserving.
+
+Use `retry <task_id>` or `delegate <task_id> to codex ...` first when you want to preserve the existing task work. For conflict-resolution and premerge-failure states, `homelabd` carries the previous failure text into the worker prompt and prepares the isolated task worktree by merging current `main` when the worktree is clean. If that merge conflicts, the worker receives the actual unmerged files to resolve.
 
 `approve <approval_id>` still executes a pending approval. For merge approvals, the Orchestrator first attempts to reconcile the task branch with current `main`; conflicts move the task to `conflict_resolution` for manual fixes and no merge is applied.
 

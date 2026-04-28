@@ -14,6 +14,22 @@ reflect on our recent interaction and suggest one improvement
 
 The reply includes a `new <goal>` command. In the dashboard this appears as a suggested action button, so you can create the follow-up task directly from the reflection result.
 
+## Memory And Personality
+
+Use memory when you want chat to carry a durable lesson into future decisions without copying your wording or tone:
+
+```text
+remember prefer concise handoffs with changed files, validation, usage, and docs status
+learn from our recent interaction
+memories
+unlearn mem_20260428_202158_ab12cd34
+unlearn concise handoffs
+```
+
+`remember` and `learn` store one distilled lesson in `memory/user.md`. When an LLM provider is configured, the agent rewrites explicit feedback into a short future-facing decision rule; without a provider it stores the supplied lesson directly. `learn from our recent interaction` requires an LLM provider because the agent must summarise chat history rather than record a raw transcript.
+
+`memories` lists stored lesson IDs and text. `unlearn` removes lessons by ID or distinctive text. The Orchestrator also exposes `memory.list`, `memory.remember`, and `memory.unlearn` as policy-bound tools, but its prompt limits writes to explicit remember/learn/forget requests or clear future-facing feedback. Current instructions, the latest user request, and repo state always take precedence over durable memory.
+
 ## Task Creation
 
 Use explicit task wording when you want a new durable task instead of a status summary:

@@ -94,6 +94,19 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantPath:   "/events",
 			wantQuery:  "date=2026-04-26&limit=2",
 		},
+		{
+			name:       "workflow create",
+			args:       []string{"workflow", "new", "Research", "bundle:", "Find", "sources"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/workflows",
+			wantBody:   map[string]any{"name": "Research bundle", "goal": "Find sources"},
+		},
+		{
+			name:       "workflow run",
+			args:       []string{"workflow", "run", "workflow_123"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/workflows/workflow_123/run",
+		},
 	}
 
 	for _, tt := range tests {
@@ -234,6 +247,17 @@ func TestUXShortcutSendsChatCommand(t *testing.T) {
 	}
 	if stdout != "queued ux\n" {
 		t.Fatalf("stdout = %q, want plain reply", stdout)
+	}
+}
+
+func TestParseWorkflowCreateArgs(t *testing.T) {
+	name, goal := parseWorkflowCreateArgs([]string{"Research", "bundle:", "Find", "sources"})
+	if name != "Research bundle" || goal != "Find sources" {
+		t.Fatalf("parseWorkflowCreateArgs = (%q, %q), want Research bundle / Find sources", name, goal)
+	}
+	name, goal = parseWorkflowCreateArgs([]string{"Watch", "deploy"})
+	if name != "Watch deploy" || goal != "Watch deploy" {
+		t.Fatalf("parseWorkflowCreateArgs = (%q, %q), want same name and goal", name, goal)
 	}
 }
 

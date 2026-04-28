@@ -84,6 +84,7 @@ func defaultAgentTools() map[string]map[string]bool {
 	return map[string]map[string]bool{
 		"OrchestratorAgent": allow(
 			"task.create", "task.run", "task.list",
+			"workflow.create", "workflow.list", "workflow.show", "workflow.run",
 			"agent.list", "agent.delegate",
 			"memory.read", "memory.propose_write",
 			"text.correct", "text.summarize",

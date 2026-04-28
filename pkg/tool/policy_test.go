@@ -144,4 +144,8 @@ func TestPseudoToolAllowlist(t *testing.T) {
 	if !decision.Allowed {
 		t.Fatalf("expected OrchestratorAgent task.run pseudo-tool to be allowed: %s", decision.Reason)
 	}
+	decision = policy.DecideNamed("OrchestratorAgent", "workflow.run", json.RawMessage(`{"workflow_id":"workflow_123"}`))
+	if !decision.Allowed {
+		t.Fatalf("expected OrchestratorAgent workflow.run pseudo-tool to be allowed: %s", decision.Reason)
+	}
 }

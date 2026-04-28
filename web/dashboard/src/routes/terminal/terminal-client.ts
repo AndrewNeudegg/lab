@@ -87,14 +87,22 @@ export const websocketEndpoint = (apiBase: string, path: string, locationLike: P
   return httpURL.toString();
 };
 
-export const terminalStatusLabel = (connected: boolean, loading: boolean) => {
+export const terminalStatusLabel = (connected: boolean, loading: boolean, reconnecting = false) => {
   if (connected) {
     return 'Connected';
+  }
+  if (reconnecting) {
+    return 'Reconnecting';
   }
   if (loading) {
     return 'Starting';
   }
   return 'Disconnected';
+};
+
+export const terminalReconnectDelay = (attempt: number) => {
+  const safeAttempt = Math.max(0, Math.trunc(attempt));
+  return Math.min(10_000, 500 * 2 ** safeAttempt);
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

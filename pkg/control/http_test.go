@@ -243,6 +243,46 @@ func TestTaskDeleteEndpointDeletesTask(t *testing.T) {
 	}
 }
 
+func TestWorkflowHTTPLifecycle(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	create := requestJSON(t, mux, http.MethodPost, "/workflows", `{
+		"name":"Watch deploy",
+		"goal":"Wait until the deployment is healthy",
+		"steps":[{"name":"Health gate","kind":"wait","condition":"healthd reports healthy","timeout_seconds":120}]
+	}`, "", http.StatusCreated)
+	var created struct {
+		Workflow struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Status   string `json:"status"`
+			Estimate struct {
+				Waits            int `json:"waits"`
+				EstimatedSeconds int `json:"estimated_seconds"`
+			} `json:"estimate"`
+		} `json:"workflow"`
+		Reply string `json:"reply"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Workflow.ID == "" || created.Workflow.Estimate.Waits != 1 || created.Workflow.Estimate.EstimatedSeconds != 120 {
+		t.Fatalf("created workflow = %#v", created.Workflow)
+	}
+
+	list := requestJSON(t, mux, http.MethodGet, "/workflows", "", "", http.StatusOK)
+	if !strings.Contains(list.Body.String(), "Watch deploy") {
+		t.Fatalf("workflow list = %s, want created workflow", list.Body.String())
+	}
+
+	run := requestJSON(t, mux, http.MethodPost, "/workflows/"+created.Workflow.ID+"/run", `{}`, "", http.StatusOK)
+	if !strings.Contains(run.Body.String(), `"status":"waiting"`) || !strings.Contains(run.Body.String(), "healthd reports healthy") {
+		t.Fatalf("run response = %s, want waiting workflow run", run.Body.String())
+	}
+}
+
 func TestAgentHeartbeatRequiresBearerToken(t *testing.T) {
 	server := Server{RemoteAgents: remoteagent.NewStore(t.TempDir()), AgentToken: "secret"}
 	mux := http.NewServeMux()

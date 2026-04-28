@@ -4,6 +4,7 @@ The dashboard has these primary operator surfaces:
 
 - `/chat`: global conversation, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
+- `/workflows`: durable LLM/tool workflow creation, cost estimates, run status, and latest outputs.
 - `/docs`: searchable documentation library generated from Markdown files in `./docs`.
 - `/terminal`: browser terminal backed by a homelabd shell session for direct operator commands.
 - `/supervisord`: supervised application status and start, stop, restart controls.
@@ -19,7 +20,7 @@ Use the shared responsive navbar on every dashboard page.
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Chat`, `Tasks`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
+- Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 
 ## Documentation Library
@@ -82,6 +83,13 @@ For `/chat`, every visible component must answer one of these questions:
 2. What did homelabd say back?
 3. Which generated command can I safely click?
 4. Where do I go to inspect task state?
+
+For `/workflows`, every visible component must answer one of these questions:
+
+1. What workflow can I reuse?
+2. What will it cost in LLM calls, tool calls, waits, and estimated runtime?
+3. Which step is encoded?
+4. What happened on the latest run?
 
 If a component does not answer one of those questions, it should not be in the primary surface.
 
@@ -163,13 +171,13 @@ On compact screens `/terminal` keeps the xterm viewport as the primary scroll ar
 
 ## Terminal Runtime
 
-The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts the user's shell in the homelabd working directory inside a Linux PTY. When `tmux` is available, homelabd starts the shell inside a hidden tmux session and attaches the browser PTY to it, so the dashboard can reload and reattach without losing the running shell. `GET /terminal/sessions/{id}` reattaches homelabd to an existing tmux-backed session and returns current metadata.
+The Terminal page uses homelabd HTTP endpoints under `/terminal/sessions`, proxied by the dashboard as `/api/terminal/sessions` during development. Creating a session starts `./run.sh shell` when an executable `run.sh` exists in the homelabd working directory; otherwise it starts the user's shell inside a Linux PTY. When `tmux` is available, homelabd starts the shell inside a hidden tmux session and attaches the browser PTY to it, so the dashboard can reload and reattach without losing the running shell. `GET /terminal/sessions/{id}` reattaches homelabd to an existing tmux-backed session and returns current metadata.
 
-The browser renders each session with xterm.js, connects terminal bytes over `GET /terminal/sessions/{id}/ws`, and sends terminal resize updates with `POST /terminal/sessions/{id}/resize`.
+The browser renders each session with xterm.js, streams terminal output over `GET /terminal/sessions/{id}/events`, sends keyboard input with `POST /terminal/sessions/{id}/input`, and sends terminal resize updates with `POST /terminal/sessions/{id}/resize`. The event stream includes SSE event ids and reconnects from the last seen event after mobile sleep, tab switching, or brief network loss. `GET /terminal/sessions/{id}/ws` remains available for WebSocket clients.
 
 Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colours, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
 
-The Terminal page has persistent tabs. Use the `+` button beside the session target picker to add a shell, click the active tab name to rename it, and close a tab to delete its backend session. Reloading the dashboard keeps local tab metadata and reattaches to the stored session ids. The session target picker chooses the target for the next new tab: `homelabd local` opens a PTY on the control plane, while online remote agents appear when their heartbeat metadata includes `terminal_base_url`.
+The Terminal page has persistent tabs. Use the `+` button beside the session target picker to add a shell, click an inactive tab once to switch to it, click the active tab name to rename it, and close a tab to delete its backend session. Reloading the dashboard keeps local tab metadata and reattaches to the stored session ids. The session target picker chooses the target for the next new tab: `homelabd local` opens a PTY on the control plane, while online remote agents appear when their heartbeat metadata includes `terminal_base_url`.
 
 This is an operator shell. Run it only where the homelabd HTTP API is already trusted, because anyone who can reach the endpoint can execute commands as the homelabd process user.
 

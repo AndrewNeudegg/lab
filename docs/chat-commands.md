@@ -33,6 +33,19 @@ run <task_id>
 delegate <task_id> to codex
 ```
 
+## Workflows
+
+Use workflows for repeatable LLM/tool logic that should live outside one chat turn:
+
+```text
+workflows
+workflow new Research bundle: Find current sources and summarise risk
+workflow show workflow_123
+workflow run workflow_123
+```
+
+Workflows expose cost estimates for LLM calls, tool calls, waits, and runtime. The LLM can also use `workflow.create`, `workflow.list`, `workflow.show`, and `workflow.run` as policy-bound tools.
+
 ## Application Errors
 
 Supervised app stderr is captured by `supervisord`, written to `data/supervisord/logs/<app>.stderr.log`, and pushed to healthd. Use `homelabctl errors` to inspect recent entries from a terminal, or ask chat to diagnose recent application errors. The Orchestrator has the read-only `health.errors` tool and can use it with `task.create` when a root-cause fix should be tracked.

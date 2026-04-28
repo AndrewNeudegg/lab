@@ -1,6 +1,6 @@
 # homelabctl
 
-`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, approval, event, chat, and terminal interactions.
+`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, workflow, approval, event, chat, and terminal interactions.
 
 Start `homelabd` in HTTP mode before using the CLI:
 
@@ -106,6 +106,20 @@ go run ./cmd/homelabctl refresh task_123
 
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
 
+## Workflow Commands
+
+Workflow commands use typed HTTP endpoints for durable LLM/tool workflows:
+
+```bash
+go run ./cmd/homelabctl workflow new "Research bundle: Find current sources"
+go run ./cmd/homelabctl workflow list
+go run ./cmd/homelabctl workflows
+go run ./cmd/homelabctl workflow show workflow_123
+go run ./cmd/homelabctl workflow run workflow_123
+```
+
+Use workflows when repeatable logic should be created, estimated, monitored, and invoked outside one chat turn. See `docs/workflows.md`.
+
 ## Remote Agent Commands
 
 Remote machines use the `/agents` inventory. This is separate from the chat command `agents`, which lists external local worker backends such as `codex`, `claude`, and `gemini`. Built-in role agents such as `UXAgent` are invoked with commands like `ux task_123`.
@@ -162,7 +176,7 @@ The command calls `GET /healthd/errors` on the healthd service. It is useful bef
 
 ## Terminal Commands
 
-The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page.
+The terminal commands wrap the same `/terminal/sessions` API used by the dashboard Terminal page. Starting a session runs `./run.sh shell` first when the target working directory contains an executable `run.sh`; otherwise it opens the configured interactive shell.
 
 Create a shell session:
 
@@ -177,7 +191,7 @@ Show session metadata and reattach homelabd to an existing persistent terminal s
 go run ./cmd/homelabctl terminal show term_123
 ```
 
-Stream session output:
+Stream session output. The underlying event stream emits SSE ids so clients can resume with `GET /terminal/sessions/{id}/events?after=N` or the `Last-Event-ID` header after a disconnect:
 
 ```bash
 go run ./cmd/homelabctl terminal stream term_123
@@ -218,6 +232,10 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks/{id}/cancel`
 - `POST /tasks/{id}/retry`
 - `POST /tasks/{id}/delete`
+- `GET /workflows`
+- `POST /workflows`
+- `GET /workflows/{id}`
+- `POST /workflows/{id}/run`
 - `GET /agents`
 - `GET /agents/{id}`
 - `GET /approvals`
@@ -226,7 +244,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `GET /events?date=YYYY-MM-DD&limit=N`
 - `POST /terminal/sessions`
 - `GET /terminal/sessions/{id}`
-- `GET /terminal/sessions/{id}/events`
+- `GET /terminal/sessions/{id}/events`, including optional `after=N` resume support
 - `POST /terminal/sessions/{id}/input`
 - `POST /terminal/sessions/{id}/signal`
 - `DELETE /terminal/sessions/{id}`

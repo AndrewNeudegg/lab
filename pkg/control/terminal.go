@@ -52,12 +52,15 @@ type terminalSession struct {
 	inputProbePending string
 
 	exitCode  int
+	nextSeq   int64
 	history   []terminalEvent
+	exitEvent terminalEvent
 	listeners map[chan terminalEvent]struct{}
 }
 
 type terminalEvent struct {
 	Type string `json:"type"`
+	Seq  int64  `json:"seq,omitempty"`
 	Data string `json:"data,omitempty"`
 	Code int    `json:"code,omitempty"`
 	Cols int    `json:"cols,omitempty"`
@@ -95,7 +98,7 @@ func (m *terminalManager) createWithSize(cwd string, size terminalSize) (*termin
 }
 
 func (m *terminalManager) createDirectWithSize(sessionID, cleanCWD, shell string, size terminalSize) (*terminalSession, error) {
-	cmd := terminalCommand(shell)
+	cmd := terminalCommand(cleanCWD, shell)
 	cmd.Dir = cleanCWD
 	cmd.Env = terminalEnv()
 
@@ -307,7 +310,10 @@ func terminalShellHasLineEditing(shell string) bool {
 	return err == nil && strings.Contains(string(out), "enable bind")
 }
 
-func terminalCommand(shell string) *exec.Cmd {
+func terminalCommand(cwd, shell string) *exec.Cmd {
+	if terminalRunShellBootstrap(cwd) {
+		return exec.Command("./run.sh", "shell")
+	}
 	if filepath.Base(shell) == "bash" {
 		return exec.Command(shell, "--noprofile", "--norc", "-i")
 	}
@@ -348,7 +354,7 @@ func startTerminalTmuxSession(sessionID, cwd, shell string) (string, error) {
 	if terminalTmuxSessionExists(tmuxName) {
 		return tmuxName, nil
 	}
-	cmd := terminalTmuxCommand("new-session", "-d", "-s", tmuxName, "-c", cwd, terminalShellCommand(shell))
+	cmd := terminalTmuxCommand("new-session", "-d", "-s", tmuxName, "-c", cwd, terminalStartupCommand(cwd, shell))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("start tmux session: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -361,6 +367,24 @@ func startTerminalTmuxSession(sessionID, cwd, shell string) (string, error) {
 		return "", fmt.Errorf("configure tmux escape-time: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return tmuxName, nil
+}
+
+func terminalStartupCommand(cwd, shell string) string {
+	if terminalRunShellBootstrap(cwd) {
+		return shellQuote("./run.sh") + " shell"
+	}
+	return terminalShellCommand(shell)
+}
+
+func terminalRunShellBootstrap(cwd string) bool {
+	if os.Getenv("HOMELAB_WEB_TERMINAL_SKIP_RUN_SH_SHELL") == "1" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(cwd, "run.sh"))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0111 != 0
 }
 
 func terminalShellCommand(shell string) string {
@@ -636,19 +660,29 @@ func (s *terminalSession) terminate() {
 }
 
 func (s *terminalSession) subscribe() chan terminalEvent {
+	return s.subscribeSince(0)
+}
+
+func (s *terminalSession) subscribeSince(afterSeq int64) chan terminalEvent {
 	ch := make(chan terminalEvent, 256)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		for _, event := range s.history {
-			ch <- event
+			if event.Seq > afterSeq {
+				ch <- event
+			}
 		}
-		ch <- terminalEvent{Type: "exit", Code: s.exitCode}
+		if s.exitEvent.Type != "" && s.exitEvent.Seq > afterSeq {
+			ch <- s.exitEvent
+		}
 		close(ch)
 		return ch
 	}
 	for _, event := range s.history {
-		ch <- event
+		if event.Seq > afterSeq {
+			ch <- event
+		}
 	}
 	s.listeners[ch] = struct{}{}
 	return ch
@@ -671,11 +705,13 @@ func (s *terminalSession) close(code int) {
 	}
 	s.closed = true
 	s.exitCode = code
+	s.nextSeq++
+	event := terminalEvent{Type: "exit", Seq: s.nextSeq, Code: code}
+	s.exitEvent = event
 	listeners := s.listeners
 	s.listeners = make(map[chan terminalEvent]struct{})
 	s.mu.Unlock()
 
-	event := terminalEvent{Type: "exit", Code: code}
 	for ch := range listeners {
 		ch <- event
 		close(ch)
@@ -688,6 +724,8 @@ func (s *terminalSession) broadcast(event terminalEvent) {
 	if s.closed {
 		return
 	}
+	s.nextSeq++
+	event.Seq = s.nextSeq
 	s.history = append(s.history, event)
 	if len(s.history) > 500 {
 		s.history = s.history[len(s.history)-500:]

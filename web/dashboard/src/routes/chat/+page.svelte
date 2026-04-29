@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
@@ -224,6 +225,14 @@
     return true;
   };
 
+  const navigateMarkdownLink = (href: string) => {
+    if (href.startsWith('#')) {
+      window.location.hash = href;
+      return;
+    }
+    void goto(href, { keepFocus: true });
+  };
+
   const addMessage = (
     role: ChatRole,
     content: string,
@@ -414,7 +423,7 @@
               <time>{message.time}</time>
             </span>
           </div>
-          <Markdown content={message.content} />
+          <Markdown content={message.content} navigate={navigateMarkdownLink} />
           {#if message.attachments?.length}
             <div class="attachment-list message-attachments" aria-label="Message attachments">
               {#each message.attachments as attachment}

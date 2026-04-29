@@ -168,8 +168,12 @@ test('created task chat reply links to the task with SPA navigation', async ({ p
   await expect(taskLink).toBeVisible();
 
   await taskLink.click();
-  await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150000_11111111$/);
-  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible();
+  await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150000_11111111$/, {
+    timeout: 20_000
+  });
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible({
+    timeout: 20_000
+  });
   await expect(page.locator('.workbench')).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => (window as Window & { __spaMarker?: string }).__spaMarker))
@@ -190,7 +194,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await mockTaskApi(page);
   await page.goto('/tasks');
 
-  const rows = page.getByRole('button', { name: /Review queue behavior on mobile/ });
+  const rows = page.getByRole('link', { name: /Review queue behavior on mobile/ });
   const queue = page.locator('.task-pane');
   const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);

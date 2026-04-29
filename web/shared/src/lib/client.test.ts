@@ -192,6 +192,7 @@ describe('homelabd client', () => {
 
     await client.runTask('task_1');
     await client.reviewTask('task_1');
+    await client.moveTaskInMergeQueue('task_1', { direction: 'up' });
     await client.acceptTask('task_1');
     await client.restartTask('task_1');
     await client.reopenTask('task_1', { reason: 'needs mobile verification' });
@@ -204,6 +205,7 @@ describe('homelabd client', () => {
     expect(requests.map((request) => `${request.init?.method || 'GET'} ${request.url}`)).toEqual([
       'POST http://homelabd/tasks/task_1/run',
       'POST http://homelabd/tasks/task_1/review',
+      'POST http://homelabd/tasks/task_1/merge-queue',
       'POST http://homelabd/tasks/task_1/accept',
       'POST http://homelabd/tasks/task_1/restart',
       'POST http://homelabd/tasks/task_1/reopen',
@@ -213,8 +215,9 @@ describe('homelabd client', () => {
       'POST http://homelabd/approvals/approval_1/approve',
       'POST http://homelabd/approvals/approval_2/deny'
     ]);
-    expect(requests[4].body).toEqual({ reason: 'needs mobile verification' });
-    expect(requests[6].body).toEqual({ backend: 'codex', instruction: 'fix the blocked state' });
+    expect(requests[2].body).toEqual({ direction: 'up' });
+    expect(requests[5].body).toEqual({ reason: 'needs mobile verification' });
+    expect(requests[7].body).toEqual({ backend: 'codex', instruction: 'fix the blocked state' });
   });
 
   test('uses typed workflow endpoints', async () => {

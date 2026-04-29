@@ -86,7 +86,7 @@ const mockTaskApi = async (page: Page) => {
     }
   ];
 
-  await page.route('**/api/tasks', async (route) => {
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks } });
   });
   await page.route('**/api/approvals', async (route) => {
@@ -242,6 +242,47 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   await expect(page.getByText('received attachment')).toBeVisible();
 });
 
+test('chat marks failed sends inline and retries the original message', async ({ page }) => {
+  let attempts = 0;
+  const sentBodies: any[] = [];
+  await page.route('**/api/message', async (route) => {
+    attempts += 1;
+    sentBodies.push(JSON.parse(route.request().postData() || '{}'));
+    if (attempts === 1) {
+      await route.fulfill({ status: 503, body: 'offline' });
+      return;
+    }
+    await route.fulfill({ json: { reply: 'retry received', source: 'program' } });
+  });
+
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  const text = 'send this when the connection returns';
+  await page.getByRole('textbox', { name: 'Message' }).fill(text);
+  await page.getByRole('button', { name: 'Send' }).click();
+
+  const failedMessage = page.locator('.message.user').filter({ hasText: text });
+  await expect(failedMessage).toContainText('Message failed to send');
+  await expect(failedMessage).toHaveClass(/failed/);
+  await expect(page.locator('.error')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page.getByRole('button', { name: 'Switch to dark mode' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect
+    .poll(() => failedMessage.evaluate((element) => getComputedStyle(element).backgroundColor))
+    .toBe('rgb(31, 41, 55)');
+  await page.getByRole('button', { name: 'Menu' }).click();
+
+  await failedMessage.getByRole('button', { name: 'Resend failed message' }).click();
+  await expect(page.getByText('retry received')).toBeVisible();
+  await expect(failedMessage).not.toContainText('Message failed to send');
+  await expect(failedMessage).not.toHaveClass(/failed/);
+  expect(attempts).toBe(2);
+  expect(sentBodies.map((body) => body.content)).toEqual([text, text]);
+});
+
 test('chat renders Mermaid diagrams in assistant replies', async ({ page }) => {
   await page.route('**/api/message', async (route) => {
     await route.fulfill({
@@ -277,7 +318,7 @@ test('chat renders Mermaid diagrams in assistant replies', async ({ page }) => {
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {
   await mockScreenCapture(page);
   let requestBody: any;
-  await page.route('**/api/tasks', async (route) => {
+  await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     requestBody = JSON.parse(route.request().postData() || '{}');
     await route.fulfill({ status: 201, json: { reply: 'created help task' } });
   });

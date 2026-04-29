@@ -281,6 +281,53 @@ func TestTaskDeleteEndpointDeletesTask(t *testing.T) {
 	}
 }
 
+func TestTaskMergeQueueEndpointReordersTask(t *testing.T) {
+	server, tasks, _ := newHTTPTestServer(t)
+	now := time.Now().UTC()
+	firstID := "task_queue_endpoint_first"
+	secondID := "task_queue_endpoint_second"
+	for _, task := range []taskstore.Task{
+		{
+			ID:         firstID,
+			Title:      "first",
+			Goal:       "first",
+			Status:     taskstore.StatusAwaitingApproval,
+			AssignedTo: "codex",
+			CreatedAt:  now.Add(-time.Minute),
+			UpdatedAt:  now.Add(-time.Minute),
+		},
+		{
+			ID:         secondID,
+			Title:      "second",
+			Goal:       "second",
+			Status:     taskstore.StatusAwaitingApproval,
+			AssignedTo: "codex",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		},
+	} {
+		if err := tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	server.register(mux)
+	requestJSON(t, mux, http.MethodPost, "/tasks/"+secondID+"/merge-queue", `{"direction":"up"}`, "", http.StatusOK)
+
+	first, err := tasks.Load(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.MergeQueuePosition != 1 || first.MergeQueuePosition != 2 {
+		t.Fatalf("positions: first=%d second=%d, want first=2 second=1", first.MergeQueuePosition, second.MergeQueuePosition)
+	}
+}
+
 func TestWorkflowHTTPLifecycle(t *testing.T) {
 	server, _, _ := newHTTPTestServer(t)
 	mux := http.NewServeMux()

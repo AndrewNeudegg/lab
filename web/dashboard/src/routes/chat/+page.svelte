@@ -115,6 +115,10 @@
             typeof (attachment as Record<string, unknown>).name === 'string' &&
             typeof (attachment as Record<string, unknown>).content_type === 'string'
         ));
+    const validDeliveryStatus =
+      candidate.delivery_status === undefined || candidate.delivery_status === 'failed';
+    const validDeliveryError =
+      candidate.delivery_error === undefined || typeof candidate.delivery_error === 'string';
 
     return (
       typeof candidate.id === 'string' &&
@@ -123,7 +127,9 @@
       typeof candidate.time === 'string' &&
       validActions &&
       validStats &&
-      validAttachments
+      validAttachments &&
+      validDeliveryStatus &&
+      validDeliveryError
     );
   };
 
@@ -229,21 +235,59 @@
     stats?: ChatInteractionStats
   ) => {
     messageId += 1;
-    messages = [
-      ...messages,
-      {
-        id: `${role}-${messageId}`,
-        role,
-        content,
-        source,
-        attachments: attachments.length ? attachments : undefined,
-        actions: role === 'assistant' ? extractCommands(content) : undefined,
-        stats,
-        time: timeLabel()
-      }
-    ];
+    const message: ChatTranscriptMessage = {
+      id: `${role}-${messageId}`,
+      role,
+      content,
+      source,
+      attachments: attachments.length ? attachments : undefined,
+      actions: role === 'assistant' ? extractCommands(content) : undefined,
+      stats,
+      time: timeLabel()
+    };
+    messages = [...messages, message];
     persistMessages();
     scrollMessages();
+    return message;
+  };
+
+  const updateMessage = (messageID: string, updates: Partial<ChatTranscriptMessage>) => {
+    messages = messages.map((message) =>
+      message.id === messageID ? { ...message, ...updates } : message
+    );
+    persistMessages();
+    scrollMessages();
+  };
+
+  const failedDeliveryMessage = (err: unknown) =>
+    err instanceof Error ? err.message : 'Unable to reach homelabd.';
+
+  const deliverUserMessage = async (message: ChatTranscriptMessage) => {
+    loading = true;
+    error = '';
+    try {
+      const response = await client.sendMessage({
+        from: 'dashboard',
+        content: message.content.trim() || 'Attached files',
+        attachments: message.attachments || []
+      });
+      updateMessage(message.id, { delivery_status: undefined, delivery_error: undefined });
+      addMessage(
+        'assistant',
+        response.reply || 'No reply returned.',
+        response.source || 'program',
+        [],
+        response.stats
+      );
+    } catch (err) {
+      updateMessage(message.id, {
+        delivery_status: 'failed',
+        delivery_error: failedDeliveryMessage(err)
+      });
+    } finally {
+      loading = false;
+      focusInput();
+    }
   };
 
   onMount(() => {
@@ -267,28 +311,15 @@
     attachmentError = '';
     persistChatDraft(draft);
     error = '';
-    addMessage('user', trimmed || 'Attached files', undefined, attachments);
-    loading = true;
+    const message = addMessage('user', trimmed || 'Attached files', undefined, attachments);
+    await deliverUserMessage(message);
+  };
 
-    try {
-      const response = await client.sendMessage({
-        from: 'dashboard',
-        content: trimmed || 'Attached files',
-        attachments
-      });
-      addMessage(
-        'assistant',
-        response.reply || 'No reply returned.',
-        response.source || 'program',
-        [],
-        response.stats
-      );
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to reach homelabd.';
-    } finally {
-      loading = false;
-      focusInput();
+  const resendFailedMessage = (message: ChatTranscriptMessage) => {
+    if (loading || message.delivery_status !== 'failed') {
+      return;
     }
+    void deliverUserMessage(message);
   };
 
   const sendCommand = (command: string) => {
@@ -410,7 +441,11 @@
   <main class="chat-card">
     <section class="messages" bind:this={messagesEl} aria-live="polite">
       {#each messages as message, index (message.id)}
-        <article class="message" class:user={message.role === 'user'}>
+        <article
+          class="message"
+          class:user={message.role === 'user'}
+          class:failed={message.delivery_status === 'failed'}
+        >
           <div class="meta">
             <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
             <time>{message.time}</time>
@@ -443,6 +478,25 @@
                   {action}
                 </button>
               {/each}
+            </div>
+          {/if}
+          {#if message.role === 'user' && message.delivery_status === 'failed'}
+            <div class="delivery-status">
+              <span role="status">Message failed to send</span>
+              <button
+                type="button"
+                class="resend-button"
+                disabled={loading}
+                aria-label="Resend failed message"
+                title={message.delivery_error || 'Resend failed message'}
+                on:click={() => resendFailedMessage(message)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path
+                    d="M21 12a9 9 0 0 1-15.1 6.6M3 12A9 9 0 0 1 18.1 5.4M18 2v5h-5M6 22v-5h5"
+                  />
+                </svg>
+              </button>
             </div>
           {/if}
           {#if messageFooter(message, index)}
@@ -633,9 +687,84 @@
     background: #f0fdf4;
   }
 
+  .message.user.failed {
+    border-color: #cbd5e1;
+    color: #334155;
+    background: #f1f5f9;
+  }
+
+  .message.user.failed .meta span {
+    color: #475569;
+  }
+
+  :global(html[data-theme='dark']) .message.user.failed {
+    border-color: var(--border) !important;
+    color: var(--text) !important;
+    background: var(--surface-muted) !important;
+  }
+
+  :global(html[data-theme='dark']) .message.user.failed .meta span,
+  :global(html[data-theme='dark']) .delivery-status,
+  :global(html[data-theme='dark']) .resend-button {
+    color: var(--muted) !important;
+  }
+
+  :global(html[data-theme='dark']) .resend-button:hover:not(:disabled),
+  :global(html[data-theme='dark']) .resend-button:focus-visible {
+    border-color: var(--border) !important;
+    color: #bfdbfe !important;
+    background: var(--surface-hover) !important;
+  }
+
   .message.pending {
     color: #475569;
     border-style: dashed;
+  }
+
+  .delivery-status {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.35rem;
+    margin-top: 0.05rem;
+    color: #64748b;
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+
+  .resend-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.65rem;
+    height: 1.65rem;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    color: #475569;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .resend-button:hover:not(:disabled),
+  .resend-button:focus-visible {
+    border-color: #cbd5e1;
+    color: #1d4ed8;
+    background: #ffffff;
+    outline: none;
+  }
+
+  .resend-button svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .resend-button path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .attachment-chip {

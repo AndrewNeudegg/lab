@@ -59,6 +59,7 @@ type AppStatus struct {
 	PreStartCommand    string            `json:"pre_start_command,omitempty"`
 	PreStartArgs       []string          `json:"pre_start_args,omitempty"`
 	PreStartWorkingDir string            `json:"pre_start_working_dir,omitempty"`
+	HealthStartupGrace int               `json:"health_startup_grace_seconds,omitempty"`
 }
 
 type Snapshot struct {
@@ -146,6 +147,7 @@ func NewManager(cfg config.SupervisordConfig, logger *slog.Logger) *Manager {
 				PreStartCommand:    app.PreStartCommand,
 				PreStartArgs:       append([]string(nil), app.PreStartArgs...),
 				PreStartWorkingDir: app.PreStartWorkingDir,
+				HealthStartupGrace: app.HealthStartupGraceSec,
 			},
 		}
 	}
@@ -914,13 +916,25 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 		}
 		m.mu.Lock()
 		if app := m.apps[t.name]; app != nil {
+			now := time.Now().UTC()
 			app.status.LastHealth = status
-			app.status.UpdatedAt = time.Now().UTC()
-			if unhealthyHealthStatus(status, statusCode) &&
+			app.status.UpdatedAt = now
+			unhealthy := unhealthyHealthStatus(status, statusCode)
+			if !unhealthy && strings.HasPrefix(app.status.Message, "health check failed during startup grace") {
+				app.status.Message = "running"
+				_ = m.saveStateLocked()
+			}
+			if unhealthy &&
 				app.status.Desired == StateRunning &&
 				app.status.State == StateRunning &&
 				app.status.PID > 0 &&
 				app.cfg.Restart != "never" {
+				if remaining := appHealthStartupGraceRemaining(app, now); remaining > 0 {
+					app.status.Message = fmt.Sprintf("health check failed during startup grace; %.0fs remaining", remaining.Seconds())
+					_ = m.saveStateLocked()
+					m.mu.Unlock()
+					continue
+				}
 				app.status.State = StateStopping
 				app.status.Message = "health check failed; restarting tracked process"
 				app.status.Restarts++
@@ -945,6 +959,18 @@ func unhealthyHealthStatus(status string, statusCode int) bool {
 		return true
 	}
 	return statusCode < 200 || statusCode >= 300
+}
+
+func appHealthStartupGraceRemaining(app *appRuntime, now time.Time) time.Duration {
+	if app == nil || app.status.StartedAt == nil || app.cfg.HealthStartupGraceSec <= 0 {
+		return 0
+	}
+	grace := time.Duration(app.cfg.HealthStartupGraceSec) * time.Second
+	remaining := grace - now.Sub(*app.status.StartedAt)
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
 }
 
 func processAlive(pid int) bool {

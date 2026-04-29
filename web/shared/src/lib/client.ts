@@ -9,6 +9,7 @@ import type {
   HomelabdCreateTaskResponse,
   HomelabdCreateWorkflowRequest,
   HomelabdEventsResponse,
+  HomelabdMergeQueueMoveRequest,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
   HomelabdTaskActionResponse,
@@ -246,6 +247,17 @@ export const createHomelabdClient = (
         method: 'POST',
         body: JSON.stringify(request)
       });
+    },
+    moveTaskInMergeQueue(taskId: string, request: HomelabdMergeQueueMoveRequest) {
+      return apiFetch<HomelabdTaskActionResponse>(
+        `/tasks/${encodeURIComponent(taskId)}/merge-queue`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
     },
     deleteTask(taskId: string) {
       return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/delete`, {

@@ -11,7 +11,6 @@
     taskRuntimeMs,
     taskStartedAt,
     taskStateDescription,
-    taskStateTransitions,
     taskSummaryTitle,
     type HomelabdApproval,
     type HomelabdEvent,
@@ -58,6 +57,7 @@
   } from './sync-model';
 
   type DiffMode = 'split' | 'unified';
+  type MergeQueueDirection = 'up' | 'down';
   type MobilePanel = 'queue' | 'detail';
   type Notice = {
     id: number;
@@ -83,7 +83,9 @@
   let diffError = '';
   let actionLoading = '';
   let approvalLoading = '';
+  let mergeQueueLoading = '';
   let diffLoadingTaskId = '';
+  let workerRunsIssue = '';
   let taskFilter: TaskFilter = 'attention';
   let queueFilter: TaskQueueFilter = 'all';
   let taskSearch = '';
@@ -123,6 +125,7 @@
   let attentionTaskItems: HomelabdTask[] = [];
   let activeTaskItems: HomelabdTask[] = [];
   let visibleTaskItems: HomelabdTask[] = [];
+  let mergeQueueItems: HomelabdTask[] = [];
   let currentTask: HomelabdTask | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
   let currentTaskRuns: WorkerTraceRun[] = [];
@@ -247,6 +250,9 @@
   $: activeTaskItems = taskQueueView.activeTaskItems;
   $: attentionTaskItems = taskQueueView.attentionTaskItems;
   $: visibleTaskItems = taskQueueView.visibleTaskItems;
+  $: mergeQueueItems = tasks
+    .filter((task) => (task.merge_queue_position || 0) > 0)
+    .sort((left, right) => (left.merge_queue_position || 0) - (right.merge_queue_position || 0));
   $: currentTask = taskQueueView.currentTask;
   $: currentTaskEvents = taskQueueView.currentTaskEvents;
   $: currentTaskRuns = currentTask
@@ -414,6 +420,55 @@
     return 'gray';
   };
 
+  const taskShowsActivity = (task: HomelabdTask) =>
+    taskIsActive(task) ||
+    task.status === 'ready_for_review' ||
+    (task.status === 'awaiting_restart' && task.restart_status !== 'failed');
+
+  const taskOperatorGuidance = (task: HomelabdTask) => {
+    switch (task.status) {
+      case 'queued':
+        return 'Wait for capacity, or use Start from manual controls if this should run now.';
+      case 'running':
+        return 'No action needed while the worker is running. Stop only if you need to interrupt the run.';
+      case 'ready_for_review':
+        return 'No action needed. Review is queued by the merge queue; manual Review is available if needed.';
+      case 'awaiting_approval':
+        return pendingApprovalForTask(task, approvals)
+          ? 'Review the diff and approve or deny the merge.'
+          : 'No action needed until the review gate creates a merge decision.';
+      case 'awaiting_restart':
+        return task.restart_status === 'failed'
+          ? 'Restart failed. Retry only after checking the service state.'
+          : 'No action needed while required services restart and pass health checks.';
+      case 'awaiting_verification':
+        return 'Verify the running result, then accept it or reopen the task with a reason.';
+      case 'conflict_resolution':
+        return 'Conflict recovery may retry automatically. Use Retry now only to intervene immediately.';
+      case 'blocked':
+      case 'failed':
+        return 'Read the result and worker trace, then retry with context or reopen if the task needs a different direction.';
+      case 'done':
+        return 'No action needed unless the accepted result needs more work.';
+      case 'cancelled':
+        return 'No action needed unless the task should be reopened.';
+      default:
+        return 'Check the task result and activity before choosing a manual control.';
+    }
+  };
+
+  const actionPanelLabel = (action: PrimaryTaskAction) => {
+    if (action.type === 'approval') {
+      return 'Decision needed';
+    }
+    if (action.type === 'task') {
+      return action.tone === 'warning' || action.tone === 'danger'
+        ? 'Attention needed'
+        : 'Available action';
+    }
+    return 'Current status';
+  };
+
   const refreshTaskDiff = async (taskId: string) => {
     if (!taskId) {
       return;
@@ -436,11 +491,12 @@
     if (!taskId) {
       return;
     }
+    workerRunsIssue = '';
     try {
       const result = await withRefreshTimeout('Worker runs', client.listTaskRuns(taskId));
       taskRuns = { ...taskRuns, [taskId]: result.runs };
     } catch (err) {
-      setNotice('error', 'Worker runs failed', errorMessage(err, 'Unable to load worker runs.'));
+      workerRunsIssue = errorMessage(err, 'Unable to load worker runs.');
     }
   };
 
@@ -539,9 +595,6 @@
       selectedTaskId
     });
     selectedTaskId = syncSelection.selectedTaskId;
-    if (refreshErrors.length) {
-      setNotice('error', 'Sync incomplete', refreshErrors.join(' '));
-    }
   };
 
   const refreshState = () => {
@@ -722,6 +775,27 @@
   const approvalLoadingKey = (operation: 'approve' | 'deny', approvalId: string) =>
     `${operation}:${approvalId}`;
 
+  const mergeQueueMoveKey = (taskId: string, direction: MergeQueueDirection) =>
+    `merge-queue:${taskId}:${direction}`;
+
+  const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
+    if (mergeQueueLoading) {
+      return;
+    }
+    const key = mergeQueueMoveKey(task.id, direction);
+    mergeQueueLoading = key;
+    clearNotice();
+    try {
+      const response = await client.moveTaskInMergeQueue(task.id, { direction });
+      setNotice('success', 'Merge queue updated', response.reply || 'Merge queue updated.');
+      await refreshState();
+    } catch (err) {
+      setNotice('error', 'Merge queue failed', errorMessage(err, 'Unable to reorder the merge queue.'));
+    } finally {
+      mergeQueueLoading = '';
+    }
+  };
+
   const performApprovalAction = async (
     approval: HomelabdApproval,
     operation: 'approve' | 'deny'
@@ -856,6 +930,9 @@
     if (operation === 'delete' && currentTask && deleteConfirmTaskId === currentTask.id) {
       return 'Confirm delete';
     }
+    if (operation === 'cancel') {
+      return currentTask?.status === 'running' ? 'Stop worker' : 'Cancel task';
+    }
     return taskOperationLabel(operation);
   };
 </script>
@@ -873,7 +950,7 @@
       <header class="task-header">
         <div>
           <p>Task queue</p>
-          <h1>{needsActionTotal} need action</h1>
+          <h1>{needsActionTotal} need attention</h1>
           <span>Synced {lastRefresh || 'never'}</span>
         </div>
         <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
@@ -881,9 +958,19 @@
         </button>
       </header>
 
+      {#if notice}
+        <section class={`notice queue-notice ${notice.tone}`} aria-live="polite">
+          <div>
+            <strong>{notice.title}</strong>
+            <p>{notice.detail}</p>
+          </div>
+          <button type="button" on:click={clearNotice}>Dismiss</button>
+        </section>
+      {/if}
+
       <section class="triage" aria-label="Task filters">
         {#each [
-          { id: 'attention', label: 'Needs action', count: needsActionTotal },
+          { id: 'attention', label: 'Attention', count: needsActionTotal },
           { id: 'active', label: 'Running', count: activeTaskItems.length },
           { id: 'all', label: 'All', count: tasks.length }
         ] as filter}
@@ -906,6 +993,64 @@
         on:input={handleTaskSearchInput}
       />
 
+      <details class="merge-queue" aria-label="Merge queue" open>
+        <summary>
+          <span>Merge queue</span>
+          <strong>{mergeQueueItems.length}</strong>
+          <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
+        </summary>
+        {#if mergeQueueItems.length}
+          <ol>
+            {#each mergeQueueItems as item, index}
+              <li class:selected={currentTask?.id === item.id}>
+                <button
+                  type="button"
+                  class="merge-queue-task"
+                  aria-label={`Select ${taskSummaryTitle(item, 40)}`}
+                  on:click={() => selectTask(item.id)}
+                >
+                  <span class="merge-queue-position">{item.merge_queue_position}</span>
+                  <span class="merge-queue-copy">
+                    <strong>{taskSummaryTitle(item, 54)}</strong>
+                    <small>{statusLabel(item.status)}</small>
+                  </span>
+                </button>
+                <div class="merge-queue-controls" aria-label={`Reorder ${taskSummaryTitle(item, 40)}`}>
+                  <button
+                    type="button"
+                    title="Move up"
+                    aria-label={`Move ${taskSummaryTitle(item, 40)} up in merge queue`}
+                    disabled={index === 0 ||
+                      mergeQueueLoading !== '' ||
+                      mergeQueueItems[index - 1]?.status === 'awaiting_restart'}
+                    on:click={() => void moveMergeQueueTask(item, 'up')}
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                      <path d="m5 10 5-5 5 5" />
+                      <path d="M10 5v10" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    title="Move down"
+                    aria-label={`Move ${taskSummaryTitle(item, 40)} down in merge queue`}
+                    disabled={index === mergeQueueItems.length - 1 ||
+                      mergeQueueLoading !== '' ||
+                      item.status === 'awaiting_restart'}
+                    on:click={() => void moveMergeQueueTask(item, 'down')}
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                      <path d="m5 10 5 5 5-5" />
+                      <path d="M10 5v10" />
+                    </svg>
+                  </button>
+                </div>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+      </details>
+
       <section class="task-list" aria-label="Task list">
         {#if visibleTaskItems.length === 0}
           <p class="empty">{emptyTaskListMessage}</p>
@@ -917,7 +1062,11 @@
               class:selected={currentTask?.id === task.id}
               on:click={() => selectTask(task.id)}
             >
-              <span class={`dot ${taskTone(task)}`} aria-hidden="true"></span>
+              <span
+                class={`dot ${taskTone(task)}`}
+                class:pulse={taskShowsActivity(task)}
+                aria-hidden="true"
+              ></span>
               <span class="task-copy">
                 <strong>{taskSummaryTitle(task, 84)}</strong>
                 <small>
@@ -1048,9 +1197,13 @@
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
             <header class="decision-header">
               <div class="decision-copy">
-                <span class={`dot ${taskTone(currentTask)}`} aria-hidden="true"></span>
+                <span
+                  class={`dot ${taskTone(currentTask)}`}
+                  class:pulse={taskShowsActivity(currentTask)}
+                  aria-hidden="true"
+                ></span>
                 <div>
-                  <p>Next action</p>
+                  <p>{actionPanelLabel(currentPrimaryAction)}</p>
                   <h3>{currentPrimaryAction.label}</h3>
                   <span>{currentPrimaryAction.detail}</span>
                 </div>
@@ -1067,10 +1220,6 @@
                     : approvalLoading === approvalLoadingKey(currentPrimaryAction.operation, currentPrimaryAction.approval.id)
                       ? 'Approving'
                       : currentPrimaryAction.label}
-                </button>
-              {:else}
-                <button type="button" class="primary-action" disabled={refreshing} on:click={() => void refreshState()}>
-                  {refreshing ? 'Syncing' : 'Sync'}
                 </button>
               {/if}
             </header>
@@ -1107,7 +1256,7 @@
 
             {#if currentSecondaryOperations.length || currentPendingApproval}
               <div class="secondary-actions" aria-label="Secondary task actions">
-                <p>Other actions</p>
+                <p>Manual controls</p>
                 <div class="secondary-action-row">
                   {#if currentPendingApproval}
                     <button
@@ -1158,6 +1307,12 @@
               <dt>Updated</dt>
               <dd>{compactTime(currentTask.updated_at)}</dd>
             </div>
+            {#if currentTask.merge_queue_position}
+              <div>
+                <dt>Merge queue</dt>
+                <dd>#{currentTask.merge_queue_position}</dd>
+              </div>
+            {/if}
           </dl>
 
           <details class="detail-section state-context" aria-label="Task context" open>
@@ -1172,7 +1327,7 @@
                   <strong>{statusLabel(currentTask.status)}</strong>
                 </div>
                 <p>{taskStateDescription(currentTask.status)}</p>
-                <small>Next: {taskStateTransitions(currentTask.status)}</small>
+                <small>{taskOperatorGuidance(currentTask)}</small>
               </section>
 
               {#if currentTask.auto_recovery_attempts}
@@ -1420,14 +1575,23 @@
               <strong>{currentTaskRuns.length} run{currentTaskRuns.length === 1 ? '' : 's'}</strong>
             </summary>
 
-            {#if currentTaskRuns.length === 0}
+            {#if workerRunsIssue && currentTaskRuns.length === 0}
+              <p class="empty">Worker trace is still catching up. The page will retry on the next sync.</p>
+            {:else if currentTaskRuns.length === 0}
               <p class="empty">No external worker runs recorded for this task.</p>
             {:else}
+              {#if workerRunsIssue}
+                <p class="empty compact">Worker trace is still catching up. The page will retry on the next sync.</p>
+              {/if}
               <div class="run-list">
                 {#each currentTaskRuns as run}
                   <article class={`worker-run ${runStatusTone(run)}`}>
                     <header>
-                      <span class={`dot ${runStatusTone(run)}`} aria-hidden="true"></span>
+                      <span
+                        class={`dot ${runStatusTone(run)}`}
+                        class:pulse={run.active || run.status === 'running'}
+                        aria-hidden="true"
+                      ></span>
                       <div>
                         <strong>{run.backend}</strong>
                         <small>{shortID(run.id)} / {run.status} / {compactTime(run.startedAt)}</small>
@@ -1589,7 +1753,18 @@
 
   .task-pane {
     display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "header"
+      "notice"
+      "triage"
+      "search"
+      "merge"
+      "list"
+      "alert"
+      "queues"
+      "create"
+      "footer";
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto auto auto;
     gap: 0.75rem;
     padding: 1rem;
     border-right: 1px solid var(--border-soft, #dde4ef);
@@ -1609,6 +1784,7 @@
   }
 
   .task-header {
+    grid-area: header;
     justify-content: space-between;
     gap: 0.75rem;
   }
@@ -1659,6 +1835,7 @@
   .primary-action,
   .notice button,
   .back-to-queue,
+  .merge-queue summary,
   .target-create summary {
     min-height: 2.55rem;
     padding: 0 0.75rem;
@@ -1679,12 +1856,14 @@
   .primary-action:hover:not(:disabled),
   .notice button:hover,
   .back-to-queue:hover,
+  .merge-queue summary:hover,
   .target-create summary:hover {
     border-color: var(--accent, #2563eb);
     background: var(--surface-hover, #eef5ff);
   }
 
   .triage {
+    grid-area: triage;
     gap: 0.5rem;
   }
 
@@ -1735,6 +1914,10 @@
     padding: 0 0.75rem;
   }
 
+  #task-search {
+    grid-area: search;
+  }
+
   textarea {
     min-height: 4.2rem;
     max-height: 12rem;
@@ -1753,6 +1936,7 @@
   }
 
   .task-list {
+    grid-area: list;
     display: grid;
     align-content: start;
     gap: 0.35rem;
@@ -1826,6 +2010,180 @@
     white-space: nowrap;
   }
 
+  .merge-queue {
+    grid-area: merge;
+    overflow: hidden;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.7rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .merge-queue summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.45rem;
+    min-height: 2.25rem;
+    padding: 0 0.65rem;
+    list-style: none;
+    border: 0;
+    border-radius: 0.7rem;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .merge-queue summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .merge-queue summary span {
+    overflow: hidden;
+    color: var(--muted, #64748b);
+    font-size: 0.72rem;
+    font-weight: 900;
+    letter-spacing: 0.06em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .merge-queue summary strong {
+    min-width: 1.45rem;
+    padding: 0.12rem 0.4rem;
+    border-radius: 999px;
+    color: #1d4ed8;
+    background: #dbeafe;
+    font-size: 0.72rem;
+    line-height: 1.25;
+    text-align: center;
+  }
+
+  .merge-queue summary small {
+    overflow: hidden;
+    color: var(--muted, #64748b);
+    font-size: 0.7rem;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .merge-queue ol {
+    display: grid;
+    gap: 0.2rem;
+    max-height: min(13.5rem, 32vh);
+    margin: 0;
+    overflow-y: auto;
+    padding: 0.3rem;
+    border-top: 1px solid var(--border-soft, #e2e8f0);
+    list-style: none;
+  }
+
+  .merge-queue li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    border-radius: 0.55rem;
+  }
+
+  .merge-queue li.selected {
+    background: var(--surface-hover, #eef5ff);
+  }
+
+  .merge-queue-task {
+    display: grid;
+    grid-template-columns: 1.45rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+    min-height: 2.2rem;
+    padding: 0.25rem 0.35rem;
+    border: 0;
+    border-radius: 0.5rem;
+    color: inherit;
+    background: transparent;
+    text-align: left;
+  }
+
+  .merge-queue-task:hover {
+    background: rgb(37 99 235 / 0.08);
+  }
+
+  .merge-queue-position {
+    display: grid;
+    place-items: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    color: #1e40af;
+    background: #eff6ff;
+    font-size: 0.68rem;
+    font-weight: 900;
+  }
+
+  .merge-queue-copy {
+    display: grid;
+    gap: 0.05rem;
+    min-width: 0;
+  }
+
+  .merge-queue-copy strong,
+  .merge-queue-copy small {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .merge-queue-copy strong {
+    color: var(--text-strong, #111827);
+    font-size: 0.78rem;
+    line-height: 1.25;
+  }
+
+  .merge-queue-copy small {
+    color: var(--muted, #64748b);
+    font-size: 0.68rem;
+    line-height: 1.25;
+  }
+
+  .merge-queue-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    padding-right: 0.25rem;
+  }
+
+  .merge-queue-controls button {
+    display: grid;
+    place-items: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    padding: 0;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 0.45rem;
+    color: var(--text, #243047);
+    background: var(--surface, #ffffff);
+  }
+
+  .merge-queue-controls button:hover:not(:disabled) {
+    border-color: var(--accent, #2563eb);
+    color: var(--accent, #2563eb);
+    background: var(--surface-hover, #eef5ff);
+  }
+
+  .merge-queue-controls svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.1;
+  }
+
   .status {
     flex: 0 0 auto;
     padding: 0.16rem 0.48rem;
@@ -1861,33 +2219,60 @@
   }
 
   .dot {
+    --pulse-ring: rgb(148 163 184 / 0.18);
+    --pulse-ring-wide: rgb(148 163 184 / 0.09);
     flex: 0 0 auto;
+    position: relative;
     width: 0.72rem;
     height: 0.72rem;
     margin-top: 0.22rem;
     border-radius: 999px;
     background: #94a3b8;
-    box-shadow: 0 0 0 3px rgb(148 163 184 / 0.18);
+    box-shadow: 0 0 0 3px var(--pulse-ring);
   }
 
   .dot.red {
+    --pulse-ring: rgb(239 68 68 / 0.18);
+    --pulse-ring-wide: rgb(239 68 68 / 0.09);
     background: #ef4444;
-    box-shadow: 0 0 0 3px rgb(239 68 68 / 0.18);
   }
 
   .dot.amber {
+    --pulse-ring: rgb(245 158 11 / 0.2);
+    --pulse-ring-wide: rgb(245 158 11 / 0.1);
     background: #f59e0b;
-    box-shadow: 0 0 0 3px rgb(245 158 11 / 0.2);
   }
 
   .dot.blue {
+    --pulse-ring: rgb(59 130 246 / 0.18);
+    --pulse-ring-wide: rgb(59 130 246 / 0.09);
     background: #3b82f6;
-    box-shadow: 0 0 0 3px rgb(59 130 246 / 0.18);
   }
 
   .dot.green {
+    --pulse-ring: rgb(34 197 94 / 0.18);
+    --pulse-ring-wide: rgb(34 197 94 / 0.09);
     background: #22c55e;
-    box-shadow: 0 0 0 3px rgb(34 197 94 / 0.18);
+  }
+
+  .dot.pulse {
+    animation: activity-ring 2.4s ease-in-out infinite;
+  }
+
+  @keyframes activity-ring {
+    0%,
+    100% {
+      box-shadow: 0 0 0 3px var(--pulse-ring);
+    }
+    50% {
+      box-shadow: 0 0 0 6px var(--pulse-ring-wide);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot.pulse {
+      animation: none;
+    }
   }
 
   .empty {
@@ -1909,6 +2294,16 @@
 
   .notice {
     margin: 1rem 1.25rem 0;
+  }
+
+  .queue-notice {
+    grid-area: notice;
+    display: none;
+    margin: 0;
+  }
+
+  .sync-alert {
+    grid-area: alert;
   }
 
   .notice.success {
@@ -1938,6 +2333,7 @@
   }
 
   .queue-groups {
+    grid-area: queues;
     display: grid;
     gap: 0.45rem;
   }
@@ -1976,6 +2372,7 @@
   }
 
   .target-create {
+    grid-area: create;
     border: 1px solid var(--border-soft, #dbe7f5);
     border-radius: 0.8rem;
     background: var(--surface-muted, #f8fbff);
@@ -2061,6 +2458,7 @@
   }
 
   footer {
+    grid-area: footer;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3097,9 +3495,14 @@
 
     .task-pane {
       display: grid;
-      grid-template-rows: auto auto auto minmax(18rem, auto) auto auto auto;
+      grid-template-rows: auto auto auto auto auto minmax(18rem, auto) auto auto auto auto;
       padding: 0.75rem;
       border-right: 0;
+    }
+
+    .queue-notice {
+      display: flex;
+      margin: 0;
     }
 
     .task-header {
@@ -3162,6 +3565,10 @@
     .task-attachments,
     .task-result {
       margin: 0.75rem;
+    }
+
+    .task-pane .queue-notice {
+      margin: 0;
     }
 
     .record-header {

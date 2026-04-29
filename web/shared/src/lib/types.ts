@@ -16,6 +16,7 @@ export type FetchClient = <TResponse>(
 ) => Promise<TResponse>;
 
 export type ChatRole = 'user' | 'assistant';
+export type ChatDeliveryStatus = 'failed';
 
 export interface ChatTranscriptMessage {
   id: string;
@@ -25,6 +26,8 @@ export interface ChatTranscriptMessage {
   source?: string;
   actions?: string[];
   attachments?: HomelabdTaskAttachment[];
+  delivery_status?: ChatDeliveryStatus;
+  delivery_error?: string;
 }
 
 export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
@@ -80,6 +83,8 @@ export interface HomelabdTask {
   restart_last_error?: string;
   auto_recovery_attempts?: number;
   auto_recovery_last_at?: string;
+  merge_queue_position?: number;
+  merge_queue_entered_at?: string;
   workspace?: string;
   result?: string;
   plan?: HomelabdTaskPlan;
@@ -259,6 +264,10 @@ export interface HomelabdWorkflowActionResponse {
 export interface HomelabdTaskRetryRequest {
   backend?: string;
   instruction?: string;
+}
+
+export interface HomelabdMergeQueueMoveRequest {
+  direction: 'up' | 'down';
 }
 
 export interface HomelabdTaskReopenRequest {
@@ -483,6 +492,10 @@ export interface HomelabdClient {
   retryTask(
     taskId: string,
     request?: HomelabdTaskRetryRequest
+  ): Promise<HomelabdTaskActionResponse>;
+  moveTaskInMergeQueue(
+    taskId: string,
+    request: HomelabdMergeQueueMoveRequest
   ): Promise<HomelabdTaskActionResponse>;
   deleteTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   approveApproval(approvalId: string): Promise<HomelabdTaskActionResponse>;

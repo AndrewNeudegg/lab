@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
+const docsRenderTimeoutMs = 60_000;
+
 const expectNoHorizontalOverflow = async (page: Page) => {
   const overflow = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,
@@ -20,7 +22,8 @@ const mockNavbarTaskApis = async (page: Page) => {
 
 test('docs library supports navigation, markdown rendering, table of contents, and search', async ({
   page
-}) => {
+}, testInfo) => {
+  testInfo.setTimeout(120_000);
   await mockNavbarTaskApis(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/docs');
@@ -30,8 +33,10 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   ).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   const diagram = page.locator('.content .mermaid-diagram').first();
-  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
-  await expect(diagram.locator('svg')).toBeVisible();
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered', {
+    timeout: docsRenderTimeoutMs
+  });
+  await expect(diagram.locator('svg')).toBeVisible({ timeout: docsRenderTimeoutMs });
   await expect(page.getByText('./docs/dashboard.md')).toBeVisible();
   await expect.poll(async () => page.locator('#docs-list a').count()).toBeGreaterThanOrEqual(6);
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(

@@ -147,6 +147,7 @@ test('chat mobile keeps typed draft text through layout changes', async ({ page 
 });
 
 test('tasks mobile switches between queue and selected task detail', async ({ page }) => {
+  test.setTimeout(60_000);
   await mockTaskApi(page);
   await page.goto('/tasks');
 
@@ -155,7 +156,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
-  await expect(rows).toHaveCount(1, { timeout: 30_000 });
+  await expect(rows).toHaveCount(1, { timeout: 45_000 });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
 

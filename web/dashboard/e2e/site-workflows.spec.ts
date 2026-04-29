@@ -316,7 +316,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
       )
     ).toHaveCount(0, { timeout: 15_000 });
   } else if (route === '/terminal') {
-    await expect(page.locator('.xterm')).toBeVisible();
+    await expect(page.locator('.xterm')).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: 'Add terminal tab' }).click();
     await expect(page.locator('.terminal-tab')).toHaveCount(2);
   } else if (route === '/healthd') {

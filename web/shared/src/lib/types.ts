@@ -16,6 +16,7 @@ export type FetchClient = <TResponse>(
 ) => Promise<TResponse>;
 
 export type ChatRole = 'user' | 'assistant';
+export type ChatDeliveryStatus = 'failed';
 
 export interface ChatTranscriptMessage {
   id: string;
@@ -25,6 +26,8 @@ export interface ChatTranscriptMessage {
   source?: string;
   actions?: string[];
   attachments?: HomelabdTaskAttachment[];
+  delivery_status?: ChatDeliveryStatus;
+  delivery_error?: string;
 }
 
 export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';

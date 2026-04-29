@@ -10,7 +10,6 @@
     taskRuntimeMs,
     taskStartedAt,
     taskStateDescription,
-    taskStateTransitions,
     taskSummaryTitle,
     type HomelabdApproval,
     type HomelabdEvent,
@@ -84,7 +83,11 @@
   let actionLoading = '';
   let approvalLoading = '';
   let mergeQueueLoading = '';
+  let autoMergeSaving = false;
+  let autoMergeEnabled = false;
+  let autoMergeIssue = '';
   let diffLoadingTaskId = '';
+  let workerRunsIssue = '';
   let taskFilter: TaskFilter = 'attention';
   let queueFilter: TaskQueueFilter = 'all';
   let taskSearch = '';
@@ -417,6 +420,55 @@
     return 'gray';
   };
 
+  const taskShowsActivity = (task: HomelabdTask) =>
+    taskIsActive(task) ||
+    task.status === 'ready_for_review' ||
+    (task.status === 'awaiting_restart' && task.restart_status !== 'failed');
+
+  const taskOperatorGuidance = (task: HomelabdTask) => {
+    switch (task.status) {
+      case 'queued':
+        return 'Wait for capacity, or use Start from manual controls if this should run now.';
+      case 'running':
+        return 'No action needed while the worker is running. Stop only if you need to interrupt the run.';
+      case 'ready_for_review':
+        return 'No action needed. Review is queued by the merge queue; manual Review is available if needed.';
+      case 'awaiting_approval':
+        return pendingApprovalForTask(task, approvals)
+          ? 'Review the diff and approve or deny the merge.'
+          : 'No action needed until the review gate creates a merge decision.';
+      case 'awaiting_restart':
+        return task.restart_status === 'failed'
+          ? 'Restart failed. Retry only after checking the service state.'
+          : 'No action needed while required services restart and pass health checks.';
+      case 'awaiting_verification':
+        return 'Verify the running result, then accept it or reopen the task with a reason.';
+      case 'conflict_resolution':
+        return 'Conflict recovery may retry automatically. Use Retry now only to intervene immediately.';
+      case 'blocked':
+      case 'failed':
+        return 'Read the result and worker trace, then retry with context or reopen if the task needs a different direction.';
+      case 'done':
+        return 'No action needed unless the accepted result needs more work.';
+      case 'cancelled':
+        return 'No action needed unless the task should be reopened.';
+      default:
+        return 'Check the task result and activity before choosing a manual control.';
+    }
+  };
+
+  const actionPanelLabel = (action: PrimaryTaskAction) => {
+    if (action.type === 'approval') {
+      return 'Decision needed';
+    }
+    if (action.type === 'task') {
+      return action.tone === 'warning' || action.tone === 'danger'
+        ? 'Attention needed'
+        : 'Available action';
+    }
+    return 'Current status';
+  };
+
   const refreshTaskDiff = async (taskId: string) => {
     if (!taskId) {
       return;
@@ -439,11 +491,12 @@
     if (!taskId) {
       return;
     }
+    workerRunsIssue = '';
     try {
       const result = await withRefreshTimeout('Worker runs', client.listTaskRuns(taskId));
       taskRuns = { ...taskRuns, [taskId]: result.runs };
     } catch (err) {
-      setNotice('error', 'Worker runs failed', errorMessage(err, 'Unable to load worker runs.'));
+      workerRunsIssue = errorMessage(err, 'Unable to load worker runs.');
     }
   };
 
@@ -480,16 +533,18 @@
       approvals: Promise<unknown>;
       events: Promise<unknown>;
       agents: Promise<unknown>;
+      settings: Promise<unknown>;
     },
     baseTasks: HomelabdTask[],
     initialErrors: string[] = []
   ) => {
     const refreshErrors = [...initialErrors];
     let nextApprovals = approvals;
-    const [approvalResult, eventResult, agentResult] = await Promise.allSettled([
+    const [approvalResult, eventResult, agentResult, settingsResult] = await Promise.allSettled([
       requests.approvals,
       requests.events,
-      requests.agents
+      requests.agents,
+      requests.settings
     ]);
     if (sequence !== refreshStateSequence) {
       return;
@@ -533,6 +588,14 @@
       refreshErrors.push(errorMessage(agentResult.reason, 'Unable to load agents.'));
     }
 
+    if (settingsResult.status === 'fulfilled') {
+      const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
+      autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
+      autoMergeIssue = '';
+    } else {
+      autoMergeIssue = errorMessage(settingsResult.reason, 'Unable to load automation settings.');
+    }
+
     const syncSelection = resolveTaskSyncSelection({
       tasks: baseTasks,
       approvals: nextApprovals,
@@ -542,9 +605,6 @@
       selectedTaskId
     });
     selectedTaskId = syncSelection.selectedTaskId;
-    if (refreshErrors.length) {
-      setNotice('error', 'Sync incomplete', refreshErrors.join(' '));
-    }
   };
 
   const refreshState = () => {
@@ -557,13 +617,14 @@
       const approvalRequest = withRefreshTimeout('Approvals', client.listApprovals());
       const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
       const agentRequest = withRefreshTimeout('Agents', client.listAgents());
+      const settingsRequest = withRefreshTimeout('Settings', client.getSettings());
       try {
         const taskResult = await Promise.resolve(taskRequest).then(
           (value) => ({ status: 'fulfilled' as const, value }),
           (reason) => ({ status: 'rejected' as const, reason })
         );
         if (sequence !== refreshStateSequence) {
-          void Promise.allSettled([approvalRequest, eventRequest, agentRequest]);
+          void Promise.allSettled([approvalRequest, eventRequest, agentRequest, settingsRequest]);
           return;
         }
 
@@ -603,7 +664,8 @@
           {
             approvals: approvalRequest,
             events: eventRequest,
-            agents: agentRequest
+            agents: agentRequest,
+            settings: settingsRequest
           },
           nextTasks,
           refreshErrors
@@ -727,6 +789,37 @@
 
   const mergeQueueMoveKey = (taskId: string, direction: MergeQueueDirection) =>
     `merge-queue:${taskId}:${direction}`;
+
+  const setAutoMerge = async (next: boolean) => {
+    if (autoMergeSaving) {
+      return;
+    }
+    const previous = autoMergeEnabled;
+    autoMergeEnabled = next;
+    autoMergeSaving = true;
+    autoMergeIssue = '';
+    clearNotice();
+    try {
+      const response = await client.updateSettings({ auto_merge_enabled: next });
+      autoMergeEnabled = Boolean(response.settings.auto_merge_enabled);
+      setNotice(
+        'success',
+        'Auto merge updated',
+        autoMergeEnabled
+          ? 'homelabd will merge reviewed queue-head tasks automatically.'
+          : 'homelabd will wait for manual merge approval.'
+      );
+      await refreshState();
+    } catch (err) {
+      autoMergeEnabled = previous;
+      autoMergeIssue = errorMessage(err, 'Unable to update auto merge.');
+      setNotice('error', 'Auto merge failed', autoMergeIssue);
+    } finally {
+      autoMergeSaving = false;
+    }
+  };
+
+  const toggleAutoMerge = () => setAutoMerge(!autoMergeEnabled);
 
   const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
     if (mergeQueueLoading) {
@@ -880,6 +973,9 @@
     if (operation === 'delete' && currentTask && deleteConfirmTaskId === currentTask.id) {
       return 'Confirm delete';
     }
+    if (operation === 'cancel') {
+      return currentTask?.status === 'running' ? 'Stop worker' : 'Cancel task';
+    }
     return taskOperationLabel(operation);
   };
 </script>
@@ -897,7 +993,7 @@
       <header class="task-header">
         <div>
           <p>Task queue</p>
-          <h1>{needsActionTotal} need action</h1>
+          <h1>{needsActionTotal} need attention</h1>
           <span>Synced {lastRefresh || 'never'}</span>
         </div>
         <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
@@ -917,7 +1013,7 @@
 
       <section class="triage" aria-label="Task filters">
         {#each [
-          { id: 'attention', label: 'Needs action', count: needsActionTotal },
+          { id: 'attention', label: 'Attention', count: needsActionTotal },
           { id: 'active', label: 'Running', count: activeTaskItems.length },
           { id: 'all', label: 'All', count: tasks.length }
         ] as filter}
@@ -943,9 +1039,27 @@
       <details class="merge-queue" aria-label="Merge queue" open>
         <summary>
           <span>Merge queue</span>
+          <button
+            type="button"
+            class:active={autoMergeEnabled}
+            class:busy={autoMergeSaving}
+            class="auto-merge-toggle"
+            title="Automatically merge reviewed queue-head tasks"
+            role="switch"
+            aria-checked={autoMergeEnabled}
+            aria-label="Auto merge reviewed queue-head tasks"
+            disabled={autoMergeSaving}
+            on:click|stopPropagation={toggleAutoMerge}
+          >
+            <span>Auto</span>
+            <i aria-hidden="true"></i>
+          </button>
           <strong>{mergeQueueItems.length}</strong>
           <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
         </summary>
+        {#if autoMergeIssue}
+          <p class="merge-queue-note">{autoMergeIssue}</p>
+        {/if}
         {#if mergeQueueItems.length}
           <ol>
             {#each mergeQueueItems as item, index}
@@ -1009,7 +1123,11 @@
               class:selected={currentTask?.id === task.id}
               on:click={() => selectTask(task.id)}
             >
-              <span class={`dot ${taskTone(task)}`} aria-hidden="true"></span>
+              <span
+                class={`dot ${taskTone(task)}`}
+                class:pulse={taskShowsActivity(task)}
+                aria-hidden="true"
+              ></span>
               <span class="task-copy">
                 <strong>{taskSummaryTitle(task, 84)}</strong>
                 <small>
@@ -1140,9 +1258,13 @@
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
             <header class="decision-header">
               <div class="decision-copy">
-                <span class={`dot ${taskTone(currentTask)}`} aria-hidden="true"></span>
+                <span
+                  class={`dot ${taskTone(currentTask)}`}
+                  class:pulse={taskShowsActivity(currentTask)}
+                  aria-hidden="true"
+                ></span>
                 <div>
-                  <p>Next action</p>
+                  <p>{actionPanelLabel(currentPrimaryAction)}</p>
                   <h3>{currentPrimaryAction.label}</h3>
                   <span>{currentPrimaryAction.detail}</span>
                 </div>
@@ -1159,10 +1281,6 @@
                     : approvalLoading === approvalLoadingKey(currentPrimaryAction.operation, currentPrimaryAction.approval.id)
                       ? 'Approving'
                       : currentPrimaryAction.label}
-                </button>
-              {:else}
-                <button type="button" class="primary-action" disabled={refreshing} on:click={() => void refreshState()}>
-                  {refreshing ? 'Syncing' : 'Sync'}
                 </button>
               {/if}
             </header>
@@ -1199,7 +1317,7 @@
 
             {#if currentSecondaryOperations.length || currentPendingApproval}
               <div class="secondary-actions" aria-label="Secondary task actions">
-                <p>Other actions</p>
+                <p>Manual controls</p>
                 <div class="secondary-action-row">
                   {#if currentPendingApproval}
                     <button
@@ -1270,7 +1388,7 @@
                   <strong>{statusLabel(currentTask.status)}</strong>
                 </div>
                 <p>{taskStateDescription(currentTask.status)}</p>
-                <small>Next: {taskStateTransitions(currentTask.status)}</small>
+                <small>{taskOperatorGuidance(currentTask)}</small>
               </section>
 
               {#if currentTask.auto_recovery_attempts}
@@ -1518,14 +1636,23 @@
               <strong>{currentTaskRuns.length} run{currentTaskRuns.length === 1 ? '' : 's'}</strong>
             </summary>
 
-            {#if currentTaskRuns.length === 0}
+            {#if workerRunsIssue && currentTaskRuns.length === 0}
+              <p class="empty">Worker trace is still catching up. The page will retry on the next sync.</p>
+            {:else if currentTaskRuns.length === 0}
               <p class="empty">No external worker runs recorded for this task.</p>
             {:else}
+              {#if workerRunsIssue}
+                <p class="empty compact">Worker trace is still catching up. The page will retry on the next sync.</p>
+              {/if}
               <div class="run-list">
                 {#each currentTaskRuns as run}
                   <article class={`worker-run ${runStatusTone(run)}`}>
                     <header>
-                      <span class={`dot ${runStatusTone(run)}`} aria-hidden="true"></span>
+                      <span
+                        class={`dot ${runStatusTone(run)}`}
+                        class:pulse={run.active || run.status === 'running'}
+                        aria-hidden="true"
+                      ></span>
                       <div>
                         <strong>{run.backend}</strong>
                         <small>{shortID(run.id)} / {run.status} / {compactTime(run.startedAt)}</small>
@@ -1954,7 +2081,7 @@
 
   .merge-queue summary {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     align-items: center;
     gap: 0.45rem;
     min-height: 2.25rem;
@@ -1970,7 +2097,7 @@
     display: none;
   }
 
-  .merge-queue summary span {
+  .merge-queue summary > span {
     overflow: hidden;
     color: var(--muted, #64748b);
     font-size: 0.72rem;
@@ -1979,6 +2106,80 @@
     text-overflow: ellipsis;
     text-transform: uppercase;
     white-space: nowrap;
+  }
+
+  .auto-merge-toggle {
+    display: inline-grid;
+    grid-template-columns: auto auto;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    color: var(--muted, #64748b);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .auto-merge-toggle span {
+    color: inherit;
+    font-size: 0.68rem;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .auto-merge-toggle i {
+    display: block;
+    position: relative;
+    width: 2rem;
+    height: 1.12rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #e2e8f0;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      box-shadow 140ms ease;
+  }
+
+  .auto-merge-toggle i::after {
+    content: '';
+    position: absolute;
+    top: 0.12rem;
+    left: 0.12rem;
+    width: 0.78rem;
+    height: 0.78rem;
+    border-radius: 999px;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.22);
+    transition: transform 140ms ease;
+  }
+
+  .auto-merge-toggle.active {
+    color: #14532d;
+  }
+
+  .auto-merge-toggle.active i {
+    border-color: #16a34a;
+    background: #22c55e;
+  }
+
+  .auto-merge-toggle.active i::after {
+    transform: translateX(0.86rem);
+  }
+
+  .auto-merge-toggle:focus-visible i {
+    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.18);
+  }
+
+  .auto-merge-toggle:disabled {
+    pointer-events: none;
+  }
+
+  .auto-merge-toggle.busy {
+    cursor: progress;
+    opacity: 0.72;
   }
 
   .merge-queue summary strong {
@@ -1999,6 +2200,16 @@
     font-weight: 800;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .merge-queue-note {
+    margin: 0;
+    padding: 0.45rem 0.65rem;
+    border-top: 1px solid var(--border-soft, #e2e8f0);
+    color: #92400e;
+    background: #fffbeb;
+    font-size: 0.72rem;
+    line-height: 1.35;
   }
 
   .merge-queue ol {
@@ -2153,33 +2364,60 @@
   }
 
   .dot {
+    --pulse-ring: rgb(148 163 184 / 0.18);
+    --pulse-ring-wide: rgb(148 163 184 / 0.09);
     flex: 0 0 auto;
+    position: relative;
     width: 0.72rem;
     height: 0.72rem;
     margin-top: 0.22rem;
     border-radius: 999px;
     background: #94a3b8;
-    box-shadow: 0 0 0 3px rgb(148 163 184 / 0.18);
+    box-shadow: 0 0 0 3px var(--pulse-ring);
   }
 
   .dot.red {
+    --pulse-ring: rgb(239 68 68 / 0.18);
+    --pulse-ring-wide: rgb(239 68 68 / 0.09);
     background: #ef4444;
-    box-shadow: 0 0 0 3px rgb(239 68 68 / 0.18);
   }
 
   .dot.amber {
+    --pulse-ring: rgb(245 158 11 / 0.2);
+    --pulse-ring-wide: rgb(245 158 11 / 0.1);
     background: #f59e0b;
-    box-shadow: 0 0 0 3px rgb(245 158 11 / 0.2);
   }
 
   .dot.blue {
+    --pulse-ring: rgb(59 130 246 / 0.18);
+    --pulse-ring-wide: rgb(59 130 246 / 0.09);
     background: #3b82f6;
-    box-shadow: 0 0 0 3px rgb(59 130 246 / 0.18);
   }
 
   .dot.green {
+    --pulse-ring: rgb(34 197 94 / 0.18);
+    --pulse-ring-wide: rgb(34 197 94 / 0.09);
     background: #22c55e;
-    box-shadow: 0 0 0 3px rgb(34 197 94 / 0.18);
+  }
+
+  .dot.pulse {
+    animation: activity-ring 2.4s ease-in-out infinite;
+  }
+
+  @keyframes activity-ring {
+    0%,
+    100% {
+      box-shadow: 0 0 0 3px var(--pulse-ring);
+    }
+    50% {
+      box-shadow: 0 0 0 6px var(--pulse-ring-wide);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot.pulse {
+      animation: none;
+    }
   }
 
   .empty {

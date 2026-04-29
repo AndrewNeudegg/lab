@@ -146,6 +146,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
 - `/chat` attachments: the composer supports desktop file picking, mobile file picking, and drag-and-drop into the composer. Attachment chips show the file name, media type, and size before send; sent messages keep visible attachment metadata. The API receives attachment data with the chat message so task-creation commands and LLM context can include the uploaded evidence.
+- `/chat` failed sends: keep the user's message in the transcript, tint the bubble neutral grey, and show a small `Message failed to send` status with a resend control on that message. Do not show a detached page-level send error for transient connectivity failures; the recovery action belongs beside the failed message.
 - Help task capture: the mobile navbar `Help` button records the current URL, page title, viewport, visible page text, active element, selected text, and recent click/change actions. It attempts a screenshot through the browser screen-capture permission flow and then opens a dialog for the operator's extra detail. `Submit help task` creates a normal local task with `browser-context.json` and any screenshot as task attachments.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
@@ -164,6 +165,8 @@ Do not rely on colour alone. Always show the status text next to the coloured in
 ## Network Resilience
 
 Dashboard API reads are retry-tolerant for commute-grade connections. The shared web client retries safe `GET` and `HEAD` requests after transient fetch failures, `408`, `429`, and `5xx` responses, with a short backoff. Unsafe writes such as chat commands, task creation, cancellation, and retries are not automatically replayed because they can change server state.
+
+Chat send failures are recoverable from the transcript. A failed user bubble keeps the original content and attachments visible, shows `Message failed to send`, and exposes a resend button so the operator can retry once connectivity returns.
 
 The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the next manual or scheduled sync waits for the same result instead of starting another batch. Keep existing task data visible during a failed refresh so operators can continue reading the last known state.
 

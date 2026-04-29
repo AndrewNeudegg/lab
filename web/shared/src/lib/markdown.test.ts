@@ -14,7 +14,7 @@ describe('renderMarkdown', () => {
 
   test('renders mermaid fences as diagram containers with escaped fallback source', () => {
     expect(renderMarkdown('```mermaid\ngraph TD\n  A["<safe>"] --> B\n```')).toBe(
-      '<figure class="mermaid-diagram" data-mermaid-source="graph TD\n  A[&quot;&lt;safe&gt;&quot;] --&gt; B"><pre><code class="language-mermaid">graph TD\n  A[&quot;&lt;safe&gt;&quot;] --&gt; B</code></pre></figure>'
+      '<figure class="mermaid-diagram" data-mermaid-source="graph TD\n  A[&quot;&lt;safe&gt;&quot;] --&gt; B" data-mermaid-status="pending"><div class="mermaid-output" role="img" aria-label="Mermaid diagram" hidden></div><pre><code class="language-mermaid">graph TD\n  A[&quot;&lt;safe&gt;&quot;] --&gt; B</code></pre></figure>'
     );
   });
 

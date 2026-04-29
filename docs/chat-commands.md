@@ -4,6 +4,12 @@
 
 From a terminal, use `homelabctl shell` for interactive chat-command operation, or `homelabctl message <text>` for a single message. The CLI is documented in `docs/homelabctl.md` and should be kept current with this command surface.
 
+## Markdown And Mermaid Diagrams
+
+Dashboard chat renders Markdown replies with Mermaid fenced diagram support. Agents should use Mermaid when a compact workflow, state machine, dependency graph, architecture, or handoff diagram would help a human or another machine understand the answer faster.
+
+The dashboard applies the homelabd brand diagram palette automatically. Light diagrams use `#f8fafc` background, `#ffffff` surface, `#2563eb` primary, `#0f766e` secondary, and `#172033` text. Dark diagrams use `#0f172a` background, `#111827` surface, `#60a5fa` primary, `#2dd4bf` secondary, and `#e2e8f0` text. Do not include Mermaid init directives that override the theme. Invalid diagrams fall back to their source block so the syntax can be corrected. See [Diagramming And Brand Colours](/docs/diagramming-and-brand-colours).
+
 ## Reflection
 
 Use reflection when you want one improvement from the recent interaction and a follow-up task you can action:
@@ -50,10 +56,6 @@ delegate <task_id> to codex
 ```
 
 Dashboard chat messages can include attachments. Use the `Attach` button on desktop or mobile, or drag files into the composer on desktop. When a chat message creates a task, the attachment metadata and text previews are included in the task context; direct dashboard help reports store the uploaded files and captured browser context on the task record.
-
-## Mermaid Diagrams
-
-Chat replies and docs can include Mermaid diagrams by using fenced `mermaid` code blocks. Use them when a workflow, state machine, dependency map, or system interaction would be clearer visually than as prose alone. The dashboard renders Mermaid in both light and dark mode with the homelabd brand palette; invalid diagrams fall back to the source block so the syntax can be corrected. See [Diagramming And Brand Colours](/docs/diagramming-and-brand-colours).
 
 ## Task Review And Restart Gates
 
@@ -186,8 +188,8 @@ delegate 793f04ec to codex implement the task again from current main
 
 `refresh <task_id>` resets the task worktree branch to the current repository `main` commit and leaves the task blocked for explicit redelegation. Use it when repeated review or approval attempts report premerge conflicts from old branch state and the original task changes are no longer worth preserving.
 
-Use `retry <task_id>` or `delegate <task_id> to codex ...` first when you want to preserve the existing task work. For conflict-resolution and premerge-failure states, `homelabd` carries the previous failure text into the worker prompt and prepares the isolated task worktree by merging current `main` when the worktree is clean. If that merge conflicts, the worker receives the actual unmerged files to resolve.
+Use `retry <task_id>` or `delegate <task_id> to codex ...` when you want to preserve the existing task work and force an immediate worker attempt. The task supervisor also starts automatic recovery for conflict-resolution and retryable premerge-failure states. In both paths, `homelabd` carries the previous failure text into the worker prompt and prepares the isolated task worktree by merging current `main` when the worktree is clean. If that merge conflicts, the worker receives the actual unmerged files to resolve.
 
-`approve <approval_id>` still executes a pending approval. For merge approvals, the Orchestrator first attempts to reconcile the task branch with current `main`; conflicts move the task to `conflict_resolution` for manual fixes and no merge is applied.
+`approve <approval_id>` still executes a pending approval. For merge approvals, the Orchestrator first attempts to reconcile the task branch with current `main`; conflicts move the task to `conflict_resolution`, automatic recovery is queued, and no merge is applied. Re-approving an already failed merge approval queues recovery or review instead of reporting the dead approval as granted.
 
 Remote tasks do not have a control-plane task worktree; use `reopen <task_id> <reason>` to queue follow-up work for the same remote target.

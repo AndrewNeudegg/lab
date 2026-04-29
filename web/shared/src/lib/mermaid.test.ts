@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { brandDiagramPalettes, mermaidConfigForTheme, mermaidThemeVariables } from './mermaid';
+import { brandDiagramPalettes } from './brand';
+import { mermaidConfigForTheme, mermaidThemeVariables } from './mermaid';
 
 describe('mermaid brand configuration', () => {
   test('uses the dashboard brand palettes for light and dark diagrams', () => {
-    expect(brandDiagramPalettes.light.accent).toBe('#2563eb');
-    expect(brandDiagramPalettes.dark.accent).toBe('#60a5fa');
+    expect(brandDiagramPalettes.light.primary).toBe('#2563eb');
+    expect(brandDiagramPalettes.dark.primary).toBe('#60a5fa');
   });
 
   test('maps brand colours into Mermaid theme variables', () => {
@@ -12,13 +13,13 @@ describe('mermaid brand configuration', () => {
       primaryBorderColor: '#2563eb',
       lineColor: '#2563eb',
       textColor: '#172033',
-      background: '#ffffff'
+      background: '#f8fafc'
     });
     expect(mermaidThemeVariables('dark')).toMatchObject({
       primaryBorderColor: '#60a5fa',
       lineColor: '#60a5fa',
-      textColor: '#dbe7f6',
-      background: '#172033'
+      textColor: '#e2e8f0',
+      background: '#0f172a'
     });
   });
 

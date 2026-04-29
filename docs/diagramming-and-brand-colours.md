@@ -23,19 +23,15 @@ The dashboard renderer applies the homelabd palette automatically to Mermaid dia
 
 Light palette:
 
-- Background `#f5f7fb`, surface `#ffffff`, muted surface `#f8fafc`, hover surface `#eef5ff`
-- Text `#172033`, strong text `#0f172a`, muted text `#64748b`
-- Border `#cbd5e1`, soft border `#dbe3ef`
-- Accent `#2563eb`, accent hover `#1d4ed8`
-- Success `#bbf7d0`, warning `#fde68a`, danger `#991b1b`
+- Background `#f8fafc`, surface `#ffffff`, primary `#2563eb`, secondary `#0f766e`
+- Success `#16a34a`, warning `#d97706`, danger `#dc2626`
+- Text `#172033`, muted text `#64748b`, border `#cbd5e1`
 
 Dark palette:
 
-- Background `#0b1120`, surface `#172033`, muted surface `#1f2937`, hover surface `#243047`
-- Text `#dbe7f6`, strong text `#f8fafc`, muted text `#9fb0c7`
-- Border `#334155`, soft border `#263244`
-- Accent `#60a5fa`, accent hover `#3b82f6`
-- Success `#1f6f4a`, warning `#854d0e`, danger `#fecaca`
+- Background `#0f172a`, surface `#111827`, primary `#60a5fa`, secondary `#2dd4bf`
+- Success `#4ade80`, warning `#fbbf24`, danger `#f87171`
+- Text `#e2e8f0`, muted text `#94a3b8`, border `#334155`
 
 ## Authoring Rules
 
@@ -43,3 +39,5 @@ Dark palette:
 - Let the renderer supply light and dark colours. Avoid embedded `init` blocks unless the task explicitly requires a Mermaid option, and then keep colours aligned with the palette above.
 - Use `flowchart` for task or system flows, `stateDiagram-v2` for lifecycles, `sequenceDiagram` for interactions, and `graph` for dependencies.
 - Include a short text explanation before or after the diagram so the meaning remains available to search, screen readers, and plain-text tools.
+
+Related: `AGENTS.md`, `docs/chat-commands.md`, `docs/dashboard.md`, and `docs/task-workflow.md`.

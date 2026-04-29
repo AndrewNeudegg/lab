@@ -55,6 +55,10 @@ Add supervised apps under `supervisord.apps` in `config.json`:
         "command": "bun",
         "args": ["run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"],
         "working_dir": "web/dashboard",
+        "pre_start_command": "bun",
+        "pre_start_args": ["install", "--frozen-lockfile"],
+        "pre_start_working_dir": "web",
+        "pre_start_timeout_seconds": 300,
         "start_order": 30,
         "auto_start": true,
         "restart": "on_failure",
@@ -69,6 +73,8 @@ Add supervised apps under `supervisord.apps` in `config.json`:
 Run `supervisord` from the same environment that should run the apps. In development that means `nix develop`, because the flake provides `go`, `bun`, and the agent CLIs. The supervisor config should not contain `nix develop` wrappers; it should describe the app process itself.
 
 `restart_command` and `restart_args` describe how `supervisord` restarts itself. In development this should re-run `go run ./cmd/supervisord` from the existing dev shell so code changes are picked up. In production it should point at the installed `supervisord` binary or a service manager wrapper.
+
+`pre_start_command` and `pre_start_args` run before an app starts or restarts. The default dashboard app runs `bun install --frozen-lockfile` from `web/` before Vite starts, so a merge that changes `web/bun.lock` cannot restart the dashboard against stale `node_modules`. If the pre-start command fails or times out, the app start fails and any post-merge restart gate remains failed instead of reporting a false healthy state.
 
 `log_dir` stores per-app output logs. Each managed app writes `<app>.stdout.log` and `<app>.stderr.log`; stderr lines are also queued and pushed to `healthd` as application errors. The default is `data/supervisord/logs`.
 

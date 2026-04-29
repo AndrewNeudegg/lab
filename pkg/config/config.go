@@ -134,17 +134,21 @@ type SupervisordConfig struct {
 }
 
 type SupervisorAppConfig struct {
-	Name               string            `json:"name"`
-	Type               string            `json:"type,omitempty"`
-	Command            string            `json:"command"`
-	Args               []string          `json:"args,omitempty"`
-	WorkingDir         string            `json:"working_dir,omitempty"`
-	Env                map[string]string `json:"env,omitempty"`
-	StartOrder         int               `json:"start_order"`
-	AutoStart          bool              `json:"auto_start"`
-	Restart            string            `json:"restart,omitempty"`
-	HealthURL          string            `json:"health_url,omitempty"`
-	ShutdownTimeoutSec int               `json:"shutdown_timeout_seconds,omitempty"`
+	Name                   string            `json:"name"`
+	Type                   string            `json:"type,omitempty"`
+	Command                string            `json:"command"`
+	Args                   []string          `json:"args,omitempty"`
+	WorkingDir             string            `json:"working_dir,omitempty"`
+	Env                    map[string]string `json:"env,omitempty"`
+	PreStartCommand        string            `json:"pre_start_command,omitempty"`
+	PreStartArgs           []string          `json:"pre_start_args,omitempty"`
+	PreStartWorkingDir     string            `json:"pre_start_working_dir,omitempty"`
+	PreStartTimeoutSeconds int               `json:"pre_start_timeout_seconds,omitempty"`
+	StartOrder             int               `json:"start_order"`
+	AutoStart              bool              `json:"auto_start"`
+	Restart                string            `json:"restart,omitempty"`
+	HealthURL              string            `json:"health_url,omitempty"`
+	ShutdownTimeoutSec     int               `json:"shutdown_timeout_seconds,omitempty"`
 }
 
 type ExternalAgentConfig struct {
@@ -304,16 +308,20 @@ func Default() Config {
 					ShutdownTimeoutSec: 15,
 				},
 				{
-					Name:               "dashboard",
-					Type:               "web",
-					Command:            "bun",
-					Args:               []string{"run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"},
-					WorkingDir:         "web/dashboard",
-					StartOrder:         30,
-					AutoStart:          false,
-					Restart:            "on_failure",
-					HealthURL:          "http://127.0.0.1:5173/chat",
-					ShutdownTimeoutSec: 10,
+					Name:                   "dashboard",
+					Type:                   "web",
+					Command:                "bun",
+					Args:                   []string{"run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"},
+					WorkingDir:             "web/dashboard",
+					PreStartCommand:        "bun",
+					PreStartArgs:           []string{"install", "--frozen-lockfile"},
+					PreStartWorkingDir:     "web",
+					PreStartTimeoutSeconds: 300,
+					StartOrder:             30,
+					AutoStart:              false,
+					Restart:                "on_failure",
+					HealthURL:              "http://127.0.0.1:5173/chat",
+					ShutdownTimeoutSec:     10,
 				},
 				{
 					Name:               "homelab-agent",

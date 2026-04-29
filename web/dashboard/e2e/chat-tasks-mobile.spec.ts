@@ -86,10 +86,10 @@ const mockTaskApi = async (page: Page) => {
     }
   ];
 
-  await page.route('**/api/tasks', async (route) => {
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks } });
   });
-  await page.route('**/api/approvals', async (route) => {
+  await page.route(/\/api\/approvals(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { approvals: [approvalFor(tasks[0].id)] } });
   });
   await page.route('**/api/events?**', async (route) => {
@@ -251,48 +251,48 @@ test('chat renders Mermaid diagrams with the brand palette in light and dark mod
   await page.route('**/api/message', async (route) => {
     await route.fulfill({
       json: {
-        reply: [
-          'Here is the flow.',
-          '',
-          '```mermaid',
-          'flowchart LR',
-          '  User[Operator] --> Chat[Chat]',
-          '  Chat --> Agent[Agent]',
-          '```'
-        ].join('\n'),
+        reply:
+          'diagram-regression\n\n```mermaid\nflowchart LR\n  A[Request] --> B[Task]\n  B --> C[Review]\n```',
         source: 'program'
       }
     });
   });
   await page.goto('/chat');
-  await page.getByRole('textbox', { name: 'Message' }).fill('show the flow');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  await page.getByRole('textbox', { name: 'Message' }).fill('show me the task flow');
   await page.getByRole('button', { name: 'Send' }).click();
 
-  const diagram = page.locator('.message .mermaid-diagram svg').last();
-  await expect(diagram).toBeVisible();
-  await expect
-    .poll(() => diagram.evaluate((element) => element.outerHTML))
-    .toContain('#2563eb');
+  const message = page.locator('.message').filter({ hasText: 'diagram-regression' });
+  const diagram = message.locator('.mermaid-diagram');
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  const svg = diagram.locator('svg');
+  await expect(svg).toBeVisible();
+  await expect.poll(() => svg.evaluate((element) => element.outerHTML)).toContain('#2563eb');
 
   await page.getByRole('button', { name: 'Menu' }).click();
   const darkToggle = page.getByRole('button', { name: /Switch to dark mode/ });
   await expect(darkToggle).toHaveAttribute('data-theme-toggle-ready', 'true');
   await darkToggle.click();
-  await expect
-    .poll(() => diagram.evaluate((element) => element.outerHTML))
-    .toContain('#60a5fa');
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect.poll(() => svg.evaluate((element) => element.outerHTML)).toContain('#60a5fa');
 
-  const overflow = await page.evaluate(() => ({
+  const metrics = await diagram.evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
     bodyWidth: document.body.scrollWidth,
     viewport: window.innerWidth
   }));
-  expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+  expect(metrics.scrollWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(
+    metrics.clientWidth + 2
+  );
+  expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
 });
 
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {
   await mockScreenCapture(page);
   let requestBody: any;
-  await page.route('**/api/tasks', async (route) => {
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     requestBody = JSON.parse(route.request().postData() || '{}');
     await route.fulfill({ status: 201, json: { reply: 'created help task' } });
   });

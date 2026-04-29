@@ -242,6 +242,247 @@ func TestPlainWorkRequestIntent(t *testing.T) {
 	}
 }
 
+func TestMergeQueueReviewWaitsForHead(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	firstID := "task_merge_queue_first_11111111"
+	secondID := "task_merge_queue_second_22222222"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  firstID,
+			Title:               "first",
+			Goal:                "first",
+			Status:              taskstore.StatusReadyForReview,
+			AssignedTo:          "codex",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  secondID,
+			Title:               "second",
+			Goal:                "second",
+			Status:              taskstore.StatusReadyForReview,
+			AssignedTo:          "codex",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.reviewTask(context.Background(), secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "position 2") || !strings.Contains(reply, "head of the merge queue") {
+		t.Fatalf("reply = %q, want queued merge review explanation", reply)
+	}
+	updated, err := orch.tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusReadyForReview {
+		t.Fatalf("status = %q, want ready_for_review", updated.Status)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 0 {
+		t.Fatalf("approvals = %#v, want none for non-head review", approvals)
+	}
+}
+
+func TestMoveTaskInMergeQueueReordersPositions(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	firstID := "task_merge_queue_move_first"
+	secondID := "task_merge_queue_move_second"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  firstID,
+			Title:               "first",
+			Goal:                "first",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  secondID,
+			Title:               "second",
+			Goal:                "second",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.moveTaskInMergeQueue(context.Background(), secondID, "up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "position 1") {
+		t.Fatalf("reply = %q, want new position", reply)
+	}
+	first, err := orch.tasks.Load(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := orch.tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.MergeQueuePosition != 1 || first.MergeQueuePosition != 2 {
+		t.Fatalf("positions: first=%d second=%d, want first=2 second=1", first.MergeQueuePosition, second.MergeQueuePosition)
+	}
+}
+
+func TestMergeQueueRestartGateCannotMoveDown(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	restartID := "task_merge_queue_restart_gate"
+	waitingID := "task_merge_queue_waiting_approval"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  restartID,
+			Title:               "restart",
+			Goal:                "restart",
+			Status:              taskstore.StatusAwaitingRestart,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  waitingID,
+			Title:               "waiting",
+			Goal:                "waiting",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.moveTaskInMergeQueue(context.Background(), restartID, "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "post-merge restarts") {
+		t.Fatalf("reply = %q, want restart gate explanation", reply)
+	}
+	restartTask, err := orch.tasks.Load(restartID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitingTask, err := orch.tasks.Load(waitingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restartTask.MergeQueuePosition != 1 || waitingTask.MergeQueuePosition != 2 {
+		t.Fatalf("positions: restart=%d waiting=%d, want restart=1 waiting=2", restartTask.MergeQueuePosition, waitingTask.MergeQueuePosition)
+	}
+}
+
+func TestApprovalRequiresMergeQueueHead(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	firstID := "task_merge_queue_approval_first"
+	secondID := "task_merge_queue_approval_second"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  firstID,
+			Title:               "first",
+			Goal:                "first",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  secondID,
+			Title:               "second",
+			Goal:                "second",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := approvalstore.Request{
+		ID:     "approval_merge_queue_second",
+		TaskID: secondID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "position 2") || !strings.Contains(reply, "Move it to the top") {
+		t.Fatalf("reply = %q, want queue position gate", reply)
+	}
+	updatedApproval, err := orch.approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusPending {
+		t.Fatalf("approval status = %q, want pending", updatedApproval.Status)
+	}
+	updatedTask, err := orch.tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTask.Status != taskstore.StatusAwaitingApproval {
+		t.Fatalf("task status = %q, want awaiting_approval", updatedTask.Status)
+	}
+}
+
 func TestParseDelegateCommandNaturalForm(t *testing.T) {
 	selector, backend, instruction, ok := parseDelegateCommand([]string{"delegate", "the", "bun", "task", "to", "codex"})
 	if !ok {
@@ -2020,6 +2261,42 @@ func TestPostMergeRestartFailureKeepsTaskAwaitingRestart(t *testing.T) {
 	}
 }
 
+func TestReconcileDoesNotAutoRetryFailedPostMergeRestart(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	supervisor, calls := newRestartGateSupervisor(t, false)
+	defer supervisor.Close()
+	orch.cfg.Supervisord.Addr = supervisor.URL
+	setSupervisorAppHealthURL(t, &orch.cfg, "dashboard", supervisor.URL+"/health/dashboard")
+
+	task := taskstore.Task{
+		ID:               "task_20260429_091500_deadbeef",
+		Title:            "restart failed",
+		Goal:             "restart failed",
+		Status:           taskstore.StatusAwaitingRestart,
+		AssignedTo:       "OrchestratorAgent",
+		RestartRequired:  []string{"dashboard"},
+		RestartStatus:    taskstore.RestartStatusFailed,
+		RestartCurrent:   "dashboard",
+		RestartLastError: "connection refused",
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 {
+		t.Fatalf("recovered = %d, want no automatic retry for failed restart gate", recovered)
+	}
+	if got := calls.snapshot(); len(got) != 0 {
+		t.Fatalf("supervisor calls = %#v, want no retry", got)
+	}
+}
+
 func TestApprovalMergeFailureReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeFailStub{}); err != nil {
@@ -2238,11 +2515,14 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
-	defer close(releaseDelegate)
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
 	})
+	defer func() {
+		close(releaseDelegate)
+		waitForTaskInactive(t, orch, "task_20260428_200514_0d62653b")
+	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
 	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260428_200514_0d62653b")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -2298,11 +2578,14 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
-	defer close(releaseDelegate)
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
 	})
+	defer func() {
+		close(releaseDelegate)
+		waitForTaskInactive(t, orch, "task_20260429_065348_8f7391fb")
+	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
 	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260429_065348_8f7391fb")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -3954,6 +4237,7 @@ func TestReconcileQueuedTasksStartsWorker(t *testing.T) {
 	}
 	close(releaseDelegate)
 	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+	waitForTaskInactive(t, orch, taskID)
 }
 
 func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
@@ -4007,6 +4291,7 @@ func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
 	}
 	close(releaseDelegate)
 	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+	waitForTaskInactive(t, orch, taskID)
 }
 
 func TestRecoveryPlanPreservesUXAgent(t *testing.T) {
@@ -4367,6 +4652,18 @@ func waitForTask(t *testing.T, orch *Orchestrator, taskID string, done func(task
 	}
 	t.Fatalf("timed out waiting for task %s; last = %#v", taskID, last)
 	return taskstore.Task{}
+}
+
+func waitForTaskInactive(t *testing.T, orch *Orchestrator, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !orch.taskActive(taskID) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task %s to become inactive", taskID)
 }
 
 func writeTestRepoFile(t *testing.T, root, rel, content string) {

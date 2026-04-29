@@ -4,6 +4,12 @@
 
 From a terminal, use `homelabctl shell` for interactive chat-command operation, or `homelabctl message <text>` for a single message. The CLI is documented in `docs/homelabctl.md` and should be kept current with this command surface.
 
+## Markdown And Mermaid Diagrams
+
+Dashboard chat renders Markdown replies with Mermaid fenced diagram support. Agents should use Mermaid when a compact workflow, state machine, dependency graph, architecture, or handoff diagram would help a human or another machine understand the answer faster.
+
+The dashboard applies the homelabd brand diagram palette automatically. Light diagrams use `#f8fafc` background, `#ffffff` surface, `#2563eb` primary, `#0f766e` secondary, and `#172033` text. Dark diagrams use `#0f172a` background, `#111827` surface, `#60a5fa` primary, `#2dd4bf` secondary, and `#e2e8f0` text. Do not include Mermaid init directives that override the theme.
+
 ## Reflection
 
 Use reflection when you want one improvement from the recent interaction and a follow-up task you can action:

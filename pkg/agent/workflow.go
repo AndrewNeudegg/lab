@@ -380,6 +380,7 @@ func workflowStepPrompt(item workflowstore.Workflow, step workflowstore.Step, pr
 	}
 	lines = append(lines, "Step: "+step.Name)
 	lines = append(lines, "Prompt: "+step.Prompt)
+	lines = append(lines, "Diagram guidance: "+agentDiagramGuidance)
 	if len(previous) > 0 {
 		lines = append(lines, "Previous outputs:")
 		for _, output := range previous {

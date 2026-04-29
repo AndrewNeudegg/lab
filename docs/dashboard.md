@@ -33,6 +33,15 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Desktop: keep local documentation navigation visible on the left, but compact enough that the selected document and on-page table of contents remain the primary reading surface.
 - Mobile: avoid horizontal document carousels. Show a labelled document jump control, visible search, and a vertical document list so operators can discover other pages without guessing that content is off-screen.
 - Search filters titles, paths, summaries, and full Markdown content. Search results show summaries; the default browse view uses short labels for faster scanning.
+- Mermaid fenced diagrams render in docs and chat. The renderer applies the shared homelabd light or dark diagram palette, keeps the original source as a code fallback when rendering fails, and prevents diagram-level theme overrides from replacing the brand colours.
+
+```mermaid
+flowchart LR
+  A[Agent writes Mermaid] --> B[Shared Markdown renderer]
+  B --> C{Dashboard theme}
+  C -->|Light| D[Brand light palette]
+  C -->|Dark| E[Brand dark palette]
+```
 
 ## Research Inputs
 

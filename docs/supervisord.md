@@ -8,7 +8,7 @@ It owns three jobs:
 - stop and restart them with graceful `SIGTERM` before forced `SIGKILL`
 - publish its own heartbeat to `healthd`
 
-Do not use `supervisord` restarts as an agent test harness. Agent browser UAT must start an isolated dev server from the task worktree; the production `dashboard`, `homelabd`, `healthd`, and `supervisord` processes should only be restarted after an explicit operator decision. See `docs/agentic-testing.md`.
+Do not use `supervisord` restarts as an agent test harness. Agent browser UAT must start an isolated dev server from the task worktree. The production `dashboard`, `homelabd`, `healthd`, and `supervisord` processes should only be restarted after an explicit operator decision or by the `homelabd` post-merge restart gate that follows an approved merge. See `docs/agentic-testing.md`.
 
 ## Run
 
@@ -28,7 +28,7 @@ For the local development stack, prefer the wrapper commands:
 
 `stack-start` starts `supervisord`, adopts any already-running `healthd`, `homelabd`, or dashboard process, then starts any missing apps. Dashboard adoption first looks for the process listening on port `5173`, which lets a running UI be brought back under supervisor control without stopping the terminal page. `stack-restart` gracefully stops apps in reverse order, restarts `supervisord`, then starts apps in dependency order. `stack-stop` gracefully stops the apps and then stops `supervisord`.
 
-If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app fails its health check, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
+If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app's health check is unreachable or returns a non-2xx status, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
 
 Start, stop, and restart requests are serialised per app. Repeated API calls while an app is starting, stopping, or restarting update the desired state but do not launch a second copy of the same app.
 

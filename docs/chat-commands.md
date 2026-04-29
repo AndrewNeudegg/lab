@@ -51,6 +51,20 @@ delegate <task_id> to codex
 
 Dashboard chat messages can include attachments. Use the `Attach` button on desktop or mobile, or drag files into the composer on desktop. When a chat message creates a task, the attachment metadata and text previews are included in the task context; direct dashboard help reports store the uploaded files and captured browser context on the task record.
 
+## Task Review And Restart Gates
+
+Use review, approval, restart, verification, and reopen commands to move local tasks through merge safely:
+
+```text
+review <task_id>
+approve <approval_id>
+restart <task_id>
+accept <task_id>
+reopen <task_id> needs rework
+```
+
+`review` records any supervised components that need a restart from the diff. After merge approval, a task with restart requirements moves to `awaiting_restart` and cannot be accepted until `homelabd` has restarted each required component through `supervisord` and seen healthy 2xx responses. Use `restart <task_id>` only when that gate has failed and needs an explicit retry.
+
 ## Workflows
 
 Use workflows for repeatable LLM/tool logic that should live outside one chat turn:

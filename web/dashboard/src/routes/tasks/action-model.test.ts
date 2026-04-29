@@ -58,6 +58,25 @@ describe('task action model', () => {
     );
   });
 
+  test('locks acceptance while post-merge restart is running', () => {
+    const restarting = {
+      ...task('awaiting_restart'),
+      restart_status: 'running',
+      restart_current: 'dashboard'
+    };
+    const failed = {
+      ...task('awaiting_restart'),
+      restart_status: 'failed',
+      restart_last_error: 'dashboard health check failed'
+    };
+
+    expect(primaryTaskAction(restarting, []).type).toBe('none');
+    const action = primaryTaskAction(failed, []);
+    expect(action.type === 'task' && action.operation).toBe('restart');
+    expect(action.detail).toContain('dashboard health check failed');
+    expect(secondaryTaskOperations(restarting, [])).toContain('restart');
+  });
+
   test('keeps destructive actions secondary and out of active worker states', () => {
     expect(secondaryTaskOperations(task('running'), [])).toEqual([]);
     expect(secondaryTaskOperations(task('ready_for_review'), [])).toContain('delete');

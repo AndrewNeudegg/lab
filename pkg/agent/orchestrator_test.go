@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1909,6 +1911,112 @@ func TestApprovedMergeAwaitsVerificationUntilAccepted(t *testing.T) {
 	}
 	if updated.Status != taskstore.StatusDone {
 		t.Fatalf("status = %q, want done", updated.Status)
+	}
+}
+
+func TestApprovedMergeEnforcesRestartBeforeVerification(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
+		t.Fatal(err)
+	}
+	supervisor, calls := newRestartGateSupervisor(t, false)
+	defer supervisor.Close()
+	orch.cfg.Supervisord.Addr = supervisor.URL
+	setSupervisorAppHealthURL(t, &orch.cfg, "dashboard", supervisor.URL+"/health/dashboard")
+
+	task := taskstore.Task{
+		ID:         "task_20260429_083000_abcd1234",
+		Title:      "fix dashboard SSR",
+		Goal:       "fix dashboard SSR",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260429_083000_restart",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260429_083000_abcd1234","restart_required":["dashboard"]}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "enforcing post-merge restarts before verification") {
+		t.Fatalf("reply = %q, want restart gate guidance", reply)
+	}
+	awaiting, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if awaiting.Status != taskstore.StatusAwaitingRestart || awaiting.RestartStatus != taskstore.RestartStatusPending {
+		t.Fatalf("task after approval = %#v, want awaiting restart pending", awaiting)
+	}
+	blockedReply, err := orch.acceptTask(context.Background(), "abcd1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(blockedReply, "still enforcing post-merge restarts") {
+		t.Fatalf("accept reply = %q, want restart gate block", blockedReply)
+	}
+
+	verified := waitForTask(t, orch, task.ID, func(item taskstore.Task) bool {
+		return item.Status == taskstore.StatusAwaitingVerification && item.RestartStatus == taskstore.RestartStatusComplete
+	})
+	if !containsString(verified.RestartCompleted, "dashboard") {
+		t.Fatalf("restart_completed = %#v, want dashboard", verified.RestartCompleted)
+	}
+	if got := calls.snapshot(); !containsString(got, "POST /supervisord/apps/dashboard/restart") {
+		t.Fatalf("supervisor calls = %#v, want dashboard restart", got)
+	}
+}
+
+func TestPostMergeRestartFailureKeepsTaskAwaitingRestart(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	supervisor, _ := newRestartGateSupervisor(t, true)
+	defer supervisor.Close()
+	orch.cfg.Supervisord.Addr = supervisor.URL
+	setSupervisorAppHealthURL(t, &orch.cfg, "dashboard", supervisor.URL+"/health/dashboard")
+
+	task := taskstore.Task{
+		ID:              "task_20260429_090000_deadbeef",
+		Title:           "restart fails",
+		Goal:            "restart fails",
+		Status:          taskstore.StatusAwaitingRestart,
+		AssignedTo:      "OrchestratorAgent",
+		RestartRequired: []string{"dashboard"},
+		RestartStatus:   taskstore.RestartStatusPending,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	err := orch.continuePostMergeRestart(context.Background(), task.ID)
+	if err == nil {
+		t.Fatal("restart gate succeeded, want failure")
+	}
+	updated, loadErr := orch.tasks.Load(task.ID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if updated.Status != taskstore.StatusAwaitingRestart || updated.RestartStatus != taskstore.RestartStatusFailed || updated.RestartCurrent != "dashboard" {
+		t.Fatalf("task = %#v, want awaiting_restart failed on dashboard", updated)
+	}
+	if !strings.Contains(updated.RestartLastError, "500") {
+		t.Fatalf("restart_last_error = %q, want HTTP 500 detail", updated.RestartLastError)
 	}
 }
 
@@ -3991,6 +4099,79 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+type restartGateCalls struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *restartGateCalls) append(call string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, call)
+}
+
+func (c *restartGateCalls) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.calls...)
+}
+
+func newRestartGateSupervisor(t *testing.T, failRestart bool) (*httptest.Server, *restartGateCalls) {
+	t.Helper()
+	calls := &restartGateCalls{}
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		calls.append(req.Method + " " + req.URL.Path)
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/supervisord/apps/dashboard/restart":
+			if failRestart {
+				http.Error(rw, "restart failed", http.StatusInternalServerError)
+				return
+			}
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write([]byte(`{"ok":true}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/health/dashboard":
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write([]byte(`{"ok":true}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/supervisord":
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write([]byte(`{"status":"running"}`))
+		default:
+			http.NotFound(rw, req)
+		}
+	}))
+	return server, calls
+}
+
+func setSupervisorAppHealthURL(t *testing.T, cfg *config.Config, appName, healthURL string) {
+	t.Helper()
+	for i := range cfg.Supervisord.Apps {
+		if cfg.Supervisord.Apps[i].Name == appName {
+			cfg.Supervisord.Apps[i].HealthURL = healthURL
+			return
+		}
+	}
+	t.Fatalf("supervisor app %q not found", appName)
+}
+
+func waitForTask(t *testing.T, orch *Orchestrator, taskID string, done func(taskstore.Task) bool) taskstore.Task {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var last taskstore.Task
+	for time.Now().Before(deadline) {
+		item, err := orch.tasks.Load(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = item
+		if done(item) {
+			return item
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task %s; last = %#v", taskID, last)
+	return taskstore.Task{}
 }
 
 func writeTestRepoFile(t *testing.T, root, rel, content string) {

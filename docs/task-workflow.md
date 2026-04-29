@@ -9,7 +9,8 @@
 - `ready_for_review`: local work is staged in the task worktree, or a remote agent result has been recorded for human acknowledgement. Local next transition: `ready_for_review -> awaiting_approval` when checks and premerge pass, `ready_for_review -> conflict_resolution` when the task branch cannot reconcile with current `main`, or `ready_for_review -> blocked` for other failures. Remote next transition: `ready_for_review -> awaiting_verification` when review acknowledges the remote result.
 - `conflict_resolution`: a local task branch conflicts with current `main` and needs fixes in the task worktree. Next transition: `conflict_resolution -> running` after `retry` or delegation, `conflict_resolution -> ready_for_review` after manual resolution, or deletion/cancellation.
 - `blocked`: review or execution stopped and no worker should be running automatically. Next transition: `blocked -> running` only after an explicit `retry`, `delegate`, `run`, or `reopen`.
-- `awaiting_approval`: checks and premerge passed and a merge approval exists. When approval is triggered, the Orchestrator first tries to reconcile the local task branch with current `main`. Next transition: `awaiting_approval -> awaiting_verification` after approved merge, `awaiting_approval -> conflict_resolution` if auto-rebase fails, `awaiting_approval -> blocked` for other merge failures, or `awaiting_approval -> running` when an operator explicitly retries or delegates more work. Starting that new run marks the old pending approvals stale.
+- `awaiting_approval`: checks and premerge passed and a merge approval exists. When approval is triggered, the Orchestrator first tries to reconcile the local task branch with current `main`. Next transition: `awaiting_approval -> awaiting_restart` when the reviewed diff requires supervised component restarts, `awaiting_approval -> awaiting_verification` when no restart is required, `awaiting_approval -> conflict_resolution` if auto-rebase fails, `awaiting_approval -> blocked` for other merge failures, or `awaiting_approval -> running` when an operator explicitly retries or delegates more work. Starting that new run marks the old pending approvals stale.
+- `awaiting_restart`: the merge has landed and `homelabd` is restarting required supervised components through `supervisord`. The task cannot be accepted while this gate is pending or running. Each component must restart and pass its configured health URL before the task moves to verification; a failed restart leaves the task in `awaiting_restart` with `restart_status=failed`, `restart_current`, and `restart_last_error` so the operator can retry with `restart <task_id>` or `homelabctl task restart <task_id>`.
 - `awaiting_verification`: local task merge has landed in the main repo, or remote task review acknowledged the remote result. The human still needs to verify the running app or the named remote machine/directory. Next transition: `awaiting_verification -> done` via `accept`, or `awaiting_verification -> queued` via `reopen`.
 - `done`: the human accepted the merged result. Terminal state.
 - `cancelled`: work was intentionally stopped. Terminal state.
@@ -40,7 +41,7 @@ New local development tasks are represented by one queued task record and one is
 
 Task records may also include `attachments`. Dashboard help reports use this for `browser-context.json` and screenshots; chat/task creation can attach uploaded files. Attachments store name, media type, byte size, optional text preview, and optional data URL content. The `/tasks` selected-task pane shows attachments in `State and context`, and worker prompts include attachment names plus text previews so evidence is not lost outside the UI.
 
-Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `retry <task_id> codex <instruction>` to continue blocked or conflict work with preserved failure context, `delegate <task_id> to codex` to use an external worker directly, and `accept <task_id>` after verifying the merged result. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat. Long diagnostics such as worker output, activity, the reviewed plan, and the original prompt are collapsible so they remain available without dominating the decision flow.
+Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `retry <task_id> codex <instruction>` to continue blocked or conflict work with preserved failure context, `delegate <task_id> to codex` to use an external worker directly, `restart <task_id>` to retry a failed post-merge restart gate, and `accept <task_id>` after verification is available. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, post-merge restart retry, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat. Long diagnostics such as worker output, activity, the reviewed plan, restart status, and the original prompt are collapsible so they remain available without dominating the decision flow.
 
 Older task records may still contain graph metadata from the previous workflow:
 
@@ -52,7 +53,7 @@ Older task records may still contain graph metadata from the previous workflow:
 
 ## Verification Commands
 
-Use `accept <task_id>` after checking that the merged change works.
+Use `accept <task_id>` after checking that the merged change works. If the task is `awaiting_restart`, acceptance is rejected until the required restart gate has completed and the task has moved to `awaiting_verification`.
 
 Use `reopen <task_id> <reason>` when the merged change needs more work, for example:
 
@@ -72,6 +73,7 @@ go run ./cmd/homelabctl task runs <task_id>
 go run ./cmd/homelabctl task diff <task_id>
 go run ./cmd/homelabctl task review <task_id>
 go run ./cmd/homelabctl approve <approval_id>
+go run ./cmd/homelabctl task restart <task_id>
 go run ./cmd/homelabctl task accept <task_id>
 go run ./cmd/homelabctl task reopen <task_id> "needs rework"
 go run ./cmd/homelabctl task delete <task_id>
@@ -115,6 +117,8 @@ On startup, `homelabd` scans durable task records. Any task still marked `runnin
 - tasks assigned to `OrchestratorAgent` prefer `codex` when it is configured, otherwise they use `CoderAgent`
 
 If a legacy task is still marked `running` but already has a granted `git.merge_approved` approval, recovery treats the merge as landed and moves the task to `awaiting_verification` instead of starting another worker.
+
+If a restart-required task is still `awaiting_restart` after `homelabd` restarts, recovery continues the post-merge restart gate from the durable task record. A `homelabd` self-restart is recorded before the process exits; the next process marks that component complete and continues with any remaining components.
 
 Remote tasks are excluded from local restart recovery. A remote task stays in its target queue for the selected `homelab-agent`, and a running remote task is completed or failed only by that agent's completion callback.
 
@@ -161,6 +165,8 @@ These write tools are high-risk and approval-gated by default. Task review still
 
 Review pending shell requests with `approvals`, then use `approve <approval_id>` or `deny <approval_id>`.
 
-## Restart impact
+## Restart Impact
 
-Local review reports a restart impact line from the diff. Runtime, supervisor, healthd, and dashboard paths are mapped to their supervised components so the merge reply can carry a restart plan into final verification. Accept the task only after the named components have been restarted or verified as hot-reloaded. Remote review cannot infer restart impact from the control-plane diff; verify the named remote machine and directory directly before accepting.
+Local review reports a restart impact line from the diff. Runtime, supervisor, healthd, and dashboard paths are mapped to their supervised components and stored on the task as `restart_required`, with the same list copied into the merge approval payload. After approval, `homelabd` moves the task to `awaiting_restart`, calls `supervisord` restart endpoints for each required component, waits for configured health URLs to return 2xx, and only then moves the task to `awaiting_verification`. `accept` is blocked while the restart gate is pending, running, or failed.
+
+`supervisord` treats non-2xx app health checks as failed, so a dashboard that starts returning 500s after a merge is restarted instead of remaining up in a broken Vite SSR state. Remote review cannot infer restart impact from the control-plane diff; verify the named remote machine and directory directly before accepting.

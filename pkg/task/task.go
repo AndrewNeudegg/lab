@@ -9,10 +9,18 @@ const (
 	StatusConflictResolution   = "conflict_resolution"
 	StatusReadyForReview       = "ready_for_review"
 	StatusAwaitingApproval     = "awaiting_approval"
+	StatusAwaitingRestart      = "awaiting_restart"
 	StatusAwaitingVerification = "awaiting_verification"
 	StatusDone                 = "done"
 	StatusFailed               = "failed"
 	StatusCancelled            = "cancelled"
+)
+
+const (
+	RestartStatusPending  = "pending"
+	RestartStatusRunning  = "running"
+	RestartStatusComplete = "complete"
+	RestartStatusFailed   = "failed"
 )
 
 type Task struct {
@@ -35,6 +43,11 @@ type Task struct {
 	Target             *ExecutionTarget      `json:"target,omitempty"`
 	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria,omitempty"`
 	Attachments        []Attachment          `json:"attachments,omitempty"`
+	RestartRequired    []string              `json:"restart_required,omitempty"`
+	RestartCompleted   []string              `json:"restart_completed,omitempty"`
+	RestartStatus      string                `json:"restart_status,omitempty"`
+	RestartCurrent     string                `json:"restart_current,omitempty"`
+	RestartLastError   string                `json:"restart_last_error,omitempty"`
 	Workspace          string                `json:"workspace,omitempty"`
 	Result             string                `json:"result,omitempty"`
 	Plan               *TaskPlan             `json:"plan,omitempty"`

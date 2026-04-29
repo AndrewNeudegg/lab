@@ -77,6 +77,7 @@ go run ./cmd/homelabctl task diff task_123
 go run ./cmd/homelabctl task run task_123
 go run ./cmd/homelabctl task review task_123
 go run ./cmd/homelabctl task accept task_123
+go run ./cmd/homelabctl task restart task_123
 go run ./cmd/homelabctl task reopen task_123 "needs rework"
 go run ./cmd/homelabctl task cancel task_123
 go run ./cmd/homelabctl task retry task_123 codex "retry from the current workspace state"
@@ -86,6 +87,8 @@ go run ./cmd/homelabctl task delete task_123
 `task retry` preserves the previous task result as retry context. For `conflict_resolution` tasks, or blocked tasks whose result is a premerge/rebase failure, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
 
 `task review` normally runs after a local worker has moved the task to `ready_for_review`. It can also recheck a blocked task whose result starts with `ReviewerAgent checks failed:` after a test-infrastructure fix. It owns the task while checks run; concurrent run, retry, or delegation attempts are rejected, and a stale review result is ignored if the task state changes before checks finish.
+
+`task restart` retries an enforced post-merge restart gate for a task in `awaiting_restart`. Review stores required supervised components from the diff, approval moves the merged task into `awaiting_restart`, and `homelabd` blocks `accept` until `supervisord` has restarted each component and its configured health URL has returned 2xx.
 
 The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
 
@@ -99,6 +102,7 @@ go run ./cmd/homelabctl run task_123
 go run ./cmd/homelabctl ux task_123 "audit accessibility, responsive layout, and interaction states"
 go run ./cmd/homelabctl review task_123
 go run ./cmd/homelabctl accept task_123
+go run ./cmd/homelabctl restart task_123
 go run ./cmd/homelabctl reopen task_123 "needs mobile UAT"
 go run ./cmd/homelabctl cancel task_123
 go run ./cmd/homelabctl retry task_123
@@ -277,6 +281,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks/{id}/run`
 - `POST /tasks/{id}/review`
 - `POST /tasks/{id}/accept`
+- `POST /tasks/{id}/restart`
 - `POST /tasks/{id}/reopen`
 - `POST /tasks/{id}/cancel`
 - `POST /tasks/{id}/retry`

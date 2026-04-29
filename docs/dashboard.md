@@ -127,10 +127,10 @@ If a component does not answer one of those questions, it should not be in the p
 - Task sync failures are shown inside the task pane. The queue must never make a failed `/api/tasks` request look like a real empty result.
 - Selected task title: use the stored compact task title generated at creation time, so long prompts do not dominate the queue or the top of the record. The original input remains available in the detail disclosures.
 - Task summary: ID, status, owner, started time, runtime, and update time. Keep this as a compact metadata strip, not separate cards; it identifies the selected object without taking attention away from the decision.
-- Decision panel: one emphasized workflow-forward button derived from task state. Retry/reopen inputs and secondary task endpoint buttons live inside this same panel so the operator sees one coherent action area. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
+- Decision panel: one emphasised workflow-forward button derived from task state. Retry/reopen inputs and secondary task endpoint buttons live inside this same panel so the operator sees one coherent action area. A task in `awaiting_restart` shows restart progress instead of an accept button; if the gate fails, `Retry restart` calls the typed restart endpoint. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
 - Secondary actions: low-emphasis direct endpoint buttons such as retry, reopen, stop, delete, or deny approval. Destructive actions must remain visually distinct from constructive actions.
 - Retry and reopen forms: short, task-scoped inputs for optional retry instruction or reopen reason. These are structured payloads sent to typed task endpoints.
-- State and context: workflow state, workspace path, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
+- State and context: workflow state, workspace path, post-merge restart status, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
 - Attachments: selected task records show attached evidence inside `State and context`. Image attachments get a thumbnail and download link; text/context attachments show an inline preview. Keep this visible near state because bug-report attachments explain why the task exists.
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
@@ -144,7 +144,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Queued: the task exists and is waiting in its execution queue. Local tasks have isolated worktrees and wait for the local task supervisor; remote tasks wait for the selected `homelab-agent`.
 - Running: an in-memory local worker or a remote agent is active.
 - Red: failed, blocked, or conflict resolution. Needs intervention.
-- Amber: ready for review, awaiting approval, or awaiting verification. Needs a human decision.
+- Amber: ready for review, awaiting approval, awaiting restart, or awaiting verification. Needs a human decision or a visible gate before final acceptance.
 - Blue: queued or running. Work is active.
 - Green: done. No action required unless the result is wrong.
 - Gray: unknown or neutral state.

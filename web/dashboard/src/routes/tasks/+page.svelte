@@ -396,6 +396,7 @@
     if (
       task.status === 'ready_for_review' ||
       task.status === 'awaiting_approval' ||
+      task.status === 'awaiting_restart' ||
       task.status === 'awaiting_verification'
     ) {
       return 'amber';
@@ -774,6 +775,8 @@
             return client.reviewTask(taskId);
           case 'accept':
             return client.acceptTask(taskId);
+          case 'restart':
+            return client.restartTask(taskId);
           case 'reopen':
             return client.reopenTask(taskId, { reason: reopenReason.trim() });
           case 'cancel':
@@ -834,6 +837,8 @@
           return 'Reviewing';
         case 'accept':
           return 'Accepting';
+        case 'restart':
+          return 'Restarting';
         case 'reopen':
           return 'Reopening';
         case 'cancel':
@@ -1165,6 +1170,26 @@
                 <p>{taskStateDescription(currentTask.status)}</p>
                 <small>Next: {taskStateTransitions(currentTask.status)}</small>
               </section>
+
+              {#if currentTask.restart_required?.length}
+                <section class="state-machine" aria-label="Post-merge restart">
+                  <div>
+                    <span>Post-merge restart</span>
+                    <strong>{statusLabel(currentTask.restart_status || 'pending')}</strong>
+                  </div>
+                  <p>
+                    Required: {currentTask.restart_required.join(', ')}
+                    {#if currentTask.restart_completed?.length}
+                      / completed: {currentTask.restart_completed.join(', ')}
+                    {/if}
+                  </p>
+                  {#if currentTask.restart_status === 'failed' && currentTask.restart_last_error}
+                    <small>{currentTask.restart_last_error}</small>
+                  {:else if currentTask.restart_current}
+                    <small>Current: {currentTask.restart_current}</small>
+                  {/if}
+                </section>
+              {/if}
 
               {#if currentTask.workspace}
                 <section class="workspace-path" aria-label="Workspace path">

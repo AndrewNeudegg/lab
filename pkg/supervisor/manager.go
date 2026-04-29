@@ -850,9 +850,11 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 	for _, t := range targets {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.url, nil)
 		status := "unreachable"
+		statusCode := 0
 		if err == nil {
 			if resp, err := m.client.Do(req); err == nil {
 				status = resp.Status
+				statusCode = resp.StatusCode
 				_ = resp.Body.Close()
 			}
 		}
@@ -860,13 +862,13 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 		if app := m.apps[t.name]; app != nil {
 			app.status.LastHealth = status
 			app.status.UpdatedAt = time.Now().UTC()
-			if status == "unreachable" &&
+			if unhealthyHealthStatus(status, statusCode) &&
 				app.status.Desired == StateRunning &&
 				app.status.State == StateRunning &&
 				app.status.PID > 0 &&
 				app.cfg.Restart != "never" {
 				app.status.State = StateStopping
-				app.status.Message = "health check unreachable; restarting tracked process"
+				app.status.Message = "health check failed; restarting tracked process"
 				app.status.Restarts++
 				_ = m.saveStateLocked()
 				toRestart = append(toRestart, t.name)
@@ -876,12 +878,19 @@ func (m *Manager) checkAppHealth(ctx context.Context) {
 	}
 	for _, name := range toRestart {
 		go func(name string) {
-			m.logger.Warn("restarting app because health check is unreachable", "app", name)
+			m.logger.Warn("restarting app because health check failed", "app", name)
 			if err := m.restartAppIfDesiredRunning(context.Background(), name); err != nil {
 				m.logger.Error("health recovery failed", "app", name, "error", err)
 			}
 		}(name)
 	}
+}
+
+func unhealthyHealthStatus(status string, statusCode int) bool {
+	if status == "unreachable" {
+		return true
+	}
+	return statusCode < 200 || statusCode >= 300
 }
 
 func processAlive(pid int) bool {

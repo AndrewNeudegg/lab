@@ -403,6 +403,46 @@ func TestManagerHealthRecoveryRestartsTrackedProcessGroup(t *testing.T) {
 	}
 }
 
+func TestManagerHealthRecoveryRestartsOnHTTPFailure(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		ShutdownTimeoutSeconds: 2,
+		Apps: []config.SupervisorAppConfig{{
+			Name:               "dashboard",
+			Type:               "web",
+			Command:            script,
+			Restart:            "on_failure",
+			HealthURL:          "http://dashboard.test/chat",
+			ShutdownTimeoutSec: 2,
+		}},
+	}, nil)
+	manager.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: http.NoBody}, nil
+	})}
+
+	if err := manager.StartApp(context.Background(), "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	first := waitForAppState(t, manager, "dashboard", StateRunning)
+	if first.PID == 0 {
+		t.Fatal("dashboard did not start")
+	}
+
+	manager.checkAppHealth(context.Background())
+	restarting := manager.Snapshot().Apps[0]
+	if restarting.State != StateStopping || restarting.PID != first.PID || restarting.LastHealth != "500 Internal Server Error" {
+		t.Fatalf("status = %#v, want failed health response to restart tracked pid", restarting)
+	}
+	recovered := waitForAppState(t, manager, "dashboard", StateRunning)
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "dashboard") })
+	if recovered.PID == 0 || recovered.PID == first.PID {
+		t.Fatalf("status = %#v, want restarted dashboard with a new pid", recovered)
+	}
+}
+
 func TestManagerHealthRecoveryDoesNotOverrideStoppedDesiredState(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "app.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {

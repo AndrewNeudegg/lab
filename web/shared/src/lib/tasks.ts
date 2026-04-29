@@ -6,6 +6,7 @@ const attentionStatuses = new Set([
   'failed',
   'ready_for_review',
   'awaiting_approval',
+  'awaiting_restart',
   'awaiting_verification'
 ]);
 
@@ -34,6 +35,8 @@ export const taskStateDescription = (status = '') => {
       return 'Task branch conflicts with current main. Delegate or manually resolve before review.';
     case 'awaiting_approval':
       return 'Review gate passed. Merge approval is pending.';
+    case 'awaiting_restart':
+      return 'Merge landed. Required restarts and health checks are running before verification.';
     case 'awaiting_verification':
       return 'Merge landed. Verify the running app before accepting.';
     case 'done':
@@ -60,7 +63,9 @@ export const taskStateTransitions = (status = '') => {
     case 'conflict_resolution':
       return 'conflict resolution → running, ready for review, cancelled, or deleted';
     case 'awaiting_approval':
-      return 'awaiting approval → awaiting verification, conflict resolution, blocked, or running';
+      return 'awaiting approval → awaiting restart, awaiting verification, conflict resolution, blocked, or running';
+    case 'awaiting_restart':
+      return 'awaiting restart → awaiting verification, queued, or deleted';
     case 'awaiting_verification':
       return 'awaiting verification → done or queued';
     case 'done':

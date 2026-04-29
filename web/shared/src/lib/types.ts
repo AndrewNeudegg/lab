@@ -47,6 +47,7 @@ export type TaskStatus =
   | 'conflict_resolution'
   | 'ready_for_review'
   | 'awaiting_approval'
+  | 'awaiting_restart'
   | 'awaiting_verification'
   | 'done'
   | 'failed'
@@ -72,6 +73,11 @@ export interface HomelabdTask {
   target?: HomelabdTaskTarget;
   acceptance_criteria?: HomelabdAcceptanceCriterion[];
   attachments?: HomelabdTaskAttachment[];
+  restart_required?: string[];
+  restart_completed?: string[];
+  restart_status?: 'pending' | 'running' | 'complete' | 'failed' | string;
+  restart_current?: string;
+  restart_last_error?: string;
   workspace?: string;
   result?: string;
   plan?: HomelabdTaskPlan;
@@ -466,6 +472,7 @@ export interface HomelabdClient {
   runTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   reviewTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   acceptTask(taskId: string): Promise<HomelabdTaskActionResponse>;
+  restartTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   reopenTask(
     taskId: string,
     request?: HomelabdTaskReopenRequest

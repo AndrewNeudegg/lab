@@ -262,6 +262,8 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 			reply, err = s.Orchestrator.ReviewTask(req.Context(), taskID)
 		case "accept":
 			reply, err = s.Orchestrator.AcceptTask(req.Context(), taskID)
+		case "restart":
+			reply, err = s.Orchestrator.RestartTaskPostMerge(req.Context(), taskID)
 		case "reopen":
 			var in struct {
 				Reason string `json:"reason"`

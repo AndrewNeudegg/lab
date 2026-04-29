@@ -193,6 +193,7 @@ describe('homelabd client', () => {
     await client.runTask('task_1');
     await client.reviewTask('task_1');
     await client.acceptTask('task_1');
+    await client.restartTask('task_1');
     await client.reopenTask('task_1', { reason: 'needs mobile verification' });
     await client.cancelTask('task_1');
     await client.retryTask('task_1', { backend: 'codex', instruction: 'fix the blocked state' });
@@ -204,6 +205,7 @@ describe('homelabd client', () => {
       'POST http://homelabd/tasks/task_1/run',
       'POST http://homelabd/tasks/task_1/review',
       'POST http://homelabd/tasks/task_1/accept',
+      'POST http://homelabd/tasks/task_1/restart',
       'POST http://homelabd/tasks/task_1/reopen',
       'POST http://homelabd/tasks/task_1/cancel',
       'POST http://homelabd/tasks/task_1/retry',
@@ -211,8 +213,8 @@ describe('homelabd client', () => {
       'POST http://homelabd/approvals/approval_1/approve',
       'POST http://homelabd/approvals/approval_2/deny'
     ]);
-    expect(requests[3].body).toEqual({ reason: 'needs mobile verification' });
-    expect(requests[5].body).toEqual({ backend: 'codex', instruction: 'fix the blocked state' });
+    expect(requests[4].body).toEqual({ reason: 'needs mobile verification' });
+    expect(requests[6].body).toEqual({ backend: 'codex', instruction: 'fix the blocked state' });
   });
 
   test('uses typed workflow endpoints', async () => {

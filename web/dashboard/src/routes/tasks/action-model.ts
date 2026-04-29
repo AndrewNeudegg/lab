@@ -5,6 +5,7 @@ export type TaskOperation =
   | 'run'
   | 'review'
   | 'accept'
+  | 'restart'
   | 'reopen'
   | 'cancel'
   | 'retry'
@@ -100,6 +101,24 @@ export const primaryTaskAction = (
         detail: 'No pending approval is attached to this task yet. Sync to refresh approvals.',
         tone: 'warning'
       };
+    case 'awaiting_restart':
+      if (task.restart_status === 'failed') {
+        return {
+          type: 'task',
+          operation: 'restart',
+          label: 'Retry restart',
+          detail: task.restart_last_error || 'Post-merge restart failed. Retry the enforced restart gate.',
+          tone: 'warning'
+        };
+      }
+      return {
+        type: 'none',
+        label: 'Restarting services',
+        detail: task.restart_current
+          ? `Restarting ${task.restart_current}; verification is locked until health checks pass.`
+          : 'Post-merge restarts are queued before verification.',
+        tone: 'warning'
+      };
     case 'awaiting_verification':
       return {
         type: 'task',
@@ -155,6 +174,10 @@ export const secondaryTaskOperations = (
   if (task.status === 'awaiting_verification') {
     operations.add('reopen');
   }
+  if (task.status === 'awaiting_restart') {
+    operations.add('restart');
+    operations.add('reopen');
+  }
   if (task.status === 'awaiting_approval') {
     operations.add('review');
   }
@@ -185,6 +208,8 @@ export const taskOperationLabel = (operation: TaskOperation) => {
       return 'Review';
     case 'accept':
       return 'Accept';
+    case 'restart':
+      return 'Restart';
     case 'reopen':
       return 'Reopen';
     case 'cancel':

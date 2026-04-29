@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -254,6 +257,11 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 		return programResult(o.createTaskWithAttachments(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])), attachments))
 	case "tasks":
 		return programResult(o.listTasks())
+	case "restart":
+		if len(fields) < 2 {
+			return programResult("usage: restart <task_id>", nil)
+		}
+		return programResult(o.restartTaskPostMerge(ctx, fields[1]))
 	case "workflow", "workflows":
 		return programResult(o.handleWorkflowCommand(ctx, fields, message))
 	case "agents":
@@ -1212,6 +1220,10 @@ func (o *Orchestrator) AcceptTask(ctx context.Context, taskID string) (string, e
 	return o.acceptTask(ctx, taskID)
 }
 
+func (o *Orchestrator) RestartTaskPostMerge(ctx context.Context, taskID string) (string, error) {
+	return o.restartTaskPostMerge(ctx, taskID)
+}
+
 func (o *Orchestrator) ReopenTask(ctx context.Context, taskID, reason string) (string, error) {
 	return o.reopenTask(ctx, taskID, reason)
 }
@@ -1503,6 +1515,19 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			continue
 		}
 		if remoteTask(t) {
+			continue
+		}
+		if t.Status == taskstore.StatusAwaitingRestart {
+			recovered++
+			o.log().Info("task supervisor continuing post-merge restart",
+				"task_id", t.ID,
+				"task_short_id", taskShortID(t.ID),
+				"restart_required", t.RestartRequired,
+				"restart_completed", t.RestartCompleted,
+				"restart_status", t.RestartStatus,
+				"restart_current", t.RestartCurrent,
+			)
+			o.startPostMergeRestart(t.ID, 0)
 			continue
 		}
 		if t.Status == taskstore.StatusRunning {
@@ -1843,6 +1868,7 @@ func help() string {
 		"  diff <task_id>             show worktree diff",
 		"  review <task_id>           run tests, show diff, request merge approval",
 		"  accept <task_id>           mark merged task verified and done",
+		"  restart <task_id>          retry a failed post-merge restart gate",
 		"  reopen <task_id> [reason]  mark task not done and continue work",
 		"  retry <task_id> [agent] [instruction]",
 		"                             rerun blocked or conflict work with preserved failure context",
@@ -3338,6 +3364,11 @@ func nextActionForTask(t taskstore.Task) string {
 	switch t.Status {
 	case taskstore.StatusAwaitingApproval:
 		return "approvals"
+	case taskstore.StatusAwaitingRestart:
+		if t.RestartStatus == taskstore.RestartStatusFailed {
+			return fmt.Sprintf("restart %s", shortID)
+		}
+		return fmt.Sprintf("show %s", shortID)
 	case taskstore.StatusAwaitingVerification:
 		return fmt.Sprintf("accept %s", shortID)
 	case taskstore.StatusReadyForReview:
@@ -3378,6 +3409,9 @@ func nextActionsForTaskWithPrimary(t taskstore.Task, primary string) string {
 	if t.Status == taskstore.StatusAwaitingVerification {
 		return fmt.Sprintf("`%s`, `reopen %s needs rework`, or `delete %s`", primary, shortID, shortID)
 	}
+	if t.Status == taskstore.StatusAwaitingRestart {
+		return fmt.Sprintf("`%s`, `reopen %s needs rework`, or `delete %s`", primary, shortID, shortID)
+	}
 	return fmt.Sprintf("`%s`, `ux %s`, `delegate %s to codex`, or `delete %s`", primary, shortID, shortID, shortID)
 }
 
@@ -3395,6 +3429,8 @@ func taskStateDescription(status string) string {
 		return "review or execution stopped; a human or worker must choose the next action"
 	case taskstore.StatusAwaitingApproval:
 		return "review gate passed; merge approval is pending"
+	case taskstore.StatusAwaitingRestart:
+		return "merge landed; post-merge restarts and health checks are running before verification"
 	case taskstore.StatusAwaitingVerification:
 		return "merge landed; verify the running app before accepting"
 	case taskstore.StatusDone:
@@ -3421,7 +3457,9 @@ func taskStateTransitions(status string) string {
 	case taskstore.StatusBlocked:
 		return "blocked -> running, cancelled, or deleted"
 	case taskstore.StatusAwaitingApproval:
-		return "awaiting_approval -> awaiting_verification, conflict_resolution, blocked, or running"
+		return "awaiting_approval -> awaiting_restart, awaiting_verification, conflict_resolution, blocked, or running"
+	case taskstore.StatusAwaitingRestart:
+		return "awaiting_restart -> awaiting_verification, queued, or deleted"
 	case taskstore.StatusAwaitingVerification:
 		return "awaiting_verification -> done or queued"
 	case taskstore.StatusDone, taskstore.StatusCancelled:
@@ -3717,6 +3755,9 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 	if t.Status == taskstore.StatusCancelled {
 		return fmt.Sprintf("Task %s is cancelled; reopen it before accepting.", taskID), nil
 	}
+	if t.Status == taskstore.StatusAwaitingRestart {
+		return fmt.Sprintf("Task %s is still enforcing post-merge restarts (%s). Wait for completion or run `restart %s` to retry a failed restart.", taskShortID(taskID), firstNonEmptyString(t.RestartStatus, taskstore.RestartStatusPending), taskShortID(taskID)), nil
+	}
 	if err := o.stalePendingTaskApprovals(ctx, taskID, "task accepted by human"); err != nil {
 		return "", err
 	}
@@ -3751,6 +3792,296 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 		graphLine += "\nAll child phases are done; parent task is now done."
 	}
 	return fmt.Sprintf("Accepted %s. Task is now done.%s\nUsage/docs notes:\n%s", taskShortID(taskID), graphLine, usageNotesFromResult(t.Result)), nil
+}
+
+func (o *Orchestrator) restartTaskPostMerge(ctx context.Context, selector string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if t.Status != taskstore.StatusAwaitingRestart {
+		return fmt.Sprintf("Task %s is %s, not %s.", taskShortID(taskID), t.Status, taskstore.StatusAwaitingRestart), nil
+	}
+	if o.taskActive(taskID) {
+		return fmt.Sprintf("Post-merge restart for %s is already running.", taskShortID(taskID)), nil
+	}
+	t.RestartStatus = taskstore.RestartStatusPending
+	t.RestartCurrent = ""
+	t.RestartLastError = ""
+	if err := o.tasks.Save(t); err != nil {
+		return "", err
+	}
+	if !o.queuePostMergeRestart(taskID) {
+		return fmt.Sprintf("Post-merge restart for %s is already running.", taskShortID(taskID)), nil
+	}
+	return fmt.Sprintf("Queued post-merge restart retry for %s.", taskShortID(taskID)), nil
+}
+
+func (o *Orchestrator) queuePostMergeRestart(taskID string) bool {
+	return o.startPostMergeRestart(taskID, 250*time.Millisecond)
+}
+
+func (o *Orchestrator) startPostMergeRestart(taskID string, delay time.Duration) bool {
+	if strings.TrimSpace(taskID) == "" {
+		return false
+	}
+	if !o.markTaskActive(taskID, "RestartGate") {
+		return false
+	}
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		o.setTaskActiveRun(taskID, "", cancel)
+		defer cancel()
+		defer o.clearTaskActive(taskID)
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		}
+		if err := o.continuePostMergeRestart(ctx, taskID); err != nil {
+			o.log().Error("post-merge restart failed", "task_id", taskID, "error", err)
+		}
+	}()
+	return true
+}
+
+func (o *Orchestrator) continuePostMergeRestart(ctx context.Context, taskID string) error {
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return err
+	}
+	if t.Status != taskstore.StatusAwaitingRestart {
+		return nil
+	}
+	required := restartRequirementsForTask(t)
+	if len(required) == 0 {
+		return o.completePostMergeRestart(ctx, t)
+	}
+	t.RestartRequired = required
+	if t.RestartStatus == taskstore.RestartStatusRunning && t.RestartCurrent == "homelabd" && !containsString(t.RestartCompleted, "homelabd") {
+		t.RestartCompleted = append(t.RestartCompleted, "homelabd")
+		t.RestartCurrent = ""
+		t.RestartLastError = ""
+		if err := o.tasks.Save(t); err != nil {
+			return err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.restart.completed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"component": "homelabd", "reason": "homelabd restarted and resumed post-merge gate"})})
+	}
+	for _, component := range required {
+		if containsString(t.RestartCompleted, component) {
+			continue
+		}
+		t.RestartStatus = taskstore.RestartStatusRunning
+		t.RestartCurrent = component
+		t.RestartLastError = ""
+		if err := o.tasks.Save(t); err != nil {
+			return err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.restart.started", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"component": component, "restart_required": required})})
+		if err := o.restartComponent(ctx, component); err != nil {
+			if component != "supervisord" {
+				return o.failPostMergeRestart(ctx, t, component, err)
+			}
+			if healthErr := o.waitForRestartHealth(ctx, component); healthErr != nil {
+				return o.failPostMergeRestart(ctx, t, component, fmt.Errorf("restart request failed: %v; health check failed: %w", err, healthErr))
+			}
+		} else if component != "homelabd" {
+			if err := o.waitForRestartHealth(ctx, component); err != nil {
+				return o.failPostMergeRestart(ctx, t, component, err)
+			}
+		}
+		if component == "homelabd" {
+			return nil
+		}
+		t, err = o.tasks.Load(taskID)
+		if err != nil {
+			return err
+		}
+		if t.Status != taskstore.StatusAwaitingRestart {
+			return nil
+		}
+		if !containsString(t.RestartCompleted, component) {
+			t.RestartCompleted = append(t.RestartCompleted, component)
+		}
+		t.RestartCurrent = ""
+		t.RestartLastError = ""
+		if err := o.tasks.Save(t); err != nil {
+			return err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.restart.completed", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"component": component})})
+	}
+	t, err = o.tasks.Load(taskID)
+	if err != nil {
+		return err
+	}
+	return o.completePostMergeRestart(ctx, t)
+}
+
+func (o *Orchestrator) completePostMergeRestart(ctx context.Context, t taskstore.Task) error {
+	t.Status = taskstore.StatusAwaitingVerification
+	t.AssignedTo = "OrchestratorAgent"
+	t.RestartStatus = taskstore.RestartStatusComplete
+	t.RestartCurrent = ""
+	t.RestartLastError = ""
+	completedLine := "post-merge restarts completed"
+	if required := restartRequirementsForTask(t); len(required) > 0 {
+		completedLine += ": " + strings.Join(required, ", ")
+	}
+	t.Result = appendResultLine(t.Result, completedLine)
+	if err := o.tasks.Save(t); err != nil {
+		return err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"restart_required": t.RestartRequired, "restart_completed": t.RestartCompleted})})
+	return nil
+}
+
+func (o *Orchestrator) failPostMergeRestart(ctx context.Context, t taskstore.Task, component string, err error) error {
+	t.RestartStatus = taskstore.RestartStatusFailed
+	t.RestartCurrent = component
+	t.RestartLastError = err.Error()
+	t.Result = appendResultLine(t.Result, fmt.Sprintf("post-merge restart failed for %s: %s", component, err.Error()))
+	if saveErr := o.tasks.Save(t); saveErr != nil {
+		return saveErr
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.restart.failed", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"component": component, "error": err.Error()})})
+	return err
+}
+
+func restartRequirementsForTask(t taskstore.Task) []string {
+	if len(t.RestartRequired) > 0 {
+		return orderedRestartComponents(t.RestartRequired)
+	}
+	return restartComponentsFromPlan(restartPlanFromResult(t.Result))
+}
+
+func restartRequirementsForTaskAndApproval(t taskstore.Task, args json.RawMessage) []string {
+	if required := restartRequirementsForTask(t); len(required) > 0 {
+		return required
+	}
+	return restartComponentsFromApprovalArgs(args)
+}
+
+func restartComponentsFromApprovalArgs(args json.RawMessage) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	var payload struct {
+		RestartRequired []string `json:"restart_required"`
+	}
+	if err := json.Unmarshal(args, &payload); err != nil {
+		return nil
+	}
+	return orderedRestartComponents(payload.RestartRequired)
+}
+
+func (o *Orchestrator) restartComponent(ctx context.Context, component string) error {
+	base, err := supervisorBaseURL(o.cfg.Supervisord.Addr)
+	if err != nil {
+		return err
+	}
+	if component == "supervisord" {
+		return postSupervisor(ctx, base+"/supervisord/restart")
+	}
+	return postSupervisor(ctx, base+"/supervisord/apps/"+url.PathEscape(component)+"/restart")
+}
+
+func (o *Orchestrator) waitForRestartHealth(ctx context.Context, component string) error {
+	healthURL, err := o.restartHealthURL(component)
+	if err != nil {
+		return err
+	}
+	if healthURL == "" {
+		return fmt.Errorf("%s health URL is not configured", component)
+	}
+	deadline := time.Now().Add(45 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := healthCheck(ctx, healthURL); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("health check did not complete")
+	}
+	return fmt.Errorf("%s health check failed after restart: %w", component, lastErr)
+}
+
+func (o *Orchestrator) restartHealthURL(component string) (string, error) {
+	base, err := supervisorBaseURL(o.cfg.Supervisord.Addr)
+	if err != nil {
+		return "", err
+	}
+	if component == "supervisord" {
+		return base + "/supervisord", nil
+	}
+	for _, app := range o.cfg.Supervisord.Apps {
+		if app.Name == component {
+			return strings.TrimSpace(app.HealthURL), nil
+		}
+	}
+	return "", fmt.Errorf("supervised app %q is not configured", component)
+}
+
+func supervisorBaseURL(addr string) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", fmt.Errorf("supervisord address is not configured")
+	}
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return strings.TrimRight(addr, "/"), nil
+	}
+	return "http://" + strings.TrimRight(addr, "/"), nil
+}
+
+func postSupervisor(ctx context.Context, endpoint string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("%s returned %s: %s", endpoint, resp.Status, strings.TrimSpace(string(body)))
+}
+
+func healthCheck(ctx context.Context, endpoint string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	return fmt.Errorf("%s returned %s: %s", endpoint, resp.Status, strings.TrimSpace(string(body)))
 }
 
 func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) (string, error) {
@@ -3981,7 +4312,19 @@ func containsString(values []string, needle string) bool {
 }
 
 func restartPlanForDiff(diff string) string {
-	components := touchedRestartComponents(diffFileList(diff))
+	components := restartComponentsForDiff(diff)
+	if len(components) == 0 {
+		return ""
+	}
+	return restartPlanForComponents(components)
+}
+
+func restartComponentsForDiff(diff string) []string {
+	return orderedRestartComponents(touchedRestartComponents(diffFileList(diff)))
+}
+
+func restartPlanForComponents(components []string) string {
+	components = orderedRestartComponents(components)
 	if len(components) == 0 {
 		return ""
 	}
@@ -3996,6 +4339,61 @@ func restartPlanFromResult(result string) string {
 		}
 	}
 	return ""
+}
+
+func restartComponentsFromPlan(plan string) []string {
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return nil
+	}
+	lower := strings.ToLower(plan)
+	start := strings.Index(lower, "restart ")
+	if start < 0 {
+		return nil
+	}
+	rest := strings.TrimSpace(plan[start+len("restart "):])
+	if end := strings.Index(strings.ToLower(rest), " after "); end >= 0 {
+		rest = rest[:end]
+	}
+	rest = strings.ReplaceAll(rest, " and ", ",")
+	parts := strings.FieldsFunc(rest, func(r rune) bool {
+		return r == ',' || r == '&' || r == '+' || r == '/'
+	})
+	var components []string
+	for _, part := range parts {
+		component := strings.TrimSpace(strings.ToLower(part))
+		switch component {
+		case "homelabd", "dashboard", "healthd", "supervisord":
+			components = append(components, component)
+		}
+	}
+	return orderedRestartComponents(components)
+}
+
+func orderedRestartComponents(components []string) []string {
+	if len(components) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for _, component := range components {
+		component = strings.TrimSpace(strings.ToLower(component))
+		if component != "" {
+			seen[component] = true
+		}
+	}
+	order := []string{"supervisord", "healthd", "homelabd", "dashboard"}
+	var ordered []string
+	for _, component := range order {
+		if seen[component] {
+			ordered = append(ordered, component)
+			delete(seen, component)
+		}
+	}
+	for component := range seen {
+		ordered = append(ordered, component)
+	}
+	sort.Strings(ordered[len(ordered)-len(seen):])
+	return ordered
 }
 
 func touchedRestartComponents(files []string) []string {
@@ -5197,9 +5595,10 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created and no worker was restarted automatically.\nNext: `delegate %s to codex rebase and resolve merge conflicts`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, status, strings.TrimSpace(testOut), err.Error(), shortID, shortID, shortID), nil
 		}
 	}
-	restartPlan := restartPlanForDiff(diffOut)
+	restartRequired := restartComponentsForDiff(diffOut)
+	restartPlan := restartPlanForComponents(restartRequired)
 	approvalID := id.New("approval")
-	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID})
+	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID, "restart_required": restartRequired})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
 	if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
 		return "", currentErr
@@ -5217,16 +5616,27 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	t.Status = taskstore.StatusAwaitingApproval
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = "ReviewerAgent test status: " + status
+	t.RestartRequired = restartRequired
+	t.RestartCompleted = nil
+	t.RestartCurrent = ""
+	t.RestartLastError = ""
+	if len(restartRequired) > 0 {
+		t.RestartStatus = taskstore.RestartStatusPending
+	} else {
+		t.RestartStatus = ""
+	}
 	if restartPlan != "" {
 		t.Result += "\nRestart plan: " + restartPlan
 	}
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(req)})
 	restartLine := "Restart impact: no supervised component restart detected."
+	afterMergeLine := fmt.Sprintf("After merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", shortID, shortID)
 	if restartPlan != "" {
 		restartLine = "Restart impact: " + restartPlan
+		afterMergeLine = fmt.Sprintf("After merge, homelabd will restart required components and wait for health before verification; then use `accept %s` or `reopen %s <reason>`.", shortID, shortID)
 	}
-	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\nAfter merge, verify the running app and use `accept %s` or `reopen %s <reason>`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, shortID, shortID), nil
+	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\n%s", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, afterMergeLine), nil
 }
 
 func reviewNotReadyReply(t taskstore.Task) string {
@@ -5238,6 +5648,8 @@ func reviewNotReadyReply(t taskstore.Task) string {
 		return fmt.Sprintf("ReviewerAgent: task %s is still queued. No checks run and no state changed.\nNext: `run %s`, `delegate %s to codex`, or `show %s`.", shortID, shortID, shortID, shortID)
 	case taskstore.StatusAwaitingApproval:
 		return fmt.Sprintf("ReviewerAgent: task %s has already passed review and is awaiting approval. No checks run and no state changed.\nNext: `approvals` or `show %s`.", shortID, shortID)
+	case taskstore.StatusAwaitingRestart:
+		return fmt.Sprintf("ReviewerAgent: task %s has merged and is enforcing post-merge restarts. No checks run and no state changed.\nNext: `show %s` or `restart %s` if the restart gate failed.", shortID, shortID, shortID)
 	case taskstore.StatusAwaitingVerification:
 		return fmt.Sprintf("ReviewerAgent: task %s has already merged and is awaiting verification. No checks run and no state changed.\nNext: `accept %s` or `reopen %s <reason>`.", shortID, shortID, shortID)
 	case taskstore.StatusBlocked, taskstore.StatusFailed, taskstore.StatusConflictResolution:
@@ -6004,15 +6416,30 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 	if err := o.approvals.Save(req); err != nil {
 		return "", err
 	}
+	postMergeRestartQueued := false
+	postMergeRestartPlan := ""
 	if req.TaskID != "" {
 		if t, err := o.tasks.Load(req.TaskID); err == nil {
 			if req.Tool == "git.merge_approved" {
-				t.Status = taskstore.StatusAwaitingVerification
 				t.AssignedTo = "OrchestratorAgent"
-				restartPlan := restartPlanFromResult(t.Result)
-				t.Result = "merged after approval " + approvalID + "; awaiting human verification"
-				if restartPlan != "" {
-					t.Result += "\nRestart plan: " + restartPlan
+				restartRequired := restartRequirementsForTaskAndApproval(t, req.Args)
+				t.RestartRequired = restartRequired
+				t.RestartCompleted = nil
+				t.RestartCurrent = ""
+				t.RestartLastError = ""
+				postMergeRestartPlan = restartPlanForComponents(restartRequired)
+				if len(restartRequired) > 0 {
+					t.Status = taskstore.StatusAwaitingRestart
+					t.RestartStatus = taskstore.RestartStatusPending
+					t.Result = "merged after approval " + approvalID + "; post-merge restart pending"
+					postMergeRestartQueued = true
+				} else {
+					t.Status = taskstore.StatusAwaitingVerification
+					t.RestartStatus = ""
+					t.Result = "merged after approval " + approvalID + "; awaiting human verification"
+				}
+				if postMergeRestartPlan != "" {
+					t.Result += "\nRestart plan: " + postMergeRestartPlan
 				}
 			} else {
 				t.Status = taskstore.StatusRunning
@@ -6023,15 +6450,23 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.granted", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(req)})
 	if req.Tool == "git.merge_approved" {
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID})})
+		if postMergeRestartQueued {
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_restart", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "restart_required": restartComponentsFromPlan(postMergeRestartPlan)})})
+			o.queuePostMergeRestart(req.TaskID)
+		} else {
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID})})
+		}
 		if req.TaskID != "" {
 			restartPlan := ""
 			if t, err := o.tasks.Load(req.TaskID); err == nil {
-				restartPlan = restartPlanFromResult(t.Result)
+				restartPlan = restartPlanForComponents(restartRequirementsForTask(t))
 			}
 			restartLine := ""
 			if restartPlan != "" {
 				restartLine = "\nRestart plan: " + restartPlan
+			}
+			if postMergeRestartQueued {
+				return fmt.Sprintf("Approved and merged %s.\nTask %s is enforcing post-merge restarts before verification.%s\nNext: wait for restart health checks, then `accept %s` or `reopen %s <reason>`.", approvalID, taskShortID(req.TaskID), restartLine, taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
 			}
 			return fmt.Sprintf("Approved and merged %s.\nTask %s is awaiting verification.%s\nNext: check the running app, then `accept %s` or `reopen %s <reason>`.", approvalID, taskShortID(req.TaskID), restartLine, taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
 		}

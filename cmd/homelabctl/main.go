@@ -141,7 +141,7 @@ func (c cli) dispatch(args []string) error {
 		return c.task(withAction("runs", args[1:]))
 	case "diff":
 		return c.task(withAction("diff", args[1:]))
-	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
+	case "run", "review", "accept", "verify", "restart", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
 		return c.task(withAction(cmd, args[1:]))
 	case "status", "agents", "refresh", "rebase", "sync",
 		"delegate", "escalate", "codex", "claude", "gemini", "ux", "test", "patch",
@@ -203,7 +203,7 @@ func parseWorkflowCreateArgs(args []string) (string, string) {
 
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|reopen|cancel|retry|delete>")
+		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|restart|reopen|cancel|retry|delete>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -254,6 +254,11 @@ func (c cli) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task accept <task_id>")
 		}
 		return c.do(http.MethodPost, path("tasks", args[1], "accept"), nil)
+	case "restart":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl task restart <task_id>")
+		}
+		return c.do(http.MethodPost, path("tasks", args[1], "restart"), nil)
 	case "cancel", "stop":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: homelabctl task cancel <task_id>")
@@ -895,6 +900,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] task run <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task review <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task accept <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task restart <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task reopen <task_id> [reason]
   homelabctl [-addr http://127.0.0.1:18080] task cancel <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task retry <task_id> [codex|claude|gemini] [instruction]
@@ -930,7 +936,7 @@ func usage(out io.Writer) {
 
 Top-level shortcuts:
   homelabctl new <goal>
-  homelabctl run|review|accept|reopen|cancel|retry|delete <task_id> [...]
+  homelabctl run|review|accept|restart|reopen|cancel|retry|delete <task_id> [...]
   homelabctl approve|deny <approval_id>
   homelabctl memories|remember|unlearn ...
   homelabctl errors [-limit N] [app]

@@ -13,6 +13,7 @@ const offlineFallback = '/offline.html';
 const apiPrefixes = ['/api', '/healthd-api', '/supervisord-api'];
 const appAssets = new Set([...build, ...files]);
 const precacheUrls = Array.from(new Set([...appAssets, offlineFallback]));
+const skipWaitingMessage = 'SKIP_WAITING';
 
 const isApiRequest = (url: URL) => apiPrefixes.some((prefix) => url.pathname.startsWith(prefix));
 
@@ -50,7 +51,6 @@ worker.addEventListener('install', (event: ExtendableEvent) => {
     (async () => {
       const cache = await caches.open(assetCacheName);
       await cache.addAll(precacheUrls);
-      await worker.skipWaiting();
     })()
   );
 });
@@ -83,5 +83,11 @@ worker.addEventListener('fetch', (event: FetchEvent) => {
 
   if (request.mode === 'navigate') {
     event.respondWith(networkFirstPage(request));
+  }
+});
+
+worker.addEventListener('message', (event: ExtendableMessageEvent) => {
+  if ((event.data as { type?: string } | undefined)?.type === skipWaitingMessage) {
+    event.waitUntil(worker.skipWaiting());
   }
 });

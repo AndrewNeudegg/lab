@@ -3,6 +3,9 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [sveltekit()],
+  optimizeDeps: {
+    include: ['mermaid']
+  },
   server: {
     allowedHosts: ['lab'],
     proxy: {

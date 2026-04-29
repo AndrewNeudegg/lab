@@ -290,7 +290,8 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
     await expect(page.locator('#docs-list')).toBeVisible();
   } else if (route === '/terminal') {
-    await expect(page.locator('.xterm')).toBeVisible();
+    await expect(page.getByRole('application', { name: 'Interactive terminal' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Terminal input' })).toBeVisible();
     await page.getByRole('button', { name: 'Add terminal tab' }).click();
     await expect(page.locator('.terminal-tab')).toHaveCount(2);
   } else if (route === '/healthd') {
@@ -332,7 +333,7 @@ for (const viewport of [
         await exerciseRoute(page, route, viewport.mobile);
         await expectNoVisualArtifacts(page);
         await testInfo.attach(`${viewport.name}-${route.replaceAll('/', '-') || 'root'}.png`, {
-          body: await page.screenshot({ fullPage: true }),
+          body: await page.screenshot({ fullPage: !route.startsWith('/docs') }),
           contentType: 'image/png'
         });
       });

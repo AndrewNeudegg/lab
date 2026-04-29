@@ -27,12 +27,36 @@ Each `args` object must match the tool's schema. Empty args are treated as `{}`.
 
 Registered tools expose a name, description, JSON schema, risk level, and `Run` implementation through `pkg/tool.Tool`. Pseudo-tools such as `task.create` and `workflow.run` use the same call shape, but the Orchestrator handles them directly instead of looking them up in the registry.
 
+## Tool Execution Flow
+
+```mermaid
+flowchart LR
+  A[Agent JSON tool call] --> B{Registered tool?}
+  B -->|Yes| C[Tool registry schema and Run method]
+  B -->|Pseudo-tool| D[Orchestrator handler]
+  C --> E[Role allow-list and risk policy]
+  D --> E
+  E -->|Allowed| F[Execute with bounded args]
+  E -->|Approval needed| G[Approval request]
+  G -->|Approved| F
+  E -->|Denied| H[tool.call.denied event]
+  F --> I[tool.result event]
+```
+
+The dispatcher normalises empty `args` to `{}`, checks the actor's allow-list, applies configured approval gates, and then executes the tool or pseudo-tool handler. Tool output is JSON; command-backed tools usually return captured output plus metadata, while approval or policy failures are recorded as events instead of silently disappearing.
+
+## Tool Discovery And Source Of Truth
+
+`cmd/homelabd/main.go` builds the runtime registry at startup by registering packages under `pkg/tools/*`. The Orchestrator then injects a sorted JSON catalogue into agent prompts from the registry plus its pseudo-tools in `pkg/agent/orchestrator.go`. That catalogue contains each tool's name, description, risk level, and JSON schema; this document is the human-readable companion and should be updated when schemas, policy, commands, or limits change.
+
+Pseudo-tools such as `task.create`, `task.run`, and `workflow.run` are not package tools, but they still appear in the catalogue and pass through the same policy path. Package tools implement `pkg/tool.Tool`; tools with input-dependent risk, such as `shell.run_limited`, also implement `RiskFor`.
+
 ## Argument Conventions
 
 - `workspace` is an absolute task worktree path under `repo.workspace_root`; workspace-scoped write tools rely on this for medium-risk approval decisions.
 - `path` is repository-relative or workspace-relative, depending on whether `workspace` is supplied. Absolute paths and parent traversal are rejected by repository helpers.
 - `dir` is the working directory for Git, shell, and validation commands. Prefer the isolated task workspace for agent work.
-- `target` is required on approval-sensitive critical or high-impact operations so the human approval request has an explicit destination.
+- `target` is required by some high-impact operations and optional on others; include it whenever the schema accepts it so the human approval request has an explicit destination.
 - `command` is an argv array, not a shell string. Pipes, redirects, glob expansion, and environment assignment do not happen unless the executable itself implements them.
 
 ## Policy And Approval
@@ -49,7 +73,7 @@ Tools declare one of these risk levels:
 
 Default role access:
 
-- `OrchestratorAgent`: task and workflow pseudo-tools, external delegation, memory read/proposal, text, internet, repo read/diff, git read/write/worktree, Go/Bun validation, limited and approved shell.
+- `OrchestratorAgent`: task and workflow pseudo-tools, external delegation, memory list/read/remember/unlearn/proposal, text, internet, health error reads, repo read/diff, git read/write/worktree, Go/Bun validation, limited and approved shell.
 - `CoderAgent`: text, internet, repo read/write patch/diff, git read, Go/Bun validation, limited shell.
 - `UXAgent`: same as `CoderAgent`, with UX/browser-UAT expectations in its prompt.
 - `ResearchAgent`: text, internet, and memory proposals.
@@ -63,7 +87,7 @@ Paths are repository-relative unless `workspace` is supplied. Absolute paths and
 
 - `repo.list`: required args: none. Optional args: `path`, `workspace`. Lists up to 500 entries and skips `.git`, `workspaces`, and `data`.
 - `repo.read`: required args: `path`. Optional args: `workspace`. Reads one bounded text file. The default maximum is `limits.max_file_bytes`, currently 1 MiB in `config.example.json`.
-- `repo.search`: required args: `query`. Optional args: `path`, `workspace`, `context_lines`, `max_results`. Searches plain substrings, not regex, and skips binary files. `context_lines` clamps to 0-8; `max_results` defaults to 100 and clamps to 200.
+- `repo.search`: required args: `query`. Optional args: `path`, `workspace`, `context_lines`, `max_results`. Searches plain substrings, not regex, and skips binary files. `context_lines` defaults to 2 and clamps to 0-8; `max_results` defaults to 100 and clamps to 200.
 - `repo.write_patch`: required args: `workspace`, `patch`. Applies a unified diff with `git apply --whitespace=nowarn` inside an isolated task workspace. Medium risk.
 - `repo.current_diff`: required args: `workspace`. Returns tracked diff plus untracked file diffs, excluding untracked `.codex` metadata.
 - `repo.apply_patch_to_main`: required args: `patch`. Optional args: `target`. Admin/approval path for applying a patch to the configured repo root. High risk.
@@ -92,10 +116,10 @@ Git tools run `git -C <dir> ...`. Pathspec arrays reject absolute paths and `..`
 - `git.commit`: required args: `dir`, `message`. Optional args: `all`, `allow_empty`, `paths`. Stages selected paths or all changes, then commits. High risk.
 - `git.revert`: required args: `dir`, `commit`. Optional args: `no_commit`, `mainline`. High risk.
 - `git.merge`: required args: `dir`, `branch`. Optional args: `no_ff`, `squash`, `no_commit`, `message`. High risk.
-- `git.merge_check`: required args: `branch`, `target`. Checks a branch can merge into the configured repo root without modifying the worktree.
+- `git.merge_check`: required args: `branch`, `target`. Checks a branch can merge into the configured repo root without modifying the worktree. `target` must match the configured repo root.
 - `git.worktree_create`: required args: `task_id`. Creates an isolated task worktree and branch.
 - `git.worktree_remove`: required args: `workspace`. Optional args: `force`. Removes an isolated worktree. Medium risk.
-- `git.merge_approved`: required args: `branch`, `target`. Optional args: `workspace`, `message`. Internal approved merge path. Commits workspace changes if supplied, checks merge readiness, requires a clean target, then merges with `--no-ff`. High risk.
+- `git.merge_approved`: required args: `branch`, `target`. Optional args: `workspace`, `message`. Internal approved merge path. Commits workspace changes if supplied, checks merge readiness, requires a clean target, then merges with `--no-ff`. Workspace commits exclude `.codex`, `.git-local`, `.artifacts`, and `data` metadata. High risk.
 
 Normal task review uses `git.merge_approved`; agents should not merge task branches directly.
 
@@ -140,8 +164,8 @@ These tools are convenience wrappers around common project checks. They set writ
 - `bun.check`: required args: `dir`. Runs `bun install` then `bun run check`, or falls back through Nix.
 - `bun.build`: required args: `dir`. Runs `bun install` then `bun run build`, or falls back through Nix.
 - `bun.test`: required args: `dir`. Runs `bun install` then `bun run test`, or falls back through Nix.
-- `bun.uat.tasks`: required args: `dir`. Runs isolated dashboard task-page Playwright UAT. Minimum timeout is two minutes.
-- `bun.uat.site`: required args: `dir`. Runs isolated site-wide Playwright UAT. Minimum timeout is four minutes.
+- `bun.uat.tasks`: required args: `dir`. Runs isolated dashboard task-page Playwright UAT. Minimum timeout is five minutes.
+- `bun.uat.site`: required args: `dir`. Runs isolated site-wide Playwright UAT. Minimum timeout is ten minutes.
 
 For UI work, browser UAT must use the task worktree or remote workdir, not the production dashboard. See `docs/agentic-testing.md`.
 
@@ -150,7 +174,7 @@ For UI work, browser UAT must use the task worktree or remote workdir, not the p
 Internet tools are read-only for local state but they do make outbound network requests.
 
 - `internet.search`: required args: `query`. Optional args: `source`, `provider`, `max_results`, `time_range`, `language`. `source` is `web`, `academic`, or `all`; default is `web`. `provider` is `auto`, `searxng`, `brave`, `tavily`, or `duckduckgo`. `max_results` defaults to 8 and clamps to 20. Academic search uses OpenAlex.
-- `internet.research`: required args: `query`. Optional args: `source`, `depth`, `provider`, `time_range`, `language`, `max_searches`, `max_sources`, `fetch`, `trusted_domains`. It plans subqueries, searches, deduplicates URLs, optionally fetches top pages, and returns an evidence bundle. `depth` defaults to `standard`; `max_searches` clamps to 8 and `max_sources` to 20.
+- `internet.research`: required args: `query`. Optional args: `source`, `depth`, `provider`, `time_range`, `language`, `max_searches`, `max_sources`, `fetch`, `trusted_domains`. It plans subqueries, searches, deduplicates URLs, optionally fetches top pages, and returns an evidence bundle. `source` defaults to `all`, `depth` defaults to `standard`, `max_searches` clamps to 8, and `max_sources` clamps to 20.
 - `internet.fetch`: required args: `url`. Optional args: `max_chars`. Fetches public HTTP(S) URLs only. Private hosts are rejected. Reads at most 2 MiB from the response and returns extracted text clamped to 500-20,000 characters, default 12,000.
 
 Research depth defaults:
@@ -191,7 +215,10 @@ External CLI backends may modify a task worktree, but they cannot approve or mer
 
 ## Memory Tools
 
+- `memory.list`: required args: none. Optional args: `name`. Lists markdown memory files and durable interaction lessons. `name` selects the markdown memory file for lesson entries and defaults to `user.md`.
 - `memory.read`: required args: `name`. Reads a markdown memory file.
+- `memory.remember`: required args: `content`. Optional args: `kind`, `source`, `name`. Stores a short distilled durable interaction lesson or user preference. Low risk for trusted agents.
+- `memory.unlearn`: required args: `selector`. Optional args: `name`. Removes durable interaction lessons by id or distinctive matching text. Low risk for trusted agents.
 - `memory.propose_write`: required args: `name`, `content`. Writes a proposal file; it does not commit memory.
 - `memory.commit_write`: required args: `name`, `content`, `target`. Commits memory after approval. High risk and not in normal agent role lists.
 

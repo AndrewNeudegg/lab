@@ -86,22 +86,22 @@ const mockTaskApi = async (page: Page) => {
     }
   ];
 
-  await page.route('**/api/tasks', async (route) => {
+  await page.route(/\/api\/tasks$/, async (route) => {
     await route.fulfill({ json: { tasks } });
   });
-  await page.route('**/api/approvals', async (route) => {
+  await page.route(/\/api\/approvals$/, async (route) => {
     await route.fulfill({ json: { approvals: [approvalFor(tasks[0].id)] } });
   });
-  await page.route('**/api/events?**', async (route) => {
+  await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
-  await page.route('**/api/agents', async (route) => {
+  await page.route(/\/api\/agents$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
   });
-  await page.route('**/api/tasks/*/runs', async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
   });
-  await page.route('**/api/tasks/*/diff', async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
     await route.fulfill({
       json: {
         task_id: tasks[0].id,
@@ -148,6 +148,9 @@ test('chat mobile keeps typed draft text through layout changes', async ({ page 
 
 test('tasks mobile switches between queue and selected task detail', async ({ page }) => {
   await mockTaskApi(page);
+  page.on('request', (request) => console.log('request', request.method(), request.url()));
+  page.on('response', (response) => console.log('response', response.status(), response.url()));
+  page.on('requestfailed', (request) => console.log('failed', request.method(), request.url(), request.failure()?.errorText));
   await page.goto('/tasks');
 
   const rows = page.getByRole('button', { name: /Review queue behavior on mobile/ });

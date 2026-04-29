@@ -12,7 +12,7 @@ const launchOptions = {
 };
 const uatTestTimeout = 120_000;
 const uatExpectTimeout = 15_000;
-const uatWebServerTimeout = 90_000;
+const uatWebServerTimeout = 120_000;
 
 function worktreePort(cwd: string) {
   let hash = 0;

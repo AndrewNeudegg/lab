@@ -3,7 +3,9 @@ package externalagent
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -264,4 +266,45 @@ func TestRunnerCancelsRunningProcess(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("runner did not return after context cancellation")
 	}
+}
+
+func TestRunnerTerminatesBackgroundProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are Unix-specific in this runner")
+	}
+	workspace := t.TempDir()
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"test": {
+			Enabled: true,
+			Command: "sh",
+			Args: []string{
+				"-c",
+				"sleep 30 >/dev/null 2>&1 & echo $! > child.pid",
+			},
+			TimeoutSeconds: 5,
+		},
+	})
+
+	if _, err := runner.Run(context.Background(), RunRequest{
+		Backend:     "test",
+		RunID:       "delegate_orphan",
+		TaskID:      "task_orphan",
+		Workspace:   workspace,
+		Instruction: "run",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pidBytes, err := os.ReadFile(filepath.Join(workspace, "child.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := strings.TrimSpace(string(pidBytes))
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.Command("kill", "-0", pid).Run() != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("background child pid %s still exists after runner returned", pid)
 }

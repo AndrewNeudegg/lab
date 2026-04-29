@@ -50,6 +50,8 @@ type Task struct {
 	RestartLastError     string                `json:"restart_last_error,omitempty"`
 	AutoRecoveryAttempts int                   `json:"auto_recovery_attempts,omitempty"`
 	AutoRecoveryLastAt   *time.Time            `json:"auto_recovery_last_at,omitempty"`
+	MergeQueuePosition   int                   `json:"merge_queue_position,omitempty"`
+	MergeQueueEnteredAt  *time.Time            `json:"merge_queue_entered_at,omitempty"`
 	Workspace            string                `json:"workspace,omitempty"`
 	Result               string                `json:"result,omitempty"`
 	Plan                 *TaskPlan             `json:"plan,omitempty"`

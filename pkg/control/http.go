@@ -67,6 +67,7 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
+	mux.HandleFunc("/settings", s.withCORS(s.handleSettings))
 	mux.HandleFunc("/workflows", s.withCORS(s.handleWorkflows))
 	mux.HandleFunc("/workflows/", s.withCORS(s.handleWorkflow))
 	mux.HandleFunc("/agents", s.withCORS(s.handleAgents))
@@ -78,6 +79,41 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/terminal/sessions/", s.withCORS(s.handleTerminalSession))
 	mux.HandleFunc("/api/terminal/sessions", s.withCORS(s.handleTerminalSessions))
 	mux.HandleFunc("/api/terminal/sessions/", s.withCORS(s.handleTerminalSession))
+}
+
+func (s *Server) handleSettings(rw http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		settings, err := s.Orchestrator.RuntimeSettings()
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"settings": settings})
+	case http.MethodPost:
+		var in struct {
+			AutoMergeEnabled *bool `json:"auto_merge_enabled"`
+		}
+		if req.Body != nil {
+			_ = json.NewDecoder(req.Body).Decode(&in)
+		}
+		current, err := s.Orchestrator.RuntimeSettings()
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if in.AutoMergeEnabled != nil {
+			current.AutoMergeEnabled = *in.AutoMergeEnabled
+		}
+		settings, err := s.Orchestrator.UpdateRuntimeSettings(req.Context(), current)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"settings": settings})
+	default:
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *Server) handleHealthz(rw http.ResponseWriter, req *http.Request) {
@@ -260,6 +296,14 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 			reply, err = s.Orchestrator.AssignTaskTarget(req.Context(), taskID, in.Target)
 		case "review":
 			reply, err = s.Orchestrator.ReviewTask(req.Context(), taskID)
+		case "merge-queue":
+			var in struct {
+				Direction string `json:"direction"`
+			}
+			if req.Body != nil {
+				_ = json.NewDecoder(req.Body).Decode(&in)
+			}
+			reply, err = s.Orchestrator.MoveTaskInMergeQueue(req.Context(), taskID, in.Direction)
 		case "accept":
 			reply, err = s.Orchestrator.AcceptTask(req.Context(), taskID)
 		case "restart":

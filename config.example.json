@@ -37,7 +37,7 @@
     ]
   },
   "limits": {
-    "max_concurrent_tasks": 4,
+    "max_concurrent_tasks": 2,
     "max_tool_calls_per_turn": 12,
     "max_shell_seconds": 60,
     "max_file_bytes": 1048576,
@@ -126,6 +126,7 @@
         "auto_start": false,
         "restart": "always",
         "health_url": "http://127.0.0.1:18081/healthd",
+        "health_startup_grace_seconds": 30,
         "shutdown_timeout_seconds": 10
       },
       {
@@ -138,6 +139,7 @@
         "auto_start": false,
         "restart": "always",
         "health_url": "http://127.0.0.1:18080/healthz",
+        "health_startup_grace_seconds": 30,
         "shutdown_timeout_seconds": 15
       },
       {
@@ -150,6 +152,7 @@
         "pre_start_args": ["install", "--frozen-lockfile"],
         "pre_start_working_dir": "web",
         "pre_start_timeout_seconds": 300,
+        "health_startup_grace_seconds": 30,
         "start_order": 30,
         "auto_start": false,
         "restart": "on_failure",

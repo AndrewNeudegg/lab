@@ -144,6 +144,7 @@ type SupervisorAppConfig struct {
 	PreStartArgs           []string          `json:"pre_start_args,omitempty"`
 	PreStartWorkingDir     string            `json:"pre_start_working_dir,omitempty"`
 	PreStartTimeoutSeconds int               `json:"pre_start_timeout_seconds,omitempty"`
+	HealthStartupGraceSec  int               `json:"health_startup_grace_seconds,omitempty"`
 	StartOrder             int               `json:"start_order"`
 	AutoStart              bool              `json:"auto_start"`
 	Restart                string            `json:"restart,omitempty"`
@@ -234,7 +235,7 @@ func Default() Config {
 			},
 		},
 		Limits: LimitsConfig{
-			MaxConcurrentTasks:  4,
+			MaxConcurrentTasks:  2,
 			MaxToolCallsPerTurn: 12,
 			MaxShellSeconds:     60,
 			MaxFileBytes:        1 << 20,
@@ -284,28 +285,30 @@ func Default() Config {
 			RestartArgs:              []string{"run", "./cmd/supervisord"},
 			Apps: []SupervisorAppConfig{
 				{
-					Name:               "healthd",
-					Type:               "daemon",
-					Command:            "go",
-					Args:               []string{"run", "./cmd/healthd"},
-					WorkingDir:         ".",
-					StartOrder:         10,
-					AutoStart:          false,
-					Restart:            "always",
-					HealthURL:          "http://127.0.0.1:18081/healthd",
-					ShutdownTimeoutSec: 10,
+					Name:                  "healthd",
+					Type:                  "daemon",
+					Command:               "go",
+					Args:                  []string{"run", "./cmd/healthd"},
+					WorkingDir:            ".",
+					StartOrder:            10,
+					AutoStart:             false,
+					Restart:               "always",
+					HealthURL:             "http://127.0.0.1:18081/healthd",
+					HealthStartupGraceSec: 30,
+					ShutdownTimeoutSec:    10,
 				},
 				{
-					Name:               "homelabd",
-					Type:               "daemon",
-					Command:            "go",
-					Args:               []string{"run", "./cmd/homelabd", "-mode", "http"},
-					WorkingDir:         ".",
-					StartOrder:         20,
-					AutoStart:          false,
-					Restart:            "always",
-					HealthURL:          "http://127.0.0.1:18080/healthz",
-					ShutdownTimeoutSec: 15,
+					Name:                  "homelabd",
+					Type:                  "daemon",
+					Command:               "go",
+					Args:                  []string{"run", "./cmd/homelabd", "-mode", "http"},
+					WorkingDir:            ".",
+					StartOrder:            20,
+					AutoStart:             false,
+					Restart:               "always",
+					HealthURL:             "http://127.0.0.1:18080/healthz",
+					HealthStartupGraceSec: 30,
+					ShutdownTimeoutSec:    15,
 				},
 				{
 					Name:                   "dashboard",
@@ -317,6 +320,7 @@ func Default() Config {
 					PreStartArgs:           []string{"install", "--frozen-lockfile"},
 					PreStartWorkingDir:     "web",
 					PreStartTimeoutSeconds: 300,
+					HealthStartupGraceSec:  30,
 					StartOrder:             30,
 					AutoStart:              false,
 					Restart:                "on_failure",

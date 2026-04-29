@@ -129,7 +129,7 @@ const run = async () => {
       })`
     );
     assert(initial.filters.length === 3, 'task filters did not render', initial);
-    assert(initial.filters.some((text) => text.includes('Needs action')), 'Needs action filter missing', initial);
+    assert(initial.filters.some((text) => text.includes('Attention')), 'Attention filter missing', initial);
     assert(initial.filters.some((text) => text.includes('Running')), 'Running filter missing', initial);
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
     assert(initial.commandPanelCount === 0, 'old chat command panel still rendered', initial);

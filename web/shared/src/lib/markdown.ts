@@ -100,6 +100,17 @@ type ListState = {
   items: string[];
 };
 
+const renderFence = (language: string, content: string) => {
+  const code = escapeHtml(content);
+  const languageClass = language ? ` class="language-${escapeAttribute(language)}"` : '';
+
+  if (language.toLowerCase() === 'mermaid') {
+    return `<figure class="mermaid-diagram"><pre><code class="language-mermaid">${code}</code></pre></figure>`;
+  }
+
+  return `<pre><code${languageClass}>${code}</code></pre>`;
+};
+
 export const renderMarkdown = (source: string, options: MarkdownRenderOptions = {}) => {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const blocks: string[] = [];
@@ -157,11 +168,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
     const fenceMatch = line.match(/^```([A-Za-z0-9_.+-]*)\s*$/);
     if (fenceLines) {
       if (fenceMatch) {
-        blocks.push(
-          `<pre><code${fenceLanguage ? ` class="language-${escapeAttribute(fenceLanguage)}"` : ''}>${escapeHtml(
-            fenceLines.join('\n')
-          )}</code></pre>`
-        );
+        blocks.push(renderFence(fenceLanguage, fenceLines.join('\n')));
         fenceLines = undefined;
         fenceLanguage = '';
       } else {
@@ -217,11 +224,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
   }
 
   if (fenceLines) {
-    blocks.push(
-      `<pre><code${fenceLanguage ? ` class="language-${escapeAttribute(fenceLanguage)}"` : ''}>${escapeHtml(
-        fenceLines.join('\n')
-      )}</code></pre>`
-    );
+    blocks.push(renderFence(fenceLanguage, fenceLines.join('\n')));
   }
   flushTextBlocks();
 

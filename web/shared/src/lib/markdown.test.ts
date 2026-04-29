@@ -12,6 +12,12 @@ describe('renderMarkdown', () => {
     );
   });
 
+  test('renders mermaid fences as diagram containers with escaped fallback code', () => {
+    expect(renderMarkdown('```mermaid\ngraph TD\n  A["<safe>"] --> B\n```')).toBe(
+      '<figure class="mermaid-diagram"><pre><code class="language-mermaid">graph TD\n  A[&quot;&lt;safe&gt;&quot;] --&gt; B</code></pre></figure>'
+    );
+  });
+
   test('renders common inline markdown', () => {
     expect(renderMarkdown('Use **bold**, _emphasis_, and `code`.')).toBe(
       '<p>Use <strong>bold</strong>, <em>emphasis</em>, and <code>code</code>.</p>'

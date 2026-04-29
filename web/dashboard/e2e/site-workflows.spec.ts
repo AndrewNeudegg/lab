@@ -144,7 +144,20 @@ const installTerminalMocks = async (page: Page) => {
 const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
   await page.route(/\/api\/message$/, async (route) => {
-    await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
+    await route.fulfill({
+      json: {
+        reply: [
+          'Status: `tasks` and `workflow list` are available.',
+          '',
+          '```mermaid',
+          'flowchart LR',
+          '  Chat[Chat] --> Tasks[Tasks]',
+          '  Tasks --> Review[Review]',
+          '```'
+        ].join('\n'),
+        source: 'program'
+      }
+    });
   });
   await page.route(/\/api\/tasks$/, async (route) => {
     await route.fulfill({ json: { tasks: [restartTask, task] } });
@@ -266,6 +279,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Status:')).toBeVisible();
+    await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
   } else if (route === '/tasks') {
     await page.getByPlaceholder('Search tasks').fill('queue');
     await page.locator('.task-row').first().click();

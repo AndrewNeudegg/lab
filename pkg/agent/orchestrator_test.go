@@ -594,7 +594,8 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 
 func TestWorkflowChatCommandsCreateListAndRun(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
-	orch.provider = &staticProvider{content: "Research summary ready."}
+	provider := &staticProvider{content: "Research summary ready."}
+	orch.provider = provider
 	orch.model = "test-model"
 
 	reply, err := orch.Handle(context.Background(), "test", "workflow new Research releases: Find release notes and summarise risk")
@@ -626,6 +627,9 @@ func TestWorkflowChatCommandsCreateListAndRun(t *testing.T) {
 	}
 	if !strings.Contains(reply, "completed") || !strings.Contains(reply, "Research summary ready") {
 		t.Fatalf("reply = %q, want completed workflow run", reply)
+	}
+	if len(provider.requests) == 0 || !strings.Contains(provider.requests[0].Messages[0].Content, "Mermaid fenced diagrams") {
+		t.Fatalf("workflow LLM prompt missing Mermaid guidance")
 	}
 	updated, err := orch.LoadWorkflow(workflows[0].ID)
 	if err != nil {
@@ -3066,7 +3070,7 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
 	}
 	system := provider.requests[0].Messages[0].Content
-	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production"} {
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Mermaid fenced diagrams", "Do not stop or restart production"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("UX prompt missing %q:\n%s", want, system)
 		}
@@ -3090,6 +3094,9 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 		"nix develop -c bun run --cwd web browser:preflight",
 		"do not stop or restart production",
 		"For remote tasks",
+		"Mermaid fenced diagrams",
+		"accent #2563eb",
+		"accent #60a5fa",
 	} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("delegation instruction missing %q:\n%s", want, instruction)
@@ -3123,6 +3130,17 @@ func TestBrowserUATForDiffSelectsSiteUATForBroadDashboardChanges(t *testing.T) {
 	}, "\n")
 	if got := browserUATForDiff(diff); got != "site" {
 		t.Fatalf("browserUATForDiff(shared nav) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/web/shared/package.json b/web/shared/package.json",
+		"--- a/web/shared/package.json",
+		"+++ b/web/shared/package.json",
+		"@@",
+		"+change",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(shared package) = %q, want site", got)
 	}
 
 	diff = strings.Join([]string{
@@ -3847,7 +3865,7 @@ func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
 		ID:        "task_123",
 		Workspace: "/tmp/workspaces/task_123",
 	})
-	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines"} {
+	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "dashboard brand colours"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
 		}

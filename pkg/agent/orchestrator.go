@@ -568,6 +568,10 @@ func (o *Orchestrator) memoryContextPrompt() string {
 	return prompt
 }
 
+func diagramGuidancePrompt() string {
+	return "Use Mermaid fenced diagrams when they clarify workflows, states, dependency graphs, queues, or machine context. Prefer plain Mermaid and rely on dashboard brand colours: light bg #f5f7fb, surface #ffffff, text #172033, accent #2563eb; dark bg #0b1120, surface #172033, text #dbe7f6, accent #60a5fa. Do not inline arbitrary colours."
+}
+
 func wantsRecentInteractionMemory(value string) bool {
 	normalised := strings.ToLower(strings.Join(strings.Fields(strings.Trim(value, " .,!?:;")), " "))
 	switch normalised {
@@ -2118,6 +2122,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
 		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
+		diagramGuidancePrompt(),
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
 		"Current durable memory:",
 		o.memoryContextPrompt(),
@@ -3546,6 +3551,7 @@ func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) st
 		"Goal: " + t.Goal,
 		"Attachments: " + formatTaskAttachmentsForPrompt(t.Attachments),
 		"",
+		diagramGuidancePrompt(),
 		"Inspect the directory first, make the smallest practical change, run relevant validation, and report changed files plus commands run.",
 	}, "\n")
 }
@@ -4965,6 +4971,7 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Inspect the task workspace before editing.",
 		"Make a minimal patch that satisfies the task goal.",
 		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
+		diagramGuidancePrompt(),
 		"Run relevant formatting and tests when available.",
 		"For UI changes, run browser UAT from this task workspace with an isolated dev server, for example `nix develop -c bun run --cwd web uat:tasks` for task-page changes or `nix develop -c bun run --cwd web uat:site` for site-wide changes. If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure; do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
 		"For remote tasks, run validation on the remote worker in the selected remote workdir and report the exact commands, ports, and URLs used.",
@@ -5818,7 +5825,9 @@ func diffRequiresSiteUAT(diff string) bool {
 	for _, path := range diffFileList(diff) {
 		switch path {
 		case "web/package.json",
+			"web/bun.lock",
 			"web/dashboard/package.json",
+			"web/shared/package.json",
 			"web/dashboard/playwright.config.ts":
 			return true
 		}
@@ -6167,6 +6176,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"- Use internet.search with source academic for papers or source all when both web and scholarly context matter.",
 		"- Use internet.fetch on promising result URLs before relying on details; prefer official, primary, or scholarly sources.",
+		"- " + diagramGuidancePrompt(),
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
 		"- Use shell.run_limited with dir set to the task workspace for allowlisted command arrays when a dedicated repo or test tool is too narrow.",
@@ -6212,6 +6222,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Use text.correct before internet.search when a natural-language query appears misspelled or grammatically ambiguous; preserve exact code symbols.",
 		"- Use internet.search for precise current documentation lookups and internet.fetch before citing or relying on details.",
 		"- Prefer official standards, primary framework docs, design-system docs, and reputable UX research. Mention source URLs in the final message.",
+		"- " + diagramGuidancePrompt(),
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
 		"- Add automated regression coverage for fixed UX bugs. Prefer testable view/state logic plus browser-level tests where interaction matters.",

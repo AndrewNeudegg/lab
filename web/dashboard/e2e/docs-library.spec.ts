@@ -24,6 +24,11 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
     2
   );
+  const diagram = page.locator('.content .mermaid-diagram').first();
+  await expect(diagram.locator('svg')).toBeVisible();
+  await expect(diagram).toHaveAttribute('data-mermaid-theme', 'light');
+  await page.getByRole('button', { name: 'Switch to dark mode' }).click();
+  await expect(diagram).toHaveAttribute('data-mermaid-theme', 'dark');
 
   await page.locator('#docs-list a', { hasText: 'Task Workflow' }).click();
   await expect(page).toHaveURL(/\/docs\/task-workflow$/);

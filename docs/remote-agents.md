@@ -70,6 +70,8 @@ Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are config
 
 Remote agents validate in the selected remote workdir. They must not call the control-plane supervisor to restart production services, and they must not assume `127.0.0.1:5173` points at the operator's dashboard.
 
+When a remote result needs to explain execution flow, state, dependencies, or machine context, include a Mermaid fenced diagram. The control-plane dashboard renders Mermaid in chat and docs and applies the shared light/dark brand palette documented in `docs/dashboard.md#markdown-diagrams-and-brand-colours`.
+
 For dashboard task-page changes in a remote checkout, run:
 
 ```sh

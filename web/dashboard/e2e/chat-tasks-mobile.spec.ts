@@ -242,6 +242,42 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   await expect(page.getByText('received attachment')).toBeVisible();
 });
 
+test('chat renders mermaid diagrams in assistant replies', async ({ page }) => {
+  await page.route('**/api/message', async (route) => {
+    await route.fulfill({
+      json: {
+        reply: [
+          'Queue flow:',
+          '',
+          '```mermaid',
+          'flowchart LR',
+          '  Chat[Chat] --> Task[Task]',
+          '  Task --> Review[Review]',
+          '```'
+        ].join('\n'),
+        source: 'program'
+      }
+    });
+  });
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  await page.getByRole('textbox', { name: 'Message' }).fill('show the queue flow');
+  await page.getByRole('button', { name: 'Send' }).click();
+
+  const diagram = page.locator('.message .mermaid-diagram').last();
+  await expect(diagram.locator('svg')).toBeVisible();
+  await expect(diagram).toHaveAttribute('data-mermaid-theme', 'light');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(diagram.locator('svg')).toBeVisible();
+
+  const overflow = await page.evaluate(() => ({
+    bodyWidth: document.body.scrollWidth,
+    viewport: window.innerWidth
+  }));
+  expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+});
+
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {
   await mockScreenCapture(page);
   let requestBody: any;

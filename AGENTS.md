@@ -12,6 +12,13 @@
 - Documentation must be written and kept in sync with behaviour, commands, UI, configuration, tools, and workflows in the same change. If no docs update is needed, state why in the handoff.
 - Documentation is for humans and LLMs. Keep it concise, use British spelling, and emphasise discoverability and usability with clear titles, searchable terms, related links, and current examples.
 
+## Mermaid Diagrams And Brand Colours
+
+- Use Mermaid fenced diagrams when a state machine, workflow, dependency graph, queue, or machine context is easier to understand visually than as prose.
+- Chat and docs render Mermaid diagrams. Prefer plain Mermaid and let the renderer apply the brand palette; do not inline arbitrary colours.
+- Light palette: `bg #f5f7fb`, `surface #ffffff`, `text #172033`, `strong #0f172a`, `muted #64748b`, `border #cbd5e1`, `accent #2563eb`, `accent-hover #1d4ed8`, `success #16a34a`, `warning #d97706`, `danger #dc2626`.
+- Dark palette: `bg #0b1120`, `surface #172033`, `text #dbe7f6`, `strong #f8fafc`, `muted #9fb0c7`, `border #334155`, `accent #60a5fa`, `accent-hover #3b82f6`, `success #4ade80`, `warning #facc15`, `danger #f87171`.
+
 ## homelabctl
 
 - Use `homelabctl` for interactive `homelabd` operation instead of ad hoc HTTP calls. See `docs/homelabctl.md`.

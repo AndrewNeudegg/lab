@@ -34,6 +34,25 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Mobile: avoid horizontal document carousels. Show a labelled document jump control, visible search, and a vertical document list so operators can discover other pages without guessing that content is off-screen.
 - Search filters titles, paths, summaries, and full Markdown content. Search results show summaries; the default browse view uses short labels for faster scanning.
 
+## Markdown Diagrams And Brand Colours
+
+Chat replies and docs pages render Mermaid fenced blocks. Use diagrams when a state machine, workflow, queue, dependency graph, or handoff is easier to scan visually than as prose.
+
+```mermaid
+flowchart LR
+  Chat[Chat reply] --> Markdown[Markdown renderer]
+  Docs[Docs page] --> Markdown
+  Markdown --> Mermaid[Mermaid SVG]
+  Mermaid --> Theme{Theme}
+  Theme --> Light[Light brand palette]
+  Theme --> Dark[Dark brand palette]
+```
+
+Agents should write plain Mermaid and let the dashboard apply the brand palette. Avoid inline colours unless a diagram has a specific semantic need.
+
+- Light palette: `bg #f5f7fb`, `surface #ffffff`, `text #172033`, `strong #0f172a`, `muted #64748b`, `border #cbd5e1`, `accent #2563eb`, `accent-hover #1d4ed8`, `success #16a34a`, `warning #d97706`, `danger #dc2626`.
+- Dark palette: `bg #0b1120`, `surface #172033`, `text #dbe7f6`, `strong #f8fafc`, `muted #9fb0c7`, `border #334155`, `accent #60a5fa`, `accent-hover #3b82f6`, `success #4ade80`, `warning #facc15`, `danger #f87171`.
+
 ## Research Inputs
 
 - Apple split-view guidance: keep navigation and detail panes visibly related, preserve the current selection, and avoid forcing split panes into compact mobile widths.

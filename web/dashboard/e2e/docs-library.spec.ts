@@ -19,6 +19,9 @@ test('docs library supports navigation, markdown rendering, table of contents, a
     page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Docs' })
   ).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  const diagram = page.locator('.content .mermaid-diagram').first();
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered', { timeout: 15_000 });
+  await expect(diagram.locator('svg')).toBeVisible();
   await expect(page.getByText('./docs/dashboard.md')).toBeVisible();
   await expect.poll(async () => page.locator('#docs-list a').count()).toBeGreaterThanOrEqual(6);
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
@@ -47,7 +50,9 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await page.goto('/docs/chat-commands');
 
   await expect(page.getByRole('heading', { name: 'Chat Commands', exact: true })).toBeVisible();
-  await expect(page.locator('.content pre code').first()).toContainText('reflect on our recent interaction');
+  await expect(
+    page.locator('.content pre code').filter({ hasText: 'reflect on our recent interaction' })
+  ).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Menu' }).click();

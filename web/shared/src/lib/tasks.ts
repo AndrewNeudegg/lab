@@ -28,11 +28,11 @@ export const taskStateDescription = (status = '') => {
     case 'running':
       return 'A worker owns this task. Wait for completion or inspect progress.';
     case 'ready_for_review':
-      return 'Worker finished. The review gate has not passed yet.';
+      return 'Worker finished. The task supervisor will run the review gate.';
     case 'blocked':
-      return 'Review or execution stopped. Pick a fix, rerun, or delete.';
+      return 'Review or execution stopped. Retryable failures are requeued automatically with bounded attempts.';
     case 'conflict_resolution':
-      return 'Task branch conflicts with current main. Delegate or manually resolve before review.';
+      return 'Task branch conflicts with current main. The task supervisor will queue automatic recovery.';
     case 'awaiting_approval':
       return 'Review gate passed. Merge approval is pending.';
     case 'awaiting_restart':
@@ -59,9 +59,9 @@ export const taskStateTransitions = (status = '') => {
     case 'ready_for_review':
       return 'ready for review → awaiting approval, conflict resolution, or blocked';
     case 'blocked':
-      return 'blocked → running, cancelled, or deleted';
+      return 'blocked → running through automatic recovery, cancelled, or deleted';
     case 'conflict_resolution':
-      return 'conflict resolution → running, ready for review, cancelled, or deleted';
+      return 'conflict resolution → running through automatic recovery, ready for review, cancelled, or deleted';
     case 'awaiting_approval':
       return 'awaiting approval → awaiting restart, awaiting verification, conflict resolution, blocked, or running';
     case 'awaiting_restart':

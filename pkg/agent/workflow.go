@@ -217,7 +217,7 @@ func (o *Orchestrator) runWorkflowStep(ctx context.Context, item workflowstore.W
 				Content: strings.Join([]string{
 					"You are executing one durable homelabd workflow step.",
 					"Return concise plain text for this step output. Do not invent tool results.",
-					diagramPromptGuidance,
+					agentDiagramGuidance,
 				}, "\n"),
 			}, {
 				Role:    "user",
@@ -381,6 +381,7 @@ func workflowStepPrompt(item workflowstore.Workflow, step workflowstore.Step, pr
 	}
 	lines = append(lines, "Step: "+step.Name)
 	lines = append(lines, "Prompt: "+step.Prompt)
+	lines = append(lines, "Diagram guidance: "+agentDiagramGuidance)
 	if len(previous) > 0 {
 		lines = append(lines, "Previous outputs:")
 		for _, output := range previous {

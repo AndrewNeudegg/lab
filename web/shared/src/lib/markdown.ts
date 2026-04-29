@@ -20,8 +20,6 @@ export type MarkdownRenderOptions = {
   headingIds?: boolean;
 };
 
-const mermaidLanguagePattern = /^(mermaid|mmd)$/i;
-
 export const slugifyMarkdownHeading = (value: string) => {
   const slug = value
     .replace(/`([^`\n]+)`/g, '$1')
@@ -49,25 +47,6 @@ const createHtmlToken = (tokens: string[], html: string) => {
   const token = `\u0000HTML${tokens.length}\u0000`;
   tokens.push(html);
   return token;
-};
-
-const encodeDataAttribute = (value: string) => encodeURIComponent(value);
-
-const renderFencedBlock = (language: string, code: string) => {
-  const codeClass = language ? ` class="language-${escapeAttribute(language)}"` : '';
-  const codeElement = `<pre><code${codeClass}>${escapeHtml(code)}</code></pre>`;
-
-  if (!mermaidLanguagePattern.test(language)) {
-    return codeElement;
-  }
-
-  return [
-    `<div class="mermaid-diagram" data-mermaid-source="${escapeAttribute(
-      encodeDataAttribute(code)
-    )}" data-mermaid-state="pending" aria-label="Mermaid diagram">`,
-    codeElement,
-    '</div>'
-  ].join('');
 };
 
 const renderInlineMarkdown = (value: string): string => {
@@ -119,6 +98,34 @@ const renderInlineMarkdown = (value: string): string => {
 type ListState = {
   kind: 'ol' | 'ul';
   items: string[];
+};
+
+const mermaidLanguagePattern = /^(mermaid|mmd)$/i;
+const mermaidInitDirectivePattern = /^\s*%%\{\s*(?:init|initialize|config)[\s\S]*?\}%%\s*/i;
+
+const stripMermaidInitDirectives = (code: string) => {
+  let stripped = code;
+  while (mermaidInitDirectivePattern.test(stripped)) {
+    stripped = stripped.replace(mermaidInitDirectivePattern, '');
+  }
+  return stripped;
+};
+
+const renderFencedCode = (language: string, lines: string[]) => {
+  const code = lines.join('\n');
+  const languageClass = language ? ` class="language-${escapeAttribute(language)}"` : '';
+
+  if (mermaidLanguagePattern.test(language)) {
+    const source = stripMermaidInitDirectives(code);
+    return [
+      `<figure class="mermaid-diagram" data-mermaid-source="${escapeAttribute(source)}" data-mermaid-status="pending">`,
+      '<div class="mermaid-output" role="img" aria-label="Mermaid diagram" hidden></div>',
+      `<pre><code${languageClass}>${escapeHtml(code)}</code></pre>`,
+      '</figure>'
+    ].join('');
+  }
+
+  return `<pre><code${languageClass}>${escapeHtml(code)}</code></pre>`;
 };
 
 export const renderMarkdown = (source: string, options: MarkdownRenderOptions = {}) => {
@@ -178,7 +185,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
     const fenceMatch = line.match(/^```([A-Za-z0-9_.+-]*)\s*$/);
     if (fenceLines) {
       if (fenceMatch) {
-        blocks.push(renderFencedBlock(fenceLanguage, fenceLines.join('\n')));
+        blocks.push(renderFencedCode(fenceLanguage, fenceLines));
         fenceLines = undefined;
         fenceLanguage = '';
       } else {
@@ -234,7 +241,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
   }
 
   if (fenceLines) {
-    blocks.push(renderFencedBlock(fenceLanguage, fenceLines.join('\n')));
+    blocks.push(renderFencedCode(fenceLanguage, fenceLines));
   }
   flushTextBlocks();
 

@@ -12,9 +12,19 @@ describe('renderMarkdown', () => {
     );
   });
 
-  test('renders Mermaid fences as diagram placeholders with a safe code fallback', () => {
-    expect(renderMarkdown('```mermaid\ngraph TD\nA[Chat] --> B[Docs]\n```')).toBe(
-      '<div class="mermaid-diagram" data-mermaid-source="graph%20TD%0AA%5BChat%5D%20--%3E%20B%5BDocs%5D" data-mermaid-state="pending" aria-label="Mermaid diagram"><pre><code class="language-mermaid">graph TD\nA[Chat] --&gt; B[Docs]</code></pre></div>'
+  test('renders mermaid fences as diagram containers with escaped fallback source', () => {
+    expect(renderMarkdown('```mermaid\ngraph TD\n  A["<safe>"] --> B\n```')).toBe(
+      '<figure class="mermaid-diagram" data-mermaid-source="graph TD\n  A[&quot;&lt;safe&gt;&quot;] --&gt; B" data-mermaid-status="pending"><div class="mermaid-output" role="img" aria-label="Mermaid diagram" hidden></div><pre><code class="language-mermaid">graph TD\n  A[&quot;&lt;safe&gt;&quot;] --&gt; B</code></pre></figure>'
+    );
+  });
+
+  test('renders mmd fences and strips Mermaid init directives from render source', () => {
+    expect(
+      renderMarkdown(
+        '```mmd\n%%{init: {"theme": "forest"}}%%\nflowchart LR\n  Chat --> Docs\n```'
+      )
+    ).toBe(
+      '<figure class="mermaid-diagram" data-mermaid-source="flowchart LR\n  Chat --&gt; Docs" data-mermaid-status="pending"><div class="mermaid-output" role="img" aria-label="Mermaid diagram" hidden></div><pre><code class="language-mmd">%%{init: {&quot;theme&quot;: &quot;forest&quot;}}%%\nflowchart LR\n  Chat --&gt; Docs</code></pre></figure>'
     );
   });
 

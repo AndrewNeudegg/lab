@@ -12,6 +12,12 @@ describe('renderMarkdown', () => {
     );
   });
 
+  test('renders Mermaid fences as diagram placeholders with a safe code fallback', () => {
+    expect(renderMarkdown('```mermaid\ngraph TD\nA[Chat] --> B[Docs]\n```')).toBe(
+      '<div class="mermaid-diagram" data-mermaid-source="graph%20TD%0AA%5BChat%5D%20--%3E%20B%5BDocs%5D" data-mermaid-state="pending" aria-label="Mermaid diagram"><pre><code class="language-mermaid">graph TD\nA[Chat] --&gt; B[Docs]</code></pre></div>'
+    );
+  });
+
   test('renders common inline markdown', () => {
     expect(renderMarkdown('Use **bold**, _emphasis_, and `code`.')).toBe(
       '<p>Use <strong>bold</strong>, <em>emphasis</em>, and <code>code</code>.</p>'

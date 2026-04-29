@@ -2116,6 +2116,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use memory.unlearn when the user asks you to forget, remove, correct, or stop using a stored lesson.",
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
+		diagramPromptGuidance,
 		"Create development work with task.create instead of pretending to edit files directly.",
 		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
@@ -4966,6 +4967,7 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Make a minimal patch that satisfies the task goal.",
 		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"Run relevant formatting and tests when available.",
+		diagramPromptGuidance,
 		"For UI changes, run browser UAT from this task workspace with an isolated dev server, for example `nix develop -c bun run --cwd web uat:tasks` for task-page changes or `nix develop -c bun run --cwd web uat:site` for site-wide changes. If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure; do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
 		"For remote tasks, run validation on the remote worker in the selected remote workdir and report the exact commands, ports, and URLs used.",
 		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
@@ -6005,6 +6007,8 @@ type specialistTaskAgent struct {
 	InitialUserMessage string
 }
 
+const diagramPromptGuidance = "When a system, workflow, state machine, sequence, or UI journey would be clearer as a diagram, include a concise Mermaid fenced diagram; use the homelabd brand colour scheme by relying on the dashboard Mermaid renderer instead of ad hoc colours."
+
 func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, agent specialistTaskAgent) (string, error) {
 	if agent.Name == "" {
 		agent.Name = "CoderAgent"
@@ -6172,6 +6176,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Use shell.run_limited with dir set to the task workspace for allowlisted command arrays when a dedicated repo or test tool is too narrow.",
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
 		"- If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
+		"- " + diagramPromptGuidance,
 		"- After editing Go code, run go.fmt, go.test, and repo.current_diff.",
 		"- After editing web code, run bun.check, bun.build, bun.test, and a targeted isolated browser UAT when UI changed; use bun.uat.site for broad dashboard shell, navigation, theme, or multi-page changes.",
 		"- If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure.",
@@ -6206,6 +6211,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Prioritise semantic HTML, accessible names, keyboard operation, visible focus, target size and spacing, colour contrast, predictable states, clear errors, responsive layouts, and content that matches user language.",
 		"- Check loading, empty, error, disabled, selected, hover/focus, long-content, and mobile states when relevant.",
 		"- Ensure text does not overlap, truncate badly, or depend on colour alone; UI changes must be usable at narrow and desktop viewports.",
+		"- " + diagramPromptGuidance,
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",
 		"- Use internet.research for broad or current UX/accessibility questions before implementation choices.",

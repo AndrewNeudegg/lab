@@ -220,7 +220,12 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   let requestBody: any;
   await page.route('**/api/message', async (route) => {
     requestBody = JSON.parse(route.request().postData() || '{}');
-    await route.fulfill({ json: { reply: 'received attachment', source: 'program' } });
+    await route.fulfill({
+      json: {
+        reply: 'received attachment\n\n```mermaid\nflowchart LR\n  Chat[Chat] --> Task[Task]\n```',
+        source: 'program'
+      }
+    });
   });
   await page.goto('/chat');
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
@@ -240,6 +245,7 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   expect(requestBody.attachments[0].text).toBe('steps to reproduce');
   await expect(page.getByLabel('Message attachments')).toContainText('notes.txt');
   await expect(page.getByText('received attachment')).toBeVisible();
+  await expect(page.locator('.message:not(.user) .mermaid-diagram svg')).toBeVisible();
 });
 
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {

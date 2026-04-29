@@ -61,6 +61,9 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   await expect(page.locator('#docs-list a[aria-current="page"]')).toContainText('Dashboard');
 
+  await page.goto('/docs/chat-commands');
+  await expect(page.locator('.content .mermaid-diagram svg')).toBeVisible();
+
   await page.getByRole('searchbox', { name: 'Search documentation' }).fill('operator interface');
   await expect(page.locator('#docs-list a')).toHaveCount(1);
   await expect(page.locator('#docs-list a')).toContainText('homelabctl');

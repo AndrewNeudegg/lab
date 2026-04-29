@@ -5,6 +5,8 @@ For local tasks, the CLI runs inside the task worktree, so any file edits stay i
 
 Built-in role agents are separate from external CLI backends. `UXAgent` is invoked with `ux <task_id> [instruction]` or `delegate <task_id> to ux ...`; it uses the local LLM provider and the same worktree/review flow, not an entry in `external_agents`.
 
+External agents may include Mermaid fenced diagrams in final summaries, docs, or task notes when a workflow, state machine, architecture, sequence, or user journey would be easier to understand visually. The dashboard renders those diagrams in chat and docs with the homelabd brand theme and strips Mermaid init directives. Do not add Mermaid `init` blocks or hard-code unrelated colours; use the palette in `docs/chat-commands.md` when explicit semantic styling is unavoidable.
+
 ## Commands
 
 ```text

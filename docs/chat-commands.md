@@ -4,6 +4,32 @@
 
 From a terminal, use `homelabctl shell` for interactive chat-command operation, or `homelabctl message <text>` for a single message. The CLI is documented in `docs/homelabctl.md` and should be kept current with this command surface.
 
+## Mermaid Diagrams And Brand Colours
+
+Chat messages and dashboard docs render fenced `mermaid` and `mmd` Markdown blocks as diagrams. Use diagrams when a workflow, state machine, architecture, sequence, or user journey would be clearer for a human operator or a future agent.
+
+```mermaid
+flowchart LR
+  Human[Human] --> Chat[Chat]
+  Chat --> Task[Task record]
+  Task --> Worker[Worker]
+  Worker --> Review[Review]
+```
+
+The dashboard applies the homelabd diagram theme automatically and strips Mermaid theme/config init directives before rendering. Agents should not add Mermaid `init` blocks or hard-code unrelated colours. If explicit semantic styling is unavoidable outside the dashboard renderer, stay within this palette:
+
+| Token | Light | Dark |
+| --- | --- | --- |
+| Canvas | `#ffffff` | `#172033` |
+| Panel | `#f8fafc` | `#111827` |
+| Text | `#172033` | `#dbe7f6` |
+| Strong text | `#0f172a` | `#f8fafc` |
+| Muted line/text | `#64748b` | `#9fb0c7` |
+| Primary accent | `#2563eb` | `#60a5fa` |
+| Success | `#1f6f4a` | `#1f6f4a` |
+| Warning | `#b45309` | `#fde68a` |
+| Danger | `#991b1b` | `#fecaca` |
+
 ## Reflection
 
 Use reflection when you want one improvement from the recent interaction and a follow-up task you can action:

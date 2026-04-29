@@ -20,6 +20,8 @@ export type MarkdownRenderOptions = {
   headingIds?: boolean;
 };
 
+const mermaidLanguagePattern = /^(mermaid|mmd)$/i;
+
 export const slugifyMarkdownHeading = (value: string) => {
   const slug = value
     .replace(/`([^`\n]+)`/g, '$1')
@@ -47,6 +49,25 @@ const createHtmlToken = (tokens: string[], html: string) => {
   const token = `\u0000HTML${tokens.length}\u0000`;
   tokens.push(html);
   return token;
+};
+
+const encodeDataAttribute = (value: string) => encodeURIComponent(value);
+
+const renderFencedBlock = (language: string, code: string) => {
+  const codeClass = language ? ` class="language-${escapeAttribute(language)}"` : '';
+  const codeElement = `<pre><code${codeClass}>${escapeHtml(code)}</code></pre>`;
+
+  if (!mermaidLanguagePattern.test(language)) {
+    return codeElement;
+  }
+
+  return [
+    `<div class="mermaid-diagram" data-mermaid-source="${escapeAttribute(
+      encodeDataAttribute(code)
+    )}" data-mermaid-state="pending" aria-label="Mermaid diagram">`,
+    codeElement,
+    '</div>'
+  ].join('');
 };
 
 const renderInlineMarkdown = (value: string): string => {
@@ -157,11 +178,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
     const fenceMatch = line.match(/^```([A-Za-z0-9_.+-]*)\s*$/);
     if (fenceLines) {
       if (fenceMatch) {
-        blocks.push(
-          `<pre><code${fenceLanguage ? ` class="language-${escapeAttribute(fenceLanguage)}"` : ''}>${escapeHtml(
-            fenceLines.join('\n')
-          )}</code></pre>`
-        );
+        blocks.push(renderFencedBlock(fenceLanguage, fenceLines.join('\n')));
         fenceLines = undefined;
         fenceLanguage = '';
       } else {
@@ -217,11 +234,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
   }
 
   if (fenceLines) {
-    blocks.push(
-      `<pre><code${fenceLanguage ? ` class="language-${escapeAttribute(fenceLanguage)}"` : ''}>${escapeHtml(
-        fenceLines.join('\n')
-      )}</code></pre>`
-    );
+    blocks.push(renderFencedBlock(fenceLanguage, fenceLines.join('\n')));
   }
   flushTextBlocks();
 

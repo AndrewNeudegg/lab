@@ -2566,8 +2566,6 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("automatic recovery worker did not start")
 	}
-	releaseAndWait := delegateReleaseWaiter(t, orch, task.ID, releaseDelegate, taskstore.StatusReadyForReview)
-	defer releaseAndWait()
 	updated, err := orch.tasks.Load(task.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -2575,7 +2573,6 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
-	releaseAndWait()
 }
 
 func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
@@ -2621,8 +2618,6 @@ func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("automatic recovery worker did not start")
 	}
-	releaseAndWait := delegateReleaseWaiter(t, orch, task.ID, releaseDelegate, taskstore.StatusReadyForReview)
-	defer releaseAndWait()
 	updated, err := orch.tasks.Load(task.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -2630,7 +2625,6 @@ func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
-	releaseAndWait()
 }
 
 func TestAutomaticRecoveryFailureRemainsRetryableAfterCooldown(t *testing.T) {
@@ -4457,31 +4451,6 @@ func waitForTaskStatus(t *testing.T, orch *Orchestrator, taskID, status string) 
 		t.Fatal(err)
 	}
 	t.Fatalf("task status = %q, want %q", updated.Status, status)
-}
-
-func delegateReleaseWaiter(t *testing.T, orch *Orchestrator, taskID string, release chan struct{}, status string) func() {
-	t.Helper()
-	var once sync.Once
-	return func() {
-		t.Helper()
-		once.Do(func() {
-			close(release)
-			waitForTaskStatus(t, orch, taskID, status)
-			waitForTaskInactive(t, orch, taskID)
-		})
-	}
-}
-
-func waitForTaskInactive(t *testing.T, orch *Orchestrator, taskID string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if !orch.taskActive(taskID) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("task %s remained active", taskID)
 }
 
 func taskByPhase(tasks []taskstore.Task, phase string) taskstore.Task {

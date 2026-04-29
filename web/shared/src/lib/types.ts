@@ -134,6 +134,18 @@ export interface HomelabdTasksResponse {
   tasks: HomelabdTask[];
 }
 
+export interface HomelabdRuntimeSettings {
+  auto_merge_enabled: boolean;
+}
+
+export interface HomelabdSettingsResponse {
+  settings: HomelabdRuntimeSettings;
+}
+
+export interface HomelabdUpdateSettingsRequest {
+  auto_merge_enabled?: boolean;
+}
+
 export interface HomelabdCreateTaskRequest {
   goal: string;
   target?: HomelabdTaskTarget;
@@ -471,6 +483,8 @@ export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;
+  getSettings(): Promise<HomelabdSettingsResponse>;
+  updateSettings(request: HomelabdUpdateSettingsRequest): Promise<HomelabdSettingsResponse>;
   createWorkflow(request: HomelabdCreateWorkflowRequest): Promise<HomelabdWorkflowActionResponse>;
   listWorkflows(): Promise<HomelabdWorkflowsResponse>;
   getWorkflow(workflowId: string): Promise<HomelabdWorkflow>;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
@@ -37,6 +38,8 @@
   let jumpSlug = selectedSlug;
   let syncedSelectedSlug = selectedSlug;
   let pendingDocPath = '';
+  let controlsReady = false;
+
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
     ...preferredDocOrder
@@ -97,6 +100,10 @@
     pendingDocPath = path;
     window.location.assign(path);
   };
+
+  onMount(() => {
+    controlsReady = true;
+  });
 </script>
 
 <svelte:head>
@@ -119,6 +126,7 @@
         <select
           id="docs-jump"
           bind:value={jumpSlug}
+          disabled={!controlsReady}
           oninput={openSelectedDoc}
           onchange={openSelectedDoc}
           aria-label="Jump to document"

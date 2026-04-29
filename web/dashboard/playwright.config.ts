@@ -1,4 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
+import {
+  playwrightExpectTimeout,
+  playwrightTestTimeout,
+  playwrightWebServerTimeout,
+  worktreePort
+} from './scripts/playwright-settings';
 
 const port = Number(process.env.PLAYWRIGHT_PORT || worktreePort(process.cwd()));
 const baseURL = `http://127.0.0.1:${port}`;
@@ -11,25 +17,17 @@ const launchOptions = {
   args: ['--disable-breakpad', '--disable-crash-reporter', '--disable-dev-shm-usage']
 };
 
-function worktreePort(cwd: string) {
-  let hash = 0;
-  for (const char of cwd) {
-    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  }
-  return 31_000 + (hash % 8_000);
-}
-
 export default defineConfig({
   testDir: './e2e',
-  timeout: 30_000,
+  timeout: playwrightTestTimeout(process.env),
   workers: 1,
   expect: {
-    timeout: 5_000
+    timeout: playwrightExpectTimeout(process.env)
   },
   webServer: {
     command: `bun run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
     url: `${baseURL}/chat`,
-    timeout: 30_000,
+    timeout: playwrightWebServerTimeout(process.env),
     reuseExistingServer: false
   },
   use: {

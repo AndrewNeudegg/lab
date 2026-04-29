@@ -3,13 +3,16 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -138,7 +141,7 @@ func (c cli) dispatch(args []string) error {
 		return c.task(withAction("runs", args[1:]))
 	case "diff":
 		return c.task(withAction("diff", args[1:]))
-	case "run", "review", "accept", "verify", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
+	case "run", "review", "accept", "verify", "restart", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
 		return c.task(withAction(cmd, args[1:]))
 	case "status", "agents", "refresh", "rebase", "sync",
 		"delegate", "escalate", "codex", "claude", "gemini", "ux", "test", "patch",
@@ -200,19 +203,25 @@ func parseWorkflowCreateArgs(args []string) (string, string) {
 
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|reopen|cancel|retry|delete>")
+		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|accept|restart|reopen|cancel|retry|delete>")
 	}
 	action := commandWord(args[0])
 	switch action {
 	case "new", "create":
-		target, rest := parseTaskTargetArgs(args[1:])
+		target, attachments, rest, err := parseTaskNewArgs(args[1:])
+		if err != nil {
+			return err
+		}
 		goal := strings.TrimSpace(strings.Join(rest, " "))
 		if goal == "" {
-			return fmt.Errorf("usage: homelabctl task new [--agent <agent_id> --workdir <path_or_id>] <goal>")
+			return fmt.Errorf("usage: homelabctl task new [--attach <path>] [--agent <agent_id> --workdir <path_or_id>] <goal>")
 		}
 		body := map[string]any{"goal": goal}
 		if target != nil {
 			body["target"] = target
+		}
+		if len(attachments) > 0 {
+			body["attachments"] = attachments
 		}
 		return c.do(http.MethodPost, "/tasks", body)
 	case "list", "ls":
@@ -245,6 +254,11 @@ func (c cli) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task accept <task_id>")
 		}
 		return c.do(http.MethodPost, path("tasks", args[1], "accept"), nil)
+	case "restart":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl task restart <task_id>")
+		}
+		return c.do(http.MethodPost, path("tasks", args[1], "restart"), nil)
 	case "cancel", "stop":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: homelabctl task cancel <task_id>")
@@ -271,47 +285,92 @@ func (c cli) task(args []string) error {
 	}
 }
 
-func parseTaskTargetArgs(args []string) (map[string]any, []string) {
+func parseTaskNewArgs(args []string) (map[string]any, []map[string]any, []string, error) {
 	target := map[string]any{"mode": "remote"}
-	used := false
+	usedTarget := false
+	var attachments []map[string]any
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--agent":
 			if i+1 < len(args) {
 				target["agent_id"] = args[i+1]
-				used = true
+				usedTarget = true
 				i++
 				continue
 			}
 		case "--workdir":
 			if i+1 < len(args) {
 				target["workdir_id"] = args[i+1]
-				used = true
+				usedTarget = true
 				i++
 				continue
 			}
 		case "--workdir-path":
 			if i+1 < len(args) {
 				target["workdir"] = args[i+1]
-				used = true
+				usedTarget = true
 				i++
 				continue
 			}
 		case "--backend":
 			if i+1 < len(args) {
 				target["backend"] = args[i+1]
-				used = true
+				usedTarget = true
 				i++
 				continue
 			}
+		case "--attach":
+			if i+1 >= len(args) {
+				return nil, nil, nil, fmt.Errorf("--attach requires a path")
+			}
+			attachment, err := fileAttachment(args[i+1])
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			attachments = append(attachments, attachment)
+			i++
+			continue
 		}
 		rest = append(rest, args[i])
 	}
-	if !used {
-		return nil, rest
+	if !usedTarget {
+		target = nil
 	}
-	return target, rest
+	return target, attachments, rest, nil
+}
+
+func fileAttachment(path string) (map[string]any, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	attachment := map[string]any{
+		"name":         filepath.Base(path),
+		"content_type": contentType,
+		"size":         len(data),
+		"data_url":     "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data),
+	}
+	if isTextAttachment(contentType) {
+		text := string(data)
+		if len(text) > 128*1024 {
+			text = text[:128*1024] + "\n\n[truncated]"
+		}
+		attachment["text"] = text
+	}
+	return attachment, nil
+}
+
+func isTextAttachment(contentType string) bool {
+	contentType = strings.ToLower(contentType)
+	return strings.HasPrefix(contentType, "text/") ||
+		strings.Contains(contentType, "json") ||
+		strings.Contains(contentType, "yaml") ||
+		strings.Contains(contentType, "xml")
 }
 
 func (c cli) agent(args []string) error {
@@ -834,13 +893,14 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] shell
   homelabctl [-addr http://127.0.0.1:18080] message <text>
 
-  homelabctl [-addr http://127.0.0.1:18080] task new [--agent <agent_id> --workdir <workdir_id>|--workdir-path <path> --backend <backend>] <goal>
+  homelabctl [-addr http://127.0.0.1:18080] task new [--attach <path>] [--agent <agent_id> --workdir <workdir_id>|--workdir-path <path> --backend <backend>] <goal>
   homelabctl [-addr http://127.0.0.1:18080] task list
   homelabctl [-addr http://127.0.0.1:18080] task show <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task runs <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task run <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task review <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task accept <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task restart <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task reopen <task_id> [reason]
   homelabctl [-addr http://127.0.0.1:18080] task cancel <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task retry <task_id> [codex|claude|gemini] [instruction]
@@ -876,7 +936,7 @@ func usage(out io.Writer) {
 
 Top-level shortcuts:
   homelabctl new <goal>
-  homelabctl run|review|accept|reopen|cancel|retry|delete <task_id> [...]
+  homelabctl run|review|accept|restart|reopen|cancel|retry|delete <task_id> [...]
   homelabctl approve|deny <approval_id>
   homelabctl memories|remember|unlearn ...
   homelabctl errors [-limit N] [app]

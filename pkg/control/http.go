@@ -116,9 +116,10 @@ func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var in struct {
-		From    string `json:"from"`
-		Content string `json:"content"`
-		Message string `json:"message"`
+		From        string                 `json:"from"`
+		Content     string                 `json:"content"`
+		Message     string                 `json:"message"`
+		Attachments []taskstore.Attachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 		writeError(rw, http.StatusBadRequest, err.Error())
@@ -133,7 +134,7 @@ func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 		from = "webhook"
 	}
 	_ = s.appendChat("http", "in", from, "homelabd", content, true)
-	result, err := s.Orchestrator.HandleDetailed(req.Context(), from, content)
+	result, err := s.Orchestrator.HandleDetailedWithAttachments(req.Context(), from, content, in.Attachments)
 	if err != nil {
 		_ = s.appendChat("http", "out", "homelabd", from, "error: "+err.Error(), true)
 		writeError(rw, http.StatusInternalServerError, err.Error())
@@ -190,14 +191,15 @@ func (s *Server) handleTasks(rw http.ResponseWriter, req *http.Request) {
 		writeJSON(rw, http.StatusOK, map[string]any{"tasks": tasks})
 	case http.MethodPost:
 		var in struct {
-			Goal   string                     `json:"goal"`
-			Target *taskstore.ExecutionTarget `json:"target,omitempty"`
+			Goal        string                     `json:"goal"`
+			Target      *taskstore.ExecutionTarget `json:"target,omitempty"`
+			Attachments []taskstore.Attachment     `json:"attachments,omitempty"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(rw, http.StatusBadRequest, err.Error())
 			return
 		}
-		reply, err := s.Orchestrator.CreateTaskWithTarget(req.Context(), in.Goal, in.Target)
+		reply, err := s.Orchestrator.CreateTaskWithTargetAndAttachments(req.Context(), in.Goal, in.Target, in.Attachments)
 		if err != nil {
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
@@ -264,6 +266,8 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 			reply, err = s.Orchestrator.ReviewTask(req.Context(), taskID)
 		case "accept":
 			reply, err = s.Orchestrator.AcceptTask(req.Context(), taskID)
+		case "restart":
+			reply, err = s.Orchestrator.RestartTaskPostMerge(req.Context(), taskID)
 		case "reopen":
 			var in struct {
 				Reason string `json:"reason"`

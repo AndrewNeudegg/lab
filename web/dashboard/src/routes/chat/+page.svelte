@@ -2,13 +2,18 @@
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
+    fileToTaskAttachment,
+    formatAttachmentSize,
+    isImageAttachment,
+    MAX_DASHBOARD_ATTACHMENTS,
     Markdown,
     Navbar,
     persistChatDraft,
     readStoredChatDraft,
     type ChatInteractionStats,
     type ChatRole,
-    type ChatTranscriptMessage
+    type ChatTranscriptMessage,
+    type HomelabdTaskAttachment
   } from '@homelab/shared';
   import { formatInteractionStats, messageExchangeNumber } from './interaction-stats';
 
@@ -57,8 +62,13 @@
   let error = '';
   let messageId = 0;
   let inputEl: HTMLTextAreaElement | undefined;
+  let fileInputEl: HTMLInputElement | undefined;
   let messagesEl: HTMLElement | undefined;
   let messages: ChatTranscriptMessage[] = [welcomeMessage];
+  let pendingAttachments: HomelabdTaskAttachment[] = [];
+  let selectedFiles: FileList | undefined;
+  let attachmentError = '';
+  let draggingFiles = false;
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -95,6 +105,16 @@
           const stat = (candidate.stats as Record<string, unknown>)[key];
           return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
         }));
+    const validAttachments =
+      candidate.attachments === undefined ||
+      (Array.isArray(candidate.attachments) &&
+        candidate.attachments.every(
+          (attachment) =>
+            attachment &&
+            typeof attachment === 'object' &&
+            typeof (attachment as Record<string, unknown>).name === 'string' &&
+            typeof (attachment as Record<string, unknown>).content_type === 'string'
+        ));
 
     return (
       typeof candidate.id === 'string' &&
@@ -102,7 +122,8 @@
       typeof candidate.content === 'string' &&
       typeof candidate.time === 'string' &&
       validActions &&
-      validStats
+      validStats &&
+      validAttachments
     );
   };
 
@@ -125,7 +146,11 @@
 
   const persistMessages = () => {
     try {
-      localStorage.setItem(transcriptStorageKey, JSON.stringify(messages.slice(-120)));
+      const storedMessages = messages.slice(-120).map((message) => ({
+        ...message,
+        attachments: message.attachments?.map(({ data_url, ...attachment }) => attachment)
+      }));
+      localStorage.setItem(transcriptStorageKey, JSON.stringify(storedMessages));
     } catch {
       error = 'Chat history could not be persisted locally.';
     }
@@ -200,6 +225,7 @@
     role: ChatRole,
     content: string,
     source?: string,
+    attachments: HomelabdTaskAttachment[] = [],
     stats?: ChatInteractionStats
   ) => {
     messageId += 1;
@@ -210,6 +236,7 @@
         role,
         content,
         source,
+        attachments: attachments.length ? attachments : undefined,
         actions: role === 'assistant' ? extractCommands(content) : undefined,
         stats,
         time: timeLabel()
@@ -230,25 +257,30 @@
 
   const sendMessage = async (content = draft) => {
     const trimmed = content.trim();
-    if (!trimmed || loading) {
+    const attachments = pendingAttachments;
+    if ((!trimmed && attachments.length === 0) || loading) {
       return;
     }
 
     draft = '';
+    pendingAttachments = [];
+    attachmentError = '';
     persistChatDraft(draft);
     error = '';
-    addMessage('user', trimmed);
+    addMessage('user', trimmed || 'Attached files', undefined, attachments);
     loading = true;
 
     try {
       const response = await client.sendMessage({
         from: 'dashboard',
-        content: trimmed
+        content: trimmed || 'Attached files',
+        attachments
       });
       addMessage(
         'assistant',
         response.reply || 'No reply returned.',
         response.source || 'program',
+        [],
         response.stats
       );
     } catch (err) {
@@ -275,8 +307,96 @@
     persistChatDraft(draft);
   };
 
+  $: if (selectedFiles?.length) {
+    const files = selectedFiles;
+    selectedFiles = undefined;
+    void addFiles(files);
+  }
+
   const messageFooter = (message: ChatTranscriptMessage, index: number) =>
     formatInteractionStats(message, messageExchangeNumber(messages, index));
+
+  async function addFiles(files: FileList | File[]) {
+    const selected = Array.from(files);
+    if (!selected.length || loading) {
+      return;
+    }
+    attachmentError = '';
+    const available = MAX_DASHBOARD_ATTACHMENTS - pendingAttachments.length;
+    if (available <= 0) {
+      attachmentError = `Attach up to ${MAX_DASHBOARD_ATTACHMENTS} files.`;
+      return;
+    }
+    const next: HomelabdTaskAttachment[] = [];
+    for (const file of selected.slice(0, available)) {
+      try {
+        next.push(await fileToTaskAttachment(file));
+      } catch (err) {
+        attachmentError = err instanceof Error ? err.message : 'Unable to attach file.';
+      }
+    }
+    pendingAttachments = [...pendingAttachments, ...next];
+    if (selected.length > available) {
+      attachmentError = `Only ${available} more file${available === 1 ? '' : 's'} could be attached.`;
+    }
+    if (fileInputEl) {
+      fileInputEl.value = '';
+    }
+  }
+
+  const removePendingAttachment = (id?: string) => {
+    pendingAttachments = pendingAttachments.filter((attachment) => attachment.id !== id);
+  };
+
+  const handleFileInput = (event: Event) => {
+    const files = (event.currentTarget as HTMLInputElement).files;
+    if (files) {
+      void addFiles(files);
+    }
+  };
+
+  const triggerFileInput = () => {
+    if (!loading) {
+      fileInputEl?.click();
+    }
+  };
+
+  const eventHasFiles = (event: DragEvent) =>
+    Array.from(event.dataTransfer?.types || []).includes('Files');
+
+  const handleDragEnter = (event: DragEvent) => {
+    if (!eventHasFiles(event) || loading) {
+      return;
+    }
+    event.preventDefault();
+    draggingFiles = true;
+  };
+
+  const handleDragOver = (event: DragEvent) => {
+    if (!eventHasFiles(event) || loading) {
+      return;
+    }
+    event.preventDefault();
+    draggingFiles = true;
+  };
+
+  const handleDragLeave = (event: DragEvent) => {
+    if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) {
+      draggingFiles = false;
+    }
+  };
+
+  const handleDrop = (event: DragEvent) => {
+    if (!eventHasFiles(event) || loading) {
+      return;
+    }
+    event.preventDefault();
+    draggingFiles = false;
+    if (event.dataTransfer?.files) {
+      void addFiles(event.dataTransfer.files);
+    }
+  };
+
 </script>
 
 <svelte:head>
@@ -296,6 +416,26 @@
             <time>{message.time}</time>
           </div>
           <Markdown content={message.content} />
+          {#if message.attachments?.length}
+            <div class="attachment-list message-attachments" aria-label="Message attachments">
+              {#each message.attachments as attachment}
+                <a
+                  class="attachment-chip"
+                  href={attachment.data_url || undefined}
+                  download={attachment.data_url ? attachment.name : undefined}
+                  aria-label={`Attachment ${attachment.name}`}
+                >
+                  {#if attachment.data_url && isImageAttachment(attachment)}
+                    <img src={attachment.data_url} alt="" />
+                  {/if}
+                  <span>
+                    <strong>{attachment.name}</strong>
+                    <small>{attachment.content_type} / {formatAttachmentSize(attachment.size)}</small>
+                  </span>
+                </a>
+              {/each}
+            </div>
+          {/if}
           {#if message.role === 'assistant' && message.actions?.length}
             <div class="message-actions">
               {#each message.actions as action}
@@ -335,22 +475,71 @@
       {/each}
     </section>
 
-    <form class="composer" on:submit|preventDefault={() => void sendMessage()}>
+    <form
+      class="composer"
+      class:dragging={draggingFiles}
+      on:submit|preventDefault={() => void sendMessage()}
+      on:dragenter={handleDragEnter}
+      on:dragover={handleDragOver}
+      on:dragleave={handleDragLeave}
+      on:drop={handleDrop}
+    >
       <label class="hidden" for="message">Message</label>
-      <textarea
-        id="message"
-        bind:this={inputEl}
-        bind:value={draft}
-        autocomplete="off"
-        placeholder="Tell homelabd what you want done. Use Tasks for queue state."
-        disabled={loading}
-        rows="3"
-        on:input={handleDraftInput}
-        on:keydown={handleComposerKeydown}
-      ></textarea>
-      <button type="submit" disabled={loading || !draft.trim()}>
-        {loading ? 'Sending' : 'Send'}
-      </button>
+      <div class="composer-field">
+        <textarea
+          id="message"
+          bind:this={inputEl}
+          bind:value={draft}
+          autocomplete="off"
+          placeholder="Tell homelabd what you want done. Drop files here to attach them."
+          disabled={loading}
+          rows="3"
+          on:input={handleDraftInput}
+          on:keydown={handleComposerKeydown}
+        ></textarea>
+        <input
+          class="hidden"
+          bind:this={fileInputEl}
+          bind:files={selectedFiles}
+          id="chat-attachments"
+          type="file"
+          multiple
+          disabled={loading}
+          on:input={handleFileInput}
+          on:change={handleFileInput}
+        />
+        {#if pendingAttachments.length}
+          <div class="attachment-list pending-attachments" aria-label="Pending attachments">
+            {#each pendingAttachments as attachment}
+              <span class="attachment-chip pending">
+                <span>
+                  <strong>{attachment.name}</strong>
+                  <small>{attachment.content_type} / {formatAttachmentSize(attachment.size)}</small>
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${attachment.name}`}
+                  disabled={loading}
+                  on:click={() => removePendingAttachment(attachment.id)}
+                >
+                  Remove
+                </button>
+              </span>
+            {/each}
+          </div>
+        {/if}
+        {#if attachmentError}
+          <p class="attachment-error" role="alert">{attachmentError}</p>
+        {/if}
+      </div>
+      <div class="composer-buttons">
+        <button type="button" class="attach-button" disabled={loading} on:click={triggerFileInput}>
+          Attach
+        </button>
+        <button type="submit" disabled={loading || (!draft.trim() && pendingAttachments.length === 0)}>
+          {loading ? 'Sending' : 'Send'}
+        </button>
+      </div>
     </form>
   </main>
 </div>
@@ -383,7 +572,8 @@
   }
 
   .message-actions,
-  .prompt-actions {
+  .prompt-actions,
+  .attachment-list {
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
@@ -448,6 +638,46 @@
     border-style: dashed;
   }
 
+  .attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 100%;
+    padding: 0.42rem 0.55rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.55rem;
+    color: #243047;
+    background: #f8fafc;
+    font-size: 0.78rem;
+    font-weight: 750;
+    text-decoration: none;
+  }
+
+  .attachment-chip img {
+    width: 2.4rem;
+    height: 2.4rem;
+    border-radius: 0.4rem;
+    object-fit: cover;
+  }
+
+  .attachment-chip span {
+    display: grid;
+    gap: 0.08rem;
+    min-width: 0;
+  }
+
+  .attachment-chip strong,
+  .attachment-chip small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .attachment-chip small {
+    color: #64748b;
+    font-weight: 650;
+  }
+
   .meta {
     display: flex;
     align-items: baseline;
@@ -463,9 +693,9 @@
   }
 
   .message-footer {
-    color: #475569;
+    color: #64748b;
     font-size: 0.68rem;
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.35;
     overflow-wrap: anywhere;
   }
@@ -505,10 +735,49 @@
   .composer {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
     gap: 0.75rem;
     padding: 1rem;
     border-top: 1px solid #dde4ef;
     background: #ffffff;
+  }
+
+  .composer.dragging {
+    outline: 3px solid rgb(37 99 235 / 0.18);
+    outline-offset: -0.5rem;
+  }
+
+  .composer-field,
+  .composer-buttons {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .pending-attachments {
+    min-width: 0;
+  }
+
+  .attachment-chip.pending {
+    justify-content: space-between;
+    width: min(100%, 24rem);
+  }
+
+  .attachment-chip.pending button {
+    min-height: 1.8rem;
+    padding: 0 0.5rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.45rem;
+    color: #243047;
+    background: #ffffff;
+    font-size: 0.72rem;
+    font-weight: 800;
+  }
+
+  .attachment-error {
+    margin: 0;
+    color: #991b1b;
+    font-size: 0.82rem;
+    line-height: 1.35;
   }
 
   textarea {
@@ -530,14 +799,28 @@
     outline: 3px solid rgb(37 99 235 / 0.14);
   }
 
-  .composer button[type='submit'] {
+  .composer-buttons button,
+  .composer-buttons .attach-button {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-width: 5.75rem;
-    min-height: 4.3rem;
-    border: 0;
+    min-height: 2.05rem;
+    border: 1px solid #cbd5e1;
     border-radius: 0.75rem;
+    color: #243047;
+    background: #ffffff;
+    font-weight: 850;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .composer button[type='submit'] {
+    min-height: 2.05rem;
+    border: 0;
     color: #ffffff;
     background: #2563eb;
-    font-weight: 850;
   }
 
   button:disabled {
@@ -560,7 +843,12 @@
       grid-template-columns: 1fr;
     }
 
-    .composer button[type='submit'] {
+    .composer-buttons {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .composer-buttons button,
+    .composer-buttons .attach-button {
       min-height: 2.8rem;
     }
 

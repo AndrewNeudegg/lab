@@ -21,6 +21,7 @@ Use the shared responsive navbar on every dashboard page.
 
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
 - Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
+- Mobile: keep the `Help` button next to `Menu`. It captures browser context, asks for screen-capture permission when the browser supports it, prompts for a short bug note, and creates a task with the captured attachments.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
 - Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
@@ -32,6 +33,15 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Desktop: keep local documentation navigation visible on the left, but compact enough that the selected document and on-page table of contents remain the primary reading surface.
 - Mobile: avoid horizontal document carousels. Show a labelled document jump control, visible search, and a vertical document list so operators can discover other pages without guessing that content is off-screen.
 - Search filters titles, paths, summaries, and full Markdown content. Search results show summaries; the default browse view uses short labels for faster scanning.
+- Mermaid fenced diagrams render in docs and chat. The renderer applies the shared homelabd light or dark diagram palette, keeps the original source as a code fallback when rendering fails, and prevents diagram-level theme overrides from replacing the brand colours.
+
+```mermaid
+flowchart LR
+  A[Agent writes Mermaid] --> B[Shared Markdown renderer]
+  B --> C{Dashboard theme}
+  C -->|Light| D[Brand light palette]
+  C -->|Dark| E[Brand dark palette]
+```
 
 ## Research Inputs
 
@@ -49,6 +59,9 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
 - GitLab merge request reviews: the changes view is the primary review surface, with review status and merge checks kept close to the diff.
 - CodeMirror and Monaco diff APIs: mature web diff viewers support hidden unchanged regions, gutters, syntax-aware deleted text, inline change highlighting, and unified or side-by-side review modes.
+- Marker.io and Sentry feedback widgets: bug reporting should be available in context, attach screenshots, collect useful browser state, and ask the user for the missing human detail before submission.
+- MDN Screen Capture API guidance: web pages must request screen capture through `getDisplayMedia()`, which prompts the user to select and grant capture permission.
+- Jira attachment guidance: work items can carry files and screenshots when attachments are enabled, and the issue view should make attached evidence visible.
 
 Sources:
 
@@ -77,6 +90,10 @@ Sources:
 - https://docs.gitlab.com/user/project/merge_requests/reviews/
 - https://codemirror.net/docs/ref/#merge.unifiedMergeView
 - https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor.IDiffEditorConstructionOptions.html
+- https://marker.io/features/website-feedback-widget
+- https://sentry.io/changelog/user-feedback-widget-screenshots/
+- https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia
+- https://support.atlassian.com/jira-cloud-administration/docs/configure-file-attachments/
 
 ## Layout Rationale
 
@@ -120,22 +137,25 @@ If a component does not answer one of those questions, it should not be in the p
 - Task sync failures are shown inside the task pane. The queue must never make a failed `/api/tasks` request look like a real empty result.
 - Selected task title: use the stored compact task title generated at creation time, so long prompts do not dominate the queue or the top of the record. The original input remains available in the detail disclosures.
 - Task summary: ID, status, owner, started time, runtime, and update time. Keep this as a compact metadata strip, not separate cards; it identifies the selected object without taking attention away from the decision.
-- Decision panel: one emphasized workflow-forward button derived from task state. Retry/reopen inputs and secondary task endpoint buttons live inside this same panel so the operator sees one coherent action area. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
+- Decision panel: one emphasised workflow-forward button derived from task state. Retry/reopen inputs and secondary task endpoint buttons live inside this same panel so the operator sees one coherent action area. A task in `awaiting_restart` shows restart progress instead of an accept button; if the gate fails, `Retry restart` calls the typed restart endpoint. Conflict-resolution tasks can still be retried directly, but the primary copy must make clear that automatic recovery is owned by the task supervisor. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
 - Secondary actions: low-emphasis direct endpoint buttons such as retry, reopen, stop, delete, or deny approval. Destructive actions must remain visually distinct from constructive actions.
 - Retry and reopen forms: short, task-scoped inputs for optional retry instruction or reopen reason. These are structured payloads sent to typed task endpoints.
-- State and context: workflow state, workspace path, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
+- State and context: workflow state, automatic recovery attempt count, workspace path, post-merge restart status, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
+- Attachments: selected task records show attached evidence inside `State and context`. Image attachments get a thumbnail and download link; text/context attachments show an inline preview. Keep this visible near state because bug-report attachments explain why the task exists.
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
 - Chat message footers: small, persistent metadata at the bottom of each bubble. The footer shows the exchange number, and assistant replies also show returned orchestration stats such as model turns, tool calls, and token count when available. Keep it secondary but readable; do not hide these counts behind hover-only controls.
+- `/chat` attachments: the composer supports desktop file picking, mobile file picking, and drag-and-drop into the composer. Attachment chips show the file name, media type, and size before send; sent messages keep visible attachment metadata. The API receives attachment data with the chat message so task-creation commands and LLM context can include the uploaded evidence.
+- Help task capture: the mobile navbar `Help` button records the current URL, page title, viewport, visible page text, active element, selected text, and recent click/change actions. It attempts a screenshot through the browser screen-capture permission flow and then opens a dialog for the operator's extra detail. `Submit help task` creates a normal local task with `browser-context.json` and any screenshot as task attachments.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
 ## Status Semantics
 
 - Queued: the task exists and is waiting in its execution queue. Local tasks have isolated worktrees and wait for the local task supervisor; remote tasks wait for the selected `homelab-agent`.
 - Running: an in-memory local worker or a remote agent is active.
-- Red: failed, blocked, or conflict resolution. Needs intervention.
-- Amber: ready for review, awaiting approval, or awaiting verification. Needs a human decision.
+- Red: failed, blocked, or conflict resolution. Recovery is needed; retryable local failures are requeued automatically, while exhausted, dependency-blocked, or terminal failures need intervention.
+- Amber: ready for review, awaiting approval, awaiting restart, or awaiting verification. Needs a human decision or a visible gate before final acceptance.
 - Blue: queued or running. Work is active.
 - Green: done. No action required unless the result is wrong.
 - Gray: unknown or neutral state.
@@ -154,6 +174,8 @@ The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the ne
 
 - New tasks start as `queued`, not `running`, until a worker is actually assigned.
 - The task supervisor periodically scans the durable task store and starts queued work with the preferred external worker, currently `codex` when configured.
+- The task supervisor runs review for local `ready_for_review` tasks, requeues `awaiting_approval` tasks that no longer have a pending merge approval, and queues automatic recovery for `conflict_resolution` plus retryable `blocked` states.
+- Automatic recovery is bounded to three attempts with a cooldown. Attempts are written to the task record and shown in `State and context`.
 - On boot, persisted `running` tasks are recovered because in-memory worker state cannot survive a process restart.
 - During normal operation, stale `running` tasks with no in-memory owner are retried after `limits.task_stale_seconds`.
 - Supervisor activity is logged with `slog` and appended to the event log using `task.supervisor.*` or `task.recovery.*` events.

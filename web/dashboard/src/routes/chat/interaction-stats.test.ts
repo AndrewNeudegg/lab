@@ -48,5 +48,17 @@ describe('chat interaction stats', () => {
       'Exchange 1 · 1 model turn · 0 tool calls'
     );
   });
-});
 
+  test('keeps user message footers to the exchange count', () => {
+    expect(
+      formatInteractionStats(
+        message('user', 'user-2', {
+          model_turns: 3,
+          tool_calls: 4,
+          total_tokens: 100
+        }),
+        2
+      )
+    ).toBe('Exchange 2');
+  });
+});

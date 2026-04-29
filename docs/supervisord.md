@@ -8,7 +8,7 @@ It owns three jobs:
 - stop and restart them with graceful `SIGTERM` before forced `SIGKILL`
 - publish its own heartbeat to `healthd`
 
-Do not use `supervisord` restarts as an agent test harness. Agent browser UAT must start an isolated dev server from the task worktree; the production `dashboard`, `homelabd`, `healthd`, and `supervisord` processes should only be restarted after an explicit operator decision. See `docs/agentic-testing.md`.
+Do not use `supervisord` restarts as an agent test harness. Agent browser UAT must start an isolated dev server from the task worktree. The production `dashboard`, `homelabd`, `healthd`, and `supervisord` processes should only be restarted after an explicit operator decision or by the `homelabd` post-merge restart gate that follows an approved merge. See `docs/agentic-testing.md`.
 
 ## Run
 
@@ -28,7 +28,7 @@ For the local development stack, prefer the wrapper commands:
 
 `stack-start` starts `supervisord`, adopts any already-running `healthd`, `homelabd`, or dashboard process, then starts any missing apps. Dashboard adoption first looks for the process listening on port `5173`, which lets a running UI be brought back under supervisor control without stopping the terminal page. `stack-restart` gracefully stops apps in reverse order, restarts `supervisord`, then starts apps in dependency order. `stack-stop` gracefully stops the apps and then stops `supervisord`.
 
-If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app fails its health check, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
+If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app's health check is unreachable or returns a non-2xx status, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
 
 Start, stop, and restart requests are serialised per app. Repeated API calls while an app is starting, stopping, or restarting update the desired state but do not launch a second copy of the same app.
 
@@ -55,6 +55,10 @@ Add supervised apps under `supervisord.apps` in `config.json`:
         "command": "bun",
         "args": ["run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"],
         "working_dir": "web/dashboard",
+        "pre_start_command": "bun",
+        "pre_start_args": ["install", "--frozen-lockfile"],
+        "pre_start_working_dir": "web",
+        "pre_start_timeout_seconds": 300,
         "start_order": 30,
         "auto_start": true,
         "restart": "on_failure",
@@ -69,6 +73,8 @@ Add supervised apps under `supervisord.apps` in `config.json`:
 Run `supervisord` from the same environment that should run the apps. In development that means `nix develop`, because the flake provides `go`, `bun`, and the agent CLIs. The supervisor config should not contain `nix develop` wrappers; it should describe the app process itself.
 
 `restart_command` and `restart_args` describe how `supervisord` restarts itself. In development this should re-run `go run ./cmd/supervisord` from the existing dev shell so code changes are picked up. In production it should point at the installed `supervisord` binary or a service manager wrapper.
+
+`pre_start_command` and `pre_start_args` run before an app starts or restarts. The default dashboard app runs `bun install --frozen-lockfile` from `web/` before Vite starts, so a merge that changes `web/bun.lock` cannot restart the dashboard against stale `node_modules`. If the pre-start command fails or times out, the app start fails and any post-merge restart gate remains failed instead of reporting a false healthy state.
 
 `log_dir` stores per-app output logs. Each managed app writes `<app>.stdout.log` and `<app>.stderr.log`; stderr lines are also queued and pushed to `healthd` as application errors. The default is `data/supervisord/logs`.
 

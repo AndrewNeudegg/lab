@@ -5820,8 +5820,16 @@ func diffRequiresSiteUAT(diff string) bool {
 	for _, path := range diffFileList(diff) {
 		switch path {
 		case "web/package.json",
+			"web/bun.lock",
+			"web/shared/package.json",
 			"web/dashboard/package.json",
+			"config.example.json",
 			"web/dashboard/playwright.config.ts":
+			return true
+		}
+		if strings.HasPrefix(path, "cmd/supervisord/") ||
+			strings.HasPrefix(path, "pkg/config/") ||
+			strings.HasPrefix(path, "pkg/supervisor/") {
 			return true
 		}
 		if strings.HasPrefix(path, "web/shared/src/") ||

@@ -3129,6 +3129,28 @@ func TestBrowserUATForDiffSelectsSiteUATForBroadDashboardChanges(t *testing.T) {
 	}
 
 	diff = strings.Join([]string{
+		"diff --git a/web/bun.lock b/web/bun.lock",
+		"--- a/web/bun.lock",
+		"+++ b/web/bun.lock",
+		"@@",
+		"+    \"mermaid\": [\"mermaid@11.14.0\"]",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(web lockfile) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/pkg/supervisor/manager.go b/pkg/supervisor/manager.go",
+		"--- a/pkg/supervisor/manager.go",
+		"+++ b/pkg/supervisor/manager.go",
+		"@@",
+		"+change",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(supervisor) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
 		"diff --git a/web/dashboard/src/routes/terminal/+page.svelte b/web/dashboard/src/routes/terminal/+page.svelte",
 		"--- a/web/dashboard/src/routes/terminal/+page.svelte",
 		"+++ b/web/dashboard/src/routes/terminal/+page.svelte",

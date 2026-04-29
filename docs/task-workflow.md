@@ -171,4 +171,6 @@ Review pending shell requests with `approvals`, then use `approve <approval_id>`
 
 Local review reports a restart impact line from the diff. Runtime, supervisor, healthd, and dashboard paths are mapped to their supervised components and stored on the task as `restart_required`, with the same list copied into the merge approval payload. After approval, `homelabd` moves the task to `awaiting_restart`, calls `supervisord` restart endpoints for each required component, waits for configured health URLs to return 2xx, and only then moves the task to `awaiting_verification`. `accept` is blocked while the restart gate is pending, running, or failed.
 
+Restarting a supervised app also applies its configured runtime preparation. The default dashboard app runs `bun install --frozen-lockfile` from `web/` before Vite starts, so dependency or lockfile changes from an approved merge are applied to the live checkout before health checks can pass.
+
 `supervisord` treats non-2xx app health checks as failed, so a dashboard that starts returning 500s after a merge is restarted instead of remaining up in a broken Vite SSR state. Remote review cannot infer restart impact from the control-plane diff; verify the named remote machine and directory directly before accepting.

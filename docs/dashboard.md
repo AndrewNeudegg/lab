@@ -129,6 +129,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current. The `Synced` timestamp includes seconds so a manual reload is visible even when repeated within the same minute.
 - Triage buttons: `Needs action`, `Running`, and `All`. The page opens on `Needs action` because this page is primarily an operator console; `All` remains one tap away for audit and search. The buttons double as counts and filters so the operator can shift attention without extra controls.
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
+- Merge queue: a compact disclosure between search and the task list. It shows local review/approval/restart candidates in durable merge order and provides icon-only up/down controls for priority changes. Keep it dense: it is an ordering instrument, not another task-detail surface.
 - Task list: appears immediately after search. Rows are the main navigation and must stay fast to scan even when remote queues are present. Approval state belongs on the task row and in the selected task decision panel, not in a separate queue pop-out.
 - Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous.
 - Right pane: selected task record. It is not a chat transcript and has no task chat composer. Selecting a different task changes the record, summary, result, action buttons, diff, worker trace, and activity timeline.
@@ -173,6 +174,7 @@ The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the ne
 - New tasks start as `queued`, not `running`, until a worker is actually assigned.
 - The task supervisor periodically scans the durable task store and starts queued work with the preferred external worker, currently `codex` when configured.
 - The task supervisor runs review for local `ready_for_review` tasks, requeues `awaiting_approval` tasks that no longer have a pending merge approval, and queues automatic recovery for `conflict_resolution` plus retryable `blocked` states.
+- The merge queue serialises local `ready_for_review`, `awaiting_approval`, and `awaiting_restart` tasks. Only the head runs review, consumes merge approval, applies the merge, and clears required restart gates. Dashboard reorder buttons call `POST /tasks/{id}/merge-queue` so operator priority changes are durable.
 - Automatic recovery is bounded to three attempts with a cooldown. Attempts are written to the task record and shown in `State and context`.
 - On boot, persisted `running` tasks are recovered because in-memory worker state cannot survive a process restart.
 - During normal operation, stale `running` tasks with no in-memory owner are retried after `limits.task_stale_seconds`.

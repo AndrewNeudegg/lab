@@ -28,7 +28,7 @@ For the local development stack, prefer the wrapper commands:
 
 `stack-start` starts `supervisord`, adopts any already-running `healthd`, `homelabd`, or dashboard process, then starts any missing apps. Dashboard adoption first looks for the process listening on port `5173`, which lets a running UI be brought back under supervisor control without stopping the terminal page. `stack-restart` gracefully stops apps in reverse order, restarts `supervisord`, then starts apps in dependency order. `stack-stop` gracefully stops the apps and then stops `supervisord`.
 
-If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app's health check is unreachable or returns a non-2xx status, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
+If an app is marked `desired=running`, `supervisord` treats that as an invariant. On startup and on each health interval it reconciles stopped or failed desired-running apps by starting them again, so a dashboard restart cannot leave the UI down indefinitely after a successful `SIGTERM`. When a running app's health check is unreachable or returns a non-2xx status after its startup grace has elapsed, `supervisord` restarts the tracked process group instead of clearing the PID and launching a second copy.
 
 Start, stop, and restart requests are serialised per app. Repeated API calls while an app is starting, stopping, or restarting update the desired state but do not launch a second copy of the same app.
 
@@ -59,6 +59,7 @@ Add supervised apps under `supervisord.apps` in `config.json`:
         "pre_start_args": ["install", "--frozen-lockfile"],
         "pre_start_working_dir": "web",
         "pre_start_timeout_seconds": 300,
+        "health_startup_grace_seconds": 30,
         "start_order": 30,
         "auto_start": true,
         "restart": "on_failure",
@@ -75,6 +76,8 @@ Run `supervisord` from the same environment that should run the apps. In develop
 `restart_command` and `restart_args` describe how `supervisord` restarts itself. In development this should re-run `go run ./cmd/supervisord` from the existing dev shell so code changes are picked up. In production it should point at the installed `supervisord` binary or a service manager wrapper.
 
 `pre_start_command` and `pre_start_args` run before an app starts or restarts. The default dashboard app runs `bun install --frozen-lockfile` from `web/` before Vite starts, so a merge that changes `web/bun.lock` cannot restart the dashboard against stale `node_modules`. If the pre-start command fails or times out, the app start fails and any post-merge restart gate remains failed instead of reporting a false healthy state.
+
+`health_startup_grace_seconds` suppresses health-triggered restarts immediately after a process starts. The health status is still recorded, but supervisor gives the app time to bind its port and warm dependencies before treating `unreachable` or non-2xx responses as restart-worthy. The default supervised `healthd`, `homelabd`, and dashboard apps use a 30 second grace so `go run`, Vite, and dependency optimisation cannot be killed while starting.
 
 `log_dir` stores per-app output logs. Each managed app writes `<app>.stdout.log` and `<app>.stderr.log`; stderr lines are also queued and pushed to `healthd` as application errors. The default is `data/supervisord/logs`.
 

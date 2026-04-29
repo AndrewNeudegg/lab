@@ -16,6 +16,8 @@ const task = {
   priority: 5,
   created_at: now,
   updated_at: now,
+  merge_queue_position: 2,
+  merge_queue_entered_at: now,
   result: 'ReviewerAgent checks passed.',
   plan: {
     status: 'reviewed',
@@ -35,12 +37,25 @@ const restartTask = {
   goal: 'Keep the task queue restart gate visible on desktop and mobile.',
   status: 'awaiting_restart',
   updated_at: '2026-04-28T12:05:00.000Z',
+  merge_queue_position: 1,
+  merge_queue_entered_at: now,
   result: 'merged after approval approval_1; post-merge restart pending',
   restart_required: ['dashboard'],
   restart_completed: ['homelabd'],
   restart_status: 'failed',
   restart_current: 'dashboard',
   restart_last_error: 'dashboard health check failed after restart'
+};
+
+const queuedTask = {
+  ...task,
+  id: 'task_20260428_120700_44444444',
+  title: 'Queued docs follow-up',
+  goal: 'Keep merge queue reordering visible without moving the restart gate.',
+  status: 'ready_for_review',
+  updated_at: '2026-04-28T12:01:00.000Z',
+  merge_queue_position: 3,
+  result: 'external agent finished; ready for review.'
 };
 
 const workflow = {
@@ -149,7 +164,7 @@ const mockDashboardApis = async (page: Page) => {
     await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
   });
   await page.route(/\/api\/tasks$/, async (route) => {
-    await route.fulfill({ json: { tasks: [restartTask, task] } });
+    await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
@@ -165,7 +180,7 @@ const mockDashboardApis = async (page: Page) => {
       }
     });
   });
-  await page.route(/\/api\/tasks\/[^/]+\/(?:run|review|accept|restart|reopen|cancel|retry|delete)$/, async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/(?:run|review|merge-queue|accept|restart|reopen|cancel|retry|delete)$/, async (route) => {
     await route.fulfill({ json: { reply: 'task action accepted' } });
   });
   await page.route(/\/api\/approvals(?:\/[^/]+\/(?:approve|deny))?$/, async (route) => {
@@ -270,12 +285,18 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await expect(page.getByText('Status:')).toBeVisible();
   } else if (route === '/tasks') {
     await page.getByPlaceholder('Search tasks').fill('queue');
+    const mergeQueue = page.locator('[aria-label="Merge queue"]');
+    await expect(mergeQueue).toBeVisible();
+    await expect(mergeQueue).toContainText('Merge queue');
+    await mergeQueue.getByRole('button', { name: /Move Queued docs follow-up up in merge queue/ }).click();
+    const queueNotice = mobile ? page.locator('.task-pane .queue-notice') : page.locator('.workbench .notice');
+    await expect(queueNotice.getByText('Merge queue updated')).toBeVisible();
     await page.locator('.task-row').first().click();
     const taskActions = page.getByRole('region', { name: 'Task actions' });
     await expect(taskActions).toBeVisible();
     await expect(page.getByText('Post-merge restart', { exact: true })).toBeVisible();
     await taskActions.getByRole('button', { name: 'Restart', exact: true }).click();
-    await expect(page.getByText('task action accepted')).toBeVisible();
+    await expect(page.locator('.workbench .notice').getByText('task action accepted')).toBeVisible();
     if (mobile) {
       await page.getByRole('button', { name: 'Back to queue' }).click();
       await expect(page.locator('.task-pane')).toBeVisible();

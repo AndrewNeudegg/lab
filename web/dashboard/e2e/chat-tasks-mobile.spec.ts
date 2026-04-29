@@ -242,6 +242,38 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   await expect(page.getByText('received attachment')).toBeVisible();
 });
 
+test('chat renders Mermaid diagrams in assistant replies', async ({ page }) => {
+  await page.route('**/api/message', async (route) => {
+    await route.fulfill({
+      json: {
+        reply:
+          'diagram-regression\n\n```mermaid\nflowchart LR\n  A[Request] --> B[Task]\n  B --> C[Review]\n```',
+        source: 'program'
+      }
+    });
+  });
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  await page.getByRole('textbox', { name: 'Message' }).fill('show me the task flow');
+  await page.getByRole('button', { name: 'Send' }).click();
+
+  const message = page.locator('.message').filter({ hasText: 'diagram-regression' });
+  const diagram = message.locator('.mermaid-diagram');
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect(diagram.locator('svg')).toBeVisible();
+  const metrics = await diagram.evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+    bodyWidth: document.body.scrollWidth,
+    viewport: window.innerWidth
+  }));
+  expect(metrics.scrollWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(
+    metrics.clientWidth + 2
+  );
+  expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
+});
+
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {
   await mockScreenCapture(page);
   let requestBody: any;

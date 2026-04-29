@@ -3090,6 +3090,9 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 		"nix develop -c bun run --cwd web browser:preflight",
 		"do not stop or restart production",
 		"For remote tasks",
+		"Mermaid fenced diagrams",
+		"#2563eb",
+		"#60a5fa",
 	} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("delegation instruction missing %q:\n%s", want, instruction)
@@ -3847,9 +3850,24 @@ func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
 		ID:        "task_123",
 		Workspace: "/tmp/workspaces/task_123",
 	})
-	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines"} {
+	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestWorkflowStepPromptIncludesDiagramGuidance(t *testing.T) {
+	prompt := workflowStepPrompt(workflowstore.Workflow{
+		Name: "Release flow",
+		Goal: "Explain deployment states",
+	}, workflowstore.Step{
+		Name:   "Summarise",
+		Prompt: "Map the state machine",
+	}, nil)
+	for _, want := range []string{"Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workflow step prompt missing %q:\n%s", want, prompt)
 		}
 	}
 }

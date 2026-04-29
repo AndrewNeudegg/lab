@@ -1,6 +1,7 @@
 export * from './types';
 export * from './client';
 export * from './attachments';
+export * from './brand';
 export * from './chatDraft';
 export * from './markdown';
 export * from './tasks';

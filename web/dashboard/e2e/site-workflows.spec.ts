@@ -158,6 +158,7 @@ const installTerminalMocks = async (page: Page) => {
 
 const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
+  let autoMergeEnabled = false;
   await page.route(/\/api\/message$/, async (route) => {
     await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
   });
@@ -166,10 +167,10 @@ const mockDashboardApis = async (page: Page) => {
   });
   await page.route(/\/api\/settings$/, async (route) => {
     if (route.request().method() === 'POST') {
-      await route.fulfill({ json: { settings: { auto_merge_enabled: true } } });
-      return;
+      const body = route.request().postDataJSON() as { auto_merge_enabled?: boolean };
+      autoMergeEnabled = Boolean(body.auto_merge_enabled);
     }
-    await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
+    await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
@@ -293,8 +294,9 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     const mergeQueue = page.locator('[aria-label="Merge queue"]');
     await expect(mergeQueue).toBeVisible();
     await expect(mergeQueue).toContainText('Merge queue');
-    await mergeQueue.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' }).click();
-    await expect(mergeQueue.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' })).toHaveAttribute('aria-checked', 'true');
+    const autoMerge = mergeQueue.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' });
+    await autoMerge.click();
+    await expect(autoMerge).toHaveAttribute('aria-checked', 'true');
     await mergeQueue.getByRole('button', { name: /Move Queued docs follow-up up in merge queue/ }).click();
     const queueNotice = mobile ? page.locator('.task-pane .queue-notice') : page.locator('.workbench .notice');
     await expect(queueNotice.getByText('Merge queue updated')).toBeVisible();
@@ -356,7 +358,16 @@ for (const viewport of [
     for (const route of routes) {
       test(`${route} renders without visual artefacts and supports its core workflow`, async ({ page }, testInfo) => {
         await mockDashboardApis(page);
+        const taskSettingsReady =
+          route === '/tasks'
+            ? page.waitForResponse(
+                (response) =>
+                  response.url().endsWith('/api/settings') &&
+                  response.request().method() === 'GET'
+              )
+            : Promise.resolve();
         await page.goto(route);
+        await taskSettingsReady;
         if (route === '/') {
           await expect(page).toHaveURL(/\/chat$/);
         }

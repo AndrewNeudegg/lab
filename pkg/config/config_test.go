@@ -105,6 +105,32 @@ func TestDefaultSupervisorRunsHomelabdHTTPMode(t *testing.T) {
 	}
 }
 
+func TestDefaultSupervisorPreparesDashboardDependencies(t *testing.T) {
+	cfg := Default()
+	var dashboardApp *SupervisorAppConfig
+	for i := range cfg.Supervisord.Apps {
+		if cfg.Supervisord.Apps[i].Name == "dashboard" {
+			dashboardApp = &cfg.Supervisord.Apps[i]
+			break
+		}
+	}
+	if dashboardApp == nil {
+		t.Fatal("default supervisor apps missing dashboard")
+	}
+	if dashboardApp.PreStartCommand != "bun" {
+		t.Fatalf("dashboard pre-start command = %q, want bun", dashboardApp.PreStartCommand)
+	}
+	if got := strings.Join(dashboardApp.PreStartArgs, " "); got != "install --frozen-lockfile" {
+		t.Fatalf("dashboard pre-start args = %q, want frozen install", got)
+	}
+	if dashboardApp.PreStartWorkingDir != "web" {
+		t.Fatalf("dashboard pre-start working dir = %q, want web", dashboardApp.PreStartWorkingDir)
+	}
+	if dashboardApp.PreStartTimeoutSeconds < 300 {
+		t.Fatalf("dashboard pre-start timeout = %d, want at least 300", dashboardApp.PreStartTimeoutSeconds)
+	}
+}
+
 func TestDefaultExternalAgentTimeoutsAreFiveHours(t *testing.T) {
 	const want = 5 * 60 * 60
 	if DefaultExternalAgentTimeoutSeconds != want {

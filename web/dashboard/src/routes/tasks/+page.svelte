@@ -2,6 +2,8 @@
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
+    formatAttachmentSize,
+    isImageAttachment,
     Navbar,
     taskInputText,
     taskIsActive,
@@ -39,6 +41,7 @@
   } from './view-model';
   import { createCoalescedAsync } from './refresh-state';
   import {
+    approvalNoticeTitle,
     pendingApprovalForTask,
     primaryTaskAction,
     secondaryTaskOperations,
@@ -394,6 +397,7 @@
     if (
       task.status === 'ready_for_review' ||
       task.status === 'awaiting_approval' ||
+      task.status === 'awaiting_restart' ||
       task.status === 'awaiting_verification'
     ) {
       return 'amber';
@@ -732,7 +736,7 @@
           : await client.denyApproval(approval.id);
       setNotice(
         'success',
-        operation === 'approve' ? 'Approval granted' : 'Approval denied',
+        approvalNoticeTitle(operation, response.reply || ''),
         response.reply || 'Approval updated.'
       );
       await refreshState();
@@ -772,6 +776,8 @@
             return client.reviewTask(taskId);
           case 'accept':
             return client.acceptTask(taskId);
+          case 'restart':
+            return client.restartTask(taskId);
           case 'reopen':
             return client.reopenTask(taskId, { reason: reopenReason.trim() });
           case 'cancel':
@@ -832,6 +838,8 @@
           return 'Reviewing';
         case 'accept':
           return 'Accepting';
+        case 'restart':
+          return 'Restarting';
         case 'reopen':
           return 'Reopening';
         case 'cancel':
@@ -1164,6 +1172,39 @@
                 <small>Next: {taskStateTransitions(currentTask.status)}</small>
               </section>
 
+              {#if currentTask.auto_recovery_attempts}
+                <section class="state-machine" aria-label="Automatic recovery">
+                  <div>
+                    <span>Automatic recovery</span>
+                    <strong>Attempt {currentTask.auto_recovery_attempts}</strong>
+                  </div>
+                  <p>The task supervisor is retrying recoverable review, merge, or conflict failures.</p>
+                  {#if currentTask.auto_recovery_last_at}
+                    <small>Last queued: {compactTime(currentTask.auto_recovery_last_at)}</small>
+                  {/if}
+                </section>
+              {/if}
+
+              {#if currentTask.restart_required?.length}
+                <section class="state-machine" aria-label="Post-merge restart">
+                  <div>
+                    <span>Post-merge restart</span>
+                    <strong>{statusLabel(currentTask.restart_status || 'pending')}</strong>
+                  </div>
+                  <p>
+                    Required: {currentTask.restart_required.join(', ')}
+                    {#if currentTask.restart_completed?.length}
+                      / completed: {currentTask.restart_completed.join(', ')}
+                    {/if}
+                  </p>
+                  {#if currentTask.restart_status === 'failed' && currentTask.restart_last_error}
+                    <small>{currentTask.restart_last_error}</small>
+                  {:else if currentTask.restart_current}
+                    <small>Current: {currentTask.restart_current}</small>
+                  {/if}
+                </section>
+              {/if}
+
               {#if currentTask.workspace}
                 <section class="workspace-path" aria-label="Workspace path">
                   <span>Workspace</span>
@@ -1177,6 +1218,31 @@
                   <strong>{currentTask.target.machine || currentTask.target.agent_id}</strong>
                   <code>{currentTask.target.workdir}</code>
                   <small>Agent {currentTask.target.agent_id} / backend {currentTask.target.backend || 'default'}</small>
+                </section>
+              {/if}
+
+              {#if currentTask.attachments?.length}
+                <section class="task-attachments" aria-label="Task attachments">
+                  <h3>Attachments</h3>
+                  <div>
+                    {#each currentTask.attachments as attachment}
+                      <article class="task-attachment">
+                        {#if attachment.data_url && isImageAttachment(attachment)}
+                          <img src={attachment.data_url} alt="" />
+                        {/if}
+                        <div>
+                          <strong>{attachment.name}</strong>
+                          <span>{attachment.content_type} / {formatAttachmentSize(attachment.size)}</span>
+                          {#if attachment.data_url}
+                            <a href={attachment.data_url} download={attachment.name}>Download</a>
+                          {/if}
+                        </div>
+                        {#if attachment.text}
+                          <pre>{attachment.text}</pre>
+                        {/if}
+                      </article>
+                    {/each}
+                  </div>
                 </section>
               {/if}
 
@@ -2047,6 +2113,7 @@
   .state-machine,
   .workspace-path,
   .execution-context,
+  .task-attachments,
   .task-result {
     margin: 1rem 1.25rem 0;
     border: 1px solid var(--border-soft, #e2e8f0);
@@ -2056,6 +2123,82 @@
 
   .decision-panel {
     overflow: hidden;
+  }
+
+  .task-attachments {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.85rem;
+  }
+
+  .task-attachments h3 {
+    margin: 0;
+    color: var(--text-strong, #111827);
+    font-size: 0.95rem;
+  }
+
+  .task-attachments > div {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .task-attachment {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.65rem;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.65rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .task-attachment img {
+    width: 5rem;
+    height: 3.5rem;
+    border-radius: 0.45rem;
+    object-fit: cover;
+  }
+
+  .task-attachment div {
+    display: grid;
+    align-content: start;
+    gap: 0.12rem;
+    min-width: 0;
+  }
+
+  .task-attachment strong,
+  .task-attachment span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .task-attachment strong {
+    color: var(--text-strong, #111827);
+    font-size: 0.85rem;
+  }
+
+  .task-attachment span,
+  .task-attachment a {
+    color: var(--muted, #64748b);
+    font-size: 0.76rem;
+    font-weight: 750;
+  }
+
+  .task-attachment pre {
+    grid-column: 1 / -1;
+    max-height: 12rem;
+    margin: 0;
+    overflow: auto;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.5rem;
+    color: var(--text, #243047);
+    background: var(--surface, #ffffff);
+    font-size: 0.76rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .decision-header {
@@ -3013,6 +3156,7 @@
     .state-machine,
     .workspace-path,
     .execution-context,
+    .task-attachments,
     .task-result {
       margin: 0.75rem;
     }

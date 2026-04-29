@@ -217,6 +217,13 @@ export const createHomelabdClient = (
         method: 'POST'
       });
     },
+    restartTask(taskId: string) {
+      return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/restart`, {
+        baseUrl,
+        fetcher,
+        method: 'POST'
+      });
+    },
     reopenTask(taskId: string, request: HomelabdTaskReopenRequest = {}) {
       return apiFetch<HomelabdTaskActionResponse>(`/tasks/${encodeURIComponent(taskId)}/reopen`, {
         baseUrl,

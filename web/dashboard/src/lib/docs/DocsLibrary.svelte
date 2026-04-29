@@ -36,11 +36,9 @@
   const preferredDocSlugs = new Set(preferredDocOrder);
 
   let search = '';
-  let ready = false;
-
-  onMount(() => {
-    ready = true;
-  });
+  let jumpSlug = selectedSlug;
+  let lastJumpSourceSlug = selectedSlug;
+  let controlsReady = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -81,6 +79,10 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
+  $: if (selectedSlug !== lastJumpSourceSlug) {
+    jumpSlug = selectedSlug;
+    lastJumpSourceSlug = selectedSlug;
+  }
 
   const openSelectedDoc = (event: Event) => {
     const slug = (event.currentTarget as HTMLSelectElement).value;
@@ -89,6 +91,10 @@
       void goto(`/docs/${slug}`);
     }
   };
+
+  onMount(() => {
+    controlsReady = true;
+  });
 </script>
 
 <svelte:head>
@@ -97,7 +103,7 @@
 
 <Navbar title="Docs" subtitle="Library" current="/docs" />
 
-<main class="docs-shell" data-docs-library-ready={ready ? 'true' : 'false'}>
+<main class="docs-shell" data-docs-library-ready={controlsReady ? 'true' : 'false'}>
   <div class="docs-layout">
     <aside class="library" aria-label="Docs library">
       <div class="library-header">
@@ -108,7 +114,13 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" value={selectedSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select
+          id="docs-jump"
+          bind:value={jumpSlug}
+          disabled={!controlsReady}
+          on:change={openSelectedDoc}
+          aria-label="Jump to document"
+        >
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}

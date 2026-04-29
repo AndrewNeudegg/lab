@@ -26,6 +26,21 @@ const task = {
   }
 };
 
+const restartTask = {
+  ...task,
+  id: 'task_20260428_120500_33333333',
+  title: 'Queue restart gate failed',
+  goal: 'Keep the task queue restart gate visible on desktop and mobile.',
+  status: 'awaiting_restart',
+  updated_at: '2026-04-28T12:05:00.000Z',
+  result: 'merged after approval approval_1; post-merge restart pending',
+  restart_required: ['dashboard'],
+  restart_completed: ['homelabd'],
+  restart_status: 'failed',
+  restart_current: 'dashboard',
+  restart_last_error: 'dashboard health check failed after restart'
+};
+
 const workflow = {
   id: workflowID,
   name: 'Deploy homelab dashboard',
@@ -132,7 +147,7 @@ const mockDashboardApis = async (page: Page) => {
     await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
   });
   await page.route(/\/api\/tasks$/, async (route) => {
-    await route.fulfill({ json: { tasks: [task] } });
+    await route.fulfill({ json: { tasks: [restartTask, task] } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
@@ -148,7 +163,7 @@ const mockDashboardApis = async (page: Page) => {
       }
     });
   });
-  await page.route(/\/api\/tasks\/[^/]+\/(?:run|review|accept|reopen|cancel|retry|delete)$/, async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/(?:run|review|accept|restart|reopen|cancel|retry|delete)$/, async (route) => {
     await route.fulfill({ json: { reply: 'task action accepted' } });
   });
   await page.route(/\/api\/approvals(?:\/[^/]+\/(?:approve|deny))?$/, async (route) => {
@@ -254,7 +269,11 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   } else if (route === '/tasks') {
     await page.getByPlaceholder('Search tasks').fill('queue');
     await page.locator('.task-row').first().click();
-    await expect(page.getByRole('region', { name: 'Task actions' })).toBeVisible();
+    const taskActions = page.getByRole('region', { name: 'Task actions' });
+    await expect(taskActions).toBeVisible();
+    await expect(page.getByText('Post-merge restart', { exact: true })).toBeVisible();
+    await taskActions.getByRole('button', { name: 'Restart', exact: true }).click();
+    await expect(page.getByText('task action accepted')).toBeVisible();
     if (mobile) {
       await page.getByRole('button', { name: 'Back to queue' }).click();
       await expect(page.locator('.task-pane')).toBeVisible();

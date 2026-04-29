@@ -24,11 +24,11 @@ export const taskIsTerminal = (task: Pick<HomelabdTask, 'status'>) =>
 export const taskStateDescription = (status = '') => {
   switch (status) {
     case 'queued':
-      return 'Waiting for the task supervisor to assign a worker.';
+      return 'Waiting in the execution queue.';
     case 'running':
-      return 'A worker owns this task. Wait for completion or inspect progress.';
+      return 'A worker is active.';
     case 'ready_for_review':
-      return 'Worker finished. The task supervisor will run the review gate.';
+      return 'Worker finished. Review is queued by the merge queue.';
     case 'blocked':
       return 'Review or execution stopped. Retryable failures are requeued automatically with bounded attempts.';
     case 'conflict_resolution':
@@ -36,7 +36,7 @@ export const taskStateDescription = (status = '') => {
     case 'awaiting_approval':
       return 'Review gate passed. Merge approval is pending.';
     case 'awaiting_restart':
-      return 'Merge landed. Required restarts and health checks are running before verification.';
+      return 'Merge landed. Required restarts and health checks are in progress.';
     case 'awaiting_verification':
       return 'Merge landed. Verify the running app before accepting.';
     case 'done':

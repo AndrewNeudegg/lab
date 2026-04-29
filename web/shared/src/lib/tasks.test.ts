@@ -143,14 +143,14 @@ describe('task queue attention logic', () => {
   });
 
   test('explains workflow states and valid next transitions', () => {
-    expect(taskStateDescription('ready_for_review')).toContain('review gate');
+    expect(taskStateDescription('ready_for_review')).toContain('Review is queued');
     expect(taskStateTransitions('ready_for_review')).toContain('conflict resolution');
     expect(taskStateDescription('conflict_resolution')).toContain('automatic recovery');
     expect(taskStateTransitions('conflict_resolution')).toContain('automatic recovery');
     expect(taskStateTransitions('awaiting_approval')).toContain('conflict resolution');
     expect(taskStateDescription('awaiting_restart')).toContain('Required restarts');
     expect(taskStateTransitions('awaiting_restart')).toContain('awaiting verification');
-    expect(taskStateDescription('running')).toContain('worker owns');
+    expect(taskStateDescription('running')).toContain('worker is active');
     expect(taskStateDescription('blocked')).toContain('requeued automatically');
     expect(taskStateTransitions('blocked')).toContain('automatic recovery');
   });

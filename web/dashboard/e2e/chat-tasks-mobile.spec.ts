@@ -86,7 +86,7 @@ const mockTaskApi = async (page: Page) => {
     }
   ];
 
-  await page.route('**/api/tasks', async (route) => {
+  await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks } });
   });
   await page.route('**/api/approvals', async (route) => {
@@ -318,7 +318,7 @@ test('chat renders Mermaid diagrams in assistant replies', async ({ page }) => {
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {
   await mockScreenCapture(page);
   let requestBody: any;
-  await page.route('**/api/tasks', async (route) => {
+  await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     requestBody = JSON.parse(route.request().postData() || '{}');
     await route.fulfill({ status: 201, json: { reply: 'created help task' } });
   });

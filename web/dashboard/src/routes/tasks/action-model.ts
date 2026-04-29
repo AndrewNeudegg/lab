@@ -97,26 +97,26 @@ export const primaryTaskAction = (
       };
     case 'running':
       return {
-        type: 'task',
-        operation: 'cancel',
-        label: 'Stop worker',
-        detail: 'Cancels the active run and keeps the workspace for inspection.',
-        tone: 'danger'
+        type: 'none',
+        label: 'Worker running',
+        detail: 'No action needed. The task will update when the worker finishes.',
+        tone: 'neutral'
       };
     case 'ready_for_review':
       return {
-        type: 'task',
-        operation: 'review',
-        label: 'Run review gate',
-        detail: 'Runs checks and pre-merge validation without sending a chat prompt.',
-        tone: 'primary'
+        type: 'none',
+        label: 'Queued for review',
+        detail: task.merge_queue_position
+          ? `No action needed. Review runs when this task reaches position #${task.merge_queue_position} in the merge queue.`
+          : 'No action needed. The review gate will run when the task supervisor picks it up.',
+        tone: 'neutral'
       };
     case 'awaiting_approval':
       return {
         type: 'none',
-        label: 'Waiting for approval',
-        detail: 'No pending approval is attached to this task yet. Sync to refresh approvals.',
-        tone: 'warning'
+        label: 'Waiting for approval request',
+        detail: 'No action needed yet. The page will show a merge decision when review creates one.',
+        tone: 'neutral'
       };
     case 'awaiting_restart':
       if (task.restart_status === 'failed') {
@@ -130,11 +130,11 @@ export const primaryTaskAction = (
       }
       return {
         type: 'none',
-        label: 'Restarting services',
+        label: 'Restart in progress',
         detail: task.restart_current
-          ? `Restarting ${task.restart_current}; verification is locked until health checks pass.`
-          : 'Post-merge restarts are queued before verification.',
-        tone: 'warning'
+          ? `No action needed. ${task.restart_current} is restarting; verification unlocks after health checks pass.`
+          : 'No action needed. Required restarts are queued before verification.',
+        tone: 'neutral'
       };
     case 'awaiting_verification':
       return {
@@ -189,6 +189,7 @@ export const secondaryTaskOperations = (
   const operations = new Set<TaskOperation>();
 
   if (task.status === 'ready_for_review') {
+    operations.add('review');
     operations.add('retry');
   }
   if (task.status === 'awaiting_verification') {
@@ -233,7 +234,7 @@ export const taskOperationLabel = (operation: TaskOperation) => {
     case 'reopen':
       return 'Reopen';
     case 'cancel':
-      return 'Stop';
+      return 'Cancel';
     case 'retry':
       return 'Retry';
     case 'delete':

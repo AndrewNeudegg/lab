@@ -94,7 +94,7 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('aria-label="Reopen reason"');
     expect(pageSource).toContain('class="detail-section state-context"');
     expect(pageSource).toContain('taskStateDescription');
-    expect(pageSource).toContain('taskStateTransitions');
+    expect(pageSource).toContain('taskOperatorGuidance');
     expect(pageSource).toContain('aria-label="Workflow state"');
     expect(pageSource).toContain('aria-label="Automatic recovery"');
     expect(pageSource).toContain('currentTask.auto_recovery_attempts');

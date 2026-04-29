@@ -46,10 +46,8 @@ describe('task action model', () => {
     expect(primaryTaskAction(task('queued'), []).type === 'task' && primaryTaskAction(task('queued'), []).operation).toBe(
       'run'
     );
-    expect(
-      primaryTaskAction(task('ready_for_review'), []).type === 'task' &&
-        primaryTaskAction(task('ready_for_review'), []).operation
-    ).toBe('review');
+    expect(primaryTaskAction(task('running'), []).type).toBe('none');
+    expect(primaryTaskAction(task('ready_for_review'), []).type).toBe('none');
     expect(
       primaryTaskAction(task('awaiting_verification'), []).type === 'task' &&
         primaryTaskAction(task('awaiting_verification'), []).operation
@@ -81,6 +79,7 @@ describe('task action model', () => {
     };
 
     expect(primaryTaskAction(restarting, []).type).toBe('none');
+    expect(primaryTaskAction(restarting, []).label).toBe('Restart in progress');
     const action = primaryTaskAction(failed, []);
     expect(action.type === 'task' && action.operation).toBe('restart');
     expect(action.detail).toContain('dashboard health check failed');
@@ -88,7 +87,8 @@ describe('task action model', () => {
   });
 
   test('keeps destructive actions secondary and out of active worker states', () => {
-    expect(secondaryTaskOperations(task('running'), [])).toEqual([]);
+    expect(secondaryTaskOperations(task('running'), [])).toEqual(['cancel']);
+    expect(secondaryTaskOperations(task('ready_for_review'), [])).toContain('review');
     expect(secondaryTaskOperations(task('ready_for_review'), [])).toContain('delete');
     expect(secondaryTaskOperations(task('done'), [])).toContain('delete');
   });

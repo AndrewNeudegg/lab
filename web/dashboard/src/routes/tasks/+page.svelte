@@ -10,7 +10,6 @@
     taskRuntimeMs,
     taskStartedAt,
     taskStateDescription,
-    taskStateTransitions,
     taskSummaryTitle,
     type HomelabdApproval,
     type HomelabdEvent,
@@ -85,6 +84,7 @@
   let approvalLoading = '';
   let mergeQueueLoading = '';
   let diffLoadingTaskId = '';
+  let workerRunsIssue = '';
   let taskFilter: TaskFilter = 'attention';
   let queueFilter: TaskQueueFilter = 'all';
   let taskSearch = '';
@@ -417,6 +417,55 @@
     return 'gray';
   };
 
+  const taskShowsActivity = (task: HomelabdTask) =>
+    taskIsActive(task) ||
+    task.status === 'ready_for_review' ||
+    (task.status === 'awaiting_restart' && task.restart_status !== 'failed');
+
+  const taskOperatorGuidance = (task: HomelabdTask) => {
+    switch (task.status) {
+      case 'queued':
+        return 'Wait for capacity, or use Start from manual controls if this should run now.';
+      case 'running':
+        return 'No action needed while the worker is running. Stop only if you need to interrupt the run.';
+      case 'ready_for_review':
+        return 'No action needed. Review is queued by the merge queue; manual Review is available if needed.';
+      case 'awaiting_approval':
+        return pendingApprovalForTask(task, approvals)
+          ? 'Review the diff and approve or deny the merge.'
+          : 'No action needed until the review gate creates a merge decision.';
+      case 'awaiting_restart':
+        return task.restart_status === 'failed'
+          ? 'Restart failed. Retry only after checking the service state.'
+          : 'No action needed while required services restart and pass health checks.';
+      case 'awaiting_verification':
+        return 'Verify the running result, then accept it or reopen the task with a reason.';
+      case 'conflict_resolution':
+        return 'Conflict recovery may retry automatically. Use Retry now only to intervene immediately.';
+      case 'blocked':
+      case 'failed':
+        return 'Read the result and worker trace, then retry with context or reopen if the task needs a different direction.';
+      case 'done':
+        return 'No action needed unless the accepted result needs more work.';
+      case 'cancelled':
+        return 'No action needed unless the task should be reopened.';
+      default:
+        return 'Check the task result and activity before choosing a manual control.';
+    }
+  };
+
+  const actionPanelLabel = (action: PrimaryTaskAction) => {
+    if (action.type === 'approval') {
+      return 'Decision needed';
+    }
+    if (action.type === 'task') {
+      return action.tone === 'warning' || action.tone === 'danger'
+        ? 'Attention needed'
+        : 'Available action';
+    }
+    return 'Current status';
+  };
+
   const refreshTaskDiff = async (taskId: string) => {
     if (!taskId) {
       return;
@@ -439,11 +488,12 @@
     if (!taskId) {
       return;
     }
+    workerRunsIssue = '';
     try {
       const result = await withRefreshTimeout('Worker runs', client.listTaskRuns(taskId));
       taskRuns = { ...taskRuns, [taskId]: result.runs };
     } catch (err) {
-      setNotice('error', 'Worker runs failed', errorMessage(err, 'Unable to load worker runs.'));
+      workerRunsIssue = errorMessage(err, 'Unable to load worker runs.');
     }
   };
 
@@ -542,9 +592,6 @@
       selectedTaskId
     });
     selectedTaskId = syncSelection.selectedTaskId;
-    if (refreshErrors.length) {
-      setNotice('error', 'Sync incomplete', refreshErrors.join(' '));
-    }
   };
 
   const refreshState = () => {
@@ -880,6 +927,9 @@
     if (operation === 'delete' && currentTask && deleteConfirmTaskId === currentTask.id) {
       return 'Confirm delete';
     }
+    if (operation === 'cancel') {
+      return currentTask?.status === 'running' ? 'Stop worker' : 'Cancel task';
+    }
     return taskOperationLabel(operation);
   };
 </script>
@@ -897,7 +947,7 @@
       <header class="task-header">
         <div>
           <p>Task queue</p>
-          <h1>{needsActionTotal} need action</h1>
+          <h1>{needsActionTotal} need attention</h1>
           <span>Synced {lastRefresh || 'never'}</span>
         </div>
         <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
@@ -917,7 +967,7 @@
 
       <section class="triage" aria-label="Task filters">
         {#each [
-          { id: 'attention', label: 'Needs action', count: needsActionTotal },
+          { id: 'attention', label: 'Attention', count: needsActionTotal },
           { id: 'active', label: 'Running', count: activeTaskItems.length },
           { id: 'all', label: 'All', count: tasks.length }
         ] as filter}
@@ -1009,7 +1059,11 @@
               class:selected={currentTask?.id === task.id}
               on:click={() => selectTask(task.id)}
             >
-              <span class={`dot ${taskTone(task)}`} aria-hidden="true"></span>
+              <span
+                class={`dot ${taskTone(task)}`}
+                class:pulse={taskShowsActivity(task)}
+                aria-hidden="true"
+              ></span>
               <span class="task-copy">
                 <strong>{taskSummaryTitle(task, 84)}</strong>
                 <small>
@@ -1140,9 +1194,13 @@
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
             <header class="decision-header">
               <div class="decision-copy">
-                <span class={`dot ${taskTone(currentTask)}`} aria-hidden="true"></span>
+                <span
+                  class={`dot ${taskTone(currentTask)}`}
+                  class:pulse={taskShowsActivity(currentTask)}
+                  aria-hidden="true"
+                ></span>
                 <div>
-                  <p>Next action</p>
+                  <p>{actionPanelLabel(currentPrimaryAction)}</p>
                   <h3>{currentPrimaryAction.label}</h3>
                   <span>{currentPrimaryAction.detail}</span>
                 </div>
@@ -1159,10 +1217,6 @@
                     : approvalLoading === approvalLoadingKey(currentPrimaryAction.operation, currentPrimaryAction.approval.id)
                       ? 'Approving'
                       : currentPrimaryAction.label}
-                </button>
-              {:else}
-                <button type="button" class="primary-action" disabled={refreshing} on:click={() => void refreshState()}>
-                  {refreshing ? 'Syncing' : 'Sync'}
                 </button>
               {/if}
             </header>
@@ -1199,7 +1253,7 @@
 
             {#if currentSecondaryOperations.length || currentPendingApproval}
               <div class="secondary-actions" aria-label="Secondary task actions">
-                <p>Other actions</p>
+                <p>Manual controls</p>
                 <div class="secondary-action-row">
                   {#if currentPendingApproval}
                     <button
@@ -1270,7 +1324,7 @@
                   <strong>{statusLabel(currentTask.status)}</strong>
                 </div>
                 <p>{taskStateDescription(currentTask.status)}</p>
-                <small>Next: {taskStateTransitions(currentTask.status)}</small>
+                <small>{taskOperatorGuidance(currentTask)}</small>
               </section>
 
               {#if currentTask.auto_recovery_attempts}
@@ -1518,14 +1572,23 @@
               <strong>{currentTaskRuns.length} run{currentTaskRuns.length === 1 ? '' : 's'}</strong>
             </summary>
 
-            {#if currentTaskRuns.length === 0}
+            {#if workerRunsIssue && currentTaskRuns.length === 0}
+              <p class="empty">Worker trace is still catching up. The page will retry on the next sync.</p>
+            {:else if currentTaskRuns.length === 0}
               <p class="empty">No external worker runs recorded for this task.</p>
             {:else}
+              {#if workerRunsIssue}
+                <p class="empty compact">Worker trace is still catching up. The page will retry on the next sync.</p>
+              {/if}
               <div class="run-list">
                 {#each currentTaskRuns as run}
                   <article class={`worker-run ${runStatusTone(run)}`}>
                     <header>
-                      <span class={`dot ${runStatusTone(run)}`} aria-hidden="true"></span>
+                      <span
+                        class={`dot ${runStatusTone(run)}`}
+                        class:pulse={run.active || run.status === 'running'}
+                        aria-hidden="true"
+                      ></span>
                       <div>
                         <strong>{run.backend}</strong>
                         <small>{shortID(run.id)} / {run.status} / {compactTime(run.startedAt)}</small>
@@ -2153,33 +2216,60 @@
   }
 
   .dot {
+    --pulse-ring: rgb(148 163 184 / 0.18);
+    --pulse-ring-wide: rgb(148 163 184 / 0.09);
     flex: 0 0 auto;
+    position: relative;
     width: 0.72rem;
     height: 0.72rem;
     margin-top: 0.22rem;
     border-radius: 999px;
     background: #94a3b8;
-    box-shadow: 0 0 0 3px rgb(148 163 184 / 0.18);
+    box-shadow: 0 0 0 3px var(--pulse-ring);
   }
 
   .dot.red {
+    --pulse-ring: rgb(239 68 68 / 0.18);
+    --pulse-ring-wide: rgb(239 68 68 / 0.09);
     background: #ef4444;
-    box-shadow: 0 0 0 3px rgb(239 68 68 / 0.18);
   }
 
   .dot.amber {
+    --pulse-ring: rgb(245 158 11 / 0.2);
+    --pulse-ring-wide: rgb(245 158 11 / 0.1);
     background: #f59e0b;
-    box-shadow: 0 0 0 3px rgb(245 158 11 / 0.2);
   }
 
   .dot.blue {
+    --pulse-ring: rgb(59 130 246 / 0.18);
+    --pulse-ring-wide: rgb(59 130 246 / 0.09);
     background: #3b82f6;
-    box-shadow: 0 0 0 3px rgb(59 130 246 / 0.18);
   }
 
   .dot.green {
+    --pulse-ring: rgb(34 197 94 / 0.18);
+    --pulse-ring-wide: rgb(34 197 94 / 0.09);
     background: #22c55e;
-    box-shadow: 0 0 0 3px rgb(34 197 94 / 0.18);
+  }
+
+  .dot.pulse {
+    animation: activity-ring 2.4s ease-in-out infinite;
+  }
+
+  @keyframes activity-ring {
+    0%,
+    100% {
+      box-shadow: 0 0 0 3px var(--pulse-ring);
+    }
+    50% {
+      box-shadow: 0 0 0 6px var(--pulse-ring-wide);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot.pulse {
+      animation: none;
+    }
   }
 
   .empty {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { HomelabdApproval, HomelabdTask } from '@homelab/shared';
 import {
+  approvalNoticeTitle,
   pendingApprovalForTask,
   primaryTaskAction,
   secondaryTaskOperations,
@@ -56,6 +57,15 @@ describe('task action model', () => {
     expect(primaryTaskAction(task('blocked'), []).type === 'task' && primaryTaskAction(task('blocked'), []).operation).toBe(
       'retry'
     );
+    const conflictAction = primaryTaskAction(task('conflict_resolution'), []);
+    expect(conflictAction.type === 'task' && conflictAction.detail).toContain('Automatic conflict recovery');
+  });
+
+  test('does not label failed approval recovery as a granted approval', () => {
+    expect(approvalNoticeTitle('approve', 'Approved and executed approval_1')).toBe('Approval granted');
+    expect(approvalNoticeTitle('approve', 'approval is already failed')).toBe('Approval handled');
+    expect(approvalNoticeTitle('approve', 'I queued automatic conflict recovery')).toBe('Approval handled');
+    expect(approvalNoticeTitle('deny', 'Approval denied')).toBe('Approval denied');
   });
 
   test('locks acceptance while post-merge restart is running', () => {

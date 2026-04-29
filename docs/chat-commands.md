@@ -188,8 +188,8 @@ delegate 793f04ec to codex implement the task again from current main
 
 `refresh <task_id>` resets the task worktree branch to the current repository `main` commit and leaves the task blocked for explicit redelegation. Use it when repeated review or approval attempts report premerge conflicts from old branch state and the original task changes are no longer worth preserving.
 
-Use `retry <task_id>` or `delegate <task_id> to codex ...` first when you want to preserve the existing task work. For conflict-resolution and premerge-failure states, `homelabd` carries the previous failure text into the worker prompt and prepares the isolated task worktree by merging current `main` when the worktree is clean. If that merge conflicts, the worker receives the actual unmerged files to resolve.
+Use `retry <task_id>` or `delegate <task_id> to codex ...` when you want to preserve the existing task work and force an immediate worker attempt. The task supervisor also starts automatic recovery for conflict-resolution and retryable premerge-failure states. In both paths, `homelabd` carries the previous failure text into the worker prompt and prepares the isolated task worktree by merging current `main` when the worktree is clean. If that merge conflicts, the worker receives the actual unmerged files to resolve.
 
-`approve <approval_id>` still executes a pending approval. For merge approvals, the Orchestrator first attempts to reconcile the task branch with current `main`; conflicts move the task to `conflict_resolution` for manual fixes and no merge is applied.
+`approve <approval_id>` still executes a pending approval. For merge approvals, the Orchestrator first attempts to reconcile the task branch with current `main`; conflicts move the task to `conflict_resolution`, automatic recovery is queued, and no merge is applied. Re-approving an already failed merge approval queues recovery or review instead of reporting the dead approval as granted.
 
 Remote tasks do not have a control-plane task worktree; use `reopen <task_id> <reason>` to queue follow-up work for the same remote target.

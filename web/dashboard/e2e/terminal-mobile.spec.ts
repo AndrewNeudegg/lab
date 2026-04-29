@@ -204,6 +204,13 @@ const installTerminalMocks = async (page) => {
       })
     });
   });
+  await page.context().route('**/api/approvals', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ approvals: [] })
+    });
+  });
 
   await page.context().route('**/api/tasks/*/runs', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"runs":[]}' });

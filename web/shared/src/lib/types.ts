@@ -24,6 +24,7 @@ export interface ChatTranscriptMessage {
   time: string;
   source?: string;
   actions?: string[];
+  attachments?: HomelabdTaskAttachment[];
 }
 
 export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
@@ -31,6 +32,7 @@ export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
 export interface HomelabdMessageRequest {
   from?: string;
   content: string;
+  attachments?: HomelabdTaskAttachment[];
 }
 
 export interface HomelabdMessageResponse {
@@ -45,6 +47,7 @@ export type TaskStatus =
   | 'conflict_resolution'
   | 'ready_for_review'
   | 'awaiting_approval'
+  | 'awaiting_restart'
   | 'awaiting_verification'
   | 'done'
   | 'failed'
@@ -69,9 +72,27 @@ export interface HomelabdTask {
   graph_phase?: string;
   target?: HomelabdTaskTarget;
   acceptance_criteria?: HomelabdAcceptanceCriterion[];
+  attachments?: HomelabdTaskAttachment[];
+  restart_required?: string[];
+  restart_completed?: string[];
+  restart_status?: 'pending' | 'running' | 'complete' | 'failed' | string;
+  restart_current?: string;
+  restart_last_error?: string;
+  auto_recovery_attempts?: number;
+  auto_recovery_last_at?: string;
   workspace?: string;
   result?: string;
   plan?: HomelabdTaskPlan;
+}
+
+export interface HomelabdTaskAttachment {
+  id?: string;
+  name: string;
+  content_type: string;
+  size: number;
+  data_url?: string;
+  text?: string;
+  created_at?: string;
 }
 
 export interface HomelabdTaskTarget {
@@ -111,6 +132,7 @@ export interface HomelabdTasksResponse {
 export interface HomelabdCreateTaskRequest {
   goal: string;
   target?: HomelabdTaskTarget;
+  attachments?: HomelabdTaskAttachment[];
 }
 
 export interface HomelabdCreateTaskResponse {
@@ -452,6 +474,7 @@ export interface HomelabdClient {
   runTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   reviewTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   acceptTask(taskId: string): Promise<HomelabdTaskActionResponse>;
+  restartTask(taskId: string): Promise<HomelabdTaskActionResponse>;
   reopenTask(
     taskId: string,
     request?: HomelabdTaskReopenRequest

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { onMount } from 'svelte';
   import { Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
@@ -36,6 +37,7 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
+  let controlsReady = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -86,6 +88,10 @@
       void goto(`/docs/${slug}`);
     }
   };
+
+  onMount(() => {
+    controlsReady = true;
+  });
 </script>
 
 <svelte:head>
@@ -108,6 +114,7 @@
         <select
           id="docs-jump"
           bind:value={jumpSlug}
+          disabled={!controlsReady}
           on:change={openSelectedDoc}
           aria-label="Jump to document"
         >

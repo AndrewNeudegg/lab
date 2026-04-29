@@ -9,9 +9,19 @@ const expectNoHorizontalOverflow = async (page: Page) => {
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 };
 
+const mockNavbarTaskApis = async (page: Page) => {
+  await page.route(/\/api\/tasks\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { tasks: [] } });
+  });
+  await page.route(/\/api\/approvals\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { approvals: [] } });
+  });
+};
+
 test('docs library supports navigation, markdown rendering, table of contents, and search', async ({
   page
 }) => {
+  await mockNavbarTaskApis(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/docs');
 
@@ -19,6 +29,9 @@ test('docs library supports navigation, markdown rendering, table of contents, a
     page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Docs' })
   ).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  const diagram = page.locator('.content .mermaid-diagram').first();
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect(diagram.locator('svg')).toBeVisible();
   await expect(page.getByText('./docs/dashboard.md')).toBeVisible();
   await expect.poll(async () => page.locator('#docs-list a').count()).toBeGreaterThanOrEqual(6);
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
@@ -43,6 +56,7 @@ test('docs library supports navigation, markdown rendering, table of contents, a
 });
 
 test('docs library remains usable on mobile', async ({ page }) => {
+  await mockNavbarTaskApis(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/docs/chat-commands');
 

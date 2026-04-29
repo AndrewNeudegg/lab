@@ -1,8 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import {
+    dataUrlAttachment,
+    formatAttachmentSize,
+    textAttachment
+  } from './attachments';
   import { createHomelabdClient } from './client';
   import ThemeToggle from './ThemeToggle.svelte';
   import { taskAttentionCounts, type TaskAttentionCounts } from './tasks';
+  import type { HomelabdTaskAttachment } from './types';
 
   export let title = 'homelabd';
   export let subtitle = 'Dashboard';
@@ -20,10 +26,28 @@
     { href: '/healthd', label: 'Health' }
   ];
 
+  type RecentAction = {
+    time: string;
+    type: string;
+    label: string;
+    path: string;
+  };
+
+  const actionStorageKey = 'homelabd.dashboard.recentActions.v1';
+  const helpClientBase = () => apiBase || '/api';
+
   let mobileMenuOpen = false;
-  let mobileMenuElement: HTMLDetailsElement | undefined;
   let fetchedTaskAttention: TaskAttentionCounts = { red: 0, amber: 0, total: 0 };
   let currentTaskAttention: TaskAttentionCounts = { red: 0, amber: 0, total: 0 };
+  let helpDialog: HTMLDialogElement | undefined;
+  let helpDetails = '';
+  let helpStatus = '';
+  let helpError = '';
+  let helpSubmitting = false;
+  let helpCapturing = false;
+  let helpDialogOpen = false;
+  let helpReady = false;
+  let helpAttachments: HomelabdTaskAttachment[] = [];
 
   const isActive = (href: string) => current === href;
   const isTasksLink = (href: string) => href === '/tasks';
@@ -38,21 +62,6 @@
     isTasksLink(link.href) && currentTaskAttention.total
       ? `${link.label}: ${attentionPhrase(currentTaskAttention)}`
       : undefined;
-  const setMobileMenuOpen = (open: boolean) => {
-    mobileMenuOpen = open;
-    if (mobileMenuElement && mobileMenuElement.open !== open) {
-      mobileMenuElement.open = open;
-    }
-  };
-  const toggleMobileMenu = (event: MouseEvent) => {
-    event.preventDefault();
-    setMobileMenuOpen(!(mobileMenuElement?.open ?? mobileMenuOpen));
-  };
-  const syncMobileMenuOpen = (event: Event) => {
-    if (event.currentTarget instanceof HTMLDetailsElement) {
-      mobileMenuOpen = event.currentTarget.open;
-    }
-  };
 
   $: currentTaskAttention = taskAttention || fetchedTaskAttention;
 
@@ -76,20 +85,235 @@
     fetchedTaskAttention = taskAttentionCounts(tasks, approvals);
   };
 
-  onMount(() => {
-    if (mobileMenuElement?.open) {
-      mobileMenuOpen = true;
+  const elementLabel = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) {
+      return 'page';
     }
+    const element = target.closest('button, a, input, textarea, select, summary, [role="button"]');
+    if (!element) {
+      return target.tagName.toLowerCase();
+    }
+    const aria = element.getAttribute('aria-label') || element.getAttribute('title');
+    const text = element.textContent?.trim().replace(/\s+/g, ' ');
+    const name = aria || text || element.getAttribute('id') || element.tagName.toLowerCase();
+    return name.slice(0, 120);
+  };
+
+  const recentActions = (): RecentAction[] => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(actionStorageKey) || '[]');
+      return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object') : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const recordAction = (type: string, target: EventTarget | null) => {
+    try {
+      const item: RecentAction = {
+        time: new Date().toISOString(),
+        type,
+        label: elementLabel(target),
+        path: `${location.pathname}${location.search}`
+      };
+      localStorage.setItem(actionStorageKey, JSON.stringify([...recentActions(), item].slice(-12)));
+    } catch {
+      // Recent actions are helpful context, not required for normal navigation.
+    }
+  };
+
+  const visiblePageText = () =>
+    (document.body.innerText || document.body.textContent || '')
+      .replace(/\s+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .slice(0, 5000);
+
+  const activeElementLabel = () =>
+    document.activeElement ? elementLabel(document.activeElement) : 'none';
+
+  const buildBrowserContextAttachment = () => {
+    const context = {
+      captured_at: new Date().toISOString(),
+      page: current || location.pathname,
+      url: location.href,
+      title: document.title,
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        device_pixel_ratio: window.devicePixelRatio
+      },
+      screen: {
+        width: window.screen.width,
+        height: window.screen.height
+      },
+      user_agent: navigator.userAgent,
+      language: navigator.language,
+      theme: document.documentElement.dataset.theme || '',
+      active_element: activeElementLabel(),
+      selected_text: String(window.getSelection?.() || '').slice(0, 1000),
+      recent_actions: recentActions(),
+      visible_text: visiblePageText()
+    };
+    return textAttachment('browser-context.json', 'application/json', JSON.stringify(context, null, 2));
+  };
+
+  const stopStream = (stream?: MediaStream) => {
+    stream?.getTracks().forEach((track) => track.stop());
+  };
+
+  const captureScreenshotAttachment = async () => {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error('Screen capture is not available in this browser.');
+    }
+    let stream: MediaStream | undefined;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const video = document.createElement('video');
+      video.muted = true;
+      video.srcObject = stream;
+      await video.play();
+      if (!video.videoWidth || !video.videoHeight) {
+        await new Promise((resolve) => {
+          video.onloadedmetadata = () => resolve(undefined);
+          window.setTimeout(resolve, 350);
+        });
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || window.innerWidth;
+      canvas.height = video.videoHeight || window.innerHeight;
+      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return dataUrlAttachment('dashboard-screenshot.png', 'image/png', canvas.toDataURL('image/png'));
+    } finally {
+      stopStream(stream);
+    }
+  };
+
+  const showHelpDialog = async () => {
+    helpDialogOpen = true;
+    await tick();
+    if (!helpDialog || helpDialog.open) {
+      return;
+    }
+    if (typeof helpDialog.showModal === 'function') {
+      helpDialog.showModal();
+      return;
+    }
+    helpDialog.setAttribute('open', '');
+  };
+
+  const openHelpTaskDialog = async () => {
+    if (helpCapturing || helpSubmitting) {
+      return;
+    }
+    mobileMenuOpen = false;
+    helpDetails = '';
+    helpError = '';
+    helpStatus = 'Capturing page context.';
+    helpCapturing = true;
+    try {
+      helpAttachments = [buildBrowserContextAttachment()];
+    } catch (err) {
+      helpAttachments = [
+        textAttachment(
+          'browser-context.json',
+          'application/json',
+          JSON.stringify(
+            {
+              captured_at: new Date().toISOString(),
+              url: location.href,
+              error: err instanceof Error ? err.message : 'Unable to capture browser context.'
+            },
+            null,
+            2
+          )
+        )
+      ];
+    }
+    void showHelpDialog();
+    try {
+      helpStatus = 'Choose this tab or screen to attach a screenshot.';
+      const screenshot = await captureScreenshotAttachment();
+      helpAttachments = [...helpAttachments, screenshot];
+      helpStatus = 'Screenshot and browser context captured.';
+    } catch (err) {
+      helpStatus = err instanceof Error ? err.message : 'Screenshot capture was skipped.';
+    } finally {
+      helpCapturing = false;
+      void showHelpDialog();
+    }
+  };
+
+  const closeHelpDialog = () => {
+    if (helpSubmitting) {
+      return;
+    }
+    helpDialogOpen = false;
+    if (helpDialog?.open) {
+      helpDialog.close();
+    }
+  };
+
+  const helpTaskGoal = () => {
+    const detail = helpDetails.trim() || 'No extra detail provided.';
+    const attachmentList = helpAttachments
+      .map((attachment) => `- ${attachment.name} (${attachment.content_type}, ${formatAttachmentSize(attachment.size)})`)
+      .join('\n');
+    return [
+      `Dashboard help task from ${current || location.pathname}`,
+      '',
+      'Operator detail:',
+      detail,
+      '',
+      `Captured URL: ${location.href}`,
+      'Attachments:',
+      attachmentList || '- browser context unavailable'
+    ].join('\n');
+  };
+
+  const submitHelpTask = async () => {
+    if (helpSubmitting) {
+      return;
+    }
+    helpSubmitting = true;
+    helpError = '';
+    try {
+      const client = createHomelabdClient({ baseUrl: helpClientBase() });
+      const response = await client.createTask({
+        goal: helpTaskGoal(),
+        attachments: helpAttachments
+      });
+      helpStatus = response.reply || 'Help task submitted.';
+      helpDialogOpen = false;
+      if (helpDialog?.open) {
+        helpDialog.close();
+      }
+    } catch (err) {
+      helpError = err instanceof Error ? err.message : 'Unable to submit help task.';
+    } finally {
+      helpSubmitting = false;
+    }
+  };
+
+  onMount(() => {
+    helpReady = true;
     void refreshTaskAttention().catch(() => undefined);
     const interval = window.setInterval(() => {
       void refreshTaskAttention().catch(() => undefined);
     }, 15000);
-    return () => window.clearInterval(interval);
+    const clickListener = (event: MouseEvent) => recordAction('click', event.target);
+    const inputListener = (event: Event) => recordAction('input', event.target);
+    window.addEventListener('click', clickListener, { capture: true });
+    window.addEventListener('change', inputListener, { capture: true });
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('click', clickListener, { capture: true });
+      window.removeEventListener('change', inputListener, { capture: true });
+    };
   });
 </script>
 
 <header class="navbar">
-  <a class="brand" href="/chat" on:click={() => setMobileMenuOpen(false)}>
+  <a class="brand" href="/chat" onclickcapture={() => (mobileMenuOpen = false)}>
     <span>{subtitle}</span>
     <strong>{title}</strong>
   </a>
@@ -128,14 +352,23 @@
     <div class="desktop-theme">
       <ThemeToggle />
     </div>
-    <details bind:this={mobileMenuElement} class="mobile-menu" on:toggle={syncMobileMenuOpen}>
+    <button
+      type="button"
+      class="help-button"
+      aria-label="Submit help task"
+      title="Submit help task"
+      disabled={!helpReady || helpCapturing || helpSubmitting}
+      onclickcapture={openHelpTaskDialog}
+    >
+      Help
+    </button>
+    <details class="mobile-menu" bind:open={mobileMenuOpen}>
       <!-- svelte-ignore a11y_no_redundant_roles -- Chromium exposes this styled summary consistently with an explicit role. -->
       <summary
         class="menu-button"
         role="button"
         aria-controls="primary-mobile-nav"
         aria-expanded={mobileMenuOpen}
-        on:click={toggleMobileMenu}
       >
         <span aria-hidden="true">☰</span>
         Menu
@@ -150,7 +383,7 @@
               : undefined}
             title={linkTitle(link)}
             class:has-attention={isTasksLink(link.href) && currentTaskAttention.total > 0}
-            on:click={() => setMobileMenuOpen(false)}
+            onclickcapture={() => (mobileMenuOpen = false)}
           >
             <span class="nav-label">{link.label}</span>
             {#if isTasksLink(link.href) && currentTaskAttention.total > 0}
@@ -171,6 +404,64 @@
     </details>
   </div>
 </header>
+
+<dialog
+  class="help-dialog"
+  bind:this={helpDialog}
+  aria-labelledby="help-task-title"
+  onclose={() => {
+    helpDialogOpen = false;
+  }}
+>
+  <form
+    class="help-dialog-body"
+    onsubmit={(event) => {
+      event.preventDefault();
+      void submitHelpTask();
+    }}
+  >
+    <header>
+      <div>
+        <p>Dashboard report</p>
+        <h2 id="help-task-title">Submit help task</h2>
+      </div>
+      <button type="button" aria-label="Close help task dialog" onclickcapture={closeHelpDialog}>x</button>
+    </header>
+
+    <p class="help-status">{helpStatus}</p>
+
+    <label for="help-task-detail">
+      <span>More detail</span>
+      <textarea
+        id="help-task-detail"
+        bind:value={helpDetails}
+        rows="4"
+        placeholder="What went wrong? What did you expect?"
+        disabled={helpSubmitting}
+      ></textarea>
+    </label>
+
+    <section class="help-attachments" aria-label="Captured attachments">
+      {#each helpAttachments as attachment}
+        <div>
+          <strong>{attachment.name}</strong>
+          <span>{attachment.content_type} / {formatAttachmentSize(attachment.size)}</span>
+        </div>
+      {/each}
+    </section>
+
+    {#if helpError}
+      <p class="help-error" role="alert">{helpError}</p>
+    {/if}
+
+    <footer>
+      <button type="button" onclickcapture={closeHelpDialog} disabled={helpSubmitting}>Cancel</button>
+      <button type="submit" class="primary" disabled={helpSubmitting}>
+        {helpSubmitting ? 'Submitting' : 'Submit help task'}
+      </button>
+    </footer>
+  </form>
+</dialog>
 
 <style>
   :global(:root) {
@@ -241,8 +532,11 @@
 	  :global(html[data-theme='dark'] .notification),
 	  :global(html[data-theme='dark'] .notifications),
 	  :global(html[data-theme='dark'] .empty-record),
-	  :global(html[data-theme='dark'] .task-plan),
-	  :global(html[data-theme='dark'] .task-result),
+  :global(html[data-theme='dark'] .task-plan),
+  :global(html[data-theme='dark'] .task-result),
+  :global(html[data-theme='dark'] .task-attachments),
+  :global(html[data-theme='dark'] .task-attachment),
+  :global(html[data-theme='dark'] .task-attachment pre),
 	  :global(html[data-theme='dark'] .workspace-path),
 	  :global(html[data-theme='dark'] .activity),
 	  :global(html[data-theme='dark'] .record-summary div),
@@ -254,7 +548,13 @@
 	  :global(html[data-theme='dark'] .task-header button),
 	  :global(html[data-theme='dark'] .record-actions button),
 	  :global(html[data-theme='dark'] .message-actions button),
+  :global(html[data-theme='dark'] .attachment-chip),
+  :global(html[data-theme='dark'] .attachment-chip.pending button),
+  :global(html[data-theme='dark'] .composer-buttons button),
+  :global(html[data-theme='dark'] .composer-buttons .attach-button),
   :global(html[data-theme='dark'] .prompt-actions button),
+  :global(html[data-theme='dark'] .help-dialog),
+  :global(html[data-theme='dark'] .help-attachments div),
   :global(html[data-theme='dark'] .command-header-actions button),
   :global(html[data-theme='dark'] .terminal-panel),
   :global(html[data-theme='dark'] .terminal-header),
@@ -283,6 +583,8 @@
   :global(html[data-theme='dark'] .task-copy strong),
   :global(html[data-theme='dark'] .next-step h3),
   :global(html[data-theme='dark'] .task-plan h3),
+  :global(html[data-theme='dark'] .task-attachments h3),
+  :global(html[data-theme='dark'] .task-attachment strong),
   :global(html[data-theme='dark'] .task-plan li strong),
   :global(html[data-theme='dark'] .task-result h3),
   :global(html[data-theme='dark'] .activity h3),
@@ -304,6 +606,8 @@
 
   :global(html[data-theme='dark'] .task-header p),
   :global(html[data-theme='dark'] .task-header span),
+  :global(html[data-theme='dark'] .task-attachment span),
+  :global(html[data-theme='dark'] .task-attachment a),
   :global(html[data-theme='dark'] .record-header p),
   :global(html[data-theme='dark'] .record-summary span),
   :global(html[data-theme='dark'] .workspace-path span),
@@ -639,6 +943,7 @@
     display: none;
   }
 
+  .help-button,
   .menu-button {
     display: none;
     min-height: 2.4rem;
@@ -651,6 +956,10 @@
     font-size: 0.88rem;
     font-weight: 850;
     cursor: pointer;
+  }
+
+  .help-button {
+    min-width: 3.2rem;
   }
 
   .menu-button span {
@@ -675,6 +984,142 @@
     justify-content: space-between;
     gap: 0.75rem;
     padding: 0.8rem 0.9rem;
+  }
+
+  .help-dialog {
+    width: min(92vw, 31rem);
+    padding: 0;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.85rem;
+    color: var(--text, #172033);
+    background: var(--surface, #ffffff);
+    box-shadow: 0 24px 70px rgb(15 23 42 / 0.24);
+  }
+
+  .help-dialog[open] {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 50;
+    transform: translate(-50%, -50%);
+  }
+
+  .help-dialog::backdrop {
+    background: rgb(15 23 42 / 0.46);
+  }
+
+  .help-dialog-body {
+    display: grid;
+    gap: 0.85rem;
+    padding: 1rem;
+  }
+
+  .help-dialog header,
+  .help-dialog footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .help-dialog header p,
+  .help-dialog header h2,
+  .help-status,
+  .help-error {
+    margin: 0;
+  }
+
+  .help-dialog header p,
+  .help-dialog label span {
+    color: var(--muted, #64748b);
+    font-size: 0.72rem;
+    font-weight: 850;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .help-dialog header h2 {
+    color: var(--text-strong, #0f172a);
+    font-size: 1.05rem;
+  }
+
+  .help-dialog header button,
+  .help-dialog footer button {
+    min-height: 2.35rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 0.55rem;
+    color: var(--text, #243047);
+    background: var(--surface, #ffffff);
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .help-dialog footer .primary {
+    border-color: var(--accent, #2563eb);
+    color: #ffffff;
+    background: var(--accent, #2563eb);
+  }
+
+  .help-dialog label {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .help-dialog textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 6.5rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 0.65rem;
+    color: var(--text-strong, #111827);
+    background: var(--surface, #ffffff);
+    font: inherit;
+    line-height: 1.45;
+    resize: vertical;
+  }
+
+  .help-status {
+    color: var(--muted, #64748b);
+    font-size: 0.86rem;
+    line-height: 1.4;
+  }
+
+  .help-error {
+    padding: 0.65rem;
+    border: 1px solid #fecaca;
+    border-radius: 0.55rem;
+    color: var(--danger-text, #991b1b);
+    background: var(--danger-bg, #fef2f2);
+    font-size: 0.84rem;
+  }
+
+  .help-attachments {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .help-attachments div {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.55rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .help-attachments strong {
+    overflow-wrap: anywhere;
+    color: var(--text-strong, #0f172a);
+    font-size: 0.84rem;
+  }
+
+  .help-attachments span {
+    color: var(--muted, #64748b);
+    font-size: 0.76rem;
   }
 
   @media (max-width: 760px) {
@@ -704,6 +1149,7 @@
       display: block;
     }
 
+    .help-button,
     .menu-button {
       display: inline-flex;
       align-items: center;

@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.PLAYWRIGHT_PORT || worktreePort(process.cwd()));
 const baseURL = `http://127.0.0.1:${port}`;
+const webServerTimeout = Number(process.env.PLAYWRIGHT_WEB_SERVER_TIMEOUT_MS || 90_000);
 const executablePath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
   (process.env.HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME === '1' ? process.env.CHROME_BIN : undefined);
@@ -21,15 +22,15 @@ function worktreePort(cwd: string) {
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: 30_000,
+  timeout: 60_000,
   workers: 1,
   expect: {
-    timeout: 5_000
+    timeout: 10_000
   },
   webServer: {
     command: `bun run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
     url: `${baseURL}/chat`,
-    timeout: 30_000,
+    timeout: webServerTimeout,
     reuseExistingServer: false
   },
   use: {

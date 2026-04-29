@@ -84,7 +84,7 @@
         }
         diagram.dataset.mermaidStatus = 'rendering';
         try {
-          const { svg } = await mermaid.render(
+          const { svg, bindFunctions } = await mermaid.render(
             `markdown-mermaid-${instanceID}-${version}-${index}`,
             source
           );
@@ -92,6 +92,7 @@
             return;
           }
           output.innerHTML = svg;
+          bindFunctions?.(output);
           output.hidden = false;
           if (fallback) {
             fallback.hidden = true;

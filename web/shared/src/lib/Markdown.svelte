@@ -1,176 +1,191 @@
-<script lang="ts">
-  import { afterUpdate, onMount, tick } from 'svelte';
-  import { renderMarkdown } from './markdown';
-
-  export let content = '';
-  export let headingIds = false;
-
-  type MermaidThemeMode = 'light' | 'dark';
+<script lang="ts" context="module">
   type Mermaid = typeof import('mermaid').default;
 
-  const mermaidThemeVariables = {
-    light: {
-      background: '#f5f7fb',
-      primaryColor: '#dbeafe',
-      primaryTextColor: '#0f172a',
-      primaryBorderColor: '#2563eb',
-      secondaryColor: '#ccfbf1',
-      secondaryTextColor: '#0f172a',
-      secondaryBorderColor: '#0f766e',
-      tertiaryColor: '#fef3c7',
-      tertiaryTextColor: '#0f172a',
-      tertiaryBorderColor: '#d97706',
-      lineColor: '#64748b',
-      textColor: '#172033',
-      mainBkg: '#ffffff',
-      secondBkg: '#f8fafc',
-      border1: '#cbd5e1',
-      border2: '#dbe3ef',
-      noteBkgColor: '#fffbeb',
-      noteTextColor: '#172033',
-      noteBorderColor: '#fde68a',
-      clusterBkg: '#f8fafc',
-      clusterBorder: '#cbd5e1',
-      edgeLabelBackground: '#ffffff',
-      actorBkg: '#ffffff',
-      actorBorder: '#2563eb',
-      actorTextColor: '#172033',
-      signalColor: '#2563eb',
-      signalTextColor: '#172033',
-      activationBkgColor: '#dbeafe',
-      activationBorderColor: '#2563eb',
-      sequenceNumberColor: '#ffffff'
-    },
-    dark: {
-      background: '#0b1120',
-      primaryColor: '#10254a',
-      primaryTextColor: '#f8fafc',
-      primaryBorderColor: '#60a5fa',
-      secondaryColor: '#0f302d',
-      secondaryTextColor: '#f8fafc',
-      secondaryBorderColor: '#2dd4bf',
-      tertiaryColor: '#33270d',
-      tertiaryTextColor: '#f8fafc',
-      tertiaryBorderColor: '#fbbf24',
-      lineColor: '#9fb0c7',
-      textColor: '#dbe7f6',
-      mainBkg: '#172033',
-      secondBkg: '#111827',
-      border1: '#334155',
-      border2: '#263244',
-      noteBkgColor: '#33270d',
-      noteTextColor: '#f8fafc',
-      noteBorderColor: '#854d0e',
-      clusterBkg: '#111827',
-      clusterBorder: '#334155',
-      edgeLabelBackground: '#172033',
-      actorBkg: '#172033',
-      actorBorder: '#60a5fa',
-      actorTextColor: '#dbe7f6',
-      signalColor: '#60a5fa',
-      signalTextColor: '#dbe7f6',
-      activationBkgColor: '#10254a',
-      activationBorderColor: '#60a5fa',
-      sequenceNumberColor: '#0b1120'
-    }
-  };
-
-  let root: HTMLDivElement | undefined;
+  let markdownInstance = 0;
   let mermaidPromise: Promise<Mermaid> | undefined;
-  let renderQueued = false;
-  let renderGeneration = 0;
-
-  const currentThemeMode = (): MermaidThemeMode =>
-    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 
   const loadMermaid = () => {
     mermaidPromise ??= import('mermaid').then((module) => module.default);
     return mermaidPromise;
   };
+</script>
 
-  const mermaidConfig = (mode: MermaidThemeMode) => ({
-    startOnLoad: false,
-    securityLevel: 'strict' as const,
-    theme: 'base' as const,
-    secure: ['securityLevel', 'theme', 'themeVariables', 'fontFamily', 'startOnLoad'],
-    fontFamily:
-      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    themeVariables: {
-      ...mermaidThemeVariables[mode],
-      fontFamily:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-    }
-  });
+<script lang="ts">
+  import { afterUpdate, onMount, tick } from 'svelte';
+  import { mermaidBrandThemeVariables, type BrandDiagramMode } from './brand';
+  import { renderMarkdown } from './markdown';
 
-  const fallbackDiagram = (element: HTMLElement, source: string, message: string) => {
-    const pre = document.createElement('pre');
-    const code = document.createElement('code');
-    const note = document.createElement('figcaption');
+  export let content = '';
+  export let headingIds = false;
 
-    code.className = 'language-mermaid';
-    code.textContent = source;
-    pre.append(code);
-    note.className = 'mermaid-error';
-    note.textContent = message;
-    element.replaceChildren(note, pre);
-  };
+  let root: HTMLDivElement | undefined;
+  let mounted = false;
+  let renderVersion = 0;
+  let renderQueued = false;
+  let renderInFlight = false;
+  let renderRequested = false;
+  let themeMode: BrandDiagramMode = 'light';
+  const instanceID = ++markdownInstance;
 
-  const renderMermaidDiagrams = async () => {
+  const currentThemeMode = (): BrandDiagramMode =>
+    typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark'
+      ? 'dark'
+      : 'light';
+
+  const resetMermaidDiagrams = () => {
     if (!root) {
       return;
     }
-
-    const diagrams = Array.from(root.querySelectorAll<HTMLElement>('.mermaid-diagram'));
-    if (diagrams.length === 0) {
-      return;
-    }
-
-    const generation = ++renderGeneration;
-    const mode = currentThemeMode();
-    const mermaid = await loadMermaid();
-
-    if (generation !== renderGeneration) {
-      return;
-    }
-
-    mermaid.initialize(mermaidConfig(mode));
-
-    for (const [index, diagram] of diagrams.entries()) {
-      const source =
-        diagram.dataset.mermaidSource || diagram.querySelector('code')?.textContent || '';
-
-      if (!source.trim()) {
-        continue;
+    renderVersion += 1;
+    for (const diagram of root.querySelectorAll<HTMLElement>('.mermaid-diagram')) {
+      delete diagram.dataset.mermaidRendered;
+      diagram.dataset.mermaidStatus = 'pending';
+      const output = diagram.querySelector<HTMLElement>('.mermaid-output');
+      const fallback = diagram.querySelector<HTMLElement>('pre');
+      if (output) {
+        output.replaceChildren();
+        output.hidden = true;
       }
-      if (
-        diagram.dataset.mermaidRendered === 'true' &&
-        diagram.dataset.mermaidTheme === mode &&
-        diagram.dataset.mermaidSource === source
-      ) {
-        continue;
-      }
-
-      diagram.dataset.mermaidSource = source;
-
-      try {
-        const id = `homelab-mermaid-${Date.now()}-${index}`;
-        const result = await mermaid.render(id, source);
-        if (generation !== renderGeneration) {
-          return;
-        }
-        diagram.innerHTML = result.svg;
-        result.bindFunctions?.(diagram);
-        diagram.dataset.mermaidTheme = mode;
-        diagram.dataset.mermaidRendered = 'true';
-      } catch {
-        diagram.dataset.mermaidTheme = mode;
-        diagram.dataset.mermaidRendered = 'error';
-        fallbackDiagram(diagram, source, 'Mermaid diagram could not be rendered.');
+      if (fallback) {
+        fallback.hidden = false;
       }
     }
   };
 
-  const scheduleMermaidRender = () => {
+  const renderMermaidDiagrams = async () => {
+    if (!mounted || !root) {
+      return;
+    }
+    if (renderInFlight) {
+      renderRequested = true;
+      return;
+    }
+    renderInFlight = true;
+
+    type PendingDiagram = {
+      diagram: HTMLElement;
+      source: string;
+      fingerprint: string;
+      output: HTMLElement;
+      fallback: HTMLElement | null;
+    };
+    let pending: PendingDiagram[] = [];
+    try {
+      await tick();
+      const diagrams = Array.from(
+        root.querySelectorAll<HTMLElement>('.mermaid-diagram[data-mermaid-source]')
+      );
+      if (diagrams.length === 0) {
+        return;
+      }
+
+      const mode = currentThemeMode();
+      const version = ++renderVersion;
+      if (themeMode !== mode) {
+        themeMode = mode;
+      }
+      pending = diagrams.flatMap((diagram) => {
+        const source = diagram.dataset.mermaidSource || '';
+        const fingerprint = `${mode}:${source}`;
+        const output = diagram.querySelector<HTMLElement>('.mermaid-output');
+        if (!source.trim() || !output || diagram.dataset.mermaidRendered === fingerprint) {
+          return [];
+        }
+        return [
+          {
+            diagram,
+            source,
+            fingerprint,
+            output,
+            fallback: diagram.querySelector<HTMLElement>('pre')
+          }
+        ];
+      });
+      if (pending.length === 0) {
+        return;
+      }
+      for (const { diagram } of pending) {
+        diagram.dataset.mermaidStatus = 'loading';
+      }
+
+      const mermaid = await loadMermaid();
+      if (version !== renderVersion || !mounted) {
+        return;
+      }
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        secure: ['securityLevel', 'theme', 'themeVariables', 'themeCSS', 'darkMode', 'fontFamily'],
+        theme: 'base',
+        darkMode: mode === 'dark',
+        fontFamily:
+          'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        themeVariables: mermaidBrandThemeVariables(mode)
+      });
+
+      await Promise.all(
+        pending.map(async ({ diagram, source, fingerprint, output, fallback }, index) => {
+          if (version !== renderVersion || !mounted) {
+            return;
+          }
+          diagram.dataset.mermaidStatus = 'rendering';
+          try {
+            const { svg, bindFunctions } = await mermaid.render(
+              `markdown-mermaid-${instanceID}-${version}-${index}`,
+              source
+            );
+            if (version !== renderVersion || !mounted) {
+              return;
+            }
+            output.innerHTML = svg;
+            bindFunctions?.(output);
+            output.hidden = false;
+            if (fallback) {
+              fallback.hidden = true;
+            }
+            diagram.dataset.mermaidRendered = fingerprint;
+            diagram.dataset.mermaidStatus = 'rendered';
+          } catch (error) {
+            if (version !== renderVersion || !mounted) {
+              return;
+            }
+            output.replaceChildren();
+            output.hidden = true;
+            if (fallback) {
+              fallback.hidden = false;
+            }
+            diagram.dataset.mermaidStatus = 'error';
+            diagram.dataset.mermaidError = error instanceof Error ? error.message : String(error);
+          }
+        })
+      );
+    } catch (error) {
+      for (const { diagram, output, fallback } of pending) {
+        output.replaceChildren();
+        output.hidden = true;
+        if (fallback) {
+          fallback.hidden = false;
+        }
+        diagram.dataset.mermaidStatus = 'error';
+        diagram.dataset.mermaidError = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      renderInFlight = false;
+      if (renderRequested && mounted) {
+        renderRequested = false;
+        queueMermaidRender();
+      }
+    }
+  };
+
+  const queueMermaidRender = () => {
+    if (!mounted) {
+      return;
+    }
+    if (renderInFlight) {
+      renderRequested = true;
+      return;
+    }
     if (renderQueued) {
       return;
     }
@@ -182,19 +197,28 @@
   };
 
   onMount(() => {
-    scheduleMermaidRender();
-
-    const observer = new MutationObserver((mutations) => {
-      if (mutations.some((mutation) => mutation.attributeName === 'data-theme')) {
-        scheduleMermaidRender();
+    mounted = true;
+    themeMode = currentThemeMode();
+    const observer = new MutationObserver(() => {
+      const nextMode = currentThemeMode();
+      if (nextMode !== themeMode) {
+        themeMode = nextMode;
+        resetMermaidDiagrams();
+        queueMermaidRender();
       }
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-
-    return () => observer.disconnect();
+    queueMermaidRender();
+    return () => {
+      mounted = false;
+      renderVersion += 1;
+      observer.disconnect();
+    };
   });
 
-  afterUpdate(scheduleMermaidRender);
+  afterUpdate(() => {
+    queueMermaidRender();
+  });
 </script>
 
 <div class="markdown" bind:this={root}>
@@ -314,12 +338,17 @@
     margin: 0.75rem 0;
     overflow-x: auto;
     padding: 0.75rem;
-    border: 1px solid #cbd5e1;
+    border: 1px solid var(--markdown-diagram-border, #cbd5e1);
     border-radius: 0.5rem;
-    background: #ffffff;
+    background: var(--markdown-diagram-bg, #f8fafc);
+    color: var(--markdown-diagram-text, #172033);
   }
 
-  .markdown :global(.mermaid-diagram svg) {
+  .markdown :global(.mermaid-output) {
+    min-width: min(38rem, 100%);
+  }
+
+  .markdown :global(.mermaid-output svg) {
     display: block;
     max-width: 100%;
     height: auto;
@@ -327,23 +356,12 @@
   }
 
   .markdown :global(.mermaid-diagram pre) {
-    margin: 0.4rem 0 0;
+    margin: 0;
   }
 
-  .markdown :global(.mermaid-error) {
-    margin: 0 0 0.45rem;
-    color: #991b1b;
-    font-size: 0.82rem;
-    font-weight: 750;
-  }
-
-  :global(html[data-theme='dark'] .markdown .mermaid-diagram) {
-    border-color: var(--border-soft, #263244);
-    background: var(--surface, #172033);
-  }
-
-  :global(html[data-theme='dark'] .markdown .mermaid-error) {
-    color: #fecaca;
+  .markdown :global(.mermaid-diagram[data-mermaid-status='error']) {
+    border-color: #d97706;
+    background: #fffbeb;
   }
 
   .markdown :global(a) {
@@ -380,5 +398,16 @@
     background: #f1f5f9;
     color: #0f172a;
     font-weight: 800;
+  }
+
+  :global(html[data-theme='dark'] .markdown) {
+    --markdown-diagram-bg: #0f172a;
+    --markdown-diagram-text: #e2e8f0;
+    --markdown-diagram-border: #334155;
+  }
+
+  :global(html[data-theme='dark'] .markdown .mermaid-diagram[data-mermaid-status='error']) {
+    border-color: #fbbf24;
+    background: #422006;
   }
 </style>

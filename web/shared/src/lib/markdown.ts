@@ -100,15 +100,21 @@ type ListState = {
   items: string[];
 };
 
-const renderFence = (language: string, content: string) => {
-  const code = escapeHtml(content);
+const renderFencedCode = (language: string, lines: string[]) => {
+  const code = lines.join('\n');
+  const normalizedLanguage = language.toLowerCase();
   const languageClass = language ? ` class="language-${escapeAttribute(language)}"` : '';
 
-  if (language.toLowerCase() === 'mermaid') {
-    return `<figure class="mermaid-diagram"><pre><code class="language-mermaid">${code}</code></pre></figure>`;
+  if (normalizedLanguage === 'mermaid') {
+    return [
+      `<figure class="mermaid-diagram" data-mermaid-source="${escapeAttribute(code)}" data-mermaid-status="pending">`,
+      '<div class="mermaid-output" role="img" aria-label="Mermaid diagram" hidden></div>',
+      `<pre><code${languageClass}>${escapeHtml(code)}</code></pre>`,
+      '</figure>'
+    ].join('');
   }
 
-  return `<pre><code${languageClass}>${code}</code></pre>`;
+  return `<pre><code${languageClass}>${escapeHtml(code)}</code></pre>`;
 };
 
 export const renderMarkdown = (source: string, options: MarkdownRenderOptions = {}) => {
@@ -168,7 +174,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
     const fenceMatch = line.match(/^```([A-Za-z0-9_.+-]*)\s*$/);
     if (fenceLines) {
       if (fenceMatch) {
-        blocks.push(renderFence(fenceLanguage, fenceLines.join('\n')));
+        blocks.push(renderFencedCode(fenceLanguage, fenceLines));
         fenceLines = undefined;
         fenceLanguage = '';
       } else {
@@ -224,7 +230,7 @@ export const renderMarkdown = (source: string, options: MarkdownRenderOptions = 
   }
 
   if (fenceLines) {
-    blocks.push(renderFence(fenceLanguage, fenceLines.join('\n')));
+    blocks.push(renderFencedCode(fenceLanguage, fenceLines));
   }
   flushTextBlocks();
 

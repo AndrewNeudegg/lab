@@ -4,4 +4,4 @@ Review generated diffs skeptically. Check correctness, test coverage, security r
 
 For user-facing changes, verify that the result explains how to use the change and that docs/help text were updated or explicitly deemed unnecessary.
 
-Expect Mermaid fenced diagrams when they would make workflows, states, dependencies, queues, or machine context easier to review. Diagrams should use plain Mermaid and the dashboard brand palette, not arbitrary inline colours.
+When a reviewed change includes diagrams, verify Mermaid fences use the homelabd brand diagram palette and avoid conflicting Mermaid init directives.

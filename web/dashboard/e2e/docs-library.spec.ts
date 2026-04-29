@@ -9,6 +9,19 @@ const expectNoHorizontalOverflow = async (page: Page) => {
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 };
 
+const openMobileMenu = async (page: Page) => {
+  const menu = page.getByRole('button', { name: 'Menu' });
+  const nav = page.getByRole('navigation', { name: 'Primary mobile' });
+  await menu.click();
+  try {
+    await expect(nav).toBeVisible({ timeout: 3_000 });
+  } catch {
+    await menu.click();
+    await expect(nav).toBeVisible();
+  }
+  return nav;
+};
+
 test('docs library supports navigation, markdown rendering, table of contents, and search', async ({
   page
 }) => {
@@ -19,16 +32,18 @@ test('docs library supports navigation, markdown rendering, table of contents, a
     page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Docs' })
   ).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  const diagram = page.locator('.content .mermaid-diagram').first();
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect(diagram).toHaveAttribute('data-mermaid-rendered', /^light:/);
+  await expect(diagram.locator('svg')).toBeVisible();
   await expect(page.getByText('./docs/dashboard.md')).toBeVisible();
   await expect.poll(async () => page.locator('#docs-list a').count()).toBeGreaterThanOrEqual(6);
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
     2
   );
-  const diagram = page.locator('.content .mermaid-diagram').first();
-  await expect(diagram.locator('svg')).toBeVisible();
-  await expect(diagram).toHaveAttribute('data-mermaid-theme', 'light');
   await page.getByRole('button', { name: 'Switch to dark mode' }).click();
-  await expect(diagram).toHaveAttribute('data-mermaid-theme', 'dark');
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect(diagram).toHaveAttribute('data-mermaid-rendered', /^dark:/);
 
   await page.locator('#docs-list a', { hasText: 'Task Workflow' }).click();
   await expect(page).toHaveURL(/\/docs\/task-workflow$/);
@@ -55,10 +70,11 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(page.locator('.content pre code').first()).toContainText('reflect on our recent interaction');
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Menu' }).click();
-  await expect(
-    page.getByRole('navigation', { name: 'Primary mobile' }).getByRole('link', { name: 'Docs' })
-  ).toHaveAttribute('aria-current', 'page');
+  const mobileNav = await openMobileMenu(page);
+  await expect(mobileNav.getByRole('link', { name: 'Docs' })).toHaveAttribute(
+    'aria-current',
+    'page'
+  );
   await page.getByRole('button', { name: 'Menu' }).click();
 
   await page.getByRole('combobox', { name: 'Jump to document' }).selectOption('dashboard');

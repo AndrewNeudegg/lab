@@ -36,6 +36,23 @@ export type PrimaryTaskAction =
       tone: 'primary' | 'warning' | 'danger' | 'neutral';
     };
 
+export const approvalNoticeTitle = (operation: ApprovalOperation, reply = '') => {
+  if (operation === 'deny') {
+    return 'Approval denied';
+  }
+  const lower = reply.toLowerCase();
+  if (
+    lower.includes('already') ||
+    lower.includes('failed') ||
+    lower.includes('stale') ||
+    lower.includes('recovery') ||
+    lower.includes('requeued')
+  ) {
+    return 'Approval handled';
+  }
+  return 'Approval granted';
+};
+
 export const pendingApprovalForTask = (
   task: Pick<HomelabdTask, 'id' | 'status'> | undefined,
   approvals: HomelabdApproval[]
@@ -133,8 +150,11 @@ export const primaryTaskAction = (
       return {
         type: 'task',
         operation: 'retry',
-        label: task.status === 'conflict_resolution' ? 'Retry conflict fix' : 'Retry with worker',
-        detail: 'Starts a direct retry from the current workspace state.',
+        label: task.status === 'conflict_resolution' ? 'Retry now' : 'Retry with worker',
+        detail:
+          task.status === 'conflict_resolution'
+            ? 'Automatic conflict recovery is handled by the task supervisor; this starts an immediate retry.'
+            : 'Starts a direct retry from the current workspace state.',
         tone: 'warning'
       };
     case 'done':

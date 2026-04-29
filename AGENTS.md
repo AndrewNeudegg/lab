@@ -14,10 +14,10 @@
 
 ## Mermaid Diagrams And Brand Colours
 
-- Use Mermaid fenced diagrams when a state machine, workflow, dependency graph, queue, or machine context is easier to understand visually than as prose.
-- Chat and docs render Mermaid diagrams. Prefer plain Mermaid and let the renderer apply the brand palette; do not inline arbitrary colours.
-- Light palette: `bg #f5f7fb`, `surface #ffffff`, `text #172033`, `strong #0f172a`, `muted #64748b`, `border #cbd5e1`, `accent #2563eb`, `accent-hover #1d4ed8`, `success #16a34a`, `warning #d97706`, `danger #dc2626`.
-- Dark palette: `bg #0b1120`, `surface #172033`, `text #dbe7f6`, `strong #f8fafc`, `muted #9fb0c7`, `border #334155`, `accent #60a5fa`, `accent-hover #3b82f6`, `success #4ade80`, `warning #facc15`, `danger #f87171`.
+- Use Mermaid fenced diagrams when a workflow, state machine, dependency graph, architecture, or handoff would be clearer for humans or machines as a compact diagram.
+- Keep diagrams small, label edges clearly, and avoid decorative complexity.
+- Use the homelabd brand diagram palette for generated visuals. Light: background `#f8fafc`, surface `#ffffff`, primary `#2563eb`, secondary `#0f766e`, success `#16a34a`, warning `#d97706`, danger `#dc2626`, text `#172033`, muted `#64748b`, border `#cbd5e1`. Dark: background `#0f172a`, surface `#111827`, primary `#60a5fa`, secondary `#2dd4bf`, success `#4ade80`, warning `#fbbf24`, danger `#f87171`, text `#e2e8f0`, muted `#94a3b8`, border `#334155`.
+- Dashboard Markdown renders Mermaid code fences in chat and docs with that palette and locks theme overrides, so do not add conflicting Mermaid init directives.
 
 ## homelabctl
 

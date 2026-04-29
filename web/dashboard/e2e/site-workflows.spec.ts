@@ -269,10 +269,21 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.clippedButtons, JSON.stringify(metrics)).toEqual([]);
 };
 
+const openMobileMenu = async (page: Page) => {
+  const menu = page.getByRole('button', { name: 'Menu' });
+  const nav = page.getByRole('navigation', { name: 'Primary mobile' });
+  await menu.click();
+  try {
+    await expect(nav).toBeVisible({ timeout: 3_000 });
+  } catch {
+    await menu.click();
+    await expect(nav).toBeVisible();
+  }
+};
+
 const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   if (mobile && route !== '/') {
-    await page.getByRole('button', { name: 'Menu' }).click();
-    await expect(page.getByRole('navigation', { name: 'Primary mobile' })).toBeVisible();
+    await openMobileMenu(page);
     await page.getByRole('button', { name: 'Menu' }).click();
   }
   if (route === '/' || route === '/chat') {

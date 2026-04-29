@@ -41,6 +41,7 @@
   } from './view-model';
   import { createCoalescedAsync } from './refresh-state';
   import {
+    approvalNoticeTitle,
     pendingApprovalForTask,
     primaryTaskAction,
     secondaryTaskOperations,
@@ -735,7 +736,7 @@
           : await client.denyApproval(approval.id);
       setNotice(
         'success',
-        operation === 'approve' ? 'Approval granted' : 'Approval denied',
+        approvalNoticeTitle(operation, response.reply || ''),
         response.reply || 'Approval updated.'
       );
       await refreshState();
@@ -1170,6 +1171,19 @@
                 <p>{taskStateDescription(currentTask.status)}</p>
                 <small>Next: {taskStateTransitions(currentTask.status)}</small>
               </section>
+
+              {#if currentTask.auto_recovery_attempts}
+                <section class="state-machine" aria-label="Automatic recovery">
+                  <div>
+                    <span>Automatic recovery</span>
+                    <strong>Attempt {currentTask.auto_recovery_attempts}</strong>
+                  </div>
+                  <p>The task supervisor is retrying recoverable review, merge, or conflict failures.</p>
+                  {#if currentTask.auto_recovery_last_at}
+                    <small>Last queued: {compactTime(currentTask.auto_recovery_last_at)}</small>
+                  {/if}
+                </section>
+              {/if}
 
               {#if currentTask.restart_required?.length}
                 <section class="state-machine" aria-label="Post-merge restart">

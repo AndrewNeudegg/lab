@@ -51,6 +51,10 @@ delegate <task_id> to codex
 
 Dashboard chat messages can include attachments. Use the `Attach` button on desktop or mobile, or drag files into the composer on desktop. When a chat message creates a task, the attachment metadata and text previews are included in the task context; direct dashboard help reports store the uploaded files and captured browser context on the task record.
 
+## Mermaid Diagrams
+
+Chat replies and docs can include Mermaid diagrams by using fenced `mermaid` code blocks. Use them when a workflow, state machine, dependency map, or system interaction would be clearer visually than as prose alone. The dashboard renders Mermaid in both light and dark mode with the homelabd brand palette; invalid diagrams fall back to the source block so the syntax can be corrected. See [Diagramming And Brand Colours](/docs/diagramming-and-brand-colours).
+
 ## Task Review And Restart Gates
 
 Use review, approval, restart, verification, and reopen commands to move local tasks through merge safely:

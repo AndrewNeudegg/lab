@@ -242,6 +242,53 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   await expect(page.getByText('received attachment')).toBeVisible();
 });
 
+test('chat renders Mermaid diagrams with the brand palette in light and dark modes', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('homelabd.dashboard.theme', 'light');
+  });
+  await page.route('**/api/message', async (route) => {
+    await route.fulfill({
+      json: {
+        reply: [
+          'Here is the flow.',
+          '',
+          '```mermaid',
+          'flowchart LR',
+          '  User[Operator] --> Chat[Chat]',
+          '  Chat --> Agent[Agent]',
+          '```'
+        ].join('\n'),
+        source: 'program'
+      }
+    });
+  });
+  await page.goto('/chat');
+  await page.getByRole('textbox', { name: 'Message' }).fill('show the flow');
+  await page.getByRole('button', { name: 'Send' }).click();
+
+  const diagram = page.locator('.message .mermaid-diagram svg').last();
+  await expect(diagram).toBeVisible();
+  await expect
+    .poll(() => diagram.evaluate((element) => element.outerHTML))
+    .toContain('#2563eb');
+
+  await page.getByRole('button', { name: 'Menu' }).click();
+  const darkToggle = page.getByRole('button', { name: /Switch to dark mode/ });
+  await expect(darkToggle).toHaveAttribute('data-theme-toggle-ready', 'true');
+  await darkToggle.click();
+  await expect
+    .poll(() => diagram.evaluate((element) => element.outerHTML))
+    .toContain('#60a5fa');
+
+  const overflow = await page.evaluate(() => ({
+    bodyWidth: document.body.scrollWidth,
+    viewport: window.innerWidth
+  }));
+  expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+});
+
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {
   await mockScreenCapture(page);
   let requestBody: any;

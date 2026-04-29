@@ -70,6 +70,8 @@ Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are config
 
 Remote agents validate in the selected remote workdir. They must not call the control-plane supervisor to restart production services, and they must not assume `127.0.0.1:5173` points at the operator's dashboard.
 
+When remote handoffs describe multi-machine flows, state transitions, or verification paths, include a concise Mermaid diagram if it improves understanding. Diagrams must use the homelabd brand palette from `docs/diagramming-and-brand-colours.md`; the dashboard applies those colours automatically to Mermaid fences.
+
 For dashboard task-page changes in a remote checkout, run:
 
 ```sh

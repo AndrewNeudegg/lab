@@ -76,6 +76,7 @@ On NixOS, keep `repo.root` and `repo.workspace_root` in a normal writable path s
 - Remote agents use these backend commands in their selected remote workdir. Remote review acknowledges the reported result and moves the task to verification; it does not compare or merge the remote checkout with the control-plane repo.
 - Configure exact CLI args per backend; provider-specific headless flags can differ.
 - Browser UAT must run against an isolated dev server from the task worktree or remote workdir. Agents must not restart the production `dashboard`, `homelabd`, `healthd`, or `supervisord` stack as part of validation.
+- Agent handoffs should include concise Mermaid diagrams when they clarify machines, humans, state transitions, workflow gates, or architecture. Mermaid output must use the homelabd light/dark brand palette documented in `docs/diagramming-and-brand-colours.md`.
 
 For dashboard task-page changes, the standard completion gate is:
 

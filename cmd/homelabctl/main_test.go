@@ -82,6 +82,13 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantPath:   "/tasks/task_123/restart",
 		},
 		{
+			name:       "task queue move",
+			args:       []string{"task", "queue", "task_123", "up"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/tasks/task_123/merge-queue",
+			wantBody:   map[string]any{"direction": "up"},
+		},
+		{
 			name:       "task retry with backend",
 			args:       []string{"retry", "task_123", "codex", "inspect", "again"},
 			wantMethod: http.MethodPost,

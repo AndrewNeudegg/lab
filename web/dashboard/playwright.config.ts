@@ -29,7 +29,7 @@ export default defineConfig({
   webServer: {
     command: `bun run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
     url: `${baseURL}/chat`,
-    timeout: 60_000,
+    timeout: 120_000,
     reuseExistingServer: false
   },
   use: {

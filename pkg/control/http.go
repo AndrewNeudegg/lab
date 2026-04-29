@@ -260,6 +260,14 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 			reply, err = s.Orchestrator.AssignTaskTarget(req.Context(), taskID, in.Target)
 		case "review":
 			reply, err = s.Orchestrator.ReviewTask(req.Context(), taskID)
+		case "merge-queue":
+			var in struct {
+				Direction string `json:"direction"`
+			}
+			if req.Body != nil {
+				_ = json.NewDecoder(req.Body).Decode(&in)
+			}
+			reply, err = s.Orchestrator.MoveTaskInMergeQueue(req.Context(), taskID, in.Direction)
 		case "accept":
 			reply, err = s.Orchestrator.AcceptTask(req.Context(), taskID)
 		case "restart":

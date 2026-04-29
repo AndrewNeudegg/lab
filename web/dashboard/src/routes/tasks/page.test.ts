@@ -30,6 +30,7 @@ describe('tasks page composition', () => {
   test('uses direct task and approval endpoints instead of a chat command composer', () => {
     expect(pageSource).toContain('client.runTask(taskId)');
     expect(pageSource).toContain('client.reviewTask(taskId)');
+    expect(pageSource).toContain('client.moveTaskInMergeQueue');
     expect(pageSource).toContain('client.acceptTask(taskId)');
     expect(pageSource).toContain('client.reopenTask(taskId');
     expect(pageSource).toContain('client.cancelTask(taskId)');
@@ -44,6 +45,16 @@ describe('tasks page composition', () => {
     expect(pageSource).not.toContain('Task command');
     expect(pageSource).not.toContain('Pending approvals');
     expect(pageSource).not.toContain('approval-list');
+  });
+
+  test('renders a compact operator-adjustable merge queue', () => {
+    expect(pageSource).toContain('let mergeQueueItems: HomelabdTask[] = []');
+    expect(pageSource).toContain('merge_queue_position');
+    expect(pageSource).toContain('aria-label="Merge queue"');
+    expect(pageSource).toContain('Move ${taskSummaryTitle(item, 40)} up in merge queue');
+    expect(pageSource).toContain('Move ${taskSummaryTitle(item, 40)} down in merge queue');
+    expect(pageSource).toContain('mergeQueueMoveKey');
+    expect(pageSource).toContain('max-height: min(13.5rem, 32vh);');
   });
 
   test('keeps manual sync responsive while selected details refresh separately', () => {

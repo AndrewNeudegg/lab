@@ -57,6 +57,7 @@
   } from './sync-model';
 
   type DiffMode = 'split' | 'unified';
+  type MergeQueueDirection = 'up' | 'down';
   type MobilePanel = 'queue' | 'detail';
   type Notice = {
     id: number;
@@ -82,6 +83,7 @@
   let diffError = '';
   let actionLoading = '';
   let approvalLoading = '';
+  let mergeQueueLoading = '';
   let diffLoadingTaskId = '';
   let taskFilter: TaskFilter = 'attention';
   let queueFilter: TaskQueueFilter = 'all';
@@ -122,6 +124,7 @@
   let attentionTaskItems: HomelabdTask[] = [];
   let activeTaskItems: HomelabdTask[] = [];
   let visibleTaskItems: HomelabdTask[] = [];
+  let mergeQueueItems: HomelabdTask[] = [];
   let currentTask: HomelabdTask | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
   let currentTaskRuns: WorkerTraceRun[] = [];
@@ -245,6 +248,9 @@
   $: activeTaskItems = taskQueueView.activeTaskItems;
   $: attentionTaskItems = taskQueueView.attentionTaskItems;
   $: visibleTaskItems = taskQueueView.visibleTaskItems;
+  $: mergeQueueItems = tasks
+    .filter((task) => (task.merge_queue_position || 0) > 0)
+    .sort((left, right) => (left.merge_queue_position || 0) - (right.merge_queue_position || 0));
   $: currentTask = taskQueueView.currentTask;
   $: currentTaskEvents = taskQueueView.currentTaskEvents;
   $: currentTaskRuns = currentTask
@@ -719,6 +725,27 @@
   const approvalLoadingKey = (operation: 'approve' | 'deny', approvalId: string) =>
     `${operation}:${approvalId}`;
 
+  const mergeQueueMoveKey = (taskId: string, direction: MergeQueueDirection) =>
+    `merge-queue:${taskId}:${direction}`;
+
+  const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
+    if (mergeQueueLoading) {
+      return;
+    }
+    const key = mergeQueueMoveKey(task.id, direction);
+    mergeQueueLoading = key;
+    clearNotice();
+    try {
+      const response = await client.moveTaskInMergeQueue(task.id, { direction });
+      setNotice('success', 'Merge queue updated', response.reply || 'Merge queue updated.');
+      await refreshState();
+    } catch (err) {
+      setNotice('error', 'Merge queue failed', errorMessage(err, 'Unable to reorder the merge queue.'));
+    } finally {
+      mergeQueueLoading = '';
+    }
+  };
+
   const performApprovalAction = async (
     approval: HomelabdApproval,
     operation: 'approve' | 'deny'
@@ -878,6 +905,16 @@
         </button>
       </header>
 
+      {#if notice}
+        <section class={`notice queue-notice ${notice.tone}`} aria-live="polite">
+          <div>
+            <strong>{notice.title}</strong>
+            <p>{notice.detail}</p>
+          </div>
+          <button type="button" on:click={clearNotice}>Dismiss</button>
+        </section>
+      {/if}
+
       <section class="triage" aria-label="Task filters">
         {#each [
           { id: 'attention', label: 'Needs action', count: needsActionTotal },
@@ -902,6 +939,64 @@
         placeholder="Search tasks"
         on:input={handleTaskSearchInput}
       />
+
+      <details class="merge-queue" aria-label="Merge queue" open>
+        <summary>
+          <span>Merge queue</span>
+          <strong>{mergeQueueItems.length}</strong>
+          <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
+        </summary>
+        {#if mergeQueueItems.length}
+          <ol>
+            {#each mergeQueueItems as item, index}
+              <li class:selected={currentTask?.id === item.id}>
+                <button
+                  type="button"
+                  class="merge-queue-task"
+                  aria-label={`Select ${taskSummaryTitle(item, 40)}`}
+                  on:click={() => selectTask(item.id)}
+                >
+                  <span class="merge-queue-position">{item.merge_queue_position}</span>
+                  <span class="merge-queue-copy">
+                    <strong>{taskSummaryTitle(item, 54)}</strong>
+                    <small>{statusLabel(item.status)}</small>
+                  </span>
+                </button>
+                <div class="merge-queue-controls" aria-label={`Reorder ${taskSummaryTitle(item, 40)}`}>
+                  <button
+                    type="button"
+                    title="Move up"
+                    aria-label={`Move ${taskSummaryTitle(item, 40)} up in merge queue`}
+                    disabled={index === 0 ||
+                      mergeQueueLoading !== '' ||
+                      mergeQueueItems[index - 1]?.status === 'awaiting_restart'}
+                    on:click={() => void moveMergeQueueTask(item, 'up')}
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                      <path d="m5 10 5-5 5 5" />
+                      <path d="M10 5v10" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    title="Move down"
+                    aria-label={`Move ${taskSummaryTitle(item, 40)} down in merge queue`}
+                    disabled={index === mergeQueueItems.length - 1 ||
+                      mergeQueueLoading !== '' ||
+                      item.status === 'awaiting_restart'}
+                    on:click={() => void moveMergeQueueTask(item, 'down')}
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                      <path d="m5 10 5 5 5-5" />
+                      <path d="M10 5v10" />
+                    </svg>
+                  </button>
+                </div>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+      </details>
 
       <section class="task-list" aria-label="Task list">
         {#if visibleTaskItems.length === 0}
@@ -1155,6 +1250,12 @@
               <dt>Updated</dt>
               <dd>{compactTime(currentTask.updated_at)}</dd>
             </div>
+            {#if currentTask.merge_queue_position}
+              <div>
+                <dt>Merge queue</dt>
+                <dd>#{currentTask.merge_queue_position}</dd>
+              </div>
+            {/if}
           </dl>
 
           <details class="detail-section state-context" aria-label="Task context" open>
@@ -1586,7 +1687,18 @@
 
   .task-pane {
     display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "header"
+      "notice"
+      "triage"
+      "search"
+      "merge"
+      "list"
+      "alert"
+      "queues"
+      "create"
+      "footer";
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto auto auto;
     gap: 0.75rem;
     padding: 1rem;
     border-right: 1px solid var(--border-soft, #dde4ef);
@@ -1606,6 +1718,7 @@
   }
 
   .task-header {
+    grid-area: header;
     justify-content: space-between;
     gap: 0.75rem;
   }
@@ -1656,6 +1769,7 @@
   .primary-action,
   .notice button,
   .back-to-queue,
+  .merge-queue summary,
   .target-create summary {
     min-height: 2.55rem;
     padding: 0 0.75rem;
@@ -1676,12 +1790,14 @@
   .primary-action:hover:not(:disabled),
   .notice button:hover,
   .back-to-queue:hover,
+  .merge-queue summary:hover,
   .target-create summary:hover {
     border-color: var(--accent, #2563eb);
     background: var(--surface-hover, #eef5ff);
   }
 
   .triage {
+    grid-area: triage;
     gap: 0.5rem;
   }
 
@@ -1732,6 +1848,10 @@
     padding: 0 0.75rem;
   }
 
+  #task-search {
+    grid-area: search;
+  }
+
   textarea {
     min-height: 4.2rem;
     max-height: 12rem;
@@ -1750,6 +1870,7 @@
   }
 
   .task-list {
+    grid-area: list;
     display: grid;
     align-content: start;
     gap: 0.35rem;
@@ -1821,6 +1942,180 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .merge-queue {
+    grid-area: merge;
+    overflow: hidden;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.7rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .merge-queue summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.45rem;
+    min-height: 2.25rem;
+    padding: 0 0.65rem;
+    list-style: none;
+    border: 0;
+    border-radius: 0.7rem;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .merge-queue summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .merge-queue summary span {
+    overflow: hidden;
+    color: var(--muted, #64748b);
+    font-size: 0.72rem;
+    font-weight: 900;
+    letter-spacing: 0.06em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .merge-queue summary strong {
+    min-width: 1.45rem;
+    padding: 0.12rem 0.4rem;
+    border-radius: 999px;
+    color: #1d4ed8;
+    background: #dbeafe;
+    font-size: 0.72rem;
+    line-height: 1.25;
+    text-align: center;
+  }
+
+  .merge-queue summary small {
+    overflow: hidden;
+    color: var(--muted, #64748b);
+    font-size: 0.7rem;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .merge-queue ol {
+    display: grid;
+    gap: 0.2rem;
+    max-height: min(13.5rem, 32vh);
+    margin: 0;
+    overflow-y: auto;
+    padding: 0.3rem;
+    border-top: 1px solid var(--border-soft, #e2e8f0);
+    list-style: none;
+  }
+
+  .merge-queue li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    border-radius: 0.55rem;
+  }
+
+  .merge-queue li.selected {
+    background: var(--surface-hover, #eef5ff);
+  }
+
+  .merge-queue-task {
+    display: grid;
+    grid-template-columns: 1.45rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+    min-height: 2.2rem;
+    padding: 0.25rem 0.35rem;
+    border: 0;
+    border-radius: 0.5rem;
+    color: inherit;
+    background: transparent;
+    text-align: left;
+  }
+
+  .merge-queue-task:hover {
+    background: rgb(37 99 235 / 0.08);
+  }
+
+  .merge-queue-position {
+    display: grid;
+    place-items: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    color: #1e40af;
+    background: #eff6ff;
+    font-size: 0.68rem;
+    font-weight: 900;
+  }
+
+  .merge-queue-copy {
+    display: grid;
+    gap: 0.05rem;
+    min-width: 0;
+  }
+
+  .merge-queue-copy strong,
+  .merge-queue-copy small {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .merge-queue-copy strong {
+    color: var(--text-strong, #111827);
+    font-size: 0.78rem;
+    line-height: 1.25;
+  }
+
+  .merge-queue-copy small {
+    color: var(--muted, #64748b);
+    font-size: 0.68rem;
+    line-height: 1.25;
+  }
+
+  .merge-queue-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    padding-right: 0.25rem;
+  }
+
+  .merge-queue-controls button {
+    display: grid;
+    place-items: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    padding: 0;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 0.45rem;
+    color: var(--text, #243047);
+    background: var(--surface, #ffffff);
+  }
+
+  .merge-queue-controls button:hover:not(:disabled) {
+    border-color: var(--accent, #2563eb);
+    color: var(--accent, #2563eb);
+    background: var(--surface-hover, #eef5ff);
+  }
+
+  .merge-queue-controls svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.1;
   }
 
   .status {
@@ -1908,6 +2203,16 @@
     margin: 1rem 1.25rem 0;
   }
 
+  .queue-notice {
+    grid-area: notice;
+    display: none;
+    margin: 0;
+  }
+
+  .sync-alert {
+    grid-area: alert;
+  }
+
   .notice.success {
     border-color: #bbf7d0;
     color: #166534;
@@ -1935,6 +2240,7 @@
   }
 
   .queue-groups {
+    grid-area: queues;
     display: grid;
     gap: 0.45rem;
   }
@@ -1973,6 +2279,7 @@
   }
 
   .target-create {
+    grid-area: create;
     border: 1px solid var(--border-soft, #dbe7f5);
     border-radius: 0.8rem;
     background: var(--surface-muted, #f8fbff);
@@ -2058,6 +2365,7 @@
   }
 
   footer {
+    grid-area: footer;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3094,9 +3402,14 @@
 
     .task-pane {
       display: grid;
-      grid-template-rows: auto auto auto minmax(18rem, auto) auto auto auto;
+      grid-template-rows: auto auto auto auto auto minmax(18rem, auto) auto auto auto auto;
       padding: 0.75rem;
       border-right: 0;
+    }
+
+    .queue-notice {
+      display: flex;
+      margin: 0;
     }
 
     .task-header {
@@ -3159,6 +3472,10 @@
     .task-attachments,
     .task-result {
       margin: 0.75rem;
+    }
+
+    .task-pane .queue-notice {
+      margin: 0;
     }
 
     .record-header {

@@ -485,6 +485,43 @@ func TestManagerHealthRecoveryRestartsTrackedProcessGroup(t *testing.T) {
 	}
 }
 
+func TestManagerHealthRecoveryHonoursStartupGrace(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		ShutdownTimeoutSeconds: 2,
+		Apps: []config.SupervisorAppConfig{{
+			Name:                  "dashboard",
+			Type:                  "web",
+			Command:               script,
+			Restart:               "on_failure",
+			HealthURL:             "http://dashboard.test/chat",
+			HealthStartupGraceSec: 60,
+			ShutdownTimeoutSec:    2,
+		}},
+	}, nil)
+	manager.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("health check failed")
+	})}
+
+	if err := manager.StartApp(context.Background(), "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	first := waitForAppState(t, manager, "dashboard", StateRunning)
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "dashboard") })
+
+	manager.checkAppHealth(context.Background())
+	warming := manager.Snapshot().Apps[0]
+	if warming.State != StateRunning || warming.PID != first.PID {
+		t.Fatalf("status = %#v, want startup grace to keep the process running", warming)
+	}
+	if !strings.Contains(warming.Message, "startup grace") {
+		t.Fatalf("message = %q, want startup grace context", warming.Message)
+	}
+}
+
 func TestManagerHealthRecoveryRestartsOnHTTPFailure(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "app.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {

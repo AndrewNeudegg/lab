@@ -4202,6 +4202,91 @@ func TestRecoverRunningTasksSkipsNonRunningTasks(t *testing.T) {
 	}
 }
 
+func TestReconcileAutomaticRecoveryHonoursWorkerCapacity(t *testing.T) {
+	releaseDelegate := make(chan struct{})
+	delegate := &delegateStub{started: make(chan struct{}, 3), release: releaseDelegate}
+	orch := newTestOrchestrator(t, delegate)
+	orch.cfg.Limits.MaxConcurrentTasks = 1
+	now := time.Now().UTC()
+	for _, suffix := range []string{"11111111", "22222222", "33333333"} {
+		taskID := "task_20260429_120000_" + suffix
+		if err := orch.tasks.Save(taskstore.Task{
+			ID:                   taskID,
+			Title:                "retryable blocked task",
+			Goal:                 "retryable blocked task",
+			Status:               taskstore.StatusBlocked,
+			AssignedTo:           "OrchestratorAgent",
+			Workspace:            filepath.Join(t.TempDir(), "workspaces", taskID),
+			Result:               "ReviewerAgent checks failed: test failed",
+			AutoRecoveryAttempts: 1,
+			CreatedAt:            now,
+			UpdatedAt:            now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconciled count = %d, want one worker start at capacity", count)
+	}
+	select {
+	case <-delegate.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected one delegate to start")
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("started more than one delegate despite capacity of one")
+	default:
+	}
+	if active := orch.activeTaskCount(); active != 1 {
+		t.Fatalf("active task count = %d, want 1", active)
+	}
+	close(releaseDelegate)
+}
+
+func TestReconcileMarksExhaustedAutomaticRecoveryBlocked(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	taskID := "task_20260429_120000_deadbeef"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:                   taskID,
+		Title:                "exhausted recovery",
+		Goal:                 "exhausted recovery",
+		Status:               taskstore.StatusConflictResolution,
+		AssignedTo:           "OrchestratorAgent",
+		Workspace:            filepath.Join(t.TempDir(), "workspaces", taskID),
+		Result:               "ReviewerAgent could not reconcile task branch with current main before checks: merge conflict",
+		AutoRecoveryAttempts: maxAutomaticTaskRecoveryAttempts,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconciled count = %d, want exhausted task update", count)
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", updated.Status)
+	}
+	if !strings.Contains(updated.Result, "Automatic recovery exhausted after 3 attempts") {
+		t.Fatalf("result = %q, want exhaustion message", updated.Result)
+	}
+}
+
 func TestReconcileQueuedTasksStartsWorker(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})

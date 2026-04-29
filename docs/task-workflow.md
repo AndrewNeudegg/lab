@@ -41,6 +41,8 @@ Local tasks in `ready_for_review`, `awaiting_approval`, or `awaiting_restart` ar
 
 Operators can change priority without touching git history: use the compact merge queue in `/tasks` or run `homelabctl task queue <task_id> <up|down>`. Approving a non-head merge approval does not merge it; the approval stays pending and the reply tells the operator its current queue position. This keeps priority changes explicit and prevents later tasks from merging against a repository state that has not yet absorbed earlier queued work.
 
+The `/tasks` merge-queue header includes an `Auto` switch. When enabled, `homelabd` grants the queue-head merge approval automatically after review passes. It does not skip review, queue order, pre-merge reconciliation, post-merge restart gates, or health checks. The same setting is available from `homelabctl settings auto-merge <on|off>` and is stored under `data/settings/runtime.json`.
+
 ## Task Records
 
 New local development tasks are represented by one queued task record and one isolated worktree. The task keeps the original goal, reviewed plan, lifecycle timestamps, workspace path, and final result. The durable `title` is generated through the LLM-backed `text.summarize` tool with an 84-character task-pane limit, while `goal` preserves the full user input for execution context. Task creation chat replies use that summarised title as a dashboard link to `/tasks?task=<task_id>`. If the summariser cannot run, task creation continues with a clipped extractive fallback title. `homelabd` no longer expands a new task into separate inspect, design, implement, test, docs, and review queue items.

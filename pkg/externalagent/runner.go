@@ -120,6 +120,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	args := append([]string{}, cfg.Args...)
 	cmd := exec.CommandContext(childCtx, cfg.Command, args...)
 	cmd.Dir = req.Workspace
+	configureProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return terminateProcessGroup(cmd.Process.Pid)
+	}
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(cmd.Environ(),
 		"HOMELABD_EXTERNAL_RUN_ID="+runID,
 		"HOMELABD_TASK_ID="+req.TaskID,
@@ -151,6 +159,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	cmd.Stdout = streamWriter{trace: trace, stream: "stdout"}
 	cmd.Stderr = streamWriter{trace: trace, stream: "stderr"}
 	err := cmd.Run()
+	if cmd.Process != nil {
+		_ = terminateProcessGroup(cmd.Process.Pid)
+	}
 	finished := time.Now().UTC()
 	result.Output = trace.String()
 	result.Duration = finished.Sub(started)

@@ -44,6 +44,7 @@ type Orchestrator struct {
 	logger       *slog.Logger
 	activeMu     sync.Mutex
 	active       map[string]activeTaskRun
+	settingsMu   sync.Mutex
 }
 
 func (o *Orchestrator) WithRemoteAgents(store *remoteagent.Store) *Orchestrator {
@@ -87,6 +88,10 @@ type toolExecution struct {
 type HandleResult struct {
 	Reply  string
 	Source string
+}
+
+type RuntimeSettings struct {
+	AutoMergeEnabled bool `json:"auto_merge_enabled"`
 }
 
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
@@ -156,6 +161,75 @@ func (o *Orchestrator) taskActive(taskID string) bool {
 	defer o.activeMu.Unlock()
 	_, ok := o.active[taskID]
 	return ok
+}
+
+func (o *Orchestrator) activeTaskCount() int {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	return len(o.active)
+}
+
+func (o *Orchestrator) maxConcurrentTasks() int {
+	maxConcurrent := o.cfg.Limits.MaxConcurrentTasks
+	if maxConcurrent <= 0 {
+		return 1
+	}
+	return maxConcurrent
+}
+
+func (o *Orchestrator) RuntimeSettings() (RuntimeSettings, error) {
+	o.settingsMu.Lock()
+	defer o.settingsMu.Unlock()
+	return o.loadRuntimeSettingsLocked()
+}
+
+func (o *Orchestrator) UpdateRuntimeSettings(ctx context.Context, settings RuntimeSettings) (RuntimeSettings, error) {
+	o.settingsMu.Lock()
+	if err := o.saveRuntimeSettingsLocked(settings); err != nil {
+		o.settingsMu.Unlock()
+		return RuntimeSettings{}, err
+	}
+	o.settingsMu.Unlock()
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "settings.updated", Actor: "human", Payload: eventlog.Payload(map[string]any{
+		"auto_merge_enabled": settings.AutoMergeEnabled,
+	})})
+	if settings.AutoMergeEnabled {
+		_, _ = o.processAutoMergeApproval(ctx, "auto merge enabled")
+		_, _ = o.processMergeQueueHead(ctx, "auto merge enabled")
+	}
+	return settings, nil
+}
+
+func (o *Orchestrator) loadRuntimeSettingsLocked() (RuntimeSettings, error) {
+	path := o.runtimeSettingsPath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return RuntimeSettings{}, nil
+		}
+		return RuntimeSettings{}, err
+	}
+	var settings RuntimeSettings
+	if err := json.Unmarshal(b, &settings); err != nil {
+		return RuntimeSettings{}, err
+	}
+	return settings, nil
+}
+
+func (o *Orchestrator) saveRuntimeSettingsLocked(settings RuntimeSettings) error {
+	path := o.runtimeSettingsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func (o *Orchestrator) runtimeSettingsPath() string {
+	return filepath.Join(o.cfg.DataDir, "settings", "runtime.json")
 }
 
 func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string, error) {
@@ -1318,7 +1392,7 @@ func (o *Orchestrator) ListApprovals() ([]approvalstore.Request, error) {
 }
 
 func (o *Orchestrator) ResolveApproval(ctx context.Context, approvalID string, grant bool) (string, error) {
-	return o.resolveApproval(ctx, approvalID, grant)
+	return o.resolveApprovalWithActor(ctx, approvalID, grant, "human")
 }
 
 func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
@@ -1512,13 +1586,14 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		o.log().Error("task recovery list failed", "error", err)
 		return 0, err
 	}
-	maxConcurrent := o.cfg.Limits.MaxConcurrentTasks
-	if maxConcurrent <= 0 {
-		maxConcurrent = 1
-	}
+	maxConcurrent := o.maxConcurrentTasks()
 	sem := make(chan struct{}, maxConcurrent)
 	recovered := 0
 	now := time.Now().UTC()
+	startedWorkers := 0
+	hasWorkerCapacity := func() bool {
+		return o.activeTaskCount()+startedWorkers < maxConcurrent
+	}
 	mergeQueue, err := o.ensureMergeQueue(ctx)
 	if err != nil {
 		o.log().Error("merge queue reconciliation failed", "error", err)
@@ -1630,6 +1705,17 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 				}
 				continue
 			}
+			if t.ID == mergeQueueHeadID {
+				merged, err := o.processAutoMergeApproval(ctx, "merge queue head awaiting approval")
+				if err != nil {
+					o.log().Error("auto merge approval failed", "task_id", t.ID, "error", err)
+					continue
+				}
+				if merged {
+					recovered++
+					continue
+				}
+			}
 		}
 		if t.Status == taskstore.StatusReadyForReview {
 			if t.ID == mergeQueueHeadID {
@@ -1641,15 +1727,43 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			}
 			continue
 		}
+		if automaticTaskRecoveryExhausted(t) {
+			if err := o.markRecoveryExhausted(ctx, t); err != nil {
+				o.log().Error("task automatic recovery exhaustion save failed", "task_id", t.ID, "error", err)
+				continue
+			}
+			recovered++
+			continue
+		}
 		if ok, reason := automaticTaskRecoveryCandidate(t, now); ok {
+			if !hasWorkerCapacity() {
+				o.log().Info("task supervisor deferred automatic recovery because worker capacity is full",
+					"task_id", t.ID,
+					"task_short_id", taskShortID(t.ID),
+					"max_concurrent", maxConcurrent,
+					"active", o.activeTaskCount(),
+				)
+				continue
+			}
 			recovered++
 			if err := o.queueAutomaticTaskRecovery(ctx, t, reason); err != nil {
 				o.log().Error("task automatic recovery failed to start", "task_id", t.ID, "error", err)
 				o.markRecoveryBlocked(ctx, t.ID, err)
+			} else {
+				startedWorkers++
 			}
 			continue
 		}
 		if t.Status == taskstore.StatusQueued {
+			if !hasWorkerCapacity() {
+				o.log().Info("task supervisor deferred queued task because worker capacity is full",
+					"task_id", t.ID,
+					"task_short_id", taskShortID(t.ID),
+					"max_concurrent", maxConcurrent,
+					"active", o.activeTaskCount(),
+				)
+				continue
+			}
 			backend, ok := o.preferredWorkerBackend()
 			if !ok {
 				o.log().Warn("queued task has no configured worker", "task_id", t.ID, "task_short_id", taskShortID(t.ID), "title", friendlyTaskTitle(t))
@@ -1669,6 +1783,8 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			})})
 			if err := o.startDelegationForTask(ctx, t.ID, backend, defaultDelegationInstruction(t)); err != nil {
 				o.markRecoveryBlocked(ctx, t.ID, err)
+			} else {
+				startedWorkers++
 			}
 			continue
 		}
@@ -1678,7 +1794,17 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		if !recoverAllRunning && !o.runningTaskStale(t, now) {
 			continue
 		}
+		if !hasWorkerCapacity() {
+			o.log().Info("task supervisor deferred stale running recovery because worker capacity is full",
+				"task_id", t.ID,
+				"task_short_id", taskShortID(t.ID),
+				"max_concurrent", maxConcurrent,
+				"active", o.activeTaskCount(),
+			)
+			continue
+		}
 		recovered++
+		startedWorkers++
 		strategy, backend := o.recoveryPlan(t)
 		o.log().Warn("recovering persisted running task",
 			"task_id", t.ID,
@@ -1757,6 +1883,36 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 	default:
 		return false, ""
 	}
+}
+
+func automaticTaskRecoveryExhausted(t taskstore.Task) bool {
+	if t.Status != taskstore.StatusConflictResolution && t.Status != taskstore.StatusBlocked {
+		return false
+	}
+	if len(t.BlockedBy) > 0 {
+		return false
+	}
+	if t.AutoRecoveryAttempts < maxAutomaticTaskRecoveryAttempts {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(t.Result), "automatic recovery exhausted")
+}
+
+func (o *Orchestrator) markRecoveryExhausted(ctx context.Context, t taskstore.Task) error {
+	previousStatus := t.Status
+	t.Status = taskstore.StatusBlocked
+	t.AssignedTo = "OrchestratorAgent"
+	clearMergeQueueFields(&t)
+	t.Result = appendResultLine(t.Result, fmt.Sprintf("Automatic recovery exhausted after %d attempts. Manual retry is required; inspect the workspace conflict or failure and retry with specific instructions.", t.AutoRecoveryAttempts))
+	if err := o.tasks.Save(t); err != nil {
+		return err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.auto_recovery.exhausted", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"attempts":        t.AutoRecoveryAttempts,
+		"max":             maxAutomaticTaskRecoveryAttempts,
+		"previous_status": previousStatus,
+	})})
+	return nil
 }
 
 func (o *Orchestrator) queueAutomaticTaskRecovery(ctx context.Context, t taskstore.Task, reason string) error {
@@ -1936,6 +2092,47 @@ func (o *Orchestrator) processMergeQueueHead(ctx context.Context, reason string)
 		"position": head.MergeQueuePosition,
 	})})
 	go o.runSupervisorReview(head.ID)
+	return true, nil
+}
+
+func (o *Orchestrator) processAutoMergeApproval(ctx context.Context, reason string) (bool, error) {
+	settings, err := o.RuntimeSettings()
+	if err != nil {
+		return false, err
+	}
+	if !settings.AutoMergeEnabled {
+		return false, nil
+	}
+	queue, err := o.ensureMergeQueue(ctx)
+	if err != nil {
+		return false, err
+	}
+	if len(queue) == 0 {
+		return false, nil
+	}
+	head := queue[0]
+	if head.Status != taskstore.StatusAwaitingApproval || o.taskActive(head.ID) {
+		return false, nil
+	}
+	approval, ok, err := o.latestApprovalForTask(head.ID, "git.merge_approved", approvalstore.StatusPending)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.auto_merge.queued", Actor: "homelabd", TaskID: head.ID, Payload: eventlog.Payload(map[string]any{
+		"approval": approval.ID,
+		"reason":   reason,
+	})})
+	reply, err := o.resolveApprovalWithActor(ctx, approval.ID, true, "homelabd")
+	if err != nil {
+		return false, err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.auto_merge.completed", Actor: "homelabd", TaskID: head.ID, Payload: eventlog.Payload(map[string]any{
+		"approval": approval.ID,
+		"reply":    reply,
+	})})
 	return true, nil
 }
 
@@ -6041,6 +6238,15 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		restartLine = "Restart impact: " + restartPlan
 		afterMergeLine = fmt.Sprintf("After merge, homelabd will restart required components and wait for health before verification; then use `accept %s` or `reopen %s <reason>`.", shortID, shortID)
 	}
+	if settings, err := o.RuntimeSettings(); err == nil && settings.AutoMergeEnabled {
+		mergeReply, mergeErr := o.resolveApprovalWithActor(ctx, approvalID, true, "homelabd")
+		if mergeErr != nil {
+			return "", mergeErr
+		}
+		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nAuto merge is on. %s", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, mergeReply), nil
+	} else if err != nil {
+		o.log().Error("runtime settings read failed before auto merge", "task_id", taskID, "error", err)
+	}
 	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\n%s", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, afterMergeLine), nil
 }
 
@@ -6745,6 +6951,11 @@ func (o *Orchestrator) listApprovals() (string, error) {
 }
 
 func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, grant bool) (string, error) {
+	return o.resolveApprovalWithActor(ctx, approvalID, grant, "human")
+}
+
+func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID string, grant bool, actor string) (string, error) {
+	actor = firstNonEmptyString(strings.TrimSpace(actor), "human")
 	req, err := o.approvals.Load(approvalID)
 	if err != nil {
 		return "", err
@@ -6760,7 +6971,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 		if err := o.approvals.Save(req); err != nil {
 			return "", err
 		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.denied", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(req)})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.denied", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(req)})
 		return "Denied " + approvalID, nil
 	}
 	task, hasTask, err := o.loadApprovalTask(req)
@@ -6847,7 +7058,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			}
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "reason": task.Result})})
 		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": err.Error()})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": err.Error()})})
 		if req.Tool == "git.merge_approved" && req.TaskID != "" {
 			recoveryLine := "Automatic recovery will be queued for retryable merge failures."
 			if hasTask {
@@ -6899,7 +7110,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			_ = o.tasks.Save(t)
 		}
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.granted", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(req)})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.granted", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(req)})
 	if req.Tool == "git.merge_approved" {
 		if postMergeRestartQueued {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_restart", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "restart_required": restartComponentsFromPlan(postMergeRestartPlan)})})

@@ -66,6 +66,14 @@ describe('task action model', () => {
     expect(approvalNoticeTitle('deny', 'Approval denied')).toBe('Approval denied');
   });
 
+  test('labels exhausted automatic recovery as a manual retry', () => {
+    const exhausted = { ...task('conflict_resolution'), auto_recovery_attempts: 3 };
+    const action = primaryTaskAction(exhausted, []);
+
+    expect(action.type === 'task' && action.label).toBe('Retry manually');
+    expect(action.type === 'task' && action.detail).toContain('Automatic recovery has paused');
+  });
+
   test('locks acceptance while post-merge restart is running', () => {
     const restarting = {
       ...task('awaiting_restart'),

@@ -89,6 +89,14 @@ const mockTaskApi = async (page: Page) => {
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks } });
   });
+  let autoMergeEnabled = false;
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON() as { auto_merge_enabled?: boolean };
+      autoMergeEnabled = Boolean(body.auto_merge_enabled);
+    }
+    await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });
+  });
   await page.route('**/api/approvals', async (route) => {
     await route.fulfill({ json: { approvals: [approvalFor(tasks[0].id)] } });
   });
@@ -158,6 +166,10 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(rows).toHaveCount(1, { timeout: 10_000 });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
+  const autoMerge = page.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' });
+  await expect(autoMerge).toHaveAttribute('aria-checked', 'false');
+  await autoMerge.click();
+  await expect(autoMerge).toHaveAttribute('aria-checked', 'true');
 
   const queueMetrics = await page.evaluate(() => {
     const navbar = document.querySelector('.navbar');

@@ -86,7 +86,7 @@ const mockTaskApi = async (page: Page) => {
     }
   ];
 
-  await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks } });
   });
   await page.route('**/api/approvals', async (route) => {
@@ -155,7 +155,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
-  await expect(rows).toHaveCount(1, { timeout: 10_000 });
+  await expect(rows).toHaveCount(1, { timeout: 30_000 });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
 

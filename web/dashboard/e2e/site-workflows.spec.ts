@@ -310,6 +310,11 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   } else if (route.startsWith('/docs')) {
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
     await expect(page.locator('#docs-list')).toBeVisible();
+    await expect(
+      page.locator(
+        '.mermaid-diagram[data-mermaid-status="pending"], .mermaid-diagram[data-mermaid-status="rendering"]'
+      )
+    ).toHaveCount(0, { timeout: 15_000 });
   } else if (route === '/terminal') {
     await expect(page.locator('.xterm')).toBeVisible();
     await page.getByRole('button', { name: 'Add terminal tab' }).click();
@@ -342,7 +347,7 @@ for (const viewport of [
         await exerciseRoute(page, route, viewport.mobile);
         await expectNoVisualArtifacts(page);
         await testInfo.attach(`${viewport.name}-${route.replaceAll('/', '-') || 'root'}.png`, {
-          body: await page.screenshot({ fullPage: true }),
+          body: await page.screenshot({ fullPage: !route.startsWith('/docs') }),
           contentType: 'image/png'
         });
       });

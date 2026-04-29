@@ -2,6 +2,8 @@
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
+    formatAttachmentSize,
+    isImageAttachment,
     Navbar,
     taskInputText,
     taskIsActive,
@@ -1180,6 +1182,31 @@
                 </section>
               {/if}
 
+              {#if currentTask.attachments?.length}
+                <section class="task-attachments" aria-label="Task attachments">
+                  <h3>Attachments</h3>
+                  <div>
+                    {#each currentTask.attachments as attachment}
+                      <article class="task-attachment">
+                        {#if attachment.data_url && isImageAttachment(attachment)}
+                          <img src={attachment.data_url} alt="" />
+                        {/if}
+                        <div>
+                          <strong>{attachment.name}</strong>
+                          <span>{attachment.content_type} / {formatAttachmentSize(attachment.size)}</span>
+                          {#if attachment.data_url}
+                            <a href={attachment.data_url} download={attachment.name}>Download</a>
+                          {/if}
+                        </div>
+                        {#if attachment.text}
+                          <pre>{attachment.text}</pre>
+                        {/if}
+                      </article>
+                    {/each}
+                  </div>
+                </section>
+              {/if}
+
               {#if currentTask.result}
                 <section class="task-result" aria-label="Task result">
                   <h3>Result</h3>
@@ -2047,6 +2074,7 @@
   .state-machine,
   .workspace-path,
   .execution-context,
+  .task-attachments,
   .task-result {
     margin: 1rem 1.25rem 0;
     border: 1px solid var(--border-soft, #e2e8f0);
@@ -2056,6 +2084,82 @@
 
   .decision-panel {
     overflow: hidden;
+  }
+
+  .task-attachments {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.85rem;
+  }
+
+  .task-attachments h3 {
+    margin: 0;
+    color: var(--text-strong, #111827);
+    font-size: 0.95rem;
+  }
+
+  .task-attachments > div {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .task-attachment {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.65rem;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.65rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .task-attachment img {
+    width: 5rem;
+    height: 3.5rem;
+    border-radius: 0.45rem;
+    object-fit: cover;
+  }
+
+  .task-attachment div {
+    display: grid;
+    align-content: start;
+    gap: 0.12rem;
+    min-width: 0;
+  }
+
+  .task-attachment strong,
+  .task-attachment span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .task-attachment strong {
+    color: var(--text-strong, #111827);
+    font-size: 0.85rem;
+  }
+
+  .task-attachment span,
+  .task-attachment a {
+    color: var(--muted, #64748b);
+    font-size: 0.76rem;
+    font-weight: 750;
+  }
+
+  .task-attachment pre {
+    grid-column: 1 / -1;
+    max-height: 12rem;
+    margin: 0;
+    overflow: auto;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.5rem;
+    color: var(--text, #243047);
+    background: var(--surface, #ffffff);
+    font-size: 0.76rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .decision-header {
@@ -3013,6 +3117,7 @@
     .state-machine,
     .workspace-path,
     .execution-context,
+    .task-attachments,
     .task-result {
       margin: 0.75rem;
     }

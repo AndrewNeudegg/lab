@@ -68,6 +68,7 @@ Direct task commands use typed HTTP endpoints. Most print pretty JSON; `task dif
 
 ```bash
 go run ./cmd/homelabctl task new "Add dashboard regression tests"
+go run ./cmd/homelabctl task new --attach ./browser-context.json "Fix the bug shown in the context"
 go run ./cmd/homelabctl task new --agent workstation --workdir repo "Update this checkout"
 go run ./cmd/homelabctl task list
 go run ./cmd/homelabctl task show task_123
@@ -87,6 +88,8 @@ go run ./cmd/homelabctl task delete task_123
 `task review` normally runs after a local worker has moved the task to `ready_for_review`. It can also recheck a blocked task whose result starts with `ReviewerAgent checks failed:` after a test-infrastructure fix. It owns the task while checks run; concurrent run, retry, or delegation attempts are rejected, and a stale review result is ignored if the task state changes before checks finish.
 
 The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
+
+Use `--attach <path>` one or more times to include local evidence on a new task. Text-like files also include a bounded text preview so workers can read the context from the prompt; all attached files remain visible on the task record.
 
 Top-level aliases are available for common task actions:
 

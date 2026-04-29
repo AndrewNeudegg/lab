@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
@@ -35,6 +36,7 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
+  let controlsReady = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -84,6 +86,10 @@
       window.location.assign(`/docs/${slug}`);
     }
   };
+
+  onMount(() => {
+    controlsReady = true;
+  });
 </script>
 
 <svelte:head>
@@ -103,7 +109,13 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:value={jumpSlug} on:change={openSelectedDoc} aria-label="Jump to document">
+        <select
+          id="docs-jump"
+          bind:value={jumpSlug}
+          disabled={!controlsReady}
+          on:change={openSelectedDoc}
+          aria-label="Jump to document"
+        >
           {#each navigationDocs as doc}
             <option value={doc.slug}>{doc.title}</option>
           {/each}

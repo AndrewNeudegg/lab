@@ -49,6 +49,8 @@ run <task_id>
 delegate <task_id> to codex
 ```
 
+Dashboard chat messages can include attachments. Use the `Attach` button on desktop or mobile, or drag files into the composer on desktop. When a chat message creates a task, the attachment metadata and text previews are included in the task context; direct dashboard help reports store the uploaded files and captured browser context on the task record.
+
 ## Workflows
 
 Use workflows for repeatable LLM/tool logic that should live outside one chat turn:

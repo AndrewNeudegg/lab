@@ -24,6 +24,7 @@ export interface ChatTranscriptMessage {
   time: string;
   source?: string;
   actions?: string[];
+  attachments?: HomelabdTaskAttachment[];
 }
 
 export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
@@ -31,6 +32,7 @@ export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
 export interface HomelabdMessageRequest {
   from?: string;
   content: string;
+  attachments?: HomelabdTaskAttachment[];
 }
 
 export interface HomelabdMessageResponse {
@@ -69,9 +71,20 @@ export interface HomelabdTask {
   graph_phase?: string;
   target?: HomelabdTaskTarget;
   acceptance_criteria?: HomelabdAcceptanceCriterion[];
+  attachments?: HomelabdTaskAttachment[];
   workspace?: string;
   result?: string;
   plan?: HomelabdTaskPlan;
+}
+
+export interface HomelabdTaskAttachment {
+  id?: string;
+  name: string;
+  content_type: string;
+  size: number;
+  data_url?: string;
+  text?: string;
+  created_at?: string;
 }
 
 export interface HomelabdTaskTarget {
@@ -111,6 +124,7 @@ export interface HomelabdTasksResponse {
 export interface HomelabdCreateTaskRequest {
   goal: string;
   target?: HomelabdTaskTarget;
+  attachments?: HomelabdTaskAttachment[];
 }
 
 export interface HomelabdCreateTaskResponse {

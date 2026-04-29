@@ -34,9 +34,20 @@ type Task struct {
 	GraphPhase         string                `json:"graph_phase,omitempty"`
 	Target             *ExecutionTarget      `json:"target,omitempty"`
 	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria,omitempty"`
+	Attachments        []Attachment          `json:"attachments,omitempty"`
 	Workspace          string                `json:"workspace,omitempty"`
 	Result             string                `json:"result,omitempty"`
 	Plan               *TaskPlan             `json:"plan,omitempty"`
+}
+
+type Attachment struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	ContentType string    `json:"content_type"`
+	Size        int64     `json:"size"`
+	DataURL     string    `json:"data_url,omitempty"`
+	Text        string    `json:"text,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
 }
 
 type ExecutionTarget struct {

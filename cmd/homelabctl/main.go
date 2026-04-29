@@ -107,6 +107,10 @@ func (c cli) dispatch(args []string) error {
 			return c.workflow([]string{"list"})
 		}
 		return c.workflow(args[1:])
+	case "settings", "setting":
+		return c.settings(args[1:])
+	case "auto-merge", "automerge":
+		return c.settings(withAction("auto-merge", args[1:]))
 	case "agent":
 		return c.agent(args[1:])
 	case "tasks":
@@ -199,6 +203,42 @@ func parseWorkflowCreateArgs(args []string) (string, string) {
 		return name, goal
 	}
 	return text, text
+}
+
+func (c cli) settings(args []string) error {
+	if len(args) == 0 {
+		return c.do(http.MethodGet, "/settings", nil)
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "show", "get", "list":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl settings")
+		}
+		return c.do(http.MethodGet, "/settings", nil)
+	case "auto-merge", "automerge":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl settings auto-merge <on|off>")
+		}
+		enabled, err := parseOnOff(args[1])
+		if err != nil {
+			return err
+		}
+		return c.do(http.MethodPost, "/settings", map[string]any{"auto_merge_enabled": enabled})
+	default:
+		return fmt.Errorf("unknown settings command %q", args[0])
+	}
+}
+
+func parseOnOff(value string) (bool, error) {
+	switch commandWord(value) {
+	case "on", "true", "yes", "enable", "enabled", "1":
+		return true, nil
+	case "off", "false", "no", "disable", "disabled", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("expected on or off, got %q", value)
+	}
 }
 
 func (c cli) task(args []string) error {
@@ -917,6 +957,9 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] workflow list
   homelabctl [-addr http://127.0.0.1:18080] workflow show <workflow_id>
   homelabctl [-addr http://127.0.0.1:18080] workflow run <workflow_id>
+
+  homelabctl [-addr http://127.0.0.1:18080] settings
+  homelabctl [-addr http://127.0.0.1:18080] settings auto-merge <on|off>
 
   homelabctl [-addr http://127.0.0.1:18080] agent list
   homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>

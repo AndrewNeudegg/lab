@@ -91,6 +91,27 @@ func TestMessageEndpointReturnsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	initial := requestJSON(t, mux, http.MethodGet, "/settings", "", "", http.StatusOK)
+	if !strings.Contains(initial.Body.String(), `"auto_merge_enabled":false`) {
+		t.Fatalf("initial settings = %s", initial.Body.String())
+	}
+
+	updated := requestJSON(t, mux, http.MethodPost, "/settings", `{"auto_merge_enabled":true}`, "", http.StatusOK)
+	if !strings.Contains(updated.Body.String(), `"auto_merge_enabled":true`) {
+		t.Fatalf("updated settings = %s", updated.Body.String())
+	}
+
+	reloaded := requestJSON(t, mux, http.MethodGet, "/settings", "", "", http.StatusOK)
+	if !strings.Contains(reloaded.Body.String(), `"auto_merge_enabled":true`) {
+		t.Fatalf("reloaded settings = %s", reloaded.Body.String())
+	}
+}
+
 func TestTaskRunsEndpointListsExternalArtifacts(t *testing.T) {
 	server, _, cfg := newHTTPTestServer(t)
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "runs"), 0o755); err != nil {

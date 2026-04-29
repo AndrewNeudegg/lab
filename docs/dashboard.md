@@ -128,18 +128,18 @@ If a component does not answer one of those questions, it should not be in the p
 
 - `/tasks` left pane: task queue. It is the navigation model, because the operator supervises work by task rather than by chat transcript.
 - Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current. The `Synced` timestamp includes seconds so a manual reload is visible even when repeated within the same minute.
-- Triage buttons: `Needs action`, `Running`, and `All`. The page opens on `Needs action` because this page is primarily an operator console; `All` remains one tap away for audit and search. The buttons double as counts and filters so the operator can shift attention without extra controls.
+- Triage buttons: `Attention`, `Running`, and `All`. The page opens on `Attention` because this page is primarily an operator console; `All` remains one tap away for audit and search. The buttons double as counts and filters so the operator can shift attention without extra controls.
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
-- Merge queue: a compact disclosure between search and the task list. It shows local review/approval/restart candidates in durable merge order and provides icon-only up/down controls for priority changes. Keep it dense: it is an ordering instrument, not another task-detail surface.
+- Merge queue: a compact disclosure between search and the task list. It shows local review/approval/restart candidates in durable merge order and provides icon-only up/down controls for priority changes. The `Auto` switch sits in the header because it changes the queue's automation mode immediately; keep the label visible and expose the switch state through text and `role="switch"`, not colour alone. Keep the queue dense: it is an ordering instrument, not another task-detail surface.
 - Task list: appears immediately after search. Rows are the main navigation and must stay fast to scan even when remote queues are present. Approval state belongs on the task row and in the selected task decision panel, not in a separate queue pop-out.
-- Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous.
+- Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous. Blue active work and amber system-owned gates may use a subtle pulsing ring; red, green, and amber states that need operator intervention must stay static.
 - Right pane: selected task record. It is not a chat transcript and has no task chat composer. Selecting a different task changes the record, summary, result, action buttons, diff, worker trace, and activity timeline.
 - Manual `Sync` refreshes tasks, approvals, events, and remote agents first, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current.
 - Task sync failures are shown inside the task pane. The queue must never make a failed `/api/tasks` request look like a real empty result.
 - Selected task title: use the stored compact task title generated at creation time, so long prompts do not dominate the queue or the top of the record. The original input remains available in the detail disclosures.
 - Task summary: ID, status, owner, started time, runtime, and update time. Keep this as a compact metadata strip, not separate cards; it identifies the selected object without taking attention away from the decision.
-- Decision panel: one emphasised workflow-forward button derived from task state. Retry/reopen inputs and secondary task endpoint buttons live inside this same panel so the operator sees one coherent action area. A task in `awaiting_restart` shows restart progress instead of an accept button; if the gate fails, `Retry restart` calls the typed restart endpoint. Conflict-resolution tasks can still be retried directly, but the primary copy must make clear that automatic recovery is owned by the task supervisor. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
-- Secondary actions: low-emphasis direct endpoint buttons such as retry, reopen, stop, delete, or deny approval. Destructive actions must remain visually distinct from constructive actions.
+- Decision panel: status-first copy derived from task state. Use `Decision needed` only when the operator must decide, `Attention needed` for failures that need intervention, `Available action` for optional forward motion, and `Current status` for work the system owns. Running workers, queued review gates, and post-merge restarts must not be presented as user actions. If a restart gate fails, `Retry restart` calls the typed restart endpoint. Conflict-resolution tasks can still be retried directly, but the primary copy must make clear when automatic recovery is owned by the task supervisor. Do not build task-page buttons by sending chat messages or natural-language commands to `/message`.
+- Manual controls: low-emphasis direct endpoint buttons such as retry, review, reopen, stop, delete, or deny approval. Destructive actions must remain visually distinct from constructive actions and must not be the primary button for a healthy in-progress task.
 - Retry and reopen forms: short, task-scoped inputs for optional retry instruction or reopen reason. These are structured payloads sent to typed task endpoints.
 - State and context: workflow state, automatic recovery attempt count, workspace path, post-merge restart status, remote execution context, and stored result are grouped together. Remote execution context must repeat machine, agent, backend, and full directory path because remote tasks may run outside this repo and a wrong target can damage the wrong checkout.
 - Attachments: selected task records show attached evidence inside `State and context`. Image attachments get a thumbnail and download link; text/context attachments show an inline preview. Keep this visible near state because bug-report attachments explain why the task exists.
@@ -157,7 +157,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Queued: the task exists and is waiting in its execution queue. Local tasks have isolated worktrees and wait for the local task supervisor; remote tasks wait for the selected `homelab-agent`.
 - Running: an in-memory local worker or a remote agent is active.
 - Red: failed, blocked, or conflict resolution. Recovery is needed; retryable local failures are requeued automatically, while exhausted, dependency-blocked, or terminal failures need intervention.
-- Amber: ready for review, awaiting approval, awaiting restart, or awaiting verification. Needs a human decision or a visible gate before final acceptance.
+- Amber: ready for review, awaiting approval, awaiting restart, or awaiting verification. Some amber states are system-owned gates and some need a human decision; the decision panel text must say which is true.
 - Blue: queued or running. Work is active.
 - Green: done. No action required unless the result is wrong.
 - Gray: unknown or neutral state.
@@ -170,7 +170,7 @@ Dashboard API reads are retry-tolerant for commute-grade connections. The shared
 
 Chat send failures are recoverable from the transcript. A failed user bubble keeps the original content and attachments visible, shows `Message failed to send`, and exposes a resend button so the operator can retry once connectivity returns.
 
-The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the next manual or scheduled sync waits for the same result instead of starting another batch. Keep existing task data visible during a failed refresh so operators can continue reading the last known state.
+The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the next manual or scheduled sync waits for the same result instead of starting another batch. Keep existing task data visible during a failed refresh so operators can continue reading the last known state. Do not promote secondary read timeouts, such as events or worker-run history, into page-level errors unless the operator has a concrete action to take; retry them on the next sync and keep any stale task data visible.
 
 ## Task Supervisor
 
@@ -178,9 +178,9 @@ The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the ne
 
 - New tasks start as `queued`, not `running`, until a worker is actually assigned.
 - The task supervisor periodically scans the durable task store and starts queued work with the preferred external worker, currently `codex` when configured.
-- The task supervisor runs review for local `ready_for_review` tasks, requeues `awaiting_approval` tasks that no longer have a pending merge approval, and queues automatic recovery for `conflict_resolution` plus retryable `blocked` states.
+- The task supervisor runs review for local `ready_for_review` tasks, requeues `awaiting_approval` tasks that no longer have a pending merge approval, auto-merges the queue head when runtime settings allow it, and queues automatic recovery for `conflict_resolution` plus retryable `blocked` states.
 - The merge queue serialises local `ready_for_review`, `awaiting_approval`, and `awaiting_restart` tasks. Only the head runs review, consumes merge approval, applies the merge, and clears required restart gates. Dashboard reorder buttons call `POST /tasks/{id}/merge-queue` so operator priority changes are durable.
-- Automatic recovery is bounded to three attempts with a cooldown. Attempts are written to the task record and shown in `State and context`.
+- Automatic recovery is bounded to three attempts with a cooldown and by `limits.max_concurrent_tasks`, default `2`, so heavy UAT/build runs do not fan out across every blocked task. Exhausted recovery moves the task to `blocked` with a manual retry message instead of sitting indefinitely in conflict resolution. Attempts are written to the task record and shown in `State and context`.
 - On boot, persisted `running` tasks are recovered because in-memory worker state cannot survive a process restart.
 - During normal operation, stale `running` tasks with no in-memory owner are retried after `limits.task_stale_seconds`.
 - Supervisor activity is logged with `slog` and appended to the event log using `task.supervisor.*` or `task.recovery.*` events.
@@ -196,7 +196,7 @@ The Tasks page separates work by execution queue:
 
 Remote task creation is deliberately explicit. The "New task target" panel shows the selected agent, machine, and full directory path, and the create button remains disabled until the context confirmation checkbox is checked. Treat that checkbox as the final guard against running an agent in the wrong checkout. The API rejects unknown workdir ids or paths for registered agents, so a stale UI selection should fail instead of silently falling back.
 
-The `Needs action` tab shows tasks that need an operator decision, failed work, review, approval, verification, or conflict resolution. Legacy task graph parent records or child phases blocked only by an earlier graph phase are hidden from this tab, but remain visible in `All` and search for auditability.
+The `Attention` tab shows tasks worth inspecting: operator decisions, failed work, review gates, approval gates, verification, restart gates, or conflict resolution. Some items are system-owned and do not need a button press. Legacy task graph parent records or child phases blocked only by an earlier graph phase are hidden from this tab, but remain visible in `All` and search for auditability.
 
 Remote task detail pages repeat the execution context in an amber "Remote execution context" block. Verify that machine and path before asking for follow-up work.
 

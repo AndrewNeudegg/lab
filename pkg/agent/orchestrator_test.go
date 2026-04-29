@@ -2344,6 +2344,51 @@ func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	}
 }
 
+func TestAutomaticRecoveryFailureRemainsRetryableAfterCooldown(t *testing.T) {
+	lastAttempt := time.Now().Add(-10 * time.Minute).UTC()
+	ok, reason := automaticTaskRecoveryCandidate(taskstore.Task{
+		ID:                   "task_automatic_recovery_failed",
+		Status:               taskstore.StatusBlocked,
+		Result:               "signal: terminated",
+		AutoRecoveryAttempts: 1,
+		AutoRecoveryLastAt:   &lastAttempt,
+	}, time.Now().UTC())
+	if !ok || !strings.Contains(reason, "automatic recovery") {
+		t.Fatalf("candidate = %v, %q; want blocked automatic recovery attempts to remain retryable", ok, reason)
+	}
+}
+
+func TestMarkRecoveryBlockedPreservesRetryContext(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_retry_context",
+		Title:      "retry context",
+		Goal:       "retry context",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "OrchestratorAgent",
+		Result:     "ReviewerAgent premerge check failed: merge conflict",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	orch.markRecoveryBlocked(context.Background(), task.ID, context.Canceled)
+
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(updated.Result, "ReviewerAgent premerge check failed") || !strings.Contains(updated.Result, "automatic recovery failed") {
+		t.Fatalf("result = %q, want original retry context plus automatic recovery failure", updated.Result)
+	}
+	ok, _ := automaticTaskRecoveryCandidate(updated, time.Now().Add(10*time.Minute).UTC())
+	if !ok {
+		t.Fatalf("task should remain an automatic recovery candidate after a failed recovery start: %#v", updated)
+	}
+}
+
 func TestPrepareDelegationForConflictResolutionPreservesFailureContext(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	tempDir := t.TempDir()

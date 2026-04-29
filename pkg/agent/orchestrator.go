@@ -1708,12 +1708,17 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 	if t.Status == taskstore.StatusConflictResolution {
 		return true, "main-branch conflict"
 	}
+	if t.AutoRecoveryAttempts > 0 {
+		return true, "previous automatic recovery attempt ended blocked"
+	}
 	result := strings.ToLower(strings.TrimSpace(t.Result))
 	switch {
 	case strings.Contains(result, "revieweragent checks failed"):
 		return true, "review checks failed"
 	case strings.Contains(result, "revieweragent could not commit workspace changes"):
 		return true, "workspace git state blocked review"
+	case strings.Contains(result, "automatic recovery failed"):
+		return true, "automatic recovery was interrupted or failed before worker start"
 	case strings.Contains(result, "revieweragent premerge check failed"),
 		strings.Contains(result, "approved merge failed"),
 		strings.Contains(result, "premerge check failed"),
@@ -1969,7 +1974,7 @@ func (o *Orchestrator) markRecoveryBlocked(ctx context.Context, taskID string, e
 	if loadErr == nil {
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
-		t.Result = "automatic recovery failed: " + err.Error()
+		t.Result = appendResultLine(t.Result, "automatic recovery failed: "+err.Error())
 		_ = o.tasks.Save(t)
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.failed", Actor: "homelabd", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"error": err.Error()})})

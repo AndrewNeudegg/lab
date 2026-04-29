@@ -83,6 +83,9 @@
   let actionLoading = '';
   let approvalLoading = '';
   let mergeQueueLoading = '';
+  let autoMergeSaving = false;
+  let autoMergeEnabled = false;
+  let autoMergeIssue = '';
   let diffLoadingTaskId = '';
   let workerRunsIssue = '';
   let taskFilter: TaskFilter = 'attention';
@@ -530,16 +533,18 @@
       approvals: Promise<unknown>;
       events: Promise<unknown>;
       agents: Promise<unknown>;
+      settings: Promise<unknown>;
     },
     baseTasks: HomelabdTask[],
     initialErrors: string[] = []
   ) => {
     const refreshErrors = [...initialErrors];
     let nextApprovals = approvals;
-    const [approvalResult, eventResult, agentResult] = await Promise.allSettled([
+    const [approvalResult, eventResult, agentResult, settingsResult] = await Promise.allSettled([
       requests.approvals,
       requests.events,
-      requests.agents
+      requests.agents,
+      requests.settings
     ]);
     if (sequence !== refreshStateSequence) {
       return;
@@ -583,6 +588,14 @@
       refreshErrors.push(errorMessage(agentResult.reason, 'Unable to load agents.'));
     }
 
+    if (settingsResult.status === 'fulfilled') {
+      const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
+      autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
+      autoMergeIssue = '';
+    } else {
+      autoMergeIssue = errorMessage(settingsResult.reason, 'Unable to load automation settings.');
+    }
+
     const syncSelection = resolveTaskSyncSelection({
       tasks: baseTasks,
       approvals: nextApprovals,
@@ -604,13 +617,14 @@
       const approvalRequest = withRefreshTimeout('Approvals', client.listApprovals());
       const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
       const agentRequest = withRefreshTimeout('Agents', client.listAgents());
+      const settingsRequest = withRefreshTimeout('Settings', client.getSettings());
       try {
         const taskResult = await Promise.resolve(taskRequest).then(
           (value) => ({ status: 'fulfilled' as const, value }),
           (reason) => ({ status: 'rejected' as const, reason })
         );
         if (sequence !== refreshStateSequence) {
-          void Promise.allSettled([approvalRequest, eventRequest, agentRequest]);
+          void Promise.allSettled([approvalRequest, eventRequest, agentRequest, settingsRequest]);
           return;
         }
 
@@ -650,7 +664,8 @@
           {
             approvals: approvalRequest,
             events: eventRequest,
-            agents: agentRequest
+            agents: agentRequest,
+            settings: settingsRequest
           },
           nextTasks,
           refreshErrors
@@ -774,6 +789,37 @@
 
   const mergeQueueMoveKey = (taskId: string, direction: MergeQueueDirection) =>
     `merge-queue:${taskId}:${direction}`;
+
+  const setAutoMerge = async (next: boolean) => {
+    if (autoMergeSaving) {
+      return;
+    }
+    const previous = autoMergeEnabled;
+    autoMergeEnabled = next;
+    autoMergeSaving = true;
+    autoMergeIssue = '';
+    clearNotice();
+    try {
+      const response = await client.updateSettings({ auto_merge_enabled: next });
+      autoMergeEnabled = Boolean(response.settings.auto_merge_enabled);
+      setNotice(
+        'success',
+        'Auto merge updated',
+        autoMergeEnabled
+          ? 'homelabd will merge reviewed queue-head tasks automatically.'
+          : 'homelabd will wait for manual merge approval.'
+      );
+      await refreshState();
+    } catch (err) {
+      autoMergeEnabled = previous;
+      autoMergeIssue = errorMessage(err, 'Unable to update auto merge.');
+      setNotice('error', 'Auto merge failed', autoMergeIssue);
+    } finally {
+      autoMergeSaving = false;
+    }
+  };
+
+  const toggleAutoMerge = () => setAutoMerge(!autoMergeEnabled);
 
   const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
     if (mergeQueueLoading) {
@@ -993,9 +1039,27 @@
       <details class="merge-queue" aria-label="Merge queue" open>
         <summary>
           <span>Merge queue</span>
+          <button
+            type="button"
+            class:active={autoMergeEnabled}
+            class:busy={autoMergeSaving}
+            class="auto-merge-toggle"
+            title="Automatically merge reviewed queue-head tasks"
+            role="switch"
+            aria-checked={autoMergeEnabled}
+            aria-label="Auto merge reviewed queue-head tasks"
+            disabled={autoMergeSaving}
+            on:click|stopPropagation={toggleAutoMerge}
+          >
+            <span>Auto</span>
+            <i aria-hidden="true"></i>
+          </button>
           <strong>{mergeQueueItems.length}</strong>
           <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
         </summary>
+        {#if autoMergeIssue}
+          <p class="merge-queue-note">{autoMergeIssue}</p>
+        {/if}
         {#if mergeQueueItems.length}
           <ol>
             {#each mergeQueueItems as item, index}
@@ -2017,7 +2081,7 @@
 
   .merge-queue summary {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     align-items: center;
     gap: 0.45rem;
     min-height: 2.25rem;
@@ -2033,7 +2097,7 @@
     display: none;
   }
 
-  .merge-queue summary span {
+  .merge-queue summary > span {
     overflow: hidden;
     color: var(--muted, #64748b);
     font-size: 0.72rem;
@@ -2042,6 +2106,80 @@
     text-overflow: ellipsis;
     text-transform: uppercase;
     white-space: nowrap;
+  }
+
+  .auto-merge-toggle {
+    display: inline-grid;
+    grid-template-columns: auto auto;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    color: var(--muted, #64748b);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .auto-merge-toggle span {
+    color: inherit;
+    font-size: 0.68rem;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .auto-merge-toggle i {
+    display: block;
+    position: relative;
+    width: 2rem;
+    height: 1.12rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #e2e8f0;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      box-shadow 140ms ease;
+  }
+
+  .auto-merge-toggle i::after {
+    content: '';
+    position: absolute;
+    top: 0.12rem;
+    left: 0.12rem;
+    width: 0.78rem;
+    height: 0.78rem;
+    border-radius: 999px;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.22);
+    transition: transform 140ms ease;
+  }
+
+  .auto-merge-toggle.active {
+    color: #14532d;
+  }
+
+  .auto-merge-toggle.active i {
+    border-color: #16a34a;
+    background: #22c55e;
+  }
+
+  .auto-merge-toggle.active i::after {
+    transform: translateX(0.86rem);
+  }
+
+  .auto-merge-toggle:focus-visible i {
+    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.18);
+  }
+
+  .auto-merge-toggle:disabled {
+    pointer-events: none;
+  }
+
+  .auto-merge-toggle.busy {
+    cursor: progress;
+    opacity: 0.72;
   }
 
   .merge-queue summary strong {
@@ -2062,6 +2200,16 @@
     font-weight: 800;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .merge-queue-note {
+    margin: 0;
+    padding: 0.45rem 0.65rem;
+    border-top: 1px solid var(--border-soft, #e2e8f0);
+    color: #92400e;
+    background: #fffbeb;
+    font-size: 0.72rem;
+    line-height: 1.35;
   }
 
   .merge-queue ol {

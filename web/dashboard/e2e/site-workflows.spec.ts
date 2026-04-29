@@ -166,6 +166,13 @@ const mockDashboardApis = async (page: Page) => {
   await page.route(/\/api\/tasks$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
+  await page.route(/\/api\/settings$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({ json: { settings: { auto_merge_enabled: true } } });
+      return;
+    }
+    await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
+  });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
   });
@@ -288,6 +295,8 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     const mergeQueue = page.locator('[aria-label="Merge queue"]');
     await expect(mergeQueue).toBeVisible();
     await expect(mergeQueue).toContainText('Merge queue');
+    await mergeQueue.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' }).click();
+    await expect(mergeQueue.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' })).toHaveAttribute('aria-checked', 'true');
     await mergeQueue.getByRole('button', { name: /Move Queued docs follow-up up in merge queue/ }).click();
     const queueNotice = mobile ? page.locator('.task-pane .queue-notice') : page.locator('.workbench .notice');
     await expect(queueNotice.getByText('Merge queue updated')).toBeVisible();

@@ -122,6 +122,19 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantMethod: http.MethodPost,
 			wantPath:   "/workflows/workflow_123/run",
 		},
+		{
+			name:       "settings show",
+			args:       []string{"settings"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/settings",
+		},
+		{
+			name:       "auto merge on",
+			args:       []string{"settings", "auto-merge", "on"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/settings",
+			wantBody:   map[string]any{"auto_merge_enabled": true},
+		},
 	}
 
 	for _, tt := range tests {

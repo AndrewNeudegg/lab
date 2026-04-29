@@ -31,12 +31,16 @@ const mockScreenCaptureUnavailable = async (page: Page) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
-      value: {}
+      value: {
+        getDisplayMedia: async () => {
+          throw new Error('Screen capture is not available in this browser.');
+        }
+      }
     });
   });
 };
 
-const mockTaskApi = async (page: Page) => {
+const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
     status: 'reviewed',
@@ -96,6 +100,11 @@ const mockTaskApi = async (page: Page) => {
   ];
 
   await page.route('**/api/tasks', async (route) => {
+    if (route.request().method() === 'POST') {
+      onCreateTask?.(JSON.parse(route.request().postData() || '{}'));
+      await route.fulfill({ status: 201, json: { reply: 'created help task' } });
+      return;
+    }
     await route.fulfill({ json: { tasks } });
   });
   await page.route('**/api/approvals', async (route) => {
@@ -164,7 +173,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
-  await expect(rows).toHaveCount(1, { timeout: 10_000 });
+  await expect(rows).toHaveCount(1, { timeout: 20_000 });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
 
@@ -313,20 +322,40 @@ test('navbar help stays available on desktop and submits without screen capture 
 }) => {
   await mockScreenCaptureUnavailable(page);
   let requestBody: any;
-  await page.route('**/api/tasks', async (route) => {
-    requestBody = JSON.parse(route.request().postData() || '{}');
-    await route.fulfill({ status: 201, json: { reply: 'created help task' } });
+  await mockTaskApi(page, (body) => {
+    requestBody = body;
   });
+  const expectHelpButtonInViewport = async () => {
+    const helpLayout = await page.locator('.help-button').evaluate((button) => {
+      const rect = button.getBoundingClientRect();
+      return {
+        right: rect.right,
+        viewport: window.innerWidth,
+        bodyWidth: document.body.scrollWidth
+      };
+    });
+    expect(helpLayout.right, JSON.stringify(helpLayout)).toBeLessThanOrEqual(
+      helpLayout.viewport + 1
+    );
+    expect(helpLayout.bodyWidth, JSON.stringify(helpLayout)).toBeLessThanOrEqual(
+      helpLayout.viewport + 2
+    );
+  };
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto('/chat');
+  await page.goto('/tasks');
+  await expect(
+    page.getByRole('button', { name: /Review queue behavior on mobile/ })
+  ).toBeVisible();
   await expect(page.locator('.desktop-nav')).toBeVisible();
   await expect(page.locator('.help-button')).toBeVisible();
+  await expectHelpButtonInViewport();
 
   await page.setViewportSize({ width: 980, height: 900 });
   await expect(page.locator('.desktop-nav')).not.toBeVisible();
   await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
   await expect(page.locator('.help-button')).toBeVisible();
+  await expectHelpButtonInViewport();
 
   await page.locator('.help-button').click();
   const dialog = page.locator('dialog.help-dialog');

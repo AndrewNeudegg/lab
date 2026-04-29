@@ -43,6 +43,12 @@
   let helpDialogOpen = false;
   let helpReady = false;
   let helpAttachments: HomelabdTaskAttachment[] = [];
+  let navbarElement: HTMLElement | undefined;
+  let brandElement: HTMLAnchorElement | undefined;
+  let navMeasureElement: HTMLElement | undefined;
+  let rightElement: HTMLDivElement | undefined;
+  let compactNav = false;
+  let expandedRightWidth = 0;
   const screenCaptureUnavailableMessage =
     'Browser context captured. Screenshot capture is unavailable in this browser, so the report will submit without an image.';
 
@@ -124,7 +130,35 @@
     stream?.getTracks().forEach((track) => track.stop());
   };
 
-  const screenCaptureSupported = () => typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+  const screenCaptureSupported = () =>
+    window.isSecureContext && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+
+  const screenCaptureUnavailable = (err: unknown) =>
+    err instanceof Error && /screen capture is not available/i.test(err.message);
+
+  const updateCompactNav = () => {
+    if (!navbarElement || !brandElement || !navMeasureElement || !rightElement) {
+      return;
+    }
+    const style = getComputedStyle(navbarElement);
+    const available =
+      navbarElement.clientWidth -
+      (Number.parseFloat(style.paddingLeft) || 0) -
+      (Number.parseFloat(style.paddingRight) || 0);
+    const gap = Number.parseFloat(style.columnGap || style.gap) || 0;
+    if (!compactNav) {
+      expandedRightWidth = rightElement.scrollWidth;
+    }
+    const required =
+      brandElement.scrollWidth +
+      navMeasureElement.scrollWidth +
+      (expandedRightWidth || rightElement.scrollWidth) +
+      gap * 2;
+    const nextCompact = required > available;
+    if (compactNav !== nextCompact) {
+      compactNav = nextCompact;
+    }
+  };
 
   const captureScreenshotAttachment = async () => {
     let stream: MediaStream | undefined;
@@ -211,7 +245,9 @@
       }
     } catch (err) {
       helpStatus =
-        err instanceof DOMException && err.name === 'NotAllowedError'
+        screenCaptureUnavailable(err)
+          ? screenCaptureUnavailableMessage
+          : err instanceof DOMException && err.name === 'NotAllowedError'
           ? 'Browser context captured. Screenshot capture was cancelled.'
           : 'Browser context captured. Screenshot capture was skipped.';
     } finally {
@@ -275,22 +311,46 @@
     helpReady = true;
     const clickListener = (event: MouseEvent) => recordAction('click', event.target);
     const inputListener = (event: Event) => recordAction('input', event.target);
+    let animationFrame = 0;
+    const scheduleNavUpdate = () => {
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame);
+      }
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = 0;
+        updateCompactNav();
+      });
+    };
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleNavUpdate);
     window.addEventListener('click', clickListener, { capture: true });
     window.addEventListener('change', inputListener, { capture: true });
+    window.addEventListener('resize', scheduleNavUpdate);
+    for (const element of [navbarElement, brandElement, navMeasureElement, rightElement]) {
+      if (element) {
+        resizeObserver?.observe(element);
+      }
+    }
+    void tick().then(scheduleNavUpdate);
     return () => {
       window.removeEventListener('click', clickListener, { capture: true });
       window.removeEventListener('change', inputListener, { capture: true });
+      window.removeEventListener('resize', scheduleNavUpdate);
+      resizeObserver?.disconnect();
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame);
+      }
     };
   });
 </script>
 
-<header class="navbar">
-  <a class="brand" href="/chat" onclickcapture={() => (mobileMenuOpen = false)}>
+<header class="navbar" bind:this={navbarElement}>
+  <a class="brand" href="/chat" bind:this={brandElement} onclickcapture={() => (mobileMenuOpen = false)}>
     <span>{subtitle}</span>
     <strong>{title}</strong>
   </a>
 
-  <nav class="desktop-nav" aria-label="Primary">
+  <nav class="desktop-nav" class:compact={compactNav} aria-label="Primary">
     {#each links as link}
       <a href={link.href} aria-current={isActive(link.href) ? 'page' : undefined}>
         {link.label}
@@ -298,7 +358,15 @@
     {/each}
   </nav>
 
-  <div class="right">
+  <nav class="nav-measure" bind:this={navMeasureElement} aria-hidden="true">
+    {#each links as link}
+      <a href={link.href} tabindex="-1">
+        {link.label}
+      </a>
+    {/each}
+  </nav>
+
+  <div class="right" class:compact={compactNav} bind:this={rightElement}>
     {#if apiBase}
       <span class="api">{apiBase}</span>
     {/if}
@@ -315,7 +383,7 @@
     >
       Help
     </button>
-    <details class="mobile-menu" bind:open={mobileMenuOpen}>
+    <details class="mobile-menu" class:compact={compactNav} bind:open={mobileMenuOpen}>
       <!-- svelte-ignore a11y_no_redundant_roles -- Chromium exposes this styled summary consistently with an explicit role. -->
       <summary
         class="menu-button"
@@ -736,6 +804,7 @@
 
   .brand,
   .desktop-nav a,
+  .nav-measure a,
   .mobile-nav a {
     color: inherit;
     text-decoration: none;
@@ -768,13 +837,36 @@
   }
 
   .desktop-nav,
+  .nav-measure,
   .right {
     display: flex;
     align-items: center;
     gap: 0.5rem;
   }
 
+  .desktop-nav.compact {
+    display: none;
+  }
+
+  .nav-measure {
+    position: absolute;
+    inset: auto auto 100% 0;
+    width: max-content;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .right.compact {
+    justify-content: flex-end;
+  }
+
+  .right.compact .api,
+  .right.compact .desktop-theme {
+    display: none;
+  }
+
   .desktop-nav a,
+  .nav-measure a,
   .mobile-nav a {
     border: 1px solid transparent;
     border-radius: 0.65rem;
@@ -783,7 +875,8 @@
     font-weight: 800;
   }
 
-  .desktop-nav a {
+  .desktop-nav a,
+  .nav-measure a {
     padding: 0.45rem 0.75rem;
   }
 
@@ -816,6 +909,10 @@
 
   .mobile-menu {
     display: none;
+  }
+
+  .mobile-menu.compact {
+    display: block;
   }
 
   .mobile-menu summary {
@@ -853,6 +950,14 @@
     justify-content: center;
   }
 
+  .mobile-menu.compact .menu-button {
+    display: inline-flex;
+  }
+
+  .mobile-menu.compact[open] .mobile-nav {
+    display: grid;
+  }
+
   .menu-button span {
     margin-right: 0.25rem;
   }
@@ -877,6 +982,8 @@
 
   .help-dialog {
     width: min(92vw, 31rem);
+    max-height: min(92vh, calc(100dvh - 1rem));
+    margin: 0;
     padding: 0;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 0.85rem;
@@ -900,6 +1007,8 @@
   .help-dialog-body {
     display: grid;
     gap: 0.85rem;
+    max-height: min(92vh, calc(100dvh - 1rem));
+    overflow-y: auto;
     padding: 1rem;
   }
 

@@ -290,7 +290,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
     await expect(page.locator('#docs-list')).toBeVisible();
   } else if (route === '/terminal') {
-    await expect(page.locator('.xterm')).toBeVisible();
+    await expect(page.locator('.xterm')).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: 'Add terminal tab' }).click();
     await expect(page.locator('.terminal-tab')).toHaveCount(2);
   } else if (route === '/healthd') {

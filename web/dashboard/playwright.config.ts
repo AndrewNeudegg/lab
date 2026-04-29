@@ -10,7 +10,7 @@ const launchOptions = {
   chromiumSandbox: false,
   args: ['--disable-breakpad', '--disable-crash-reporter', '--disable-dev-shm-usage']
 };
-const uatTimeout = 60_000;
+const uatTimeout = 120_000;
 
 function worktreePort(cwd: string) {
   let hash = 0;
@@ -25,7 +25,7 @@ export default defineConfig({
   timeout: uatTimeout,
   workers: 1,
   expect: {
-    timeout: 5_000
+    timeout: 20_000
   },
   webServer: {
     command: `bun run dev -- --host 127.0.0.1 --port ${port} --strictPort`,

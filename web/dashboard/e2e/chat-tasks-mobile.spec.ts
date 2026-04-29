@@ -27,6 +27,15 @@ const mockScreenCapture = async (page: Page) => {
   });
 };
 
+const mockScreenCaptureUnavailable = async (page: Page) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {}
+    });
+  });
+};
+
 const mockTaskApi = async (page: Page) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
@@ -297,6 +306,38 @@ test('mobile navbar help button creates a task with captured context', async ({ 
   expect(requestBody.attachments[0].text).toContain('"url"');
   expect(requestBody.attachments[1].name).toBe('dashboard-screenshot.png');
   expect(requestBody.attachments[1].data_url).toBe('data:image/png;base64,AAAA');
+});
+
+test('navbar help stays available on desktop and submits without screen capture support', async ({
+  page
+}) => {
+  await mockScreenCaptureUnavailable(page);
+  let requestBody: any;
+  await page.route('**/api/tasks', async (route) => {
+    requestBody = JSON.parse(route.request().postData() || '{}');
+    await route.fulfill({ status: 201, json: { reply: 'created help task' } });
+  });
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/chat');
+  await expect(page.locator('.desktop-nav')).toBeVisible();
+  await expect(page.locator('.help-button')).toBeVisible();
+
+  await page.setViewportSize({ width: 980, height: 900 });
+  await expect(page.locator('.desktop-nav')).not.toBeVisible();
+  await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
+  await expect(page.locator('.help-button')).toBeVisible();
+
+  await page.locator('.help-button').click();
+  const dialog = page.locator('dialog.help-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Screenshot capture is unavailable');
+  await dialog.getByRole('textbox', { name: 'More detail' }).fill('Desktop help should stay available.');
+  await dialog.getByRole('button', { name: 'Submit help task' }).click();
+
+  expect(requestBody.goal).toContain('Desktop help should stay available.');
+  expect(requestBody.attachments).toHaveLength(1);
+  expect(requestBody.attachments[0].name).toBe('browser-context.json');
 });
 
 test('tasks mobile has no task chat composer and keeps new-task text stable', async ({ page }) => {

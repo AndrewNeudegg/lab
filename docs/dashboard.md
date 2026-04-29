@@ -20,8 +20,8 @@ Agent browser testing is deliberately separate from the supervised dashboard. Us
 Use the shared responsive navbar on every dashboard page.
 
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
-- Mobile: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
-- Mobile: keep the `Help` button next to `Menu`. It captures browser context, asks for screen-capture permission when the browser supports it, prompts for a short bug note, and creates a task with the captured attachments.
+- Constrained widths: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
+- Keep the `Help` button visible on desktop, tablet, and mobile. It captures browser context, asks for screen-capture permission when the browser supports it, prompts for a short bug note, and creates a task with the captured attachments.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
 - Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
@@ -145,7 +145,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
 - `/chat` attachments: the composer supports desktop file picking, mobile file picking, and drag-and-drop into the composer. Attachment chips show the file name, media type, and size before send; sent messages keep visible attachment metadata. The API receives attachment data with the chat message so task-creation commands and LLM context can include the uploaded evidence.
-- Help task capture: the mobile navbar `Help` button records the current URL, page title, viewport, visible page text, active element, selected text, and recent click/change actions. It attempts a screenshot through the browser screen-capture permission flow and then opens a dialog for the operator's extra detail. `Submit help task` creates a normal local task with `browser-context.json` and any screenshot as task attachments.
+- Help task capture: the navbar `Help` button records the current URL, page title, viewport, visible page text, active element, selected text, and recent click/change actions. It opens a dialog for the operator's extra detail and attempts a screenshot through the browser screen-capture permission flow when available. If screen capture is unavailable or cancelled, the report still submits with `browser-context.json`. `Submit help task` creates a normal local task with `browser-context.json` and any screenshot as task attachments.
 - Cross-page links: `/chat` links to `/tasks`, and `/tasks` links back to `/chat`, so the operator can switch modes deliberately.
 
 ## Status Semantics

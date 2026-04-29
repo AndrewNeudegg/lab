@@ -43,6 +43,8 @@
   let helpDialogOpen = false;
   let helpReady = false;
   let helpAttachments: HomelabdTaskAttachment[] = [];
+  const screenCaptureUnavailableMessage =
+    'Browser context captured. Screenshot capture is unavailable in this browser, so the report will submit without an image.';
 
   const isActive = (href: string) => current === href;
 
@@ -122,13 +124,15 @@
     stream?.getTracks().forEach((track) => track.stop());
   };
 
+  const screenCaptureSupported = () => typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+
   const captureScreenshotAttachment = async () => {
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      throw new Error('Screen capture is not available in this browser.');
-    }
     let stream: MediaStream | undefined;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      stream = await navigator.mediaDevices?.getDisplayMedia({ video: true, audio: false });
+      if (!stream) {
+        return undefined;
+      }
       const video = document.createElement('video');
       video.muted = true;
       video.srcObject = stream;
@@ -191,13 +195,25 @@
       ];
     }
     void showHelpDialog();
+    if (!screenCaptureSupported()) {
+      helpStatus = screenCaptureUnavailableMessage;
+      helpCapturing = false;
+      return;
+    }
     try {
       helpStatus = 'Choose this tab or screen to attach a screenshot.';
       const screenshot = await captureScreenshotAttachment();
-      helpAttachments = [...helpAttachments, screenshot];
-      helpStatus = 'Screenshot and browser context captured.';
+      if (screenshot) {
+        helpAttachments = [...helpAttachments, screenshot];
+        helpStatus = 'Screenshot and browser context captured.';
+      } else {
+        helpStatus = screenCaptureUnavailableMessage;
+      }
     } catch (err) {
-      helpStatus = err instanceof Error ? err.message : 'Screenshot capture was skipped.';
+      helpStatus =
+        err instanceof DOMException && err.name === 'NotAllowedError'
+          ? 'Browser context captured. Screenshot capture was cancelled.'
+          : 'Browser context captured. Screenshot capture was skipped.';
     } finally {
       helpCapturing = false;
       void showHelpDialog();
@@ -812,7 +828,6 @@
 
   .help-button,
   .menu-button {
-    display: none;
     min-height: 2.4rem;
     padding: 0 0.75rem;
     border: 1px solid var(--border, #cbd5e1);
@@ -826,7 +841,16 @@
   }
 
   .help-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-width: 3.2rem;
+  }
+
+  .menu-button {
+    display: none;
+    align-items: center;
+    justify-content: center;
   }
 
   .menu-button span {
@@ -987,11 +1011,10 @@
     font-size: 0.76rem;
   }
 
-  @media (max-width: 760px) {
+  @media (max-width: 1120px) {
     .navbar {
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 0.75rem;
-      min-height: 3.75rem;
     }
 
     .desktop-nav {
@@ -1014,11 +1037,8 @@
       display: block;
     }
 
-    .help-button,
     .menu-button {
       display: inline-flex;
-      align-items: center;
-      justify-content: center;
     }
 
     .mobile-nav {
@@ -1027,6 +1047,12 @@
 
     .mobile-menu[open] .mobile-nav {
       display: grid;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .navbar {
+      min-height: 3.75rem;
     }
   }
 </style>

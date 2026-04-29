@@ -5,6 +5,7 @@ export type TaskOperation =
   | 'run'
   | 'review'
   | 'accept'
+  | 'restart'
   | 'reopen'
   | 'cancel'
   | 'retry'
@@ -34,6 +35,23 @@ export type PrimaryTaskAction =
       detail: string;
       tone: 'primary' | 'warning' | 'danger' | 'neutral';
     };
+
+export const approvalNoticeTitle = (operation: ApprovalOperation, reply = '') => {
+  if (operation === 'deny') {
+    return 'Approval denied';
+  }
+  const lower = reply.toLowerCase();
+  if (
+    lower.includes('already') ||
+    lower.includes('failed') ||
+    lower.includes('stale') ||
+    lower.includes('recovery') ||
+    lower.includes('requeued')
+  ) {
+    return 'Approval handled';
+  }
+  return 'Approval granted';
+};
 
 export const pendingApprovalForTask = (
   task: Pick<HomelabdTask, 'id' | 'status'> | undefined,
@@ -100,6 +118,24 @@ export const primaryTaskAction = (
         detail: 'No pending approval is attached to this task yet. Sync to refresh approvals.',
         tone: 'warning'
       };
+    case 'awaiting_restart':
+      if (task.restart_status === 'failed') {
+        return {
+          type: 'task',
+          operation: 'restart',
+          label: 'Retry restart',
+          detail: task.restart_last_error || 'Post-merge restart failed. Retry the enforced restart gate.',
+          tone: 'warning'
+        };
+      }
+      return {
+        type: 'none',
+        label: 'Restarting services',
+        detail: task.restart_current
+          ? `Restarting ${task.restart_current}; verification is locked until health checks pass.`
+          : 'Post-merge restarts are queued before verification.',
+        tone: 'warning'
+      };
     case 'awaiting_verification':
       return {
         type: 'task',
@@ -114,8 +150,11 @@ export const primaryTaskAction = (
       return {
         type: 'task',
         operation: 'retry',
-        label: task.status === 'conflict_resolution' ? 'Retry conflict fix' : 'Retry with worker',
-        detail: 'Starts a direct retry from the current workspace state.',
+        label: task.status === 'conflict_resolution' ? 'Retry now' : 'Retry with worker',
+        detail:
+          task.status === 'conflict_resolution'
+            ? 'Automatic conflict recovery is handled by the task supervisor; this starts an immediate retry.'
+            : 'Starts a direct retry from the current workspace state.',
         tone: 'warning'
       };
     case 'done':
@@ -155,6 +194,10 @@ export const secondaryTaskOperations = (
   if (task.status === 'awaiting_verification') {
     operations.add('reopen');
   }
+  if (task.status === 'awaiting_restart') {
+    operations.add('restart');
+    operations.add('reopen');
+  }
   if (task.status === 'awaiting_approval') {
     operations.add('review');
   }
@@ -185,6 +228,8 @@ export const taskOperationLabel = (operation: TaskOperation) => {
       return 'Review';
     case 'accept':
       return 'Accept';
+    case 'restart':
+      return 'Restart';
     case 'reopen':
       return 'Reopen';
     case 'cancel':

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1595,7 +1597,7 @@ func TestProjectCheckFailureKeepsFailingToolTail(t *testing.T) {
 	}
 }
 
-func TestReviewPremergeFailureBlocksWithoutAutoDelegating(t *testing.T) {
+func TestReviewPremergeFailureBlocksForSupervisorRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
 	defer close(releaseDelegate)
@@ -1627,12 +1629,12 @@ func TestReviewPremergeFailureBlocksWithoutAutoDelegating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "ready_for_review -> blocked") || !strings.Contains(reply, "no worker was restarted automatically") {
-		t.Fatalf("reply = %q, want explicit blocked transition without auto restart", reply)
+	if !strings.Contains(reply, "ready_for_review -> blocked") || !strings.Contains(reply, "task supervisor will queue automatic recovery") {
+		t.Fatalf("reply = %q, want explicit blocked transition with supervisor recovery", reply)
 	}
 	select {
 	case <-delegateStarted:
-		t.Fatal("review premerge failure should not auto-delegate")
+		t.Fatal("review premerge failure should be recovered by supervisor, not inline review")
 	default:
 	}
 	updated, err := orch.tasks.Load(task.ID)
@@ -1920,6 +1922,112 @@ func TestApprovedMergeAwaitsVerificationUntilAccepted(t *testing.T) {
 	}
 }
 
+func TestApprovedMergeEnforcesRestartBeforeVerification(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(mergeApprovedStub{}); err != nil {
+		t.Fatal(err)
+	}
+	supervisor, calls := newRestartGateSupervisor(t, false)
+	defer supervisor.Close()
+	orch.cfg.Supervisord.Addr = supervisor.URL
+	setSupervisorAppHealthURL(t, &orch.cfg, "dashboard", supervisor.URL+"/health/dashboard")
+
+	task := taskstore.Task{
+		ID:         "task_20260429_083000_abcd1234",
+		Title:      "fix dashboard SSR",
+		Goal:       "fix dashboard SSR",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260429_083000_restart",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260429_083000_abcd1234","restart_required":["dashboard"]}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "enforcing post-merge restarts before verification") {
+		t.Fatalf("reply = %q, want restart gate guidance", reply)
+	}
+	awaiting, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if awaiting.Status != taskstore.StatusAwaitingRestart || awaiting.RestartStatus != taskstore.RestartStatusPending {
+		t.Fatalf("task after approval = %#v, want awaiting restart pending", awaiting)
+	}
+	blockedReply, err := orch.acceptTask(context.Background(), "abcd1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(blockedReply, "still enforcing post-merge restarts") {
+		t.Fatalf("accept reply = %q, want restart gate block", blockedReply)
+	}
+
+	verified := waitForTask(t, orch, task.ID, func(item taskstore.Task) bool {
+		return item.Status == taskstore.StatusAwaitingVerification && item.RestartStatus == taskstore.RestartStatusComplete
+	})
+	if !containsString(verified.RestartCompleted, "dashboard") {
+		t.Fatalf("restart_completed = %#v, want dashboard", verified.RestartCompleted)
+	}
+	if got := calls.snapshot(); !containsString(got, "POST /supervisord/apps/dashboard/restart") {
+		t.Fatalf("supervisor calls = %#v, want dashboard restart", got)
+	}
+}
+
+func TestPostMergeRestartFailureKeepsTaskAwaitingRestart(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	supervisor, _ := newRestartGateSupervisor(t, true)
+	defer supervisor.Close()
+	orch.cfg.Supervisord.Addr = supervisor.URL
+	setSupervisorAppHealthURL(t, &orch.cfg, "dashboard", supervisor.URL+"/health/dashboard")
+
+	task := taskstore.Task{
+		ID:              "task_20260429_090000_deadbeef",
+		Title:           "restart fails",
+		Goal:            "restart fails",
+		Status:          taskstore.StatusAwaitingRestart,
+		AssignedTo:      "OrchestratorAgent",
+		RestartRequired: []string{"dashboard"},
+		RestartStatus:   taskstore.RestartStatusPending,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	err := orch.continuePostMergeRestart(context.Background(), task.ID)
+	if err == nil {
+		t.Fatal("restart gate succeeded, want failure")
+	}
+	updated, loadErr := orch.tasks.Load(task.ID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if updated.Status != taskstore.StatusAwaitingRestart || updated.RestartStatus != taskstore.RestartStatusFailed || updated.RestartCurrent != "dashboard" {
+		t.Fatalf("task = %#v, want awaiting_restart failed on dashboard", updated)
+	}
+	if !strings.Contains(updated.RestartLastError, "500") {
+		t.Fatalf("restart_last_error = %q, want HTTP 500 detail", updated.RestartLastError)
+	}
+}
+
 func TestApprovalMergeFailureReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeFailStub{}); err != nil {
@@ -2057,6 +2165,7 @@ func TestApprovalAutoReconcilesTaskBranchWithCurrentMain(t *testing.T) {
 
 func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
+	orch.cfg.ExternalAgents = nil
 	tempDir := t.TempDir()
 	root := filepath.Join(tempDir, "repo")
 	workspace := filepath.Join(tempDir, "workspaces", "task_20260426_184630_badf00d")
@@ -2111,7 +2220,7 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "could not auto-rebase") || !strings.Contains(reply, taskstore.StatusConflictResolution) {
+	if !strings.Contains(reply, "could not auto-rebase") || !strings.Contains(reply, taskstore.StatusConflictResolution) || !strings.Contains(reply, "Automatic conflict recovery could not start yet") {
 		t.Fatalf("reply = %q, want auto-rebase conflict guidance", reply)
 	}
 	updatedApproval, err := orch.approvals.Load(req.ID)
@@ -2131,6 +2240,115 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 	status := gitTestOutput(t, workspace, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		t.Fatalf("workspace status = %q, want merge aborted and clean", status)
+	}
+}
+
+func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	defer close(releaseDelegate)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
+	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260428_200514_0d62653b")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260428_200514_0d62653b",
+		Title:      "pwa",
+		Goal:       "pwa",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		Result:     "Approval auto-rebase failed; automatic conflict recovery required: merge conflict",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260428_221022_241942df",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260428_200514_0d62653b"}`),
+		Reason: "merge reviewed task branch into repo root; auto-rebase failed: merge conflict",
+		Status: approvalstore.StatusFailed,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "already failed") || !strings.Contains(reply, "automatic conflict recovery") {
+		t.Fatalf("reply = %q, want failed approval recovery guidance", reply)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery worker did not start")
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
+		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
+	}
+}
+
+func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	defer close(releaseDelegate)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
+	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260429_065348_8f7391fb")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260429_065348_8f7391fb",
+		Title:      "chat failed send UI",
+		Goal:       "chat failed send UI",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		Result:     "ReviewerAgent could not reconcile task branch with current main before checks: merge conflict",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().Add(-10 * time.Minute).UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered = %d, want 1", count)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery worker did not start")
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
+		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
 }
 
@@ -2990,6 +3208,9 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 		"nix develop -c bun run --cwd web browser:preflight",
 		"do not stop or restart production",
 		"For remote tasks",
+		"Mermaid fenced diagrams",
+		"#2563eb",
+		"#60a5fa",
 	} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("delegation instruction missing %q:\n%s", want, instruction)
@@ -3023,6 +3244,28 @@ func TestBrowserUATForDiffSelectsSiteUATForBroadDashboardChanges(t *testing.T) {
 	}, "\n")
 	if got := browserUATForDiff(diff); got != "site" {
 		t.Fatalf("browserUATForDiff(shared nav) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/web/bun.lock b/web/bun.lock",
+		"--- a/web/bun.lock",
+		"+++ b/web/bun.lock",
+		"@@",
+		"+    \"mermaid\": [\"mermaid@11.14.0\"]",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(web lockfile) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/pkg/supervisor/manager.go b/pkg/supervisor/manager.go",
+		"--- a/pkg/supervisor/manager.go",
+		"+++ b/pkg/supervisor/manager.go",
+		"@@",
+		"+change",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(supervisor) = %q, want site", got)
 	}
 
 	diff = strings.Join([]string{
@@ -3747,9 +3990,24 @@ func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
 		ID:        "task_123",
 		Workspace: "/tmp/workspaces/task_123",
 	})
-	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines"} {
+	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestWorkflowStepPromptIncludesDiagramGuidance(t *testing.T) {
+	prompt := workflowStepPrompt(workflowstore.Workflow{
+		Name: "Release flow",
+		Goal: "Explain deployment states",
+	}, workflowstore.Step{
+		Name:   "Summarise",
+		Prompt: "Map the state machine",
+	}, nil)
+	for _, want := range []string{"Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workflow step prompt missing %q:\n%s", want, prompt)
 		}
 	}
 }
@@ -3999,6 +4257,79 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+type restartGateCalls struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *restartGateCalls) append(call string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, call)
+}
+
+func (c *restartGateCalls) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.calls...)
+}
+
+func newRestartGateSupervisor(t *testing.T, failRestart bool) (*httptest.Server, *restartGateCalls) {
+	t.Helper()
+	calls := &restartGateCalls{}
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		calls.append(req.Method + " " + req.URL.Path)
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/supervisord/apps/dashboard/restart":
+			if failRestart {
+				http.Error(rw, "restart failed", http.StatusInternalServerError)
+				return
+			}
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write([]byte(`{"ok":true}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/health/dashboard":
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write([]byte(`{"ok":true}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/supervisord":
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write([]byte(`{"status":"running"}`))
+		default:
+			http.NotFound(rw, req)
+		}
+	}))
+	return server, calls
+}
+
+func setSupervisorAppHealthURL(t *testing.T, cfg *config.Config, appName, healthURL string) {
+	t.Helper()
+	for i := range cfg.Supervisord.Apps {
+		if cfg.Supervisord.Apps[i].Name == appName {
+			cfg.Supervisord.Apps[i].HealthURL = healthURL
+			return
+		}
+	}
+	t.Fatalf("supervisor app %q not found", appName)
+}
+
+func waitForTask(t *testing.T, orch *Orchestrator, taskID string, done func(taskstore.Task) bool) taskstore.Task {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var last taskstore.Task
+	for time.Now().Before(deadline) {
+		item, err := orch.tasks.Load(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = item
+		if done(item) {
+			return item
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task %s; last = %#v", taskID, last)
+	return taskstore.Task{}
 }
 
 func writeTestRepoFile(t *testing.T, root, rel, content string) {

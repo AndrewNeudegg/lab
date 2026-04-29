@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -62,6 +63,87 @@ func TestManagerStartsStopsAndRestartsApp(t *testing.T) {
 	stopped := manager.Snapshot().Apps[0]
 	if stopped.State != StateStopped {
 		t.Fatalf("status = %#v, want stopped", stopped)
+	}
+}
+
+func TestManagerRunsPreStartBeforeStartingApp(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "prepared")
+	preStart := filepath.Join(dir, "prestart.sh")
+	if err := os.WriteFile(preStart, []byte("#!/bin/sh\nprintf prepared > prepared\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	appScript := filepath.Join(dir, "app.sh")
+	if err := os.WriteFile(appScript, []byte("#!/bin/sh\n[ -f prepared ] || exit 9\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		ShutdownTimeoutSeconds: 2,
+		Apps: []config.SupervisorAppConfig{{
+			Name:                   "dashboard",
+			Type:                   "web",
+			Command:                appScript,
+			WorkingDir:             dir,
+			PreStartCommand:        preStart,
+			PreStartWorkingDir:     dir,
+			PreStartTimeoutSeconds: 2,
+			Restart:                "on_failure",
+			ShutdownTimeoutSec:     2,
+		}},
+	}, nil)
+
+	if err := manager.StartApp(context.Background(), "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "dashboard") })
+	running := manager.Snapshot().Apps[0]
+	if running.State != StateRunning || running.PID == 0 {
+		t.Fatalf("status = %#v, want running app", running)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "prepared" {
+		t.Fatalf("pre-start marker = %q, %v; want prepared", string(got), err)
+	}
+}
+
+func TestManagerPreStartFailureBlocksAppStart(t *testing.T) {
+	dir := t.TempDir()
+	preStart := filepath.Join(dir, "prestart.sh")
+	if err := os.WriteFile(preStart, []byte("#!/bin/sh\necho install failed >&2\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	startedMarker := filepath.Join(dir, "started")
+	appScript := filepath.Join(dir, "app.sh")
+	if err := os.WriteFile(appScript, []byte("#!/bin/sh\nprintf started > started\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		ShutdownTimeoutSeconds: 2,
+		Apps: []config.SupervisorAppConfig{{
+			Name:                   "dashboard",
+			Type:                   "web",
+			Command:                appScript,
+			WorkingDir:             dir,
+			PreStartCommand:        preStart,
+			PreStartWorkingDir:     dir,
+			PreStartTimeoutSeconds: 2,
+			Restart:                "on_failure",
+			ShutdownTimeoutSec:     2,
+		}},
+	}, nil)
+
+	err := manager.StartApp(context.Background(), "dashboard")
+	if err == nil {
+		t.Fatal("StartApp succeeded, want pre-start failure")
+	}
+	status := manager.Snapshot().Apps[0]
+	if status.State != StateFailed || status.PID != 0 || !strings.Contains(status.Message, "pre-start failed") {
+		t.Fatalf("status = %#v, want failed before app start", status)
+	}
+	if !strings.Contains(status.LastError, "install failed") {
+		t.Fatalf("last error = %q, want pre-start stderr", status.LastError)
+	}
+	if _, err := os.Stat(startedMarker); !os.IsNotExist(err) {
+		t.Fatalf("app marker exists or stat failed with %v; app should not have started", err)
 	}
 }
 
@@ -400,6 +482,46 @@ func TestManagerHealthRecoveryRestartsTrackedProcessGroup(t *testing.T) {
 	}
 	if processAlive(first.PID) {
 		t.Fatalf("old dashboard pid %d should have been stopped before restart", first.PID)
+	}
+}
+
+func TestManagerHealthRecoveryRestartsOnHTTPFailure(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "app.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.SupervisordConfig{
+		ShutdownTimeoutSeconds: 2,
+		Apps: []config.SupervisorAppConfig{{
+			Name:               "dashboard",
+			Type:               "web",
+			Command:            script,
+			Restart:            "on_failure",
+			HealthURL:          "http://dashboard.test/chat",
+			ShutdownTimeoutSec: 2,
+		}},
+	}, nil)
+	manager.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: http.NoBody}, nil
+	})}
+
+	if err := manager.StartApp(context.Background(), "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	first := waitForAppState(t, manager, "dashboard", StateRunning)
+	if first.PID == 0 {
+		t.Fatal("dashboard did not start")
+	}
+
+	manager.checkAppHealth(context.Background())
+	restarting := manager.Snapshot().Apps[0]
+	if restarting.State != StateStopping || restarting.PID != first.PID || restarting.LastHealth != "500 Internal Server Error" {
+		t.Fatalf("status = %#v, want failed health response to restart tracked pid", restarting)
+	}
+	recovered := waitForAppState(t, manager, "dashboard", StateRunning)
+	t.Cleanup(func() { _ = manager.StopApp(context.Background(), "dashboard") })
+	if recovered.PID == 0 || recovered.PID == first.PID {
+		t.Fatalf("status = %#v, want restarted dashboard with a new pid", recovered)
 	}
 }
 

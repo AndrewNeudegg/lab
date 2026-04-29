@@ -3,6 +3,30 @@ import type { Page } from '@playwright/test';
 
 const typedMessage = 'mobile input must keep every typed character 12345';
 
+const mockScreenCapture = async (page: Page) => {
+  await page.addInitScript(() => {
+    const mediaDevices = navigator.mediaDevices || {};
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        ...mediaDevices,
+        getDisplayMedia: async () => new MediaStream()
+      }
+    });
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', {
+      configurable: true,
+      get: () => 320
+    });
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', {
+      configurable: true,
+      get: () => 180
+    });
+    HTMLMediaElement.prototype.play = async () => undefined;
+    CanvasRenderingContext2D.prototype.drawImage = () => undefined;
+    HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,AAAA';
+  });
+};
+
 const mockTaskApi = async (page: Page) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
@@ -28,6 +52,15 @@ const mockTaskApi = async (page: Page) => {
       created_at: now,
       updated_at: now,
       result: 'waiting for approval',
+      attachments: [
+        {
+          id: 'att_context',
+          name: 'browser-context.json',
+          content_type: 'application/json',
+          size: 17,
+          text: '{"url":"/tasks"}'
+        }
+      ],
       plan
     },
     {
@@ -157,12 +190,12 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await mockTaskApi(page);
   await page.goto('/tasks');
 
-	const rows = page.locator('.task-row');
-	const queue = page.locator('.task-pane');
-	const detail = page.locator('.workbench');
+  const rows = page.getByRole('button', { name: /Review queue behavior on mobile/ });
+  const queue = page.locator('.task-pane');
+  const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
-  await expect(rows).toHaveCount(1);
+  await expect(rows).toHaveCount(1, { timeout: 10_000 });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
 
@@ -188,6 +221,9 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(detail).toBeVisible();
   await expect(page.getByRole('region', { name: 'Task actions', exact: true })).toContainText(
     'Approve merge'
+  );
+  await expect(page.getByRole('region', { name: 'Task attachments' })).toContainText(
+    'browser-context.json'
   );
   await expect(page.getByRole('button', { name: 'Back to queue' })).toBeVisible();
   const backStyle = await page.locator('.back-to-queue').evaluate((element) => {
@@ -218,6 +254,89 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
     viewport: window.innerWidth
   }));
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+});
+
+test('chat supports file uploads and sends attachment context', async ({ page }) => {
+  let requestBody: any;
+  await page.route('**/api/message', async (route) => {
+    requestBody = JSON.parse(route.request().postData() || '{}');
+    await route.fulfill({ json: { reply: 'received attachment', source: 'program' } });
+  });
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  await page.locator('#chat-attachments').setInputFiles({
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('steps to reproduce')
+  });
+  await expect(page.getByLabel('Pending attachments')).toContainText('notes.txt');
+  await page.getByRole('textbox', { name: 'Message' }).fill('please inspect this');
+  await page.getByRole('button', { name: 'Send' }).click();
+
+  expect(requestBody.content).toBe('please inspect this');
+  expect(requestBody.attachments).toHaveLength(1);
+  expect(requestBody.attachments[0].name).toBe('notes.txt');
+  expect(requestBody.attachments[0].text).toBe('steps to reproduce');
+  await expect(page.getByLabel('Message attachments')).toContainText('notes.txt');
+  await expect(page.getByText('received attachment')).toBeVisible();
+});
+
+test('chat renders Mermaid diagrams in assistant replies', async ({ page }) => {
+  await page.route('**/api/message', async (route) => {
+    await route.fulfill({
+      json: {
+        reply:
+          'diagram-regression\n\n```mermaid\nflowchart LR\n  A[Request] --> B[Task]\n  B --> C[Review]\n```',
+        source: 'program'
+      }
+    });
+  });
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  await page.getByRole('textbox', { name: 'Message' }).fill('show me the task flow');
+  await page.getByRole('button', { name: 'Send' }).click();
+
+  const message = page.locator('.message').filter({ hasText: 'diagram-regression' });
+  const diagram = message.locator('.mermaid-diagram');
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect(diagram.locator('svg')).toBeVisible();
+  const metrics = await diagram.evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+    bodyWidth: document.body.scrollWidth,
+    viewport: window.innerWidth
+  }));
+  expect(metrics.scrollWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(
+    metrics.clientWidth + 2
+  );
+  expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
+});
+
+test('mobile navbar help button creates a task with captured context', async ({ page }) => {
+  await mockScreenCapture(page);
+  let requestBody: any;
+  await page.route('**/api/tasks', async (route) => {
+    requestBody = JSON.parse(route.request().postData() || '{}');
+    await route.fulfill({ status: 201, json: { reply: 'created help task' } });
+  });
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+  await expect(page.locator('.help-button')).toBeVisible();
+
+  await page.locator('.help-button').click();
+  const dialog = page.locator('dialog.help-dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('textbox', { name: 'More detail' }).fill('The queue button did nothing.');
+  await dialog.getByRole('button', { name: 'Submit help task' }).click();
+
+  expect(requestBody.goal).toContain('The queue button did nothing.');
+  expect(requestBody.attachments).toHaveLength(2);
+  expect(requestBody.attachments[0].name).toBe('browser-context.json');
+  expect(requestBody.attachments[0].text).toContain('"url"');
+  expect(requestBody.attachments[1].name).toBe('dashboard-screenshot.png');
+  expect(requestBody.attachments[1].data_url).toBe('data:image/png;base64,AAAA');
 });
 
 test('tasks mobile has no task chat composer and keeps new-task text stable', async ({ page }) => {

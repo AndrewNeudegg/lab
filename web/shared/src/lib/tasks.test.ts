@@ -47,6 +47,7 @@ describe('task queue attention logic', () => {
     expect(taskNeedsAttention(task('blocked', 'blocked'))).toBe(true);
     expect(taskNeedsAttention(task('conflict', 'conflict_resolution'))).toBe(true);
     expect(taskNeedsAttention(task('review', 'ready_for_review'))).toBe(true);
+    expect(taskNeedsAttention(task('restart', 'awaiting_restart'))).toBe(true);
     expect(taskNeedsAttention(task('running', 'running'))).toBe(false);
     expect(taskIsActive(task('queued', 'queued'))).toBe(true);
     expect(taskIsTerminal(task('done', 'done'))).toBe(true);
@@ -144,10 +145,13 @@ describe('task queue attention logic', () => {
   test('explains workflow states and valid next transitions', () => {
     expect(taskStateDescription('ready_for_review')).toContain('review gate');
     expect(taskStateTransitions('ready_for_review')).toContain('conflict resolution');
-    expect(taskStateDescription('conflict_resolution')).toContain('conflicts');
-    expect(taskStateTransitions('conflict_resolution')).toContain('ready for review');
+    expect(taskStateDescription('conflict_resolution')).toContain('automatic recovery');
+    expect(taskStateTransitions('conflict_resolution')).toContain('automatic recovery');
     expect(taskStateTransitions('awaiting_approval')).toContain('conflict resolution');
+    expect(taskStateDescription('awaiting_restart')).toContain('Required restarts');
+    expect(taskStateTransitions('awaiting_restart')).toContain('awaiting verification');
     expect(taskStateDescription('running')).toContain('worker owns');
-    expect(taskStateTransitions('blocked')).toBe('blocked → running, cancelled, or deleted');
+    expect(taskStateDescription('blocked')).toContain('requeued automatically');
+    expect(taskStateTransitions('blocked')).toContain('automatic recovery');
   });
 });

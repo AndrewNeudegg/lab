@@ -33,29 +33,32 @@ const (
 )
 
 type AppStatus struct {
-	Name         string            `json:"name"`
-	Type         string            `json:"type"`
-	State        string            `json:"state"`
-	Desired      string            `json:"desired"`
-	PID          int               `json:"pid,omitempty"`
-	Restarts     int               `json:"restarts"`
-	ExitCode     int               `json:"exit_code,omitempty"`
-	Message      string            `json:"message"`
-	StartedAt    *time.Time        `json:"started_at,omitempty"`
-	StoppedAt    *time.Time        `json:"stopped_at,omitempty"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	StartOrder   int               `json:"start_order"`
-	Restart      string            `json:"restart"`
-	HealthURL    string            `json:"health_url,omitempty"`
-	LastHealth   string            `json:"last_health,omitempty"`
-	LastOutput   string            `json:"last_output,omitempty"`
-	LastError    string            `json:"last_error,omitempty"`
-	LogPath      string            `json:"log_path,omitempty"`
-	ErrorLogPath string            `json:"error_log_path,omitempty"`
-	WorkingDir   string            `json:"working_dir,omitempty"`
-	Command      string            `json:"command"`
-	Args         []string          `json:"args,omitempty"`
-	Environment  map[string]string `json:"environment,omitempty"`
+	Name               string            `json:"name"`
+	Type               string            `json:"type"`
+	State              string            `json:"state"`
+	Desired            string            `json:"desired"`
+	PID                int               `json:"pid,omitempty"`
+	Restarts           int               `json:"restarts"`
+	ExitCode           int               `json:"exit_code,omitempty"`
+	Message            string            `json:"message"`
+	StartedAt          *time.Time        `json:"started_at,omitempty"`
+	StoppedAt          *time.Time        `json:"stopped_at,omitempty"`
+	UpdatedAt          time.Time         `json:"updated_at"`
+	StartOrder         int               `json:"start_order"`
+	Restart            string            `json:"restart"`
+	HealthURL          string            `json:"health_url,omitempty"`
+	LastHealth         string            `json:"last_health,omitempty"`
+	LastOutput         string            `json:"last_output,omitempty"`
+	LastError          string            `json:"last_error,omitempty"`
+	LogPath            string            `json:"log_path,omitempty"`
+	ErrorLogPath       string            `json:"error_log_path,omitempty"`
+	WorkingDir         string            `json:"working_dir,omitempty"`
+	Command            string            `json:"command"`
+	Args               []string          `json:"args,omitempty"`
+	Environment        map[string]string `json:"environment,omitempty"`
+	PreStartCommand    string            `json:"pre_start_command,omitempty"`
+	PreStartArgs       []string          `json:"pre_start_args,omitempty"`
+	PreStartWorkingDir string            `json:"pre_start_working_dir,omitempty"`
 }
 
 type Snapshot struct {
@@ -125,21 +128,24 @@ func NewManager(cfg config.SupervisordConfig, logger *slog.Logger) *Manager {
 		m.apps[app.Name] = &appRuntime{
 			cfg: app,
 			status: AppStatus{
-				Name:         app.Name,
-				Type:         app.Type,
-				State:        StateStopped,
-				Desired:      StateStopped,
-				Message:      "not started",
-				UpdatedAt:    now,
-				StartOrder:   app.StartOrder,
-				Restart:      app.Restart,
-				HealthURL:    app.HealthURL,
-				LogPath:      logPath,
-				ErrorLogPath: errorLogPath,
-				WorkingDir:   app.WorkingDir,
-				Command:      app.Command,
-				Args:         append([]string(nil), app.Args...),
-				Environment:  copyMap(app.Env),
+				Name:               app.Name,
+				Type:               app.Type,
+				State:              StateStopped,
+				Desired:            StateStopped,
+				Message:            "not started",
+				UpdatedAt:          now,
+				StartOrder:         app.StartOrder,
+				Restart:            app.Restart,
+				HealthURL:          app.HealthURL,
+				LogPath:            logPath,
+				ErrorLogPath:       errorLogPath,
+				WorkingDir:         app.WorkingDir,
+				Command:            app.Command,
+				Args:               append([]string(nil), app.Args...),
+				Environment:        copyMap(app.Env),
+				PreStartCommand:    app.PreStartCommand,
+				PreStartArgs:       append([]string(nil), app.PreStartArgs...),
+				PreStartWorkingDir: app.PreStartWorkingDir,
 			},
 		}
 	}
@@ -269,10 +275,31 @@ func (m *Manager) startApp(ctx context.Context, name string) error {
 	app.status.State = StateStarting
 	app.status.Desired = StateRunning
 	app.status.Message = "starting"
+	if app.cfg.PreStartCommand != "" {
+		app.status.Message = "running pre-start command"
+	}
+	app.status.LastOutput = ""
+	app.status.LastError = ""
 	app.status.UpdatedAt = now
 	_ = m.saveStateLocked()
 	app.stopped = make(chan struct{})
 	m.mu.Unlock()
+
+	if app.cfg.PreStartCommand != "" {
+		output, err := m.runPreStart(app.cfg)
+		if err != nil {
+			message := fmt.Sprintf("pre-start failed: %v", err)
+			m.updateFailed(name, message, output, output)
+			return fmt.Errorf("app %q %s", name, message)
+		}
+		m.mu.Lock()
+		if runningApp := m.apps[name]; runningApp != nil {
+			runningApp.status.Message = "starting"
+			runningApp.status.UpdatedAt = time.Now().UTC()
+			_ = m.saveStateLocked()
+		}
+		m.mu.Unlock()
+	}
 
 	cmd := exec.Command(app.cfg.Command, app.cfg.Args...)
 	if app.cfg.WorkingDir != "" {
@@ -306,6 +333,8 @@ func (m *Manager) startApp(ctx context.Context, name string) error {
 	app.status.StoppedAt = nil
 	app.status.UpdatedAt = startedAt
 	app.status.Message = "running"
+	app.status.LastOutput = ""
+	app.status.LastError = ""
 	app.status.LogPath = logPath
 	app.status.ErrorLogPath = errorLogPath
 	_ = m.saveStateLocked()
@@ -314,6 +343,31 @@ func (m *Manager) startApp(ctx context.Context, name string) error {
 
 	go m.waitApp(name, cmd, &output, &errorOutput, stderrWriter, stdoutLog, stderrLog)
 	return nil
+}
+
+func (m *Manager) runPreStart(app config.SupervisorAppConfig) (string, error) {
+	timeout := time.Duration(app.PreStartTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, app.PreStartCommand, app.PreStartArgs...)
+	if app.PreStartWorkingDir != "" {
+		cmd.Dir = app.PreStartWorkingDir
+	} else if app.WorkingDir != "" {
+		cmd.Dir = app.WorkingDir
+	}
+	cmd.Env = append(os.Environ(), envList(app.Env)...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(output), fmt.Errorf("%s timed out after %s", preStartLabel(app), timeout)
+	}
+	if err != nil {
+		return string(output), fmt.Errorf("%s failed: %w", preStartLabel(app), err)
+	}
+	return string(output), nil
 }
 
 func (m *Manager) StopApp(ctx context.Context, name string) error {
@@ -1314,6 +1368,11 @@ func envList(env map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func preStartLabel(app config.SupervisorAppConfig) string {
+	parts := append([]string{app.PreStartCommand}, app.PreStartArgs...)
+	return "pre-start command " + strconv.Quote(strings.Join(parts, " "))
 }
 
 func copyMap(in map[string]string) map[string]string {

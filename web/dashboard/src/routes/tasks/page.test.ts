@@ -37,6 +37,7 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('client.deleteTask(taskId)');
     expect(pageSource).toContain('client.approveApproval(approval.id)');
     expect(pageSource).toContain('client.denyApproval(approval.id)');
+    expect(pageSource).toContain('approvalNoticeTitle(operation, response.reply ||');
     expect(pageSource).not.toContain('client.sendMessage');
     expect(pageSource).not.toContain('sendCommand');
     expect(pageSource).not.toContain('command-panel');
@@ -84,6 +85,8 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('taskStateDescription');
     expect(pageSource).toContain('taskStateTransitions');
     expect(pageSource).toContain('aria-label="Workflow state"');
+    expect(pageSource).toContain('aria-label="Automatic recovery"');
+    expect(pageSource).toContain('currentTask.auto_recovery_attempts');
     expect(pageSource).toContain('aria-label="Worker runs"');
     expect(pageSource).toContain('aria-label="Task plan"');
     expect(pageSource).toContain('aria-label="Original task input"');

@@ -1589,7 +1589,7 @@ func TestProjectCheckFailureKeepsFailingToolTail(t *testing.T) {
 	}
 }
 
-func TestReviewPremergeFailureBlocksWithoutAutoDelegating(t *testing.T) {
+func TestReviewPremergeFailureBlocksForSupervisorRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
 	defer close(releaseDelegate)
@@ -1621,12 +1621,12 @@ func TestReviewPremergeFailureBlocksWithoutAutoDelegating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "ready_for_review -> blocked") || !strings.Contains(reply, "no worker was restarted automatically") {
-		t.Fatalf("reply = %q, want explicit blocked transition without auto restart", reply)
+	if !strings.Contains(reply, "ready_for_review -> blocked") || !strings.Contains(reply, "task supervisor will queue automatic recovery") {
+		t.Fatalf("reply = %q, want explicit blocked transition with supervisor recovery", reply)
 	}
 	select {
 	case <-delegateStarted:
-		t.Fatal("review premerge failure should not auto-delegate")
+		t.Fatal("review premerge failure should be recovered by supervisor, not inline review")
 	default:
 	}
 	updated, err := orch.tasks.Load(task.ID)
@@ -2157,6 +2157,7 @@ func TestApprovalAutoReconcilesTaskBranchWithCurrentMain(t *testing.T) {
 
 func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
+	orch.cfg.ExternalAgents = nil
 	tempDir := t.TempDir()
 	root := filepath.Join(tempDir, "repo")
 	workspace := filepath.Join(tempDir, "workspaces", "task_20260426_184630_badf00d")
@@ -2211,7 +2212,7 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "could not auto-rebase") || !strings.Contains(reply, taskstore.StatusConflictResolution) {
+	if !strings.Contains(reply, "could not auto-rebase") || !strings.Contains(reply, taskstore.StatusConflictResolution) || !strings.Contains(reply, "Automatic conflict recovery could not start yet") {
 		t.Fatalf("reply = %q, want auto-rebase conflict guidance", reply)
 	}
 	updatedApproval, err := orch.approvals.Load(req.ID)
@@ -2231,6 +2232,115 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 	status := gitTestOutput(t, workspace, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		t.Fatalf("workspace status = %q, want merge aborted and clean", status)
+	}
+}
+
+func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	defer close(releaseDelegate)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
+	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260428_200514_0d62653b")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260428_200514_0d62653b",
+		Title:      "pwa",
+		Goal:       "pwa",
+		Status:     taskstore.StatusAwaitingApproval,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		Result:     "Approval auto-rebase failed; automatic conflict recovery required: merge conflict",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	req := approvalstore.Request{
+		ID:     "approval_20260428_221022_241942df",
+		TaskID: task.ID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{"branch":"homelabd/task_20260428_200514_0d62653b"}`),
+		Reason: "merge reviewed task branch into repo root; auto-rebase failed: merge conflict",
+		Status: approvalstore.StatusFailed,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "already failed") || !strings.Contains(reply, "automatic conflict recovery") {
+		t.Fatalf("reply = %q, want failed approval recovery guidance", reply)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery worker did not start")
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
+		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
+	}
+}
+
+func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	defer close(releaseDelegate)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
+	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260429_065348_8f7391fb")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := taskstore.Task{
+		ID:         "task_20260429_065348_8f7391fb",
+		Title:      "chat failed send UI",
+		Goal:       "chat failed send UI",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  workspace,
+		Result:     "ReviewerAgent could not reconcile task branch with current main before checks: merge conflict",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().Add(-10 * time.Minute).UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered = %d, want 1", count)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery worker did not start")
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
+		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
 }
 
@@ -3090,6 +3200,9 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 		"nix develop -c bun run --cwd web browser:preflight",
 		"do not stop or restart production",
 		"For remote tasks",
+		"Mermaid fenced diagrams",
+		"#2563eb",
+		"#60a5fa",
 	} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("delegation instruction missing %q:\n%s", want, instruction)
@@ -3123,6 +3236,28 @@ func TestBrowserUATForDiffSelectsSiteUATForBroadDashboardChanges(t *testing.T) {
 	}, "\n")
 	if got := browserUATForDiff(diff); got != "site" {
 		t.Fatalf("browserUATForDiff(shared nav) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/web/bun.lock b/web/bun.lock",
+		"--- a/web/bun.lock",
+		"+++ b/web/bun.lock",
+		"@@",
+		"+    \"mermaid\": [\"mermaid@11.14.0\"]",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(web lockfile) = %q, want site", got)
+	}
+
+	diff = strings.Join([]string{
+		"diff --git a/pkg/supervisor/manager.go b/pkg/supervisor/manager.go",
+		"--- a/pkg/supervisor/manager.go",
+		"+++ b/pkg/supervisor/manager.go",
+		"@@",
+		"+change",
+	}, "\n")
+	if got := browserUATForDiff(diff); got != "site" {
+		t.Fatalf("browserUATForDiff(supervisor) = %q, want site", got)
 	}
 
 	diff = strings.Join([]string{
@@ -3847,9 +3982,24 @@ func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
 		ID:        "task_123",
 		Workspace: "/tmp/workspaces/task_123",
 	})
-	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines"} {
+	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestWorkflowStepPromptIncludesDiagramGuidance(t *testing.T) {
+	prompt := workflowStepPrompt(workflowstore.Workflow{
+		Name: "Release flow",
+		Goal: "Explain deployment states",
+	}, workflowstore.Step{
+		Name:   "Summarise",
+		Prompt: "Map the state machine",
+	}, nil)
+	for _, want := range []string{"Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workflow step prompt missing %q:\n%s", want, prompt)
 		}
 	}
 }

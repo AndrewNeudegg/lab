@@ -81,6 +81,8 @@ export interface HomelabdTask {
   restart_status?: 'pending' | 'running' | 'complete' | 'failed' | string;
   restart_current?: string;
   restart_last_error?: string;
+  auto_recovery_attempts?: number;
+  auto_recovery_last_at?: string;
   workspace?: string;
   result?: string;
   plan?: HomelabdTaskPlan;

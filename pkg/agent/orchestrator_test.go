@@ -2261,6 +2261,42 @@ func TestPostMergeRestartFailureKeepsTaskAwaitingRestart(t *testing.T) {
 	}
 }
 
+func TestReconcileDoesNotAutoRetryFailedPostMergeRestart(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	supervisor, calls := newRestartGateSupervisor(t, false)
+	defer supervisor.Close()
+	orch.cfg.Supervisord.Addr = supervisor.URL
+	setSupervisorAppHealthURL(t, &orch.cfg, "dashboard", supervisor.URL+"/health/dashboard")
+
+	task := taskstore.Task{
+		ID:               "task_20260429_091500_deadbeef",
+		Title:            "restart failed",
+		Goal:             "restart failed",
+		Status:           taskstore.StatusAwaitingRestart,
+		AssignedTo:       "OrchestratorAgent",
+		RestartRequired:  []string{"dashboard"},
+		RestartStatus:    taskstore.RestartStatusFailed,
+		RestartCurrent:   "dashboard",
+		RestartLastError: "connection refused",
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 {
+		t.Fatalf("recovered = %d, want no automatic retry for failed restart gate", recovered)
+	}
+	if got := calls.snapshot(); len(got) != 0 {
+		t.Fatalf("supervisor calls = %#v, want no retry", got)
+	}
+}
+
 func TestApprovalMergeFailureReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeFailStub{}); err != nil {
@@ -2479,11 +2515,14 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
-	defer close(releaseDelegate)
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
 	})
+	defer func() {
+		close(releaseDelegate)
+		waitForTaskInactive(t, orch, "task_20260428_200514_0d62653b")
+	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
 	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260428_200514_0d62653b")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -2539,11 +2578,14 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
-	defer close(releaseDelegate)
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
 	})
+	defer func() {
+		close(releaseDelegate)
+		waitForTaskInactive(t, orch, "task_20260429_065348_8f7391fb")
+	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
 	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260429_065348_8f7391fb")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -4195,6 +4237,7 @@ func TestReconcileQueuedTasksStartsWorker(t *testing.T) {
 	}
 	close(releaseDelegate)
 	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+	waitForTaskInactive(t, orch, taskID)
 }
 
 func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
@@ -4248,6 +4291,7 @@ func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
 	}
 	close(releaseDelegate)
 	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+	waitForTaskInactive(t, orch, taskID)
 }
 
 func TestRecoveryPlanPreservesUXAgent(t *testing.T) {
@@ -4608,6 +4652,18 @@ func waitForTask(t *testing.T, orch *Orchestrator, taskID string, done func(task
 	}
 	t.Fatalf("timed out waiting for task %s; last = %#v", taskID, last)
 	return taskstore.Task{}
+}
+
+func waitForTaskInactive(t *testing.T, orch *Orchestrator, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !orch.taskActive(taskID) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task %s to become inactive", taskID)
 }
 
 func writeTestRepoFile(t *testing.T, root, rel, content string) {

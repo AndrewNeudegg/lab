@@ -1536,6 +1536,16 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			continue
 		}
 		if t.Status == taskstore.StatusAwaitingRestart {
+			if t.RestartStatus == taskstore.RestartStatusFailed {
+				o.log().Warn("task supervisor leaving failed post-merge restart for explicit retry",
+					"task_id", t.ID,
+					"task_short_id", taskShortID(t.ID),
+					"restart_required", t.RestartRequired,
+					"restart_current", t.RestartCurrent,
+					"restart_error", t.RestartLastError,
+				)
+				continue
+			}
 			recovered++
 			o.log().Info("task supervisor continuing post-merge restart",
 				"task_id", t.ID,

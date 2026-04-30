@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import { Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
@@ -27,7 +28,7 @@
     {
       id: 'agents-runtime',
       label: 'Agents and runtime',
-      slugs: ['remote-agents', 'external-agents', 'agentic-testing', 'supervisord']
+      slugs: ['remote-agents', 'external-agents', 'agent-tools', 'agentic-testing', 'supervisord']
     }
   ];
 
@@ -36,6 +37,7 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
+  let lastJumpSourceSlug = selectedSlug;
   let controlsReady = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
@@ -77,13 +79,16 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: jumpSlug = selectedSlug;
+  $: if (selectedSlug !== lastJumpSourceSlug) {
+    jumpSlug = selectedSlug;
+    lastJumpSourceSlug = selectedSlug;
+  }
 
   const openSelectedDoc = (event: Event) => {
     const slug = (event.currentTarget as HTMLSelectElement).value;
 
     if (slug && slug !== selectedSlug) {
-      window.location.assign(`/docs/${slug}`);
+      void goto(`/docs/${slug}`);
     }
   };
 
@@ -98,7 +103,7 @@
 
 <Navbar title="Docs" subtitle="Library" current="/docs" />
 
-<main class="docs-shell">
+<main class="docs-shell" data-docs-library-ready={controlsReady ? 'true' : 'false'}>
   <div class="docs-layout">
     <aside class="library" aria-label="Docs library">
       <div class="library-header">

@@ -4216,9 +4216,35 @@ func TestRecoverRunningTasksSkipsNonRunningTasks(t *testing.T) {
 
 func TestReconcileAutomaticRecoveryHonoursWorkerCapacity(t *testing.T) {
 	releaseDelegate := make(chan struct{})
-	delegate := &delegateStub{started: make(chan struct{}, 3), release: releaseDelegate}
+	delegate := &delegateStub{started: make(chan struct{}, 3), release: releaseDelegate, finished: make(chan struct{}, 1)}
 	orch := newTestOrchestrator(t, delegate)
 	orch.cfg.Limits.MaxConcurrentTasks = 1
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDelegate)
+		})
+	}
+	startedRecovery := false
+	defer func() {
+		release()
+		if !startedRecovery {
+			return
+		}
+		select {
+		case <-delegate.finished:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for delegated recovery to finish")
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if orch.activeTaskCount() == 0 {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatalf("active task count = %d, want 0 after delegated recovery", orch.activeTaskCount())
+	}()
 	now := time.Now().UTC()
 	for _, suffix := range []string{"11111111", "22222222", "33333333"} {
 		taskID := "task_20260429_120000_" + suffix
@@ -4247,6 +4273,7 @@ func TestReconcileAutomaticRecoveryHonoursWorkerCapacity(t *testing.T) {
 	}
 	select {
 	case <-delegate.started:
+		startedRecovery = true
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected one delegate to start")
 	}
@@ -4258,7 +4285,7 @@ func TestReconcileAutomaticRecoveryHonoursWorkerCapacity(t *testing.T) {
 	if active := orch.activeTaskCount(); active != 1 {
 		t.Fatalf("active task count = %d, want 1", active)
 	}
-	close(releaseDelegate)
+	release()
 }
 
 func TestReconcileMarksExhaustedAutomaticRecoveryBlocked(t *testing.T) {
@@ -4621,6 +4648,7 @@ func seedTaskGraph(t *testing.T, orch *Orchestrator, goal string) (taskstore.Tas
 type delegateStub struct {
 	started chan struct{}
 	release chan struct{}
+	finished chan struct{}
 }
 
 func newTestOrchestrator(t *testing.T, delegate *delegateStub) *Orchestrator {
@@ -4896,6 +4924,15 @@ func (s agentDelegateStub) Run(ctx context.Context, raw json.RawMessage) (json.R
 		Workspace string `json:"workspace"`
 	}
 	_ = json.Unmarshal(raw, &req)
+	defer func() {
+		if s.stub.finished == nil {
+			return
+		}
+		select {
+		case s.stub.finished <- struct{}{}:
+		default:
+		}
+	}()
 	select {
 	case s.stub.started <- struct{}{}:
 	default:

@@ -54,7 +54,18 @@ chat search browser UAT
 search chat for what did you tell me about workflows
 ```
 
-The Orchestrator can also call `chat.history` and `chat.search` before answering questions about earlier user messages, assistant replies, what it sent, or how you responded. The LLM harness separates the prior transcript from the current request and excludes the current request from those tool results, so prompts like `what was my last message?`, `what was the third word in my last message?`, or `create a task from that interaction` can inspect the preceding exchange instead of paraphrasing the live prompt. These tools read the server event log for `user.message` and `chat.reply` entries. Dashboard-only local messages, such as the welcome bubble before anything is sent to homelabd, are not part of that server log.
+The Orchestrator can also call `chat.history` and `chat.search` before answering questions about earlier user messages, assistant replies, what it sent, or how you responded. The LLM harness separates the prior transcript from the current request and excludes the current request from those tool results, so prompts like `what was my last message?`, `what was the third word in my last message?`, or `create a task from that interaction` can inspect the preceding exchange instead of paraphrasing the live prompt. These tools read the server event log for `user.message` and `chat.reply` entries. Dashboard chat sends a `conversation_id`, so history and search are scoped to the selected dashboard chat. CLI messages without a conversation id still use the shared unscoped history.
+
+## Clearing And Chat Sessions
+
+The dashboard stores resumable chat sessions in browser local storage. Use `New chat` to start a fresh local session, or select a previous chat from the history pane to continue that context. Clearing a chat removes the selected local session and asks homelabd to delete matching `user.message`, `chat.reply`, and HTTP transcript entries so future dashboard context for that chat is gone.
+
+Use the dashboard `Clear` button for the selected chat, or `Clear all` when every local dashboard chat and all server chat transcript context should be removed. From a terminal, clear server-side chat context with:
+
+```bash
+go run ./cmd/homelabctl chat clear chat_123
+go run ./cmd/homelabctl chat clear --all
+```
 
 ## Memory And Personality
 
@@ -83,6 +94,16 @@ create a task to fix running task recovery after homelabd restarts
 ```
 
 `homelabd` treats `new`, `task:`, `create a task to ...`, and similar creation phrases as task creation even when the goal text mentions words like `running`, `active tasks`, or `in progress`.
+
+Large homelabd feature requests, such as a new mode or product surface like Knowledge Space or Assistant, pause before implementation. OrchestratorAgent creates a concise design brief with objectives, scope, UX direction, API changes, and test strategy, then stores it as a pending `task.create` approval. No task or worktree exists until you confirm it:
+
+```text
+approve <approval_id>
+refine <approval_id> start read-only and keep the first slice dashboard-only
+deny <approval_id>
+```
+
+Approving the planning brief creates the implementation task and starts the worker. Refining the approval updates the brief while preserving the original request and still leaves implementation unqueued.
 
 Open-ended chat also converts assistant commitments to implementation work into a task in the same turn. If OrchestratorAgent says it will fix, tighten, update, or improve homelabd behaviour, the reply includes the normal `/tasks?task=<task_id>` task link instead of leaving the commitment as prose.
 

@@ -56,7 +56,7 @@ Ask chat `tools` or `what tools are available?` to see the live catalogue as a c
 
 Provider adapters declare their structured-output capabilities. OpenAI and Gemini agent turns include a provider-native structured-output schema for the response envelope where supported. Providers with tool calling but no native JSON schema get a `final.submit` tool for final answers. Self-hosted providers without either capability still get the same prompt contract, and all providers pass through the same Go validation and repair loop before any tool call can execute.
 
-Pseudo-tools such as `chat.history`, `chat.search`, `chat.send`, `task.create`, `task.run`, and `workflow.run` are not package tools, but they still appear in the catalogue and pass through the same policy path. Package tools implement `pkg/tool.Tool`; tools with input-dependent risk, such as `shell.run_limited`, also implement `RiskFor`.
+Pseudo-tools such as `chat.history`, `chat.search`, `chat.send`, `task.create`, `task.run`, and `workflow.run` are not package tools, but they still appear in the catalogue and pass through the same policy path. `task.create` accepts `goal`, optional `target`, and optional `attachments`; large homelabd feature goals create a design brief approval that stores internal planning metadata before queueing. Package tools implement `pkg/tool.Tool`; tools with input-dependent risk, such as `shell.run_limited`, also implement `RiskFor`.
 
 ## Argument Conventions
 

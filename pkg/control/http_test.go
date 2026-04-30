@@ -92,6 +92,48 @@ func TestMessageEndpointReturnsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestChatClearEndpointRemovesConversationEventsAndHTTPTranscript(t *testing.T) {
+	server, _, cfg := newHTTPTestServer(t)
+	server.ChatLogDir = filepath.Join(cfg.DataDir, "chat")
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"help","conversation_id":"chat_alpha"}`, "", http.StatusOK)
+	requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"status","conversation_id":"chat_beta"}`, "", http.StatusOK)
+
+	response := requestJSON(t, mux, http.MethodPost, "/chat/clear", `{"conversation_id":"chat_alpha"}`, "", http.StatusOK)
+	var cleared struct {
+		RemovedEvents     int `json:"removed_events"`
+		RemovedLogEntries int `json:"removed_log_entries"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&cleared); err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RemovedEvents != 2 || cleared.RemovedLogEntries != 2 {
+		t.Fatalf("clear response = %#v, want two event and two transcript removals", cleared)
+	}
+
+	events := requestJSON(t, mux, http.MethodGet, "/events", "", "", http.StatusOK)
+	if strings.Contains(events.Body.String(), "chat_alpha") || strings.Contains(events.Body.String(), "help") {
+		t.Fatalf("events still contain cleared conversation: %s", events.Body.String())
+	}
+	if !strings.Contains(events.Body.String(), "chat_beta") {
+		t.Fatalf("events did not keep other conversation: %s", events.Body.String())
+	}
+
+	logBytes, err := os.ReadFile(filepath.Join(server.ChatLogDir, time.Now().UTC().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if strings.Contains(logText, "chat_alpha") || strings.Contains(logText, "help") {
+		t.Fatalf("chat log still contains cleared conversation: %s", logText)
+	}
+	if !strings.Contains(logText, "chat_beta") {
+		t.Fatalf("chat log did not keep other conversation: %s", logText)
+	}
+}
+
 func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
 	server, _, _ := newHTTPTestServer(t)
 	mux := http.NewServeMux()
@@ -110,6 +152,57 @@ func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
 	reloaded := requestJSON(t, mux, http.MethodGet, "/settings", "", "", http.StatusOK)
 	if !strings.Contains(reloaded.Body.String(), `"auto_merge_enabled":true`) {
 		t.Fatalf("reloaded settings = %s", reloaded.Body.String())
+	}
+}
+
+func TestAssistantEndpointReturnsFilteredCatalogue(t *testing.T) {
+	server := Server{}
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/assistant?area=research&q=sources", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body.String())
+	}
+	var got struct {
+		Name       string `json:"name"`
+		Activities []struct {
+			ID string `json:"id"`
+		} `json:"activities"`
+		Capabilities []struct {
+			ID               string `json:"id"`
+			Name             string `json:"name"`
+			WorkflowTemplate struct {
+				Steps []struct {
+					Name string `json:"name"`
+					Kind string `json:"kind"`
+				} `json:"steps"`
+			} `json:"workflow_template"`
+		} `json:"capabilities"`
+		UXPatterns []struct {
+			ID string `json:"id"`
+		} `json:"ux_patterns"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Assistant" {
+		t.Fatalf("name = %q, want Assistant", got.Name)
+	}
+	if len(got.Capabilities) != 1 || got.Capabilities[0].ID != "research-prepare" {
+		t.Fatalf("capabilities = %#v, want research-prepare", got.Capabilities)
+	}
+	if len(got.Capabilities[0].WorkflowTemplate.Steps) == 0 {
+		t.Fatalf("workflow template missing steps: %#v", got.Capabilities[0].WorkflowTemplate)
+	}
+	if len(got.Activities) != 1 || got.Activities[0].ID != "prepare-decision" {
+		t.Fatalf("activities = %#v, want prepare-decision", got.Activities)
+	}
+	if len(got.UXPatterns) == 0 {
+		t.Fatal("expected ux patterns in assistant catalogue")
 	}
 }
 

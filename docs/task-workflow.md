@@ -38,6 +38,20 @@ Every task record carries a durable reviewed plan before execution starts. The p
 
 Reviewing a task with no workspace diff moves it to `no_change_required` only when the worker result starts with `No change required:` and explains why. This gives the operator an explicit accept-or-reopen decision without forcing a diff. A no-diff task without that marker still moves to `blocked`; the next action should be to rerun, delegate with clearer instructions, or delete the task.
 
+## Large Feature Planning Briefs
+
+Large homelabd feature requests are approval-gated before the task queue. When a chat request looks like a new homelabd mode, major feature, or product surface, OrchestratorAgent writes a concise design brief instead of creating a task. The brief covers objectives, scope, UX direction, API changes, and test strategy, then creates a pending `task.create` approval. Use `approve <approval_id>` to create and run the implementation task, `refine <approval_id> <notes>` to revise the brief, or `deny <approval_id>` to cancel it.
+
+```mermaid
+flowchart LR
+  R[large feature request] -->|brief generated| P[pending task.create approval]
+  P -->|refine notes| P
+  P -->|approve| T[task created and worker started]
+  P -->|deny| C[cancelled before queue]
+```
+
+No task record, worktree, worker run, or merge-queue entry exists before approval. Approved implementation tasks keep the accepted design brief in the task goal so the worker sees the objectives and validation strategy alongside the original request.
+
 Task records include run lifecycle timestamps. `started_at` is set when a task enters `running`, and `stopped_at` is set when it leaves `running` for review, approval, verification, blocked, failed, done, or cancelled states. Reopening or rerunning a task starts a new run and clears the previous `stopped_at`.
 
 The review gate records failure state and then exits; it does not restart a worker while ReviewerAgent owns the task. If checks or diff validation fail, the task stays `blocked`; if branch reconciliation fails, it moves to `conflict_resolution`. In either case, the failure reason is stored in the task result and task activity. The task supervisor owns follow-up recovery after review releases the task. When recovery starts, either automatically or through `retry`/`delegate`, `homelabd` preserves the previous failure context in the worker prompt and task result. For rebase or merge-conflict states, it also attempts to merge current `main` into a clean task worktree before starting the worker, leaving real conflict files in place for the worker to resolve.

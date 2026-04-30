@@ -349,7 +349,7 @@ func TestToolIntrospectionListsAvailableToolsWithoutLLM(t *testing.T) {
 		"Available tools:",
 		"`task.create`: Create a local or remote development task",
 		"Pass the full unsummarised brief as goal",
-		"Parameters: required `goal`; optional `target`.",
+		"Parameters: required `goal`; optional `attachments`, `target`.",
 		"`workflow.run`: Run a durable workflow",
 		"Parameters: required `workflow_id`.",
 		"`agent.list`: No description. Parameters: none.",
@@ -1137,6 +1137,192 @@ func TestCreateTaskUsesConciseReply(t *testing.T) {
 	}
 	if !sawCreated || !sawReviewed {
 		t.Fatalf("plan events created=%v reviewed=%v, want both", sawCreated, sawReviewed)
+	}
+}
+
+func TestLargeHomelabdFeatureCreatesPlanningApprovalBeforeTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	reply, err := orch.Handle(context.Background(), "test", "new add Knowledge Space mode to homelabd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Design brief pending approval", "Objectives", "Scope", "UX direction", "API changes", "Test strategy", "No implementation task has been created yet", "refine approval_"} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply missing %q:\n%s", want, reply)
+		}
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("task count = %d, want no implementation task before approval", len(tasks))
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("approval count = %d, want one planning approval", len(approvals))
+	}
+	approval := approvals[0]
+	if approval.Tool != "task.create" || approval.Status != approvalstore.StatusPending {
+		t.Fatalf("approval = %#v, want pending task.create approval", approval)
+	}
+	args, err := parseTaskCreateRequest(approval.Args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !args.PlanningGate || !args.AutoRun {
+		t.Fatalf("args = %#v, want planning gate with auto_run", args)
+	}
+	if !strings.Contains(args.Goal, "Knowledge Space") || !strings.Contains(args.DesignBrief, "API changes") {
+		t.Fatalf("args = %#v, want original goal and design brief", args)
+	}
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasEventType(events, "task.planning_brief.created") {
+		t.Fatalf("events missing task.planning_brief.created: %#v", events)
+	}
+}
+
+func TestApprovingLargeFeaturePlanningBriefCreatesAndRunsTask(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	releaseDelegate := make(chan struct{})
+	release := closeOnce(releaseDelegate)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: releaseDelegate,
+	})
+
+	reply, err := orch.Handle(context.Background(), "test", "add a new Assistant mode to homelabd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Design brief pending approval") {
+		t.Fatalf("reply = %q, want planning brief", reply)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("approval count = %d, want one", len(approvals))
+	}
+
+	approveReply, err := orch.Handle(context.Background(), "test", "approve "+approvals[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(approveReply, "Approved "+approvals[0].ID) || !strings.Contains(approveReply, "started codex") {
+		t.Fatalf("approve reply = %q, want approved task run", approveReply)
+	}
+	select {
+	case <-delegateStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("codex delegation did not start after planning approval")
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want one approved implementation task", len(tasks))
+	}
+	created := tasks[0]
+	if created.Status != taskstore.StatusRunning || created.AssignedTo != "codex" {
+		t.Fatalf("task = %#v, want running codex task", created)
+	}
+	if !strings.Contains(created.Goal, "Approved design brief") || !strings.Contains(created.Goal, "API changes") {
+		t.Fatalf("goal = %q, want approved design brief in task context", created.Goal)
+	}
+	updatedApproval, err := orch.approvals.Load(approvals[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusGranted || updatedApproval.TaskID != created.ID {
+		t.Fatalf("approval = %#v, want granted approval tied to task", updatedApproval)
+	}
+	release()
+	waitForTaskInactive(t, orch, created.ID)
+}
+
+func TestRefinePlanningApprovalUpdatesBriefBeforeTaskCreation(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	if _, err := orch.Handle(context.Background(), "test", "new implement a new Assistant mode for homelabd"); err != nil {
+		t.Fatal(err)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("approval count = %d, want one", len(approvals))
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "refine "+approvals[0].ID+" start read-only and do not add write actions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Refinements") || !strings.Contains(reply, "start read-only") {
+		t.Fatalf("reply = %q, want revised brief with refinement", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("task count = %d, want no task until approval", len(tasks))
+	}
+	updated, err := orch.approvals.Load(approvals[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := parseTaskCreateRequest(updated.Args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(args.Refinements) != 1 || !strings.Contains(args.DesignBrief, "start read-only") || !args.AutoRun {
+		t.Fatalf("args = %#v, want persisted refinement and auto_run", args)
+	}
+}
+
+func TestTaskCreateToolLargeFeatureReturnsPlanningApproval(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	result := orch.executeProposedTool(context.Background(), "OrchestratorAgent", proposedToolCall{
+		Tool: "task.create",
+		Args: json.RawMessage(`{"goal":"Build Knowledge Space as a new homelabd mode"}`),
+	}, "")
+	if !result.Allowed || result.Error != "" {
+		t.Fatalf("result = %#v, want allowed planning approval result", result)
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(result.Result, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload.Message, "Design brief pending approval") {
+		t.Fatalf("message = %q, want planning approval", payload.Message)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("task count = %d, want no task before approval", len(tasks))
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 || approvals[0].Tool != "task.create" {
+		t.Fatalf("approvals = %#v, want pending task.create planning approval", approvals)
 	}
 }
 
@@ -3930,6 +4116,128 @@ func TestChatMetaCommandsSearchRecordedConversation(t *testing.T) {
 	}
 	if !strings.Contains(reply, "Recent chat history:") || strings.Contains(reply, "user dashboard: history") {
 		t.Fatalf("history reply = %q, want prior messages without current command", reply)
+	}
+}
+
+func TestChatConversationHistoryIsScopedByConversationID(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "help",
+		ConversationID: "chat_alpha",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "status",
+		ConversationID: "chat_beta",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := orch.chatHistoryPayload(chatHistoryToolRequest{
+		Limit:          10,
+		ConversationID: "chat_alpha",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) == 0 {
+		t.Fatalf("entries = %#v, want chat_alpha history", result.Entries)
+	}
+	for _, entry := range result.Entries {
+		if entry.ConversationID != "chat_alpha" {
+			t.Fatalf("entry = %#v, want only chat_alpha", entry)
+		}
+	}
+}
+
+func TestClearChatRemovesOnlySelectedConversationEvents(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "help",
+		ConversationID: "chat_alpha",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "status",
+		ConversationID: "chat_beta",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := orch.ClearChat(context.Background(), ClearChatRequest{ConversationID: "chat_alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RemovedEvents != 2 {
+		t.Fatalf("removed events = %d, want user and assistant events", cleared.RemovedEvents)
+	}
+
+	payload, err := orch.chatHistoryPayload(chatHistoryToolRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) == 0 {
+		t.Fatalf("entries = %#v, want remaining chat_beta history", result.Entries)
+	}
+	for _, entry := range result.Entries {
+		if entry.ConversationID == "chat_alpha" || strings.Contains(entry.Message, "help") {
+			t.Fatalf("entry = %#v, cleared conversation still present", entry)
+		}
+	}
+}
+
+func TestClearChatAllRemovesEveryConversationEvent(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	for _, req := range []HandleRequest{
+		{From: "dashboard", Message: "help", ConversationID: "chat_alpha"},
+		{From: "dashboard", Message: "status", ConversationID: "chat_beta"},
+	} {
+		if _, err := orch.HandleDetailedRequest(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleared, err := orch.ClearChat(context.Background(), ClearChatRequest{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RemovedEvents != 4 {
+		t.Fatalf("removed events = %d, want both user and assistant events for both conversations", cleared.RemovedEvents)
+	}
+
+	payload, err := orch.chatHistoryPayload(chatHistoryToolRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 0 {
+		t.Fatalf("entries = %#v, want all chat history removed", result.Entries)
 	}
 }
 

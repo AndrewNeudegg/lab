@@ -17,6 +17,7 @@
   export let taskApiBase = '';
   export let taskAttention: TaskAttentionCounts | undefined = undefined;
   export let links: { href: string; label: string }[] = [
+    { href: '/assistant', label: 'Assistant' },
     { href: '/chat', label: 'Chat' },
     { href: '/tasks', label: 'Tasks' },
     { href: '/knowledge', label: 'Knowledge' },
@@ -76,6 +77,8 @@
   let expandedRightWidth = 0;
   const screenCaptureUnavailableMessage =
     'Browser context captured. Screenshot capture is unavailable in this browser, so the report will submit without an image.';
+  const maxMeasuredBrandWidth = 180;
+  const minMeasuredBrandWidth = 96;
 
   const isActive = (href: string) => current === href;
   const isTasksLink = (href: string) => href === '/tasks';
@@ -219,8 +222,15 @@
     if (!compactNav) {
       expandedRightWidth = rightElement.scrollWidth;
     }
+    const brandLabelWidths = Array.from(brandElement.querySelectorAll('span, strong')).map(
+      (element) => (element as HTMLElement).scrollWidth
+    );
+    const brandContentWidth = Math.min(
+      maxMeasuredBrandWidth,
+      Math.max(minMeasuredBrandWidth, ...brandLabelWidths)
+    );
     const required =
-      brandElement.scrollWidth +
+      brandContentWidth +
       navMeasureElement.scrollWidth +
       (expandedRightWidth || rightElement.scrollWidth) +
       gap * 2;

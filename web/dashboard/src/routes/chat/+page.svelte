@@ -21,9 +21,19 @@
   } from '@homelab/shared';
   import { extractCommands } from './command-actions';
   import { formatInteractionStats, messageExchangeNumber } from './interaction-stats';
+  import {
+    activeChatSessionStorageKey,
+    chatSessionTitle,
+    chatSessionsStorageKey,
+    emptyChatTitle,
+    legacyTranscriptStorageKey,
+    prepareSessionForStorage,
+    restoreChatState,
+    sortChatSessions,
+    type ChatSession
+  } from './sessions';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
-  const transcriptStorageKey = 'homelabd.dashboard.chatTranscript.v4';
   const defaultChatSendTimeoutMs = 20_000;
   const configuredChatSendTimeoutMs = Number.parseInt(
     import.meta.env.VITE_HOMELABD_CHAT_SEND_TIMEOUT_MS || '',
@@ -57,17 +67,9 @@
     }
   ];
 
-  const welcomeMessage: ChatTranscriptMessage = {
-    id: 'welcome',
-    role: 'assistant',
-    content: 'This is global chat. Use it for direction, planning, workflows, and broad commands. Use Tasks for queue state and task-specific actions.',
-    source: 'program',
-    actions: ['tasks'],
-    time: 'Now'
-  };
-
   let draft = '';
   let loading = false;
+  let clearing = false;
   let error = '';
   let messageId = 0;
   let inputEl: HTMLTextAreaElement | undefined;
@@ -75,11 +77,19 @@
   let messagesEl: HTMLElement | undefined;
   let currentSendAbortController: AbortController | undefined;
   let currentSendCancelled = false;
-  let messages: ChatTranscriptMessage[] = [welcomeMessage];
+  let sessions: ChatSession[] = [];
+  let activeSessionID = '';
+  let currentSession: ChatSession | undefined;
+  let currentSessionTitle = emptyChatTitle;
+  let messages: ChatTranscriptMessage[] = [];
   let pendingAttachments: HomelabdTaskAttachment[] = [];
   let selectedFiles: FileList | undefined;
   let attachmentError = '';
   let draggingFiles = false;
+
+  $: currentSession = sessions.find((session) => session.id === activeSessionID);
+  $: currentSessionTitle = currentSession?.title || emptyChatTitle;
+  $: hasCurrentMessages = messages.length > 0;
 
   const timeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -98,81 +108,48 @@
     }
   };
 
-  const isTranscriptMessage = (value: unknown): value is ChatTranscriptMessage => {
-    if (!value || typeof value !== 'object') {
-      return false;
-    }
-    const candidate = value as Record<string, unknown>;
-    const validRole = candidate.role === 'user' || candidate.role === 'assistant';
-    const validActions =
-      candidate.actions === undefined ||
-      (Array.isArray(candidate.actions) &&
-        candidate.actions.every((action) => typeof action === 'string'));
-    const validStats =
-      candidate.stats === undefined ||
-      (candidate.stats !== null &&
-        typeof candidate.stats === 'object' &&
-        ['model_turns', 'tool_calls', 'input_tokens', 'output_tokens', 'total_tokens', 'elapsed_ms'].every(
-          (key) => {
-            const stat = (candidate.stats as Record<string, unknown>)[key];
-            return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
-          }
-        ));
-    const validAttachments =
-      candidate.attachments === undefined ||
-      (Array.isArray(candidate.attachments) &&
-        candidate.attachments.every(
-          (attachment) =>
-            attachment &&
-            typeof attachment === 'object' &&
-            typeof (attachment as Record<string, unknown>).name === 'string' &&
-            typeof (attachment as Record<string, unknown>).content_type === 'string'
-        ));
-    const validDeliveryStatus =
-      candidate.delivery_status === undefined || candidate.delivery_status === 'failed';
-    const validDeliveryError =
-      candidate.delivery_error === undefined || typeof candidate.delivery_error === 'string';
-
-    return (
-      typeof candidate.id === 'string' &&
-      validRole &&
-      typeof candidate.content === 'string' &&
-      typeof candidate.time === 'string' &&
-      validActions &&
-      validStats &&
-      validAttachments &&
-      validDeliveryStatus &&
-      validDeliveryError
-    );
+  const newSessionID = () => {
+    const random =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    return `chat_${random}`;
   };
 
-  const loadStoredMessages = () => {
+  const activeSession = () => currentSession;
+
+  const nextMessageIndex = (items: ChatTranscriptMessage[]) =>
+    items.reduce((max, message) => {
+      const suffix = Number.parseInt(message.id.split('-').at(-1) || '', 10);
+      return Number.isFinite(suffix) ? Math.max(max, suffix) : max;
+    }, items.length);
+
+  const persistSessions = () => {
     try {
-      const stored = localStorage.getItem(transcriptStorageKey);
-      if (!stored) {
-        return [welcomeMessage];
-      }
-      const parsed = JSON.parse(stored);
-      if (!Array.isArray(parsed)) {
-        return [welcomeMessage];
-      }
-      const restored = parsed.filter(isTranscriptMessage);
-      return restored.length > 0 ? restored : [welcomeMessage];
+      const storedSessions = sortChatSessions(sessions).map(prepareSessionForStorage);
+      localStorage.setItem(chatSessionsStorageKey, JSON.stringify(storedSessions));
+      localStorage.setItem(activeChatSessionStorageKey, activeSessionID);
+      localStorage.removeItem(legacyTranscriptStorageKey);
     } catch {
-      return [welcomeMessage];
+      error = 'Chat history could not be persisted locally.';
     }
   };
 
   const persistMessages = () => {
-    try {
-      const storedMessages = messages.slice(-120).map((message) => ({
-        ...message,
-        attachments: message.attachments?.map(({ data_url, ...attachment }) => attachment)
-      }));
-      localStorage.setItem(transcriptStorageKey, JSON.stringify(storedMessages));
-    } catch {
-      error = 'Chat history could not be persisted locally.';
+    const session = activeSession();
+    if (!session) {
+      return;
     }
+    const now = new Date().toISOString();
+    const updated: ChatSession = {
+      ...session,
+      title: chatSessionTitle(messages),
+      messages,
+      updated_at: now,
+      legacy: undefined
+    };
+    sessions = sortChatSessions(sessions.map((item) => (item.id === updated.id ? updated : item)));
+    persistSessions();
   };
 
   const focusInput = () => {
@@ -205,6 +182,151 @@
       return;
     }
     void goto(href, { keepFocus: true });
+  };
+
+  const sessionUpdatedLabel = (session: ChatSession) => {
+    const updated = new Date(session.updated_at);
+    if (Number.isNaN(updated.getTime())) {
+      return '';
+    }
+    return updated.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const sessionMessageLabel = (session: ChatSession) => {
+    const count = session.messages.length;
+    return `${count} message${count === 1 ? '' : 's'}`;
+  };
+
+  const blankSession = (): ChatSession => {
+    const now = new Date().toISOString();
+    return {
+      id: newSessionID(),
+      title: emptyChatTitle,
+      messages: [],
+      created_at: now,
+      updated_at: now
+    };
+  };
+
+  const activateSession = (sessionID: string) => {
+    const session = sessions.find((item) => item.id === sessionID);
+    if (!session || loading || clearing) {
+      return;
+    }
+    activeSessionID = session.id;
+    messages = session.messages;
+    messageId = nextMessageIndex(messages);
+    pendingAttachments = [];
+    attachmentError = '';
+    persistSessions();
+    if (!scrollToMessageHash()) {
+      scrollMessages();
+    }
+    focusInput();
+  };
+
+  const startNewChat = () => {
+    if (loading || clearing) {
+      return;
+    }
+    error = '';
+    const existingBlank = sessions.find((session) => session.messages.length === 0);
+    if (existingBlank) {
+      draft = '';
+      persistChatDraft(draft);
+      activateSession(existingBlank.id);
+      return;
+    }
+    const session = blankSession();
+    sessions = sortChatSessions([session, ...sessions]);
+    activeSessionID = session.id;
+    messages = [];
+    messageId = 0;
+    draft = '';
+    pendingAttachments = [];
+    attachmentError = '';
+    persistChatDraft(draft);
+    persistSessions();
+    scrollMessages();
+    focusInput();
+  };
+
+  const clearChatContext = async (all = false, conversationID = activeSessionID) => {
+    const client = createHomelabdClient({ baseUrl: apiBase });
+    await client.clearChat(all ? { all: true } : { conversation_id: conversationID });
+  };
+
+  const useSessionAfterClear = (remaining: ChatSession[]) => {
+    if (remaining.length > 0) {
+      sessions = sortChatSessions(remaining);
+      activeSessionID = sessions[0].id;
+      messages = sessions[0].messages;
+    } else {
+      const session = blankSession();
+      sessions = [session];
+      activeSessionID = session.id;
+      messages = [];
+    }
+    messageId = nextMessageIndex(messages);
+    draft = '';
+    pendingAttachments = [];
+    attachmentError = '';
+    persistChatDraft(draft);
+    persistSessions();
+    scrollMessages();
+    focusInput();
+  };
+
+  const clearCurrentChat = async () => {
+    const session = activeSession();
+    if (!session || !hasCurrentMessages || loading || clearing) {
+      return;
+    }
+    if (
+      !window.confirm(
+        'Clear this chat? This removes its messages from this browser and homelabd chat context.'
+      )
+    ) {
+      return;
+    }
+    clearing = true;
+    error = '';
+    try {
+      await clearChatContext(false, session.id);
+      useSessionAfterClear(sessions.filter((item) => item.id !== session.id));
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Chat could not be cleared.';
+    } finally {
+      clearing = false;
+    }
+  };
+
+  const clearAllChats = async () => {
+    if (loading || clearing) {
+      return;
+    }
+    if (
+      !window.confirm(
+        'Clear all chats? This removes every local chat and clears homelabd chat context.'
+      )
+    ) {
+      return;
+    }
+    clearing = true;
+    error = '';
+    try {
+      await clearChatContext(true);
+      useSessionAfterClear([]);
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Chat history could not be cleared.';
+    } finally {
+      clearing = false;
+    }
   };
 
   const addMessage = (
@@ -298,10 +420,12 @@
   const deliverUserMessage = async (message: ChatTranscriptMessage) => {
     loading = true;
     error = '';
+    const conversationID = activeSessionID;
     try {
       const response = await sendMessageRequest({
         from: 'dashboard',
         content: message.content.trim() || 'Attached files',
+        conversation_id: conversationID,
         attachments: message.attachments || []
       });
       updateMessage(message.id, { delivery_status: undefined, delivery_error: undefined });
@@ -324,10 +448,20 @@
   };
 
   onMount(() => {
-    messages = loadStoredMessages();
+    const restored = restoreChatState({
+      storedSessions: localStorage.getItem(chatSessionsStorageKey),
+      storedActiveID: localStorage.getItem(activeChatSessionStorageKey),
+      legacyTranscript: localStorage.getItem(legacyTranscriptStorageKey),
+      createID: newSessionID,
+      now: new Date().toISOString()
+    });
+    sessions = restored.sessions;
+    activeSessionID = restored.activeSessionID;
+    messages = sessions.find((session) => session.id === activeSessionID)?.messages || [];
     draft = inputEl?.value || readStoredChatDraft();
     persistChatDraft(draft);
-    messageId = messages.length;
+    messageId = nextMessageIndex(messages);
+    persistSessions();
     if (!scrollToMessageHash()) {
       scrollMessages();
     }
@@ -339,7 +473,7 @@
   const sendMessage = async (content = draft) => {
     const trimmed = content.trim();
     const attachments = pendingAttachments;
-    if ((!trimmed && attachments.length === 0) || loading) {
+    if ((!trimmed && attachments.length === 0) || loading || clearing) {
       return;
     }
 
@@ -353,7 +487,7 @@
   };
 
   const resendFailedMessage = (message: ChatTranscriptMessage) => {
-    if (loading || message.delivery_status !== 'failed') {
+    if (loading || clearing || message.delivery_status !== 'failed') {
       return;
     }
     void deliverUserMessage(message);
@@ -386,7 +520,7 @@
 
   async function addFiles(files: FileList | File[]) {
     const selected = Array.from(files);
-    if (!selected.length || loading) {
+    if (!selected.length || loading || clearing) {
       return;
     }
     attachmentError = '';
@@ -424,7 +558,7 @@
   };
 
   const triggerFileInput = () => {
-    if (!loading) {
+    if (!loading && !clearing) {
       fileInputEl?.click();
     }
   };
@@ -433,7 +567,7 @@
     Array.from(event.dataTransfer?.types || []).includes('Files');
 
   const handleDragEnter = (event: DragEvent) => {
-    if (!eventHasFiles(event) || loading) {
+    if (!eventHasFiles(event) || loading || clearing) {
       return;
     }
     event.preventDefault();
@@ -441,7 +575,7 @@
   };
 
   const handleDragOver = (event: DragEvent) => {
-    if (!eventHasFiles(event) || loading) {
+    if (!eventHasFiles(event) || loading || clearing) {
       return;
     }
     event.preventDefault();
@@ -455,7 +589,7 @@
   };
 
   const handleDrop = (event: DragEvent) => {
-    if (!eventHasFiles(event) || loading) {
+    if (!eventHasFiles(event) || loading || clearing) {
       return;
     }
     event.preventDefault();
@@ -477,8 +611,64 @@
 </div>
 
 <div class="chat-shell">
+  <aside class="session-sidebar" aria-label="Chat history">
+    <div class="session-sidebar-header">
+      <strong>Chats</strong>
+      <button type="button" class="new-chat-button" disabled={loading || clearing} on:click={startNewChat}>
+        New chat
+      </button>
+    </div>
+    <nav class="session-list" aria-label="Previous chats">
+      {#each sessions as session (session.id)}
+        <button
+          type="button"
+          class="session-item"
+          class:active={session.id === activeSessionID}
+          aria-current={session.id === activeSessionID ? 'page' : undefined}
+          disabled={loading || clearing}
+          on:click={() => activateSession(session.id)}
+        >
+          <span class="session-title">{session.title || chatSessionTitle(session.messages)}</span>
+          <span class="session-meta">
+            {sessionMessageLabel(session)}
+            {#if sessionUpdatedLabel(session)}
+              · {sessionUpdatedLabel(session)}
+            {/if}
+          </span>
+        </button>
+      {/each}
+    </nav>
+    <button type="button" class="clear-all-button" disabled={loading || clearing} on:click={clearAllChats}>
+      Clear all
+    </button>
+  </aside>
+
   <main class="chat-card">
+    <header class="chat-toolbar">
+      <div>
+        <span>Current chat</span>
+        <h1>{currentSessionTitle}</h1>
+      </div>
+      <div class="chat-toolbar-actions">
+        <button type="button" disabled={loading || clearing} on:click={startNewChat}>New chat</button>
+        <button
+          type="button"
+          class="clear-current-button"
+          disabled={!hasCurrentMessages || loading || clearing}
+          on:click={clearCurrentChat}
+        >
+          {clearing ? 'Clearing' : 'Clear'}
+        </button>
+      </div>
+    </header>
+
     <section class="messages" bind:this={messagesEl} aria-live="polite">
+      {#if messages.length === 0 && !loading}
+        <div class="empty-chat" role="status">
+          <h2>New chat</h2>
+        </div>
+      {/if}
+
       {#each messages as message, index (message.id)}
         <article
           id={chatMessageElementID(message.id)}
@@ -517,7 +707,7 @@
           {#if message.role === 'assistant' && message.actions?.length}
             <div class="message-actions">
               {#each message.actions as action}
-                <button type="button" disabled={loading} on:click={() => sendCommand(action)}>
+                <button type="button" disabled={loading || clearing} on:click={() => sendCommand(action)}>
                   {action}
                 </button>
               {/each}
@@ -529,7 +719,7 @@
               <button
                 type="button"
                 class="resend-button"
-                disabled={loading}
+                disabled={loading || clearing}
                 aria-label="Resend failed message"
                 title={message.delivery_error || 'Resend failed message'}
                 on:click={() => resendFailedMessage(message)}
@@ -565,7 +755,7 @@
 
     <section class="prompt-actions" aria-label="Prompt shortcuts">
       {#each promptActions as action}
-        <button type="button" disabled={loading} on:click={() => sendCommand(action.command)}>
+        <button type="button" disabled={loading || clearing} on:click={() => sendCommand(action.command)}>
           <strong>{action.label}</strong>
           <span>{action.hint}</span>
         </button>
@@ -589,7 +779,7 @@
           bind:value={draft}
           autocomplete="off"
           placeholder="Tell homelabd what you want done. Drop files here to attach them."
-          disabled={loading}
+          disabled={loading || clearing}
           rows="3"
           on:input={handleDraftInput}
           on:keydown={handleComposerKeydown}
@@ -601,7 +791,7 @@
           id="chat-attachments"
           type="file"
           multiple
-          disabled={loading}
+          disabled={loading || clearing}
           on:input={handleFileInput}
           on:change={handleFileInput}
         />
@@ -616,7 +806,7 @@
                 <button
                   type="button"
                   aria-label={`Remove ${attachment.name}`}
-                  disabled={loading}
+                  disabled={loading || clearing}
                   on:click={() => removePendingAttachment(attachment.id)}
                 >
                   Remove
@@ -630,10 +820,10 @@
         {/if}
       </div>
       <div class="composer-buttons">
-        <button type="button" class="attach-button" disabled={loading} on:click={triggerFileInput}>
+        <button type="button" class="attach-button" disabled={loading || clearing} on:click={triggerFileInput}>
           Attach
         </button>
-        <button type="submit" disabled={loading || (!draft.trim() && pendingAttachments.length === 0)}>
+        <button type="submit" disabled={loading || clearing || (!draft.trim() && pendingAttachments.length === 0)}>
           {loading ? 'Sending' : 'Send'}
         </button>
         {#if loading}
@@ -676,10 +866,13 @@
     position: fixed;
     inset: 0;
     display: grid;
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: minmax(14rem, 17rem) minmax(0, 58rem);
+    gap: 0.75rem;
+    justify-content: center;
     height: auto;
     overflow: hidden;
-    padding-top: var(--chat-navbar-height);
+    padding: calc(var(--chat-navbar-height) + 0.75rem) 0.75rem 0.75rem;
+    background: #eef2f7;
   }
 
   .chat-nav-scope :global(.navbar) {
@@ -696,6 +889,157 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
+  }
+
+  .session-sidebar {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid #dbe3ef;
+    border-radius: 0.5rem;
+    background: #ffffff;
+    overflow: hidden;
+  }
+
+  .session-sidebar-header,
+  .chat-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .session-sidebar-header {
+    padding: 0.75rem;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .session-sidebar-header strong {
+    color: #0f172a;
+    font-size: 0.9rem;
+  }
+
+  .session-list {
+    display: grid;
+    align-content: start;
+    gap: 0.25rem;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.5rem;
+  }
+
+  .session-item {
+    display: grid;
+    gap: 0.18rem;
+    min-width: 0;
+    width: 100%;
+    padding: 0.55rem 0.6rem;
+    border: 1px solid transparent;
+    border-radius: 0.45rem;
+    color: #243047;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .session-item:hover:not(:disabled),
+  .session-item:focus-visible,
+  .session-item.active {
+    border-color: #cbd5e1;
+    background: #f8fafc;
+    outline: none;
+  }
+
+  .session-item.active {
+    border-color: #bfdbfe;
+    background: #eff6ff;
+  }
+
+  .session-title,
+  .session-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-title {
+    color: #172033;
+    font-size: 0.84rem;
+    font-weight: 800;
+  }
+
+  .session-meta {
+    color: #64748b;
+    font-size: 0.7rem;
+    font-weight: 650;
+  }
+
+  .new-chat-button,
+  .clear-all-button,
+  .chat-toolbar-actions button {
+    box-sizing: border-box;
+    min-height: 2rem;
+    max-width: 100%;
+    padding: 0 0.68rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.45rem;
+    color: #243047;
+    background: #ffffff;
+    font-size: 0.78rem;
+    font-weight: 850;
+    cursor: pointer;
+  }
+
+  .clear-all-button {
+    margin: 0.75rem;
+    border-color: #fecaca;
+    color: #991b1b;
+    background: #fff7f7;
+  }
+
+  .chat-toolbar {
+    min-width: 0;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #dde4ef;
+    background: #ffffff;
+  }
+
+  .chat-toolbar div:first-child {
+    min-width: 0;
+  }
+
+  .chat-toolbar span {
+    display: block;
+    color: #64748b;
+    font-size: 0.68rem;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .chat-toolbar h1 {
+    margin: 0.12rem 0 0;
+    color: #0f172a;
+    font-size: 1rem;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
+    flex-shrink: 0;
+  }
+
+  .chat-toolbar-actions .clear-current-button {
+    border-color: #fecaca;
+    color: #991b1b;
+    background: #fff7f7;
   }
 
   .message-actions button,
@@ -716,11 +1060,14 @@
 
   .chat-card {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) auto auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto auto;
     min-height: 0;
-    width: min(100%, 58rem);
-    margin: 0 auto;
+    min-width: 0;
+    width: 100%;
+    border: 1px solid #dbe3ef;
+    border-radius: 0.5rem;
     background: #f8fafc;
+    overflow: hidden;
   }
 
   .messages {
@@ -787,6 +1134,21 @@
   .message.pending {
     color: #475569;
     border-style: dashed;
+  }
+
+  .empty-chat {
+    display: grid;
+    place-items: center;
+    min-height: 10rem;
+    color: #64748b;
+    text-align: center;
+  }
+
+  .empty-chat h2 {
+    margin: 0;
+    color: #172033;
+    font-size: 1.35rem;
+    line-height: 1.2;
   }
 
   .delivery-status {
@@ -1055,6 +1417,51 @@
     background: #450a0a !important;
   }
 
+  :global(html[data-theme='dark']) .chat-shell {
+    background: var(--bg) !important;
+  }
+
+  :global(html[data-theme='dark']) .session-sidebar,
+  :global(html[data-theme='dark']) .chat-toolbar,
+  :global(html[data-theme='dark']) .session-item:hover:not(:disabled),
+  :global(html[data-theme='dark']) .session-item:focus-visible,
+  :global(html[data-theme='dark']) .session-item.active,
+  :global(html[data-theme='dark']) .new-chat-button,
+  :global(html[data-theme='dark']) .chat-toolbar-actions button {
+    color: var(--text) !important;
+    border-color: var(--border-soft) !important;
+    background: var(--surface) !important;
+  }
+
+  :global(html[data-theme='dark']) .session-sidebar-header,
+  :global(html[data-theme='dark']) .chat-toolbar {
+    border-color: var(--border-soft) !important;
+  }
+
+  :global(html[data-theme='dark']) .session-item.active {
+    border-color: var(--border) !important;
+    background: var(--surface-hover) !important;
+  }
+
+  :global(html[data-theme='dark']) .session-title,
+  :global(html[data-theme='dark']) .session-sidebar-header strong,
+  :global(html[data-theme='dark']) .chat-toolbar h1,
+  :global(html[data-theme='dark']) .empty-chat h2 {
+    color: var(--text-strong) !important;
+  }
+
+  :global(html[data-theme='dark']) .session-meta,
+  :global(html[data-theme='dark']) .chat-toolbar span {
+    color: var(--muted) !important;
+  }
+
+  :global(html[data-theme='dark']) .clear-all-button,
+  :global(html[data-theme='dark']) .chat-toolbar-actions .clear-current-button {
+    border-color: #7f1d1d !important;
+    color: #fecaca !important;
+    background: #450a0a !important;
+  }
+
   .hidden {
     position: absolute;
     width: 1px;
@@ -1068,10 +1475,33 @@
   @media (max-width: 760px) {
     .chat-shell {
       --chat-navbar-height: 4.25rem;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 0.5rem;
+      padding: calc(var(--chat-navbar-height) + 0.5rem) 0.5rem 0.5rem;
+    }
+
+    .session-sidebar {
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      max-height: 12rem;
+    }
+
+    .session-list {
+      max-height: 5.8rem;
     }
   }
 
   @media (max-width: 720px) {
+    .chat-toolbar {
+      align-items: start;
+      padding: 0.65rem 0.75rem;
+    }
+
+    .chat-toolbar-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
     .composer {
       grid-template-columns: 1fr;
     }

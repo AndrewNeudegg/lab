@@ -41,3 +41,39 @@ func TestReadDayHandlesLargeEvents(t *testing.T) {
 		t.Fatalf("message length = %d, want %d", len(got.Message), messageLength)
 	}
 }
+
+func TestDeleteMatchingRewritesOnlyMatchingEvents(t *testing.T) {
+	store := NewStore(t.TempDir())
+	day := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	events := []Event{
+		{ID: "keep", Time: day, Type: "task.created", Actor: "test", Payload: Payload(map[string]any{"message": "keep"})},
+		{ID: "drop", Time: day, Type: "user.message", Actor: "test", Payload: Payload(map[string]any{"message": "drop"})},
+		{ID: "keep-chat", Time: day, Type: "chat.reply", Actor: "test", Payload: Payload(map[string]any{"message": "keep", "conversation_id": "other"})},
+	}
+	for _, event := range events {
+		if err := store.Append(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := store.DeleteMatching(context.Background(), func(event Event) bool {
+		return event.Type == "user.message"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+
+	got, err := store.ReadDay(day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events = %d, want 2", len(got))
+	}
+	if got[0].ID != "keep" || got[1].ID != "keep-chat" {
+		t.Fatalf("events = %#v, want kept records in order", got)
+	}
+}

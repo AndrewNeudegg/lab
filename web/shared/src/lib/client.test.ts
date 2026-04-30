@@ -90,6 +90,29 @@ describe('homelabd client', () => {
     expect(attempts).toBe(1);
   });
 
+  test('clears chat history through the typed chat endpoint', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        return jsonResponse({ reply: 'cleared', removed_events: 2 });
+      }
+    });
+
+    const response = await client.clearChat({ conversation_id: 'chat_123' });
+
+    expect(response.reply).toBe('cleared');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('http://homelabd/chat/clear');
+    expect(requests[0].init?.method).toBe('POST');
+    expect(requests[0].body).toEqual({ conversation_id: 'chat_123' });
+  });
+
   test('creates a remote-targeted task with explicit target metadata', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({
@@ -174,6 +197,53 @@ describe('homelabd client', () => {
 
     expect(paths).toEqual(['http://homelabd/agents']);
     expect(response.agents[0].workdirs?.[0].path).toBe('/srv/desk/repo');
+  });
+
+  test('loads the assistant catalogue with API-owned filters', async () => {
+    const paths: string[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input) => {
+        paths.push(String(input));
+        return jsonResponse({
+          name: 'Assistant',
+          summary: 'Life-improving operating layer.',
+          updated_at: '2026-04-30T21:00:00Z',
+          principles: [],
+          activities: [],
+          capabilities: [
+            {
+              id: 'research-prepare',
+              name: 'Research and prepare',
+              area: 'research',
+              summary: 'Sourced research.',
+              promise: 'Current and cited.',
+              cadence: 'On demand',
+              autonomy: 'plan',
+              inputs: ['Question'],
+              outputs: ['Brief'],
+              surfaces: [{ label: 'Open Chat', href: '/chat', surface: 'chat' }],
+              ux_pattern_ids: ['source-tray'],
+              safeguards: ['Show sources'],
+              workflow_template: {
+                name: 'Research brief',
+                goal: 'Research the question.',
+                steps: [{ name: 'Search', kind: 'tool', tool: 'internet.search' }]
+              }
+            }
+          ],
+          ux_patterns: [],
+          research_sources: [],
+          filters: { areas: [{ value: 'research', label: 'Research', count: 1 }] }
+        });
+      }
+    });
+
+    const response = await client.getAssistant({ search: 'sources', area: 'research' });
+
+    expect(paths).toEqual(['http://homelabd/assistant?q=sources&area=research']);
+    expect(response.name).toBe('Assistant');
+    expect(response.capabilities[0].workflow_template.steps[0].tool).toBe('internet.search');
   });
 
   test('uses typed task and approval action endpoints', async () => {

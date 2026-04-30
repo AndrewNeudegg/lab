@@ -76,6 +76,8 @@
   let inputEl: HTMLTextAreaElement | undefined;
   let fileInputEl: HTMLInputElement | undefined;
   let messagesEl: HTMLElement | undefined;
+  let currentSendAbortController: AbortController | undefined;
+  let currentSendCancelled = false;
   let messages: ChatTranscriptMessage[] = [welcomeMessage];
   let pendingAttachments: HomelabdTaskAttachment[] = [];
   let selectedFiles: FileList | undefined;
@@ -312,6 +314,8 @@
   const sendMessageRequest = async (request: HomelabdMessageRequest) => {
     const timeoutMs = chatSendTimeoutMs();
     const controller = new AbortController();
+    currentSendAbortController = controller;
+    currentSendCancelled = false;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     const timedClient = createHomelabdClient({
       baseUrl: apiBase,
@@ -321,6 +325,9 @@
       return await timedClient.sendMessage(request);
     } catch (err) {
       if (isAbortError(err)) {
+        if (currentSendCancelled && currentSendAbortController === controller) {
+          throw new Error('Message send cancelled.');
+        }
         const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
         throw new Error(
           `Message send timed out after ${timeoutSeconds}s. Check the task queue before retrying.`
@@ -329,7 +336,19 @@
       throw err;
     } finally {
       window.clearTimeout(timeout);
+      if (currentSendAbortController === controller) {
+        currentSendAbortController = undefined;
+        currentSendCancelled = false;
+      }
     }
+  };
+
+  const cancelCurrentSend = () => {
+    if (!loading || !currentSendAbortController) {
+      return;
+    }
+    currentSendCancelled = true;
+    currentSendAbortController.abort();
   };
 
   const deliverUserMessage = async (message: ChatTranscriptMessage) => {
@@ -673,6 +692,16 @@
         <button type="submit" disabled={loading || (!draft.trim() && pendingAttachments.length === 0)}>
           {loading ? 'Sending' : 'Send'}
         </button>
+        {#if loading}
+          <button
+            type="button"
+            class="cancel-send-button"
+            aria-label="Cancel current message send"
+            on:click={cancelCurrentSend}
+          >
+            Cancel
+          </button>
+        {/if}
       </div>
     </form>
   </main>
@@ -1062,9 +1091,21 @@
     background: #2563eb;
   }
 
+  .composer-buttons .cancel-send-button {
+    border-color: #fecaca;
+    color: #991b1b;
+    background: #fff7f7;
+  }
+
   button:disabled {
     cursor: not-allowed;
     opacity: 0.58;
+  }
+
+  :global(html[data-theme='dark']) .composer-buttons .cancel-send-button {
+    border-color: #7f1d1d !important;
+    color: #fecaca !important;
+    background: #450a0a !important;
   }
 
   .hidden {

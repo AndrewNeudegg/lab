@@ -953,6 +953,42 @@ test('chat times out stalled sends and re-enables composer actions', async ({ pa
   expect(attempts).toBe(2);
 });
 
+test('chat can cancel a stalled send and retry the preserved message', async ({ page }) => {
+  let attempts = 0;
+  await page.route('**/api/message', async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await sleep(250);
+      await route.abort('aborted').catch(() => undefined);
+      return;
+    }
+    await route.fulfill({ json: { reply: 'retry after cancel received', source: 'program' } });
+  });
+
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  const text = 'cancel this stalled send then retry it';
+  await page.getByRole('textbox', { name: 'Message' }).fill(text);
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByRole('button', { name: 'Cancel current message send' })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel current message send' }).click();
+
+  const failedMessage = page.locator('.message.user').filter({ hasText: text });
+  await expect(failedMessage).toContainText('Message failed to send');
+  await expect(failedMessage.getByRole('button', { name: 'Resend failed message' })).toHaveAttribute(
+    'title',
+    'Message send cancelled.'
+  );
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Attach' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Cancel current message send' })).toHaveCount(0);
+
+  await failedMessage.getByRole('button', { name: 'Resend failed message' }).click();
+  await expect(page.getByText('retry after cancel received')).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
 test('chat renders Mermaid diagrams with the brand palette in light and dark modes', async ({
   page
 }) => {

@@ -3452,7 +3452,7 @@ func TestOpenEndedChatIncludesDurableMemory(t *testing.T) {
 	if !strings.Contains(system, "Prefer distilled lessons over language mimicry.") {
 		t.Fatalf("system prompt missing durable memory: %s", system)
 	}
-	if !strings.Contains(system, "Mermaid fenced diagram") || !strings.Contains(system, "brand colour scheme") {
+	if !strings.Contains(system, "Mermaid fenced diagrams") || !strings.Contains(system, "brand diagram palette") {
 		t.Fatalf("system prompt missing diagram guidance: %s", system)
 	}
 }

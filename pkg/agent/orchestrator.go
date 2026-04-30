@@ -1538,6 +1538,13 @@ func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, 
 		if t.Result == "" {
 			t.Result = "remote agent reported failure"
 		}
+	} else if status == taskstore.StatusNoChangeRequired || workerReportedNoChangeRequired(t.Result) {
+		t.Status = taskstore.StatusNoChangeRequired
+		if t.Result == "" {
+			t.Result = "remote agent reported no change required"
+		} else {
+			t.Result = "remote agent reported no change required.\n" + t.Result
+		}
 	} else {
 		t.Status = taskstore.StatusReadyForReview
 		if t.Result == "" {
@@ -4014,6 +4021,8 @@ func nextActionForTask(t taskstore.Task) string {
 		return fmt.Sprintf("show %s", shortID)
 	case taskstore.StatusAwaitingVerification:
 		return fmt.Sprintf("accept %s", shortID)
+	case taskstore.StatusNoChangeRequired:
+		return fmt.Sprintf("accept %s", shortID)
 	case taskstore.StatusReadyForReview:
 		return fmt.Sprintf("review %s", shortID)
 	case taskstore.StatusConflictResolution:
@@ -4052,6 +4061,9 @@ func nextActionsForTaskWithPrimary(t taskstore.Task, primary string) string {
 	if t.Status == taskstore.StatusAwaitingVerification {
 		return fmt.Sprintf("`%s`, `reopen %s needs rework`, or `delete %s`", primary, shortID, shortID)
 	}
+	if t.Status == taskstore.StatusNoChangeRequired {
+		return fmt.Sprintf("`%s`, `reopen %s with reproduction details`, or `delete %s`", primary, shortID, shortID)
+	}
 	if t.Status == taskstore.StatusAwaitingRestart {
 		return fmt.Sprintf("`%s`, `reopen %s needs rework`, or `delete %s`", primary, shortID, shortID)
 	}
@@ -4076,6 +4088,8 @@ func taskStateDescription(status string) string {
 		return "merge landed; post-merge restarts and health checks are running before verification"
 	case taskstore.StatusAwaitingVerification:
 		return "merge landed; verify the running app before accepting"
+	case taskstore.StatusNoChangeRequired:
+		return "worker found no patch is required; accept to close or reopen with corrected instructions"
 	case taskstore.StatusDone:
 		return "accepted by the human"
 	case taskstore.StatusFailed:
@@ -4094,7 +4108,7 @@ func taskStateTransitions(status string) string {
 	case taskstore.StatusRunning:
 		return "running -> ready_for_review or blocked"
 	case taskstore.StatusReadyForReview:
-		return "ready_for_review -> awaiting_approval, conflict_resolution, or blocked"
+		return "ready_for_review -> awaiting_approval, conflict_resolution, no_change_required, or blocked"
 	case taskstore.StatusConflictResolution:
 		return "conflict_resolution -> running, ready_for_review, cancelled, or deleted"
 	case taskstore.StatusBlocked:
@@ -4105,6 +4119,8 @@ func taskStateTransitions(status string) string {
 		return "awaiting_restart -> awaiting_verification, queued, or deleted"
 	case taskstore.StatusAwaitingVerification:
 		return "awaiting_verification -> done or queued"
+	case taskstore.StatusNoChangeRequired:
+		return "no_change_required -> done or queued"
 	case taskstore.StatusDone, taskstore.StatusCancelled:
 		return "terminal"
 	case taskstore.StatusFailed:
@@ -4190,7 +4206,7 @@ func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) st
 		"Attachments: " + formatTaskAttachmentsForPrompt(t.Attachments),
 		"",
 		agentDiagramGuidance,
-		"Inspect the directory first, make the smallest practical change, run relevant validation, and report changed files plus commands run.",
+		"Inspect the directory first. If no code, docs, configuration, or workflow change is required, make no edits and start the final result with `No change required:` followed by the reason. Otherwise make the smallest practical change, run relevant validation, and report changed files plus commands run.",
 	}, "\n")
 }
 
@@ -4402,6 +4418,7 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 	if t.Status == taskstore.StatusAwaitingRestart {
 		return fmt.Sprintf("Task %s is still enforcing post-merge restarts (%s). Wait for completion or run `restart %s` to retry a failed restart.", taskShortID(taskID), firstNonEmptyString(t.RestartStatus, taskstore.RestartStatusPending), taskShortID(taskID)), nil
 	}
+	acceptsNoChange := t.Status == taskstore.StatusNoChangeRequired
 	if err := o.stalePendingTaskApprovals(ctx, taskID, "task accepted by human"); err != nil {
 		return "", err
 	}
@@ -4434,6 +4451,9 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 	}
 	if parentDone {
 		graphLine += "\nAll child phases are done; parent task is now done."
+	}
+	if acceptsNoChange {
+		return fmt.Sprintf("Accepted %s as no change required. Task is now done.%s\nUsage/docs notes:\n%s", taskShortID(taskID), graphLine, usageNotesFromResult(t.Result)), nil
 	}
 	return fmt.Sprintf("Accepted %s. Task is now done.%s\nUsage/docs notes:\n%s", taskShortID(taskID), graphLine, usageNotesFromResult(t.Result)), nil
 }
@@ -5406,7 +5426,7 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 
 func shouldIgnoreStaleDelegationResult(t taskstore.Task) bool {
 	switch t.Status {
-	case taskstore.StatusAwaitingApproval, taskstore.StatusAwaitingVerification, taskstore.StatusDone, taskstore.StatusCancelled:
+	case taskstore.StatusAwaitingApproval, taskstore.StatusAwaitingVerification, taskstore.StatusNoChangeRequired, taskstore.StatusDone, taskstore.StatusCancelled:
 		return true
 	default:
 		return false
@@ -5610,6 +5630,7 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		"Follow the reviewed task plan before executing; if the plan is wrong, explain the mismatch in the final summary.",
 		"Inspect the task workspace before editing.",
 		"Make a minimal patch that satisfies the task goal.",
+		"If no code, docs, configuration, or workflow change is required, make no edits and start the final summary with `No change required:` followed by the reason.",
 		agentDiagramGuidance,
 		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"Run relevant formatting and tests when available.",
@@ -6211,14 +6232,24 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		} else {
 			t = latest
 		}
+		if workerReportedNoChangeRequired(t.Result) {
+			t.Status = taskstore.StatusNoChangeRequired
+			t.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&t)
+			t.Result = appendResultLine(t.Result, "ReviewerAgent found no diff and recorded the worker's no-change conclusion for human acceptance.")
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.no_change_required", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head produced no-change conclusion")
+			return fmt.Sprintf("ReviewerAgent: no diff and the worker reported no change required.\nTask %s moved to %s.\nNext: `accept %s` to close without a merge, or `reopen %s <reason>` if the conclusion is wrong.", shortID, taskstore.StatusNoChangeRequired, shortID, shortID), nil
+		}
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
 		clearMergeQueueFields(&t)
-		t.Result = "ReviewerAgent found no diff to approve."
+		t.Result = "ReviewerAgent found no diff to approve. If the task truly needs no patch, rerun with a final result that starts with `No change required:` and explains why."
 		_ = o.tasks.Save(t)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
 		_, _ = o.processMergeQueueHead(ctx, "merge queue head produced no diff")
-		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
+		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes and did not report `No change required:`.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
 	}
 	browserUAT := browserUATForDiff(diffOut)
 	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent", browserUAT)
@@ -6326,6 +6357,8 @@ func reviewNotReadyReply(t taskstore.Task) string {
 		return fmt.Sprintf("ReviewerAgent: task %s has merged and is enforcing post-merge restarts. No checks run and no state changed.\nNext: `show %s` or `restart %s` if the restart gate failed.", shortID, shortID, shortID)
 	case taskstore.StatusAwaitingVerification:
 		return fmt.Sprintf("ReviewerAgent: task %s has already merged and is awaiting verification. No checks run and no state changed.\nNext: `accept %s` or `reopen %s <reason>`.", shortID, shortID, shortID)
+	case taskstore.StatusNoChangeRequired:
+		return fmt.Sprintf("ReviewerAgent: task %s already has a no-change conclusion. No checks run and no state changed.\nNext: `accept %s` to close without a merge, or `reopen %s <reason>` if the conclusion is wrong.", shortID, shortID, shortID)
 	case taskstore.StatusBlocked, taskstore.StatusFailed, taskstore.StatusConflictResolution:
 		return fmt.Sprintf("ReviewerAgent: task %s is %s, not ready for review. No checks run and no state changed.\nNext: `retry %s codex <instruction>`, `diff %s`, or `delete %s`.", shortID, t.Status, shortID, shortID, shortID)
 	case taskstore.StatusDone, taskstore.StatusCancelled:
@@ -6333,6 +6366,29 @@ func reviewNotReadyReply(t taskstore.Task) string {
 	default:
 		return fmt.Sprintf("ReviewerAgent: task %s is %s, not %s. No checks run and no state changed.\nNext: `show %s`.", shortID, firstNonEmptyString(t.Status, "unknown"), taskstore.StatusReadyForReview, shortID)
 	}
+}
+
+func workerReportedNoChangeRequired(result string) bool {
+	for _, line := range strings.Split(result, "\n") {
+		normalized := normalizeNoChangeMarkerLine(line)
+		if normalized == "no change required" ||
+			strings.HasPrefix(normalized, "no change required:") ||
+			strings.HasPrefix(normalized, "no change required -") ||
+			normalized == "no changes required" ||
+			strings.HasPrefix(normalized, "no changes required:") ||
+			strings.HasPrefix(normalized, "no changes required -") {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeNoChangeMarkerLine(line string) string {
+	normalized := strings.ToLower(strings.TrimSpace(line))
+	normalized = strings.TrimLeft(normalized, "-*#> ")
+	normalized = strings.ReplaceAll(normalized, "**", "")
+	normalized = strings.Trim(normalized, "*_` ")
+	return normalized
 }
 
 func taskBlockedByReviewChecks(t taskstore.Task) bool {
@@ -6671,7 +6727,7 @@ func (o *Orchestrator) runCoderTask(ctx context.Context, selector string) (strin
 		Prompt: func(t taskstore.Task) string {
 			return o.coderPrompt(t)
 		},
-		InitialUserMessage: "Work this task to completion if possible. Inspect the workspace, apply a minimal patch, run formatting/tests, then summarize the diff.",
+		InitialUserMessage: "Work this task to completion if possible. Inspect the workspace. If no change is required, make no edits and start the final summary with `No change required:` plus the reason. Otherwise apply a minimal patch, run formatting/tests, then summarize the diff.",
 	})
 }
 
@@ -6756,7 +6812,7 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 	}
 	initialUserMessage := strings.TrimSpace(agent.InitialUserMessage)
 	if initialUserMessage == "" {
-		initialUserMessage = "Work this task to completion if possible. Inspect the workspace, apply a minimal patch, run formatting/tests, then summarize the diff."
+		initialUserMessage = "Work this task to completion if possible. Inspect the workspace. If no change is required, make no edits and start the final summary with `No change required:` plus the reason. Otherwise apply a minimal patch, run formatting/tests, then summarize the diff."
 	}
 	messages := []llm.Message{
 		{Role: "system", Content: prompt},
@@ -6861,6 +6917,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
 		"- Use shell.run_limited with dir set to the task workspace for allowlisted command arrays when a dedicated repo or test tool is too narrow.",
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
+		"- If no code, docs, configuration, or workflow change is required, make no edits and start the final done=true message with `No change required:` followed by the reason.",
 		"- " + agentDiagramGuidance,
 		"- If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"- After editing Go code, run go.fmt, go.test, and repo.current_diff.",
@@ -6897,6 +6954,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Prioritise semantic HTML, accessible names, keyboard operation, visible focus, target size and spacing, colour contrast, predictable states, clear errors, responsive layouts, and content that matches user language.",
 		"- Check loading, empty, error, disabled, selected, hover/focus, long-content, and mobile states when relevant.",
 		"- Ensure text does not overlap, truncate badly, or depend on colour alone; UI changes must be usable at narrow and desktop viewports.",
+		"- If no UI, code, docs, configuration, or workflow change is required, make no edits and start the final done=true message with `No change required:` followed by the reason.",
 		"- " + agentDiagramGuidance,
 		"Rules:",
 		"- Use repo.list/repo.search/repo.read with the workspace argument before editing.",

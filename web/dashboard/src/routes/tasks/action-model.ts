@@ -144,6 +144,14 @@ export const primaryTaskAction = (
         detail: 'Marks the merged or remote result as verified and done.',
         tone: 'primary'
       };
+    case 'no_change_required':
+      return {
+        type: 'task',
+        operation: 'accept',
+        label: 'Accept no-change result',
+        detail: 'Closes this task as done without a merge after you review the worker reason.',
+        tone: 'primary'
+      };
     case 'blocked':
     case 'failed':
     case 'conflict_resolution':
@@ -205,6 +213,9 @@ export const secondaryTaskOperations = (
   if (task.status === 'awaiting_verification') {
     operations.add('reopen');
   }
+  if (task.status === 'no_change_required') {
+    operations.add('reopen');
+  }
   if (task.status === 'awaiting_restart') {
     operations.add('restart');
     operations.add('reopen');
@@ -212,7 +223,7 @@ export const secondaryTaskOperations = (
   if (task.status === 'awaiting_approval') {
     operations.add('review');
   }
-  if (!taskIsActive(task) && !taskIsTerminal(task)) {
+  if (!taskIsActive(task) && !taskIsTerminal(task) && task.status !== 'no_change_required') {
     operations.add('retry');
   }
   if (taskIsTerminal(task)) {

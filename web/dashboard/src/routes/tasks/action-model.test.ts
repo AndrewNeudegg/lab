@@ -52,6 +52,11 @@ describe('task action model', () => {
       primaryTaskAction(task('awaiting_verification'), []).type === 'task' &&
         primaryTaskAction(task('awaiting_verification'), []).operation
     ).toBe('accept');
+    expect(
+      primaryTaskAction(task('no_change_required'), []).type === 'task' &&
+        primaryTaskAction(task('no_change_required'), []).operation
+    ).toBe('accept');
+    expect(primaryTaskAction(task('no_change_required'), []).label).toBe('Accept no-change result');
     expect(primaryTaskAction(task('blocked'), []).type === 'task' && primaryTaskAction(task('blocked'), []).operation).toBe(
       'retry'
     );
@@ -98,6 +103,7 @@ describe('task action model', () => {
     expect(secondaryTaskOperations(task('running'), [])).toEqual(['cancel']);
     expect(secondaryTaskOperations(task('ready_for_review'), [])).toContain('review');
     expect(secondaryTaskOperations(task('ready_for_review'), [])).toContain('delete');
+    expect(secondaryTaskOperations(task('no_change_required'), [])).toEqual(['reopen', 'delete']);
     expect(secondaryTaskOperations(task('done'), [])).toContain('delete');
   });
 });

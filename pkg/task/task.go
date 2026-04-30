@@ -11,6 +11,7 @@ const (
 	StatusAwaitingApproval     = "awaiting_approval"
 	StatusAwaitingRestart      = "awaiting_restart"
 	StatusAwaitingVerification = "awaiting_verification"
+	StatusNoChangeRequired     = "no_change_required"
 	StatusDone                 = "done"
 	StatusFailed               = "failed"
 	StatusCancelled            = "cancelled"

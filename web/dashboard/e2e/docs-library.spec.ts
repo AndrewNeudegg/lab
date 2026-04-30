@@ -29,6 +29,56 @@ const expectDocsLibraryBelowNavbar = async (page: Page) => {
   );
 };
 
+const expectDocsLibraryClearOfArticle = async (page: Page) => {
+  const metrics = await page.evaluate(() => {
+    const library = document.querySelector<HTMLElement>('.library');
+    if (!library) {
+      return null;
+    }
+    const toRect = (rect: DOMRect) => ({
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left,
+      width: rect.width,
+      height: rect.height
+    });
+    const intersects = (a: ReturnType<typeof toRect>, b: ReturnType<typeof toRect>) =>
+      a.width > 0 &&
+      a.height > 0 &&
+      b.width > 0 &&
+      b.height > 0 &&
+      a.left < b.right - 1 &&
+      a.right > b.left + 1 &&
+      a.top < b.bottom - 1 &&
+      a.bottom > b.top + 1;
+    const inViewport = (rect: ReturnType<typeof toRect>) =>
+      rect.bottom > 0 &&
+      rect.right > 0 &&
+      rect.top < window.innerHeight &&
+      rect.left < window.innerWidth;
+    const libraryRect = toRect(library.getBoundingClientRect());
+    const overlaps = Array.from(
+      document.querySelectorAll<HTMLElement>('.article-header, .content .markdown > *')
+    )
+      .map((element) => ({
+        label: (element.textContent || element.tagName).trim().replace(/\s+/g, ' ').slice(0, 80),
+        rect: toRect(element.getBoundingClientRect())
+      }))
+      .filter((entry) => inViewport(entry.rect) && intersects(libraryRect, entry.rect))
+      .slice(0, 5);
+    return {
+      scrollY: window.scrollY,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      libraryPosition: getComputedStyle(library).position,
+      library: libraryRect,
+      overlaps
+    };
+  });
+  expect(metrics).not.toBeNull();
+  expect(metrics!.overlaps, JSON.stringify(metrics)).toEqual([]);
+};
+
 const expandDocsNavigation = async (page: Page) => {
   const toggle = page.getByRole('button', { name: 'Expand docs navigation' });
   await expect(toggle).toBeVisible();
@@ -79,6 +129,7 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   });
   await expect(diagram.locator('svg')).toBeVisible({ timeout: docsRenderTimeoutMs });
   await expect(page.getByText('./docs/dashboard.md')).toBeVisible();
+  await expectDocsLibraryClearOfArticle(page);
   await expect.poll(async () => page.locator('#docs-list a').count()).toBeGreaterThanOrEqual(6);
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
     2
@@ -98,6 +149,7 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   await expect(
     page.getByRole('heading', { name: 'Diagramming And Brand Colours', exact: true })
   ).toBeVisible();
+  await expectDocsLibraryClearOfArticle(page);
   await expect(page.locator('.content .mermaid-diagram svg')).toBeVisible();
   await expect
     .poll(() =>
@@ -132,12 +184,15 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(docsNavigationToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeHidden();
   await expect(page.locator('.docs-shell')).toHaveAttribute('data-docs-library-ready', 'true');
+  await expectDocsLibraryClearOfArticle(page);
 
   await page.evaluate(() => window.scrollTo(0, 260));
+  await expectDocsLibraryClearOfArticle(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await expectDocsLibraryBelowNavbar(page);
   await expandDocsNavigation(page);
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await expectDocsLibraryClearOfArticle(page);
 
   const mobileNav = await openMobileMenu(page);
   await expect(mobileNav.getByRole('link', { name: 'Docs' })).toHaveAttribute(

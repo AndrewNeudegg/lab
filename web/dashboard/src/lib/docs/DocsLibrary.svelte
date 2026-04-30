@@ -706,9 +706,9 @@
     }
 
     .library {
-      position: sticky;
-      top: 4.25rem;
-      z-index: 10;
+      position: static;
+      top: auto;
+      z-index: auto;
       max-height: calc(100dvh - 5rem);
       overflow: hidden;
       padding: 0.85rem;

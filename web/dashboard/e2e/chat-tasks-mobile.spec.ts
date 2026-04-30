@@ -41,7 +41,11 @@ const mockScreenCaptureUnavailable = async (page: Page) => {
   });
 };
 
-const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void, extraTasks: any[] = []) => {
+const mockTaskApi = async (
+  page: Page,
+  onCreateTask?: (body: any) => void,
+  extraTasks: any[] = []
+) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
     status: 'reviewed',
@@ -110,7 +114,7 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void, extra
       result: 'complete'
     }
   ];
-  tasks.push(...extraTasks);
+  const taskRecords = [...tasks, ...extraTasks];
 
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
@@ -118,7 +122,7 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void, extra
       await route.fulfill({ status: 201, json: { reply: 'created help task' } });
       return;
     }
-    await route.fulfill({ json: { tasks } });
+    await route.fulfill({ json: { tasks: taskRecords } });
   });
   let autoMergeEnabled = false;
   await page.route(/\/api\/settings$/, async (route) => {
@@ -146,6 +150,62 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void, extra
     await route.fulfill({
       json: {
         task_id: tasks[0].id,
+        raw_diff: '',
+        summary: { files: 0, additions: 0, deletions: 0 },
+        files: [],
+        generated_at: now
+      }
+    });
+  });
+};
+
+const mockAcceptTaskApi = async (page: Page) => {
+  const now = new Date('2026-04-26T15:10:00Z').toISOString();
+  const taskID = 'task_20260426_151000_44444444';
+  let accepted = false;
+  const currentTask = () => ({
+    id: taskID,
+    title: 'Verify accepted task toast placement',
+    goal: 'Accepting the task should not move the back-to-queue control.',
+    status: accepted ? 'done' : 'awaiting_verification',
+    assigned_to: 'codex',
+    priority: 5,
+    created_at: now,
+    updated_at: now,
+    result: accepted ? 'accepted by human' : 'merged and awaiting verification'
+  });
+
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { tasks: [currentTask()] } });
+  });
+  await page.route(`**/api/tasks/${taskID}/accept`, async (route) => {
+    accepted = true;
+    await route.fulfill({
+      json: {
+        reply:
+          'Accepted task. This backend detail is deliberately longer than the toast should need.'
+      }
+    });
+  });
+  await page.route(/\/api\/settings$/, async (route) => {
+    await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
+  });
+  await page.route(/\/api\/approvals$/, async (route) => {
+    await route.fulfill({ json: { approvals: [] } });
+  });
+  await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { events: [] } });
+  });
+  await page.route(/\/api\/agents$/, async (route) => {
+    await route.fulfill({ json: { agents: [] } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
+    await route.fulfill({ json: { runs: [] } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
+    await route.fulfill({
+      json: {
+        task_id: taskID,
         raw_diff: '',
         summary: { files: 0, additions: 0, deletions: 0 },
         files: [],
@@ -453,6 +513,75 @@ test('tasks mobile preserves triage filters when returning from task detail', as
   await expect(activeFilter).toContainText('Running');
   await expect(runningRow).toBeVisible();
   await expect(page.locator('.task-row.selected')).toHaveCount(0);
+});
+
+test('tasks status pills describe queued review without implying action', async ({ page }) => {
+  const now = new Date('2026-04-26T15:05:00Z').toISOString();
+  await mockTaskApi(page, undefined, [
+    {
+      id: 'task_20260426_150500_44444444',
+      title: 'Queue review gate copy',
+      goal: 'Show system-owned review gates without sounding like an operator action.',
+      status: 'ready_for_review',
+      assigned_to: 'codex',
+      priority: 5,
+      created_at: now,
+      updated_at: now,
+      merge_queue_position: 1,
+      result: 'external agent finished; ready for review.'
+    }
+  ]);
+
+  await page.goto('/tasks');
+  const reviewGateRow = page.getByRole('link', { name: /Queue review gate copy/ });
+  await expect(reviewGateRow).toBeVisible({ timeout: taskLoadTimeoutMs });
+  await expect(reviewGateRow.locator('.status')).toHaveText('queued for review');
+  await expect(reviewGateRow.locator('.status')).not.toHaveText(/ready for review/i);
+
+  await reviewGateRow.click();
+  await expect(page.locator('.record-header .status')).toHaveText('queued for review');
+  const actions = page.getByRole('region', { name: 'Task actions', exact: true });
+  await expect(actions).toContainText('Queued for review');
+  await expect(actions).toContainText('No action needed');
+  await expect(actions).not.toContainText('Ready for review');
+});
+
+test('accepted task feedback is a non-reflowing toast on mobile', async ({ page }) => {
+  await mockAcceptTaskApi(page);
+  await page.goto('/tasks?task=task_20260426_151000_44444444');
+
+  await expect(page.getByRole('heading', { name: 'Verify accepted task toast placement' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  const backButton = page.getByRole('button', { name: 'Back to queue' });
+  await expect(backButton).toBeVisible();
+  const beforeBack = await backButton.boundingBox();
+  expect(beforeBack).not.toBeNull();
+
+  await page.getByRole('button', { name: 'Accept' }).click();
+  const toast = page.getByRole('status');
+  await expect(toast).toContainText('Accept submitted');
+  await expect(toast).toContainText('accepted. Task is now done.');
+  await expect(page.locator('.workbench > .notice')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Task actions', exact: true })).toContainText(
+    'Reopen'
+  );
+
+  const afterBack = await backButton.boundingBox();
+  expect(afterBack).not.toBeNull();
+  expect(Math.abs(afterBack!.y - beforeBack!.y)).toBeLessThanOrEqual(1);
+  const toastLayout = await page.locator('.toast-notice').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      position: style.position,
+      bodyWidth: document.body.scrollWidth,
+      viewport: window.innerWidth
+    };
+  });
+  expect(toastLayout.position).toBe('fixed');
+  expect(toastLayout.bodyWidth, JSON.stringify(toastLayout)).toBeLessThanOrEqual(
+    toastLayout.viewport + 2
+  );
 });
 
 test('chat supports file uploads and sends attachment context', async ({ page }) => {

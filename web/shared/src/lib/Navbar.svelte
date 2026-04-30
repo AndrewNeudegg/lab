@@ -34,6 +34,7 @@
   const helpClientBase = () => apiBase || '/api';
 
   let mobileMenuOpen = false;
+  let mobileMenu: HTMLDetailsElement | undefined;
   let helpDialog: HTMLDialogElement | undefined;
   let helpDetails = '';
   let helpStatus = '';
@@ -53,6 +54,10 @@
     'Browser context captured. Screenshot capture is unavailable in this browser, so the report will submit without an image.';
 
   const isActive = (href: string) => current === href;
+  const closeMobileMenu = () => {
+    mobileMenuOpen = false;
+    mobileMenu?.removeAttribute('open');
+  };
 
   const elementLabel = (target: EventTarget | null) => {
     if (!(target instanceof Element)) {
@@ -204,7 +209,7 @@
     if (helpCapturing || helpSubmitting) {
       return;
     }
-    mobileMenuOpen = false;
+    closeMobileMenu();
     helpDetails = '';
     helpError = '';
     helpStatus = 'Capturing page context.';
@@ -345,7 +350,7 @@
 </script>
 
 <header class="navbar" bind:this={navbarElement}>
-  <a class="brand" href="/chat" bind:this={brandElement} onclickcapture={() => (mobileMenuOpen = false)}>
+  <a class="brand" href="/chat" bind:this={brandElement} onclickcapture={closeMobileMenu}>
     <span>{subtitle}</span>
     <strong>{title}</strong>
   </a>
@@ -383,13 +388,12 @@
     >
       Help
     </button>
-    <details class="mobile-menu" class:compact={compactNav} bind:open={mobileMenuOpen}>
+    <details class="mobile-menu" class:compact={compactNav} bind:this={mobileMenu} bind:open={mobileMenuOpen}>
       <!-- svelte-ignore a11y_no_redundant_roles -- Chromium exposes this styled summary consistently with an explicit role. -->
       <summary
         class="menu-button"
         role="button"
         aria-controls="primary-mobile-nav"
-        aria-expanded={mobileMenuOpen}
       >
         <span aria-hidden="true">☰</span>
         Menu
@@ -399,7 +403,7 @@
           <a
             href={link.href}
             aria-current={isActive(link.href) ? 'page' : undefined}
-            onclickcapture={() => (mobileMenuOpen = false)}
+            onclickcapture={closeMobileMenu}
           >
             {link.label}
           </a>

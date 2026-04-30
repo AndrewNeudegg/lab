@@ -261,7 +261,8 @@ On compact screens `/tasks` stacks:
 1. `Queue` is the parent view. It shows filters, search, task rows, execution queues, and new-task creation.
 2. Tapping a task opens the selected task record as a child view.
 3. The selected task record starts at the top, shows the decision panel first, and exposes a clear `Back to queue` control.
-4. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.
+4. If sync or an action such as `Accept` moves the selected task out of the current filter, the page returns to the parent queue and keeps the empty queue controls visible.
+5. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.
 
 The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Do not add a separate `Task` tab for the current selection; it behaves like saved state rather than navigation and is easy to misread. The Tasks page does not render a global command panel on mobile.
 

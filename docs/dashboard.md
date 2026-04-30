@@ -21,9 +21,9 @@ The dashboard is installable as a Progressive Web App from HTTPS, `localhost`, o
 
 The service worker precaches built SvelteKit assets, static assets, icons, the manifest, and `/offline.html`. Page navigations use network-first caching so a previously loaded shell can reopen during a brief disconnect, then fall back to the offline page. Live operational endpoints under `/api`, `/healthd-api`, and `/supervisord-api` bypass the service worker, and non-GET requests are never replayed, because stale task, terminal, health, or supervisor data is worse than unavailable data.
 
-New service workers wait instead of taking over active tabs immediately. When a waiting worker is detected, the navbar shows `Update`; clicking it sends the service worker a `SKIP_WAITING` message and reloads after `controllerchange`. This keeps live operator sessions stable while still making updates discoverable.
+New service workers that replace an existing dashboard worker activate promptly, claim dashboard tabs, and refresh same-origin dashboard clients so a normal browser profile cannot stay pinned to old JavaScript after a deployment. When a browser still reports a waiting worker before activation, the navbar shows `Update`; clicking it sends the service worker a `SKIP_WAITING` message and reloads after `controllerchange`. Clearing dashboard local state does not clear the service worker cache, so update recovery must happen through the worker lifecycle rather than relying on chat or task state resets.
 
-Validate PWA metadata with `nix develop -c bun run --cwd web uat:site`. For a production service-worker check, build and serve the dashboard from the task worktree, then verify `/chat` registers `/service-worker.js`, that `/manifest.webmanifest`, the 192px icon, 512px icon, and maskable 512px icon load successfully, and that a newer build surfaces the `Update` action before it reloads.
+Validate PWA metadata with `nix develop -c bun run --cwd web uat:site`. For a production service-worker check, build and serve the dashboard from the task worktree, then verify `/chat` registers `/service-worker.js`, that `/manifest.webmanifest`, the 192px icon, 512px icon, and maskable 512px icon load successfully, and that a newer build either refreshes the controlled dashboard tab after activation or surfaces the `Update` action before reload.
 
 ## Navigation
 

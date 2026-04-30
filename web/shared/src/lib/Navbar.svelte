@@ -429,6 +429,36 @@
     pwaUpdateReady = true;
   };
 
+  const watchInstallingWorker = (worker: ServiceWorker | null) => {
+    if (!worker) {
+      return;
+    }
+    if (worker.state === 'installed') {
+      queueDashboardUpdate(worker);
+      return;
+    }
+    const stateChangeListener = () => {
+      if (worker.state === 'installed') {
+        queueDashboardUpdate(worker);
+        worker.removeEventListener('statechange', stateChangeListener);
+      }
+    };
+    worker.addEventListener('statechange', stateChangeListener);
+  };
+
+  const checkDashboardUpdate = async (registration: ServiceWorkerRegistration) => {
+    queueDashboardUpdate(registration.waiting);
+    watchInstallingWorker(registration.installing);
+    try {
+      await registration.update();
+    } catch {
+      // Update checks are opportunistic; navigation and live API calls still work without them.
+      return;
+    }
+    queueDashboardUpdate(registration.waiting);
+    watchInstallingWorker(registration.installing);
+  };
+
   onMount(() => {
     helpReady = true;
     pwaInstalled = isStandaloneDisplay();
@@ -453,8 +483,16 @@
       pwaInstallReady = false;
       pwaInstalled = true;
     };
+    let hadServiceWorkerController = Boolean(navigator.serviceWorker?.controller);
+    let reloadingForController = false;
     const controllerChangeListener = () => {
-      if (pwaRefreshing) {
+      if (!hadServiceWorkerController) {
+        hadServiceWorkerController = true;
+        return;
+      }
+      if (!reloadingForController) {
+        reloadingForController = true;
+        pwaRefreshing = true;
         window.location.reload();
       }
     };
@@ -486,17 +524,9 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('controllerchange', controllerChangeListener);
       void navigator.serviceWorker.ready.then((registration) => {
-        queueDashboardUpdate(registration.waiting);
+        void checkDashboardUpdate(registration);
         registration.addEventListener('updatefound', () => {
-          const worker = registration.installing;
-          worker?.addEventListener('statechange', () => {
-            if (worker.state === 'installed') {
-              queueDashboardUpdate(worker);
-            }
-          });
-        });
-        void registration.update().catch(() => {
-          // Update checks are opportunistic; navigation and live API calls still work without them.
+          watchInstallingWorker(registration.installing);
         });
       });
     }

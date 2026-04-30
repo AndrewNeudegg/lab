@@ -21,12 +21,14 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('pending approvals queue popout still rendered');
   });
 
-  test('exercises manual task pane sync against the browser network layer', () => {
-    expect(scriptSource).toContain('manual Sync did not reload all task pane data sources');
+  test('exercises automatic task pane sync against the browser network layer', () => {
+    expect(scriptSource).toContain('automatic sync did not reload all task pane data sources');
+    expect(scriptSource).toContain('manual Sync button still rendered');
+    expect(scriptSource).toContain('automatic sync status indicator missing');
     expect(scriptSource).toContain("path === '/api/tasks'");
-    expect(scriptSource).toContain('manual Sync changed the overview URL before task selection');
-    expect(scriptSource).toContain('manual Sync auto-selected a visible task before task click');
-    expect(scriptSource).toContain('manual Sync freshness timestamp did not include seconds');
+    expect(scriptSource).toContain('automatic sync changed the overview URL before task selection');
+    expect(scriptSource).toContain('automatic sync auto-selected a visible task before task click');
+    expect(scriptSource).toContain('automatic sync freshness timestamp did not include seconds');
   });
 
   test('keeps the Running queue selected across background sync', () => {
@@ -54,7 +56,7 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('mobile still renders ambiguous Queue/Task tabs');
     expect(scriptSource).toContain('mobile queue rows are overlapped by the navbar');
     expect(scriptSource).toContain('mobile task queue heading is overlapped by the navbar');
-    expect(scriptSource).toContain('mobile Sync button is overlapped by the navbar');
+    expect(scriptSource).toContain('mobile sync status is overlapped by the navbar');
     expect(scriptSource).toContain('mobile detail did not expose a clear back-to-queue control');
     expect(scriptSource).toContain('mobile worker trace should start collapsed');
     expect(scriptSource).toContain('mobile selected task did not show action buttons');

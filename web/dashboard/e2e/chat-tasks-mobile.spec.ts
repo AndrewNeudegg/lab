@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 
 const typedMessage = 'mobile input must keep every typed character 12345';
 const taskLoadTimeoutMs = 15_000;
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const mockScreenCapture = async (page: Page) => {
   await page.addInitScript(() => {
@@ -44,7 +45,8 @@ const mockScreenCaptureUnavailable = async (page: Page) => {
 const mockTaskApi = async (
   page: Page,
   onCreateTask?: (body: any) => void,
-  extraTasks: any[] = []
+  extraTasks: any[] = [],
+  options: { taskListDelayMs?: (requestCount: number) => number } = {}
 ) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
@@ -116,11 +118,17 @@ const mockTaskApi = async (
   ];
   const taskRecords = [...tasks, ...extraTasks];
 
+  let taskListReads = 0;
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
       onCreateTask?.(JSON.parse(route.request().postData() || '{}'));
       await route.fulfill({ status: 201, json: { reply: 'created help task' } });
       return;
+    }
+    taskListReads += 1;
+    const delayMs = options.taskListDelayMs?.(taskListReads) || 0;
+    if (delayMs > 0) {
+      await sleep(delayMs);
     }
     await route.fulfill({ json: { tasks: taskRecords } });
   });
@@ -331,6 +339,11 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(page.getByRole('heading', { name: '2 need attention' })).toBeVisible({
     timeout: taskLoadTimeoutMs
   });
+  await expect(page.locator('.task-header button')).toHaveCount(0);
+  await expect(page.locator('.sync-status')).toHaveAttribute('data-sync-status', 'connected', {
+    timeout: taskLoadTimeoutMs
+  });
+  await expect(page.locator('.sync-status')).toContainText('Connected');
   await expect(rows).toHaveCount(2, { timeout: taskLoadTimeoutMs });
   await expect(reviewRow).toHaveCount(1, { timeout: taskLoadTimeoutMs });
   await expect(queue).toBeVisible();
@@ -354,7 +367,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   const queueMetrics = await page.evaluate(() => {
     const navbar = document.querySelector('.navbar');
     const heading = document.querySelector('.task-header h1');
-    const sync = document.querySelector('.task-header button');
+    const sync = document.querySelector('.sync-status');
     return {
       navbarBottom: navbar?.getBoundingClientRect().bottom ?? 0,
       headingTop: heading?.getBoundingClientRect().top ?? 0,
@@ -464,6 +477,36 @@ test('tasks mobile keeps Running selected after background sync', async ({ page 
     .toBeGreaterThan(requestsAfterClick);
   await expect(page.locator('.triage button.active')).toContainText('Running');
   await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
+});
+
+test('tasks sync status replaces manual refresh and pulses during automatic updates', async ({
+  page
+}) => {
+  test.setTimeout(35_000);
+  let taskListRequests = 0;
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/tasks') {
+      taskListRequests += 1;
+    }
+  });
+  await mockTaskApi(page, undefined, [], {
+    taskListDelayMs: (requestCount) => (requestCount > 1 ? 2500 : 0)
+  });
+
+  await page.goto('/tasks');
+  await expect(page.locator('.task-header button')).toHaveCount(0);
+  await expect(page.locator('.sync-status')).toHaveAttribute('data-sync-status', 'connected', {
+    timeout: taskLoadTimeoutMs
+  });
+  await expect(page.locator('.sync-status')).toContainText('Connected');
+
+  const requestsAfterFirstUpdate = taskListRequests;
+  await expect
+    .poll(() => taskListRequests, { timeout: 12_000 })
+    .toBeGreaterThan(requestsAfterFirstUpdate);
+  await expect(page.locator('.sync-status.refreshing .dot.pulse')).toBeVisible();
+  await expect(page.locator('.sync-status')).toHaveAttribute('data-sync-status', 'connected');
 });
 
 test('tasks status pills describe queued review without implying action', async ({ page }) => {

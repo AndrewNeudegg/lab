@@ -14,6 +14,74 @@ export const collectionFromResponse = <T>(label: string, key: string, response: 
 export const errorMessage = (err: unknown, fallback: string) =>
   err instanceof Error ? err.message : fallback;
 
+export const sustainedTaskSyncFailureCount = 3;
+
+export type TaskSyncIndicatorTone = 'connected' | 'temporary-error' | 'sustained-error';
+
+export type TaskSyncIndicatorState = {
+  tone: TaskSyncIndicatorTone;
+  dotTone: 'green' | 'amber' | 'red';
+  label: string;
+  detail: string;
+  title: string;
+};
+
+export const taskSyncIndicatorState = ({
+  refreshing,
+  lastRefresh,
+  failureCount,
+  issue
+}: {
+  refreshing: boolean;
+  lastRefresh: string;
+  failureCount: number;
+  issue: string;
+}): TaskSyncIndicatorState => {
+  const hasSuccessfulUpdate = Boolean(lastRefresh);
+  const lastSuccessful = hasSuccessfulUpdate
+    ? `Last successful update ${lastRefresh}`
+    : 'No successful update yet';
+  const failureTitle = issue ? `${lastSuccessful}. ${issue}` : lastSuccessful;
+
+  if (failureCount >= sustainedTaskSyncFailureCount) {
+    return {
+      tone: 'sustained-error',
+      dotTone: 'red',
+      label: 'Connection error',
+      detail: hasSuccessfulUpdate ? lastSuccessful : 'No successful update',
+      title: failureTitle
+    };
+  }
+
+  if (failureCount > 0) {
+    return {
+      tone: 'temporary-error',
+      dotTone: 'amber',
+      label: refreshing ? 'Reconnecting' : 'Disconnected',
+      detail: hasSuccessfulUpdate ? `${lastSuccessful}; retrying` : 'Retrying task API',
+      title: failureTitle
+    };
+  }
+
+  if (!hasSuccessfulUpdate) {
+    return {
+      tone: 'temporary-error',
+      dotTone: 'amber',
+      label: 'Connecting',
+      detail: 'Waiting for first update',
+      title: 'Waiting for the first successful task API update.'
+    };
+  }
+
+  return {
+    tone: 'connected',
+    dotTone: 'green',
+    label: 'Connected',
+    detail: `Updated ${lastRefresh}`,
+    title: refreshing ? `Updating task data. Last update ${lastRefresh}.` : `Task data updated ${lastRefresh}.`
+  };
+};
+
 export type RefreshTimers = {
   setTimeout: (handler: () => void, timeoutMs: number) => ReturnType<typeof setTimeout>;
   clearTimeout: (timer: ReturnType<typeof setTimeout>) => void;

@@ -41,7 +41,11 @@ const mockScreenCaptureUnavailable = async (page: Page) => {
   });
 };
 
-const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
+const mockTaskApi = async (
+  page: Page,
+  onCreateTask?: (body: any) => void,
+  extraTasks: any[] = []
+) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
     status: 'reviewed',
@@ -110,6 +114,7 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
       result: 'complete'
     }
   ];
+  const taskRecords = [...tasks, ...extraTasks];
 
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
@@ -117,7 +122,7 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
       await route.fulfill({ status: 201, json: { reply: 'created help task' } });
       return;
     }
-    await route.fulfill({ json: { tasks } });
+    await route.fulfill({ json: { tasks: taskRecords } });
   });
   let autoMergeEnabled = false;
   await page.route(/\/api\/settings$/, async (route) => {
@@ -403,6 +408,93 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
     viewport: window.innerWidth
   }));
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+
+  await page.getByRole('textbox', { name: 'Search tasks' }).fill('no matching mobile tasks');
+  await expect(page.getByText('No tasks match the current filters.')).toBeVisible();
+  const emptyQueueScroll = await page.evaluate(() => {
+    const taskList = document.querySelector('.task-list') as HTMLElement | null;
+    const taskPane = document.querySelector('.task-pane') as HTMLElement | null;
+    const footer = document.querySelector('.task-pane footer') as HTMLElement | null;
+    window.scrollTo(0, document.body.scrollHeight);
+    return {
+      scrollY: window.scrollY,
+      pageScrollHeight: document.scrollingElement?.scrollHeight ?? document.documentElement.scrollHeight,
+      pageClientHeight: document.scrollingElement?.clientHeight ?? document.documentElement.clientHeight,
+      taskListHeight: Math.round(taskList?.getBoundingClientRect().height || 0),
+      taskListOverflowY: taskList ? getComputedStyle(taskList).overflowY : '',
+      taskPaneOverflowY: taskPane ? getComputedStyle(taskPane).overflowY : '',
+      footerBottom: footer?.getBoundingClientRect().bottom ?? 0
+    };
+  });
+  expect(emptyQueueScroll.scrollY, JSON.stringify(emptyQueueScroll)).toBeLessThanOrEqual(1);
+  expect(emptyQueueScroll.taskListHeight, JSON.stringify(emptyQueueScroll)).toBeGreaterThan(0);
+  expect(emptyQueueScroll.taskListOverflowY, JSON.stringify(emptyQueueScroll)).toBe('auto');
+  expect(emptyQueueScroll.taskPaneOverflowY, JSON.stringify(emptyQueueScroll)).toBe('hidden');
+  expect(emptyQueueScroll.pageScrollHeight, JSON.stringify(emptyQueueScroll)).toBeLessThanOrEqual(
+    emptyQueueScroll.pageClientHeight + 1
+  );
+  expect(emptyQueueScroll.footerBottom, JSON.stringify(emptyQueueScroll)).toBeLessThanOrEqual(
+    emptyQueueScroll.pageClientHeight + 1
+  );
+});
+
+test('tasks mobile keeps Running selected after background sync', async ({ page }) => {
+  test.setTimeout(30_000);
+  let taskListRequests = 0;
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/tasks') {
+      taskListRequests += 1;
+    }
+  });
+  await mockTaskApi(page);
+  await page.goto('/tasks?task=task_20260426_150000_11111111');
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+
+  await page.locator('.triage button').filter({ hasText: 'Running' }).click();
+  await expect(page.locator('.triage button.active')).toContainText('Running');
+  await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
+
+  const requestsAfterClick = taskListRequests;
+  await expect
+    .poll(() => taskListRequests, { timeout: 12_000 })
+    .toBeGreaterThan(requestsAfterClick);
+  await expect(page.locator('.triage button.active')).toContainText('Running');
+  await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
+});
+
+test('tasks status pills describe queued review without implying action', async ({ page }) => {
+  const now = new Date('2026-04-26T15:05:00Z').toISOString();
+  await mockTaskApi(page, undefined, [
+    {
+      id: 'task_20260426_150500_44444444',
+      title: 'Queue review gate copy',
+      goal: 'Show system-owned review gates without sounding like an operator action.',
+      status: 'ready_for_review',
+      assigned_to: 'codex',
+      priority: 5,
+      created_at: now,
+      updated_at: now,
+      merge_queue_position: 1,
+      result: 'external agent finished; ready for review.'
+    }
+  ]);
+
+  await page.goto('/tasks');
+  const reviewGateRow = page.getByRole('link', { name: /Queue review gate copy/ });
+  await expect(reviewGateRow).toBeVisible({ timeout: taskLoadTimeoutMs });
+  await expect(reviewGateRow.locator('.status')).toHaveText('queued for review');
+  await expect(reviewGateRow.locator('.status')).not.toHaveText(/ready for review/i);
+
+  await reviewGateRow.click();
+  await expect(page.locator('.record-header .status')).toHaveText('queued for review');
+  const actions = page.getByRole('region', { name: 'Task actions', exact: true });
+  await expect(actions).toContainText('Queued for review');
+  await expect(actions).toContainText('No action needed');
+  await expect(actions).not.toContainText('Ready for review');
 });
 
 test('accepted task feedback is a non-reflowing toast on mobile', async ({ page }) => {
@@ -662,17 +754,57 @@ test('tasks mobile has no task chat composer and keeps new-task text stable', as
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 });
 
-test('tasks mobile keeps navbar sticky while scrolling', async ({ page }) => {
-  await mockTaskApi(page);
+test('tasks mobile keeps page fixed and lets the task list own vertical scrolling', async ({ page }) => {
+  const now = new Date('2026-04-26T15:00:00Z').toISOString();
+  await mockTaskApi(
+    page,
+    undefined,
+    Array.from({ length: 12 }, (_, index) => ({
+      id: `task_20260426_151${String(index).padStart(2, '0')}_extra${index}`,
+      title: `Completed background task ${index + 1}`,
+      goal: 'Provide enough task rows for mobile queue scrolling.',
+      status: 'done',
+      assigned_to: 'codex',
+      priority: 5,
+      created_at: now,
+      updated_at: now,
+      result: 'complete'
+    }))
+  );
   await page.goto('/tasks');
   await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
+  const allFilter = page.locator('.triage button').filter({ hasText: 'All' });
+  await expect(allFilter).toContainText('16', { timeout: taskLoadTimeoutMs });
+  await allFilter.click();
+  await expect(allFilter).toHaveClass(/active/);
+  await expect(page.locator('.task-row')).toHaveCount(16, { timeout: taskLoadTimeoutMs });
 
-  const beforeScroll = await page.locator('.navbar').boundingBox();
-  expect(beforeScroll?.y ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
-
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(100);
-
-  const afterScroll = await page.locator('.navbar').boundingBox();
-  expect(afterScroll?.y ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+  const scrollMetrics = await page.evaluate(() => {
+    const navbar = document.querySelector('.navbar') as HTMLElement | null;
+    const taskList = document.querySelector('.task-list') as HTMLElement | null;
+    const taskPane = document.querySelector('.task-pane') as HTMLElement | null;
+    if (taskList) {
+      taskList.scrollTop = taskList.scrollHeight;
+    }
+    window.scrollTo(0, document.body.scrollHeight);
+    return {
+      windowScrollY: window.scrollY,
+      navbarTop: navbar?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY,
+      taskListScrollTop: Math.round(taskList?.scrollTop || 0),
+      taskListScrollable: Math.round((taskList?.scrollHeight || 0) - (taskList?.clientHeight || 0)),
+      taskListOverflowY: taskList ? getComputedStyle(taskList).overflowY : '',
+      taskPaneOverflowY: taskPane ? getComputedStyle(taskPane).overflowY : '',
+      bodyWidth: document.body.scrollWidth,
+      viewport: window.innerWidth
+    };
+  });
+  expect(scrollMetrics.windowScrollY, JSON.stringify(scrollMetrics)).toBeLessThanOrEqual(1);
+  expect(scrollMetrics.navbarTop, JSON.stringify(scrollMetrics)).toBeLessThanOrEqual(1);
+  expect(scrollMetrics.taskListScrollable, JSON.stringify(scrollMetrics)).toBeGreaterThan(0);
+  expect(scrollMetrics.taskListScrollTop, JSON.stringify(scrollMetrics)).toBeGreaterThan(0);
+  expect(scrollMetrics.taskListOverflowY, JSON.stringify(scrollMetrics)).toBe('auto');
+  expect(scrollMetrics.taskPaneOverflowY, JSON.stringify(scrollMetrics)).toBe('hidden');
+  expect(scrollMetrics.bodyWidth, JSON.stringify(scrollMetrics)).toBeLessThanOrEqual(
+    scrollMetrics.viewport + 2
+  );
 });

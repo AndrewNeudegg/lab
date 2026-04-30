@@ -6,6 +6,24 @@ const plural = (count: number, singular: string, pluralLabel = `${singular}s`) =
 const positiveInteger = (value: number | undefined) =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 
+const formatElapsedDuration = (milliseconds: number) => {
+  if (milliseconds < 1000) {
+    return `${milliseconds} ms`;
+  }
+  if (milliseconds < 60_000) {
+    return `${(milliseconds / 1000).toFixed(1).replace(/\.0$/, '')} s`;
+  }
+  const totalSeconds = Math.round(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds > 0 ? `${minutes} min ${seconds} s` : `${minutes} min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours} h ${remainingMinutes} min` : `${hours} h`;
+};
+
 const hasStats = (stats: ChatInteractionStats | undefined) =>
   Boolean(
     stats &&
@@ -13,7 +31,8 @@ const hasStats = (stats: ChatInteractionStats | undefined) =>
         positiveInteger(stats.tool_calls) > 0 ||
         positiveInteger(stats.total_tokens) > 0 ||
         positiveInteger(stats.input_tokens) > 0 ||
-        positiveInteger(stats.output_tokens) > 0)
+        positiveInteger(stats.output_tokens) > 0 ||
+        positiveInteger(stats.elapsed_ms) > 0)
   );
 
 export const messageExchangeNumber = (messages: ChatTranscriptMessage[], index: number) => {
@@ -44,6 +63,7 @@ export const formatInteractionStats = (
     const totalTokens =
       positiveInteger(message.stats?.total_tokens) ||
       positiveInteger(message.stats?.input_tokens) + positiveInteger(message.stats?.output_tokens);
+    const elapsedMS = positiveInteger(message.stats?.elapsed_ms);
 
     if (modelTurns > 0) {
       parts.push(plural(modelTurns, 'model turn'));
@@ -54,8 +74,10 @@ export const formatInteractionStats = (
     if (totalTokens > 0) {
       parts.push(plural(totalTokens, 'token'));
     }
+    if (elapsedMS > 0) {
+      parts.push(`${formatElapsedDuration(elapsedMS)} elapsed`);
+    }
   }
 
   return parts.join(' · ');
 };
-

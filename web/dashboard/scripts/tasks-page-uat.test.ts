@@ -29,6 +29,12 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('manual Sync freshness timestamp did not include seconds');
   });
 
+  test('keeps the Running queue selected across background sync', () => {
+    expect(scriptSource).toContain('background task sync did not run while waiting on Running filter');
+    expect(scriptSource).toContain('Running filter changed after background task sync');
+    expect(scriptSource).toContain('runningAfterAutoSync');
+  });
+
   test('checks browser history returns from task detail to overview', () => {
     expect(scriptSource).toContain('browser Back from a selected task did not return to overview URL');
     expect(scriptSource).toContain('browser Back left a task selected on the overview route');
@@ -54,6 +60,10 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('mobile selected task did not show action buttons');
     expect(scriptSource).toContain('mobile Back to queue did not hide detail');
     expect(scriptSource).toContain('mobile selected detail has horizontal overflow');
+    expect(scriptSource).toContain('mobile page scrolled instead of task list');
+    expect(scriptSource).toContain('mobile empty queue page scrolled below the footer');
+    expect(scriptSource).toContain('mobile empty queue document has a vertical scroll range');
+    expect(scriptSource).toContain('mobile empty queue footer fell below the layout viewport');
   });
 
   test('checks constrained desktop diff readability', () => {

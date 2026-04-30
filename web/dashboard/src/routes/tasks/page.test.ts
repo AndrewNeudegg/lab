@@ -85,6 +85,31 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('lastRefresh = syncTimeLabel();');
   });
 
+  test('preserves the operator-selected queue filter during background refresh', () => {
+    const refreshSource = pageSource.slice(
+      pageSource.indexOf('const refreshState = () =>'),
+      pageSource.indexOf('onMount(() =>')
+    );
+
+    expect(refreshSource).toContain('resolveTaskSyncSelection');
+    expect(refreshSource).not.toContain("taskFilter = 'all'");
+    expect(refreshSource).not.toContain("queueFilter = 'all'");
+    expect(refreshSource).not.toContain("taskSearch = ''");
+  });
+
+  test('guards route re-application while task navigation is pending', () => {
+    const navigateSource = pageSource.slice(
+      pageSource.indexOf('const navigateToTask ='),
+      pageSource.indexOf('const applyRouteTaskSelection =')
+    );
+
+    expect(pageSource).toContain("let pendingRouteTaskId = ''");
+    expect(navigateSource).toContain('pendingRouteTaskId = taskId');
+    expect(navigateSource).not.toContain('lastAppliedRouteTaskId = taskId;');
+    expect(pageSource).toContain('pendingRouteTaskId === taskId');
+    expect(pageSource).toContain('routeTaskId !== pendingRouteTaskId');
+  });
+
   test('renders mobile queue/detail switching without the old collapsing sidebar model', () => {
     expect(pageSource).toContain("type MobilePanel = 'queue' | 'detail'");
     expect(pageSource).toContain('const showMobilePanel = (panel: MobilePanel)');

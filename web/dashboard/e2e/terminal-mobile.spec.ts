@@ -335,6 +335,29 @@ test('terminal tabs can be renamed, added, closed, and reattached after reload',
   expect(eventSources.some((url) => url.includes('/api/terminal/sessions/term_test/events')), JSON.stringify(eventSources)).toBe(true);
 });
 
+test('terminal closing the final tab opens one replacement without stale session tabs', async ({ page }) => {
+  const state = await installTerminalMocks(page);
+
+  await page.goto('/terminal');
+  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.getByText('Connected')).toBeVisible();
+  await expect.poll(() => state.created).toBe(1);
+  await expect(page).toHaveURL(/\/terminal\?session=term_test$/);
+
+  await page.getByRole('button', { name: 'Close Terminal 1' }).click();
+  await expect.poll(() => state.created).toBe(2);
+  await expect(page).toHaveURL(/\/terminal\?session=term_test_2$/);
+  await expect(page.getByRole('link', { name: 'Terminal 1', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('link', { name: /^term_test/ })).toHaveCount(0);
+  expect(state.deleted).toContain('term_test');
+
+  const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem('homelab-terminal-tabs:v1') || '{}'));
+  expect(stored.activeTabId).toBe(stored.tabs?.[0]?.id);
+  expect(stored.tabs).toHaveLength(1);
+  expect(stored.tabs[0].title).toBe('Terminal 1');
+  expect(stored.tabs[0].session?.id).toBe('term_test_2');
+});
+
 test('terminal reconnects the same session after a dropped event stream', async ({ page }) => {
   const state = await installTerminalMocks(page);
 

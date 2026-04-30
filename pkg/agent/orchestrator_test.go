@@ -3398,6 +3398,9 @@ func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
 	if result.Stats.InputTokens != 30 || result.Stats.OutputTokens != 12 || result.Stats.TotalTokens != 42 {
 		t.Fatalf("usage stats = %#v, want aggregated token usage", result.Stats)
 	}
+	if result.Stats.ElapsedMilliseconds <= 0 {
+		t.Fatalf("elapsed milliseconds = %d, want measured elapsed time", result.Stats.ElapsedMilliseconds)
+	}
 	if search.query != "orchestrator" {
 		t.Fatalf("repo search query = %q, want orchestrator", search.query)
 	}

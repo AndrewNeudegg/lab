@@ -111,6 +111,7 @@
   let terminalRouteReady = false;
   let terminalRouteInitialized = false;
   let lastAppliedTerminalRoute = '';
+  const closedTerminalRouteKeys = new Set<string>();
   const lastEventSeqByTab = new Map<string, number>();
   const queuedInputByTab = new Map<string, string>();
   const queuedInputNoticeByTab = new Set<string>();
@@ -126,7 +127,7 @@
   $: if (terminalRouteReady) {
     const route = currentTerminalRoute();
     const key = terminalRouteKey(route);
-    if (key && key !== lastAppliedTerminalRoute) {
+    if (key && key !== lastAppliedTerminalRoute && !closedTerminalRouteKeys.has(key)) {
       lastAppliedTerminalRoute = key;
       void applyTerminalRoute(route);
     }
@@ -170,6 +171,20 @@
       return `tab:${route.tabId}`;
     }
     return '';
+  };
+
+  const terminalRouteKeysForTab = (tab: TerminalTab) => {
+    const keys = new Set<string>([
+      terminalRouteKey({ sessionId: '', tabId: tab.id })
+    ]);
+    const sessionKey = terminalRouteKey({
+      sessionId: tab.session?.id || '',
+      tabId: ''
+    });
+    if (sessionKey) {
+      keys.add(sessionKey);
+    }
+    return [...keys].filter(Boolean);
   };
 
   const terminalRouteForTab = (tab: TerminalTab, nextSession = tab.session) =>
@@ -222,6 +237,11 @@
   });
 
   const applyTerminalRoute = async (route = currentTerminalRoute()) => {
+    const key = terminalRouteKey(route);
+    if (key && closedTerminalRouteKeys.has(key)) {
+      persistTabs();
+      return;
+    }
     let tab = findTabForRoute(route);
     if (!tab && route.sessionId) {
       tab = createTabForSessionRoute(route.sessionId);
@@ -242,7 +262,14 @@
   const handleTerminalPopState = () => {
     window.setTimeout(() => {
       const route = terminalRouteFromLocation();
-      lastAppliedTerminalRoute = terminalRouteKey(route);
+      const key = terminalRouteKey(route);
+      if (key && closedTerminalRouteKeys.has(key)) {
+        if (activeTab) {
+          navigateToTerminalTab(activeTab, activeTab.session, true);
+        }
+        return;
+      }
+      lastAppliedTerminalRoute = key;
       void applyTerminalRoute(route);
     }, 0);
   };
@@ -257,6 +284,12 @@
     };
     const key = terminalRouteKey(route);
     if (!key) {
+      return;
+    }
+    if (closedTerminalRouteKeys.has(key)) {
+      if (activeTab) {
+        navigateToTerminalTab(activeTab, activeTab.session, true);
+      }
       return;
     }
     lastAppliedTerminalRoute = key;
@@ -808,13 +841,13 @@
     if (!closing) {
       return;
     }
-    const closingRouteKey = terminalRouteKey({
-      sessionId: closing.session?.id || '',
-      tabId: closing.session?.id ? '' : closing.id
-    });
-    const routeWasClosing = terminalRouteKey(terminalRouteFromLocation()) === closingRouteKey;
+    const closingRouteKeys = terminalRouteKeysForTab(closing);
+    const routeWasClosing = closingRouteKeys.includes(terminalRouteKey(terminalRouteFromLocation()));
     const closingIndex = tabs.findIndex((tab) => tab.id === tabId);
     const wasActive = activeTabId === tabId;
+    for (const key of closingRouteKeys) {
+      closedTerminalRouteKeys.add(key);
+    }
     if (editingTabId === tabId) {
       editingTabId = '';
       editingTitle = '';
@@ -831,7 +864,11 @@
     if (wasActive) {
       activeTabId = tabs[Math.max(0, closingIndex - 1)]?.id || tabs[0].id;
     }
+    const nextActiveTab = tabs.find((tab) => tab.id === activeTabId);
     persistTabs();
+    if (routeWasClosing && nextActiveTab) {
+      navigateToTerminalTab(nextActiveTab, nextActiveTab.session, true);
+    }
     if (closing.session) {
       try {
         await requestForTab(closing, `/terminal/sessions/${encodeURIComponent(closing.session.id)}`, { method: 'DELETE' });
@@ -842,8 +879,6 @@
     if (wasActive) {
       await tick();
       await connectActiveTab();
-    } else if (routeWasClosing && activeTab) {
-      navigateToTerminalTab(activeTab, activeTab.session, true);
     }
   };
 

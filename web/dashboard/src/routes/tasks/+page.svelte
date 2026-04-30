@@ -37,6 +37,7 @@
     buildWorkerTraceRuns,
     createTaskQueueView,
     resolveTaskSyncSelection,
+    routeTaskNeedsAllQueueFallback,
     selectTaskForQueue,
     type TaskFilter,
     type TaskQueueFilter,
@@ -212,10 +213,20 @@
     if (!taskId) {
       return;
     }
+    const useAllQueueFallback = routeTaskNeedsAllQueueFallback({
+      tasks,
+      approvals,
+      taskFilter,
+      queueFilter,
+      taskSearch,
+      routeTaskId: taskId
+    });
     selectedTaskId = taskId;
-    taskFilter = 'all';
-    queueFilter = 'all';
-    taskSearch = '';
+    if (useAllQueueFallback) {
+      taskFilter = 'all';
+      queueFilter = 'all';
+      taskSearch = '';
+    }
     showMobilePanel('detail');
     loadedRunsTaskId = '';
     loadedDiffTaskId = '';

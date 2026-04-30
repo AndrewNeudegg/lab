@@ -4,6 +4,7 @@ import {
   buildWorkerTraceRuns,
   createTaskQueueView,
   resolveTaskSyncSelection,
+  routeTaskNeedsAllQueueFallback,
   selectTaskForQueue,
   type TaskFilter,
   type TaskQueueFilter
@@ -366,6 +367,53 @@ describe('task queue selection helper', () => {
     expect(result.selectedTask).toBeUndefined();
     expect(result.shouldLoadRuns).toBe(false);
     expect(result.shouldLoadDiff).toBe(false);
+  });
+});
+
+describe('task route selection helper', () => {
+  test('keeps route selection inside the operator-selected running queue', () => {
+    const tasks = [task('task_running', 'running', '03'), task('task_done', 'done', '04')];
+
+    expect(
+      routeTaskNeedsAllQueueFallback({
+        tasks,
+        approvals: [],
+        taskFilter: 'active',
+        queueFilter: 'all',
+        taskSearch: '',
+        routeTaskId: 'task_running'
+      })
+    ).toBe(false);
+  });
+
+  test('keeps route selection inside the operator-selected attention queue', () => {
+    const tasks = [task('task_review', 'ready_for_review', '03'), task('task_done', 'done', '04')];
+
+    expect(
+      routeTaskNeedsAllQueueFallback({
+        tasks,
+        approvals: [],
+        taskFilter: 'attention',
+        queueFilter: 'all',
+        taskSearch: '',
+        routeTaskId: 'task_review'
+      })
+    ).toBe(false);
+  });
+
+  test('falls back to all tasks when the routed task is hidden by current filters', () => {
+    const tasks = [task('task_running', 'running', '03'), task('task_done', 'done', '04')];
+
+    expect(
+      routeTaskNeedsAllQueueFallback({
+        tasks,
+        approvals: [],
+        taskFilter: 'active',
+        queueFilter: 'all',
+        taskSearch: '',
+        routeTaskId: 'task_done'
+      })
+    ).toBe(true);
   });
 });
 

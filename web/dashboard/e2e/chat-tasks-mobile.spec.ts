@@ -406,6 +406,55 @@ test('tasks mobile keeps Running selected after background sync', async ({ page 
   await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
 });
 
+test('tasks mobile preserves triage filters when returning from task detail', async ({ page }) => {
+  await mockTaskApi(page);
+  await page.goto('/tasks');
+
+  const queue = page.locator('.task-pane');
+  const detail = page.locator('.workbench');
+  const activeFilter = page.locator('.triage button.active');
+  const reviewRow = page.getByRole('link', { name: /Review queue behavior on mobile/ });
+  const runningRow = page.getByRole('link', { name: /Run dashboard checks/ });
+
+  await expect(reviewRow).toBeVisible({ timeout: taskLoadTimeoutMs });
+  await expect(activeFilter).toContainText('Attention');
+  await reviewRow.click();
+  await expect(detail).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
+  await expect(activeFilter).toContainText('Attention');
+  await expect(reviewRow).toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+
+  await page.locator('.triage button').filter({ hasText: 'Running' }).click();
+  await expect(activeFilter).toContainText('Running');
+  await expect(runningRow).toBeVisible();
+  await runningRow.click();
+  await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150200_22222222$/);
+  await expect(detail).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Run dashboard checks' })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
+  await expect(activeFilter).toContainText('Running');
+  await expect(runningRow).toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+
+  await runningRow.click();
+  await expect(page.getByRole('heading', { name: 'Run dashboard checks' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
+  await expect(activeFilter).toContainText('Running');
+  await expect(runningRow).toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+});
+
 test('chat supports file uploads and sends attachment context', async ({ page }) => {
   let requestBody: any;
   await page.route('**/api/message', async (route) => {

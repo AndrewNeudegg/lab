@@ -3458,6 +3458,37 @@ func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestOpenEndedChatCreatesTaskForAssistantImplementationCommitment(t *testing.T) {
+	provider := &staticProvider{content: `{"message":"Your dashboard shows no open tasks because everything is currently terminal. I\u2019ll tighten my own briefing logic so I only report tasks that are actually open in the current task list.","done":true,"tool_calls":[]}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "why did you say there were tasks needing attention?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created queued task [") || !strings.Contains(reply, "/tasks?task=") {
+		t.Fatalf("reply = %q, want normal task creation link", reply)
+	}
+
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want one queued task", len(tasks))
+	}
+	if tasks[0].Status != taskstore.StatusQueued {
+		t.Fatalf("status = %q, want queued", tasks[0].Status)
+	}
+	for _, want := range []string{"Tighten OrchestratorAgent briefing logic", "actually open in the current task list"} {
+		if !strings.Contains(tasks[0].Goal, want) {
+			t.Fatalf("goal = %q, want %q", tasks[0].Goal, want)
+		}
+	}
+}
+
 func TestRememberCommandStoresDistilledLesson(t *testing.T) {
 	provider := &staticProvider{content: `{"lesson":"Prefer durable decision rules over style mimicry.","kind":"preference"}`}
 	orch := newTestOrchestrator(t, nil)

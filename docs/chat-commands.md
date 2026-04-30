@@ -71,6 +71,8 @@ create a task to fix running task recovery after homelabd restarts
 
 `homelabd` treats `new`, `task:`, `create a task to ...`, and similar creation phrases as task creation even when the goal text mentions words like `running`, `active tasks`, or `in progress`.
 
+Open-ended chat also converts assistant commitments to implementation work into a task in the same turn. If OrchestratorAgent says it will fix, tighten, update, or improve homelabd behaviour, the reply includes the normal `/tasks?task=<task_id>` task link instead of leaving the commitment as prose.
+
 New local development tasks create one queued task record and one isolated worktree. The chat reply stays compact: it links the summarised task title to `/tasks?task=<task_id>` and notes that a worker will start automatically. Opening the link selects the new task in the dashboard without a full page reload. To start or reassign the task explicitly, use:
 
 ```text

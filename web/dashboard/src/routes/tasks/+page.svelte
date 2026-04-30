@@ -38,7 +38,7 @@
     type TaskQueueView,
     type WorkerTraceRun
   } from './view-model';
-  import { createCoalescedAsync } from './refresh-state';
+  import { createCoalescedAsync, createMutationRevision } from './refresh-state';
   import {
     approvalNoticeTitle,
     pendingApprovalForTask,
@@ -115,6 +115,7 @@
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
   const coalesceRefreshState = createCoalescedAsync<void>();
+  const settingsRevision = createMutationRevision();
   let taskQueueView: TaskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -536,6 +537,7 @@
       settings: Promise<unknown>;
     },
     baseTasks: HomelabdTask[],
+    settingsRevisionAtStart: number,
     initialErrors: string[] = []
   ) => {
     const refreshErrors = [...initialErrors];
@@ -589,9 +591,11 @@
     }
 
     if (settingsResult.status === 'fulfilled') {
-      const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
-      autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
-      autoMergeIssue = '';
+      if (settingsRevision.matches(settingsRevisionAtStart)) {
+        const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
+        autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
+        autoMergeIssue = '';
+      }
     } else {
       autoMergeIssue = errorMessage(settingsResult.reason, 'Unable to load automation settings.');
     }
@@ -610,6 +614,7 @@
   const refreshState = () => {
     return coalesceRefreshState(async () => {
       const sequence = (refreshStateSequence += 1);
+      const settingsRevisionAtStart = settingsRevision.current();
       refreshing = true;
       const refreshErrors: string[] = [];
       let nextTasks = tasks;
@@ -668,6 +673,7 @@
             settings: settingsRequest
           },
           nextTasks,
+          settingsRevisionAtStart,
           refreshErrors
         );
         if (syncSelection.shouldLoadRuns) {
@@ -795,6 +801,7 @@
       return;
     }
     const previous = autoMergeEnabled;
+    settingsRevision.bump();
     autoMergeEnabled = next;
     autoMergeSaving = true;
     autoMergeIssue = '';
@@ -819,7 +826,9 @@
     }
   };
 
-  const toggleAutoMerge = () => setAutoMerge(!autoMergeEnabled);
+  const handleAutoMergeChange = (event: Event) => {
+    void setAutoMerge((event.currentTarget as HTMLInputElement).checked);
+  };
 
   const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
     if (mergeQueueLoading) {
@@ -1039,24 +1048,28 @@
       <details class="merge-queue" aria-label="Merge queue" open>
         <summary>
           <span>Merge queue</span>
-          <button
-            type="button"
-            class:active={autoMergeEnabled}
-            class:busy={autoMergeSaving}
-            class="auto-merge-toggle"
-            title="Automatically merge reviewed queue-head tasks"
-            role="switch"
-            aria-checked={autoMergeEnabled}
-            aria-label="Auto merge reviewed queue-head tasks"
-            disabled={autoMergeSaving}
-            on:click|stopPropagation={toggleAutoMerge}
-          >
-            <span>Auto</span>
-            <i aria-hidden="true"></i>
-          </button>
           <strong>{mergeQueueItems.length}</strong>
           <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
         </summary>
+        <label
+          class:active={autoMergeEnabled}
+          class:busy={autoMergeSaving}
+          class="auto-merge-toggle"
+          title="Automatically merge reviewed queue-head tasks"
+        >
+          <input
+            class="auto-merge-input"
+            type="checkbox"
+            role="switch"
+            checked={autoMergeEnabled}
+            aria-checked={autoMergeEnabled}
+            aria-label="Auto merge reviewed queue-head tasks"
+            disabled={autoMergeSaving}
+            on:change={handleAutoMergeChange}
+          />
+          <span>Auto</span>
+          <i aria-hidden="true"></i>
+        </label>
         {#if autoMergeIssue}
           <p class="merge-queue-note">{autoMergeIssue}</p>
         {/if}
@@ -2073,6 +2086,8 @@
 
   .merge-queue {
     grid-area: merge;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     overflow: hidden;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 0.7rem;
@@ -2080,8 +2095,10 @@
   }
 
   .merge-queue summary {
+    grid-column: 1;
+    grid-row: 1;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 0.45rem;
     min-height: 2.25rem;
@@ -2109,11 +2126,17 @@
   }
 
   .auto-merge-toggle {
+    position: relative;
+    z-index: 1;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
     display: inline-grid;
     grid-template-columns: auto auto;
     align-items: center;
     gap: 0.35rem;
     min-width: 0;
+    margin-right: 0.65rem;
     padding: 0;
     border: 0;
     color: var(--muted, #64748b);
@@ -2203,6 +2226,7 @@
   }
 
   .merge-queue-note {
+    grid-column: 1 / -1;
     margin: 0;
     padding: 0.45rem 0.65rem;
     border-top: 1px solid var(--border-soft, #e2e8f0);
@@ -2213,6 +2237,7 @@
   }
 
   .merge-queue ol {
+    grid-column: 1 / -1;
     display: grid;
     gap: 0.2rem;
     max-height: min(13.5rem, 32vh);

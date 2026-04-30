@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import { Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
@@ -27,7 +28,7 @@
     {
       id: 'agents-runtime',
       label: 'Agents and runtime',
-      slugs: ['remote-agents', 'external-agents', 'agentic-testing', 'supervisord']
+      slugs: ['remote-agents', 'external-agents', 'agent-tools', 'agentic-testing', 'supervisord']
     }
   ];
 
@@ -36,8 +37,7 @@
 
   let search = '';
   let jumpSlug = selectedSlug;
-  let syncedSelectedSlug = selectedSlug;
-  let pendingDocPath = '';
+  let lastJumpSourceSlug = selectedSlug;
   let controlsReady = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
@@ -79,26 +79,17 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: if (selectedSlug !== syncedSelectedSlug) {
-    syncedSelectedSlug = selectedSlug;
-    pendingDocPath = '';
+  $: if (selectedSlug !== lastJumpSourceSlug) {
     jumpSlug = selectedSlug;
+    lastJumpSourceSlug = selectedSlug;
   }
 
-  const selectedDocPath = (slug: string) => {
-    return slug && slug !== selectedSlug ? `/docs/${slug}` : '';
-  };
+  const openSelectedDoc = (event: Event) => {
+    const slug = (event.currentTarget as HTMLSelectElement).value;
 
-  const openSelectedDoc = (event?: Event) => {
-    const slug =
-      event?.currentTarget instanceof HTMLSelectElement ? event.currentTarget.value : jumpSlug;
-    jumpSlug = slug;
-    const path = selectedDocPath(slug);
-    if (!path || path === pendingDocPath) {
-      return;
+    if (slug && slug !== selectedSlug) {
+      void goto(`/docs/${slug}`);
     }
-    pendingDocPath = path;
-    window.location.assign(path);
   };
 
   onMount(() => {
@@ -112,7 +103,7 @@
 
 <Navbar title="Docs" subtitle="Library" current="/docs" />
 
-<main class="docs-shell">
+<main class="docs-shell" data-docs-library-ready={controlsReady ? 'true' : 'false'}>
   <div class="docs-layout">
     <aside class="library" aria-label="Docs library">
       <div class="library-header">
@@ -127,8 +118,7 @@
           id="docs-jump"
           bind:value={jumpSlug}
           disabled={!controlsReady}
-          oninput={openSelectedDoc}
-          onchange={openSelectedDoc}
+          on:change={openSelectedDoc}
           aria-label="Jump to document"
         >
           {#each navigationDocs as doc}

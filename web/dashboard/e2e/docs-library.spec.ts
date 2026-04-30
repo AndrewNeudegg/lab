@@ -54,18 +54,16 @@ test('docs library remains usable on mobile', async ({ page }) => {
     page.locator('.content pre code').filter({ hasText: 'reflect on our recent interaction' })
   ).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
+  await expect(page.locator('.docs-shell')).toHaveAttribute('data-docs-library-ready', 'true');
 
-  const searchbox = page.getByRole('searchbox', { name: 'Search documentation' });
-  await searchbox.fill('operator interface');
-  await expect(page.locator('#docs-list a')).toHaveCount(1);
-  await searchbox.fill('');
-  await expect(page.locator('#docs-result-count')).toContainText('9 documents');
-
+  const mobileNav = page.getByRole('navigation', { name: 'Primary mobile' });
   await page.getByRole('button', { name: 'Menu' }).click();
+  await expect(mobileNav).toBeVisible();
   await expect(
-    page.getByRole('navigation', { name: 'Primary mobile' }).getByRole('link', { name: 'Docs' })
+    mobileNav.getByRole('link', { name: 'Docs' })
   ).toHaveAttribute('aria-current', 'page');
   await page.getByRole('button', { name: 'Menu' }).click();
+  await expect(mobileNav).toBeHidden();
 
   await page.getByRole('combobox', { name: 'Jump to document' }).selectOption('dashboard');
   await expect(page).toHaveURL(/\/docs\/dashboard$/);

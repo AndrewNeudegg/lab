@@ -2906,11 +2906,7 @@ func (o *Orchestrator) createTaskWithAttachments(ctx context.Context, goal strin
 	}
 	t := created.Task
 	taskLink := fmt.Sprintf("[%s](%s)", markdownLinkLabel(taskLinkTitle(t)), dashboardTaskURL(t.ID))
-	return fmt.Sprintf("Created queued task %s (%s).\nPlan created and reviewed before execution.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", taskLink, t.ID, t.Workspace, created.Branch, commandBlock(
-		"status",
-		"run "+t.ID,
-		"delegate "+t.ID+" to codex",
-	)), nil
+	return fmt.Sprintf("Created queued task %s. Worker will start automatically.", taskLink), nil
 }
 
 func (c createdTask) firstChildID() string {

@@ -6,6 +6,18 @@ test.describe.configure({ timeout: 90_000 });
 const now = '2026-04-28T12:00:00.000Z';
 const taskID = 'task_20260428_120000_11111111';
 const workflowID = 'workflow_20260428_120000_22222222';
+const chatTranscriptStorageKey = 'homelabd.dashboard.chatTranscript.v4';
+const chatScrollTranscript = Array.from({ length: 24 }, (_, index) => ({
+  id: `scroll-regression-${index}`,
+  role: index % 2 === 0 ? 'assistant' : 'user',
+  content: [
+    `Scroll regression message ${index + 1}`,
+    '',
+    'The transcript is intentionally tall so browser UAT can scroll the chat pane while keeping the dashboard navigation reachable.'
+  ].join('\n'),
+  source: 'program',
+  time: '12:00'
+}));
 
 const task = {
   id: taskID,
@@ -319,6 +331,62 @@ const openMobileMenu = async (page: Page) => {
   return nav;
 };
 
+const seedChatScrollTranscript = async (page: Page) => {
+  await page.addInitScript(
+    ({ key, messages }) => {
+      localStorage.setItem(key, JSON.stringify(messages));
+      localStorage.removeItem('homelabd.dashboard.chatDraft.v1');
+    },
+    { key: chatTranscriptStorageKey, messages: chatScrollTranscript }
+  );
+};
+
+const expectChatNavbarPinned = async (page: Page) => {
+  const metrics = await page.evaluate(async () => {
+    const navbar = document.querySelector('.navbar');
+    const messages = document.querySelector('.messages');
+    const composer = document.querySelector('.composer');
+    if (messages) {
+      messages.scrollTop = messages.scrollHeight;
+    }
+    window.scrollTo(0, document.body.scrollHeight);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    const navbarRect = navbar?.getBoundingClientRect();
+    const messagesRect = messages?.getBoundingClientRect();
+    const composerRect = composer?.getBoundingClientRect();
+    return {
+      navbarTop: navbarRect?.top ?? null,
+      navbarBottom: navbarRect?.bottom ?? null,
+      navbarPosition: navbar ? getComputedStyle(navbar).position : null,
+      messagesTop: messagesRect?.top ?? null,
+      messagesScrollTop: messages?.scrollTop ?? 0,
+      messagesScrollHeight: messages?.scrollHeight ?? 0,
+      messagesClientHeight: messages?.clientHeight ?? 0,
+      composerBottom: composerRect?.bottom ?? null,
+      windowScrollY: window.scrollY,
+      viewportHeight: window.innerHeight
+    };
+  });
+  expect(metrics.navbarPosition, JSON.stringify(metrics)).toBe('fixed');
+  expect(
+    Math.abs(metrics.navbarTop ?? Number.POSITIVE_INFINITY),
+    JSON.stringify(metrics)
+  ).toBeLessThanOrEqual(1);
+  expect(metrics.messagesScrollHeight, JSON.stringify(metrics)).toBeGreaterThan(
+    metrics.messagesClientHeight
+  );
+  expect(metrics.messagesScrollTop, JSON.stringify(metrics)).toBeGreaterThan(0);
+  expect(metrics.windowScrollY, JSON.stringify(metrics)).toBeLessThanOrEqual(8);
+  expect(metrics.messagesTop ?? 0, JSON.stringify(metrics)).toBeGreaterThanOrEqual(
+    (metrics.navbarBottom ?? 0) - 1
+  );
+  expect(metrics.composerBottom ?? 0, JSON.stringify(metrics)).toBeLessThanOrEqual(
+    metrics.viewportHeight + 1
+  );
+};
+
 const expectTaskNavAttention = async (page: Page, mobile: boolean) => {
   const taskLinkName = 'Tasks, 3 review items need attention';
   if (mobile) {
@@ -344,6 +412,9 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await expect(page.getByText('Status:')).toBeVisible();
     await expect(page.getByText('1 model turn · 2 tool calls · 128 tokens · 1.2 s elapsed')).toBeVisible();
     await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
+    if (route === '/chat') {
+      await expectChatNavbarPinned(page);
+    }
   } else if (route === '/tasks') {
     await page.waitForLoadState('networkidle');
     await page.getByPlaceholder('Search tasks').fill('queue');
@@ -382,6 +453,11 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
       .click();
     await expect(page.getByText('workflow started')).toBeVisible();
   } else if (route.startsWith('/docs')) {
+    if (mobile) {
+      const docsNavigationToggle = page.getByRole('button', { name: 'Expand docs navigation' });
+      await expect(docsNavigationToggle).toBeVisible();
+      await docsNavigationToggle.click();
+    }
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
     await expect(page.locator('#docs-list')).toBeVisible();
     await expect(
@@ -437,6 +513,9 @@ for (const viewport of [
                   response.request().method() === 'GET'
               )
             : Promise.resolve();
+        if (route === '/chat') {
+          await seedChatScrollTranscript(page);
+        }
         await page.goto(route);
         await taskSettingsReady;
         if (route === '/') {

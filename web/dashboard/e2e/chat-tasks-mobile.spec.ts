@@ -41,7 +41,11 @@ const mockScreenCaptureUnavailable = async (page: Page) => {
   });
 };
 
-const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
+const mockTaskApi = async (
+  page: Page,
+  onCreateTask?: (body: any) => void,
+  extraTasks: any[] = []
+) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
     status: 'reviewed',
@@ -110,6 +114,7 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
       result: 'complete'
     }
   ];
+  const taskRecords = [...tasks, ...extraTasks];
 
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
@@ -117,7 +122,7 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
       await route.fulfill({ status: 201, json: { reply: 'created help task' } });
       return;
     }
-    await route.fulfill({ json: { tasks } });
+    await route.fulfill({ json: { tasks: taskRecords } });
   });
   let autoMergeEnabled = false;
   await page.route(/\/api\/settings$/, async (route) => {
@@ -318,6 +323,37 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
     viewport: window.innerWidth
   }));
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+});
+
+test('tasks status pills describe queued review without implying action', async ({ page }) => {
+  const now = new Date('2026-04-26T15:05:00Z').toISOString();
+  await mockTaskApi(page, undefined, [
+    {
+      id: 'task_20260426_150500_44444444',
+      title: 'Queue review gate copy',
+      goal: 'Show system-owned review gates without sounding like an operator action.',
+      status: 'ready_for_review',
+      assigned_to: 'codex',
+      priority: 5,
+      created_at: now,
+      updated_at: now,
+      merge_queue_position: 1,
+      result: 'external agent finished; ready for review.'
+    }
+  ]);
+
+  await page.goto('/tasks');
+  const reviewGateRow = page.getByRole('link', { name: /Queue review gate copy/ });
+  await expect(reviewGateRow).toBeVisible({ timeout: taskLoadTimeoutMs });
+  await expect(reviewGateRow.locator('.status')).toHaveText('queued for review');
+  await expect(reviewGateRow.locator('.status')).not.toHaveText(/ready for review/i);
+
+  await reviewGateRow.click();
+  await expect(page.locator('.record-header .status')).toHaveText('queued for review');
+  const actions = page.getByRole('region', { name: 'Task actions', exact: true });
+  await expect(actions).toContainText('Queued for review');
+  await expect(actions).toContainText('No action needed');
+  await expect(actions).not.toContainText('Ready for review');
 });
 
 test('chat supports file uploads and sends attachment context', async ({ page }) => {

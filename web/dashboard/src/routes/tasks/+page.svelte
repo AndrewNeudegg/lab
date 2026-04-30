@@ -2256,6 +2256,16 @@
     text-transform: uppercase;
   }
 
+  .auto-merge-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
   .auto-merge-toggle i {
     display: block;
     position: relative;
@@ -2296,11 +2306,11 @@
     transform: translateX(0.86rem);
   }
 
-  .auto-merge-toggle:focus-visible i {
+  .auto-merge-toggle:focus-within i {
     box-shadow: 0 0 0 3px rgb(37 99 235 / 0.18);
   }
 
-  .auto-merge-toggle:disabled {
+  .auto-merge-toggle:has(.auto-merge-input:disabled) {
     pointer-events: none;
   }
 

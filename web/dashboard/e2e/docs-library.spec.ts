@@ -49,6 +49,19 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   await expect(page.locator('#docs-list a[aria-current="page"]')).toContainText('Task Workflow');
   await expect(page.locator('.content pre code').first()).toContainText('reopen');
 
+  await page.locator('#docs-list a', { hasText: 'Diagramming And Brand Colours' }).click();
+  await expect(page).toHaveURL(/\/docs\/diagramming-and-brand-colours$/);
+  await expect(
+    page.getByRole('heading', { name: 'Diagramming And Brand Colours', exact: true })
+  ).toBeVisible();
+  await expect(page.locator('.content .mermaid-diagram svg')).toBeVisible();
+  await expect
+    .poll(() =>
+      page.locator('.content .mermaid-diagram svg').evaluate((element) => element.outerHTML)
+    )
+    .toContain('#2563eb');
+
+  await page.goto('/docs/task-workflow');
   const toc = page.getByRole('navigation', { name: 'On this page' });
   await expect(toc.getByRole('link', { name: 'States' })).toBeVisible();
   await toc.getByRole('link', { name: 'States' }).click();

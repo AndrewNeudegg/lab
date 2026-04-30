@@ -12,12 +12,14 @@ import type {
   HomelabdMergeQueueMoveRequest,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
+  HomelabdSettingsResponse,
   HomelabdTaskActionResponse,
   HomelabdTaskDiffResponse,
   HomelabdTaskReopenRequest,
   HomelabdTaskRetryRequest,
   HomelabdTaskRunsResponse,
   HomelabdTasksResponse,
+  HomelabdUpdateSettingsRequest,
   HomelabdWorkflow,
   HomelabdWorkflowActionResponse,
   HomelabdWorkflowsResponse,
@@ -147,6 +149,20 @@ export const createHomelabdClient = (
       return apiFetch<HomelabdTasksResponse>('/tasks', {
         baseUrl,
         fetcher
+      });
+    },
+    getSettings() {
+      return apiFetch<HomelabdSettingsResponse>('/settings', {
+        baseUrl,
+        fetcher
+      });
+    },
+    updateSettings(request: HomelabdUpdateSettingsRequest) {
+      return apiFetch<HomelabdSettingsResponse>('/settings', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
       });
     },
     createWorkflow(request: HomelabdCreateWorkflowRequest) {

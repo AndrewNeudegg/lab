@@ -147,6 +147,16 @@ export const primaryTaskAction = (
     case 'blocked':
     case 'failed':
     case 'conflict_resolution':
+      if ((task.auto_recovery_attempts || 0) >= 3) {
+        return {
+          type: 'task',
+          operation: 'retry',
+          label: 'Retry manually',
+          detail:
+            'Automatic recovery has paused after repeated attempts. Inspect the workspace result and retry with specific instructions.',
+          tone: 'warning'
+        };
+      }
       return {
         type: 'task',
         operation: 'retry',

@@ -235,7 +235,7 @@ func Default() Config {
 			},
 		},
 		Limits: LimitsConfig{
-			MaxConcurrentTasks:  4,
+			MaxConcurrentTasks:  2,
 			MaxToolCallsPerTurn: 12,
 			MaxShellSeconds:     60,
 			MaxFileBytes:        1 << 20,

@@ -86,15 +86,16 @@ type toolExecution struct {
 }
 
 type InteractionStats struct {
-	ModelTurns   int `json:"model_turns,omitempty"`
-	ToolCalls    int `json:"tool_calls,omitempty"`
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
-	TotalTokens  int `json:"total_tokens,omitempty"`
+	ModelTurns          int   `json:"model_turns,omitempty"`
+	ToolCalls           int   `json:"tool_calls,omitempty"`
+	InputTokens         int   `json:"input_tokens,omitempty"`
+	OutputTokens        int   `json:"output_tokens,omitempty"`
+	TotalTokens         int   `json:"total_tokens,omitempty"`
+	ElapsedMilliseconds int64 `json:"elapsed_ms,omitempty"`
 }
 
 func (s InteractionStats) HasValues() bool {
-	return s.ModelTurns > 0 || s.ToolCalls > 0 || s.InputTokens > 0 || s.OutputTokens > 0 || s.TotalTokens > 0
+	return s.ModelTurns > 0 || s.ToolCalls > 0 || s.InputTokens > 0 || s.OutputTokens > 0 || s.TotalTokens > 0 || s.ElapsedMilliseconds > 0
 }
 
 type HandleResult struct {
@@ -138,6 +139,14 @@ func recordInteractionToolCall(ctx context.Context) {
 		return
 	}
 	stats.ToolCalls++
+}
+
+func elapsedMillisecondsSince(start time.Time) int64 {
+	ms := time.Since(start).Milliseconds()
+	if ms < 1 {
+		return 1
+	}
+	return ms
 }
 
 type RuntimeSettings struct {
@@ -292,15 +301,17 @@ func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string)
 }
 
 func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, message string, attachments []taskstore.Attachment) (HandleResult, error) {
+	started := time.Now()
+	stats := &InteractionStats{}
 	message = strings.TrimSpace(message)
 	attachments = prepareTaskAttachments(attachments)
 	if message == "" && len(attachments) > 0 {
 		message = "Review the attached files."
 	}
 	if message == "" {
-		return HandleResult{Reply: "empty message", Source: "program"}, nil
+		stats.ElapsedMilliseconds = elapsedMillisecondsSince(started)
+		return HandleResult{Reply: "empty message", Source: "program", Stats: *stats}, nil
 	}
-	stats := &InteractionStats{}
 	ctx = withInteractionStats(ctx, stats)
 	payload := map[string]any{"message": message}
 	if len(attachments) > 0 {
@@ -321,6 +332,7 @@ func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, 
 	if err == nil {
 		o.appendChatReply(ctx, from, reply)
 	}
+	stats.ElapsedMilliseconds = elapsedMillisecondsSince(started)
 	return HandleResult{Reply: reply, Source: normalizeSource(source), Stats: *stats}, err
 }
 

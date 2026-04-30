@@ -37,6 +37,7 @@ export interface ChatInteractionStats {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  elapsed_ms?: number;
 }
 
 export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';

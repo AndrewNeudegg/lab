@@ -104,10 +104,12 @@
       candidate.stats === undefined ||
       (candidate.stats !== null &&
         typeof candidate.stats === 'object' &&
-        ['model_turns', 'tool_calls', 'input_tokens', 'output_tokens', 'total_tokens'].every((key) => {
-          const stat = (candidate.stats as Record<string, unknown>)[key];
-          return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
-        }));
+        ['model_turns', 'tool_calls', 'input_tokens', 'output_tokens', 'total_tokens', 'elapsed_ms'].every(
+          (key) => {
+            const stat = (candidate.stats as Record<string, unknown>)[key];
+            return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
+          }
+        ));
     const validAttachments =
       candidate.attachments === undefined ||
       (Array.isArray(candidate.attachments) &&

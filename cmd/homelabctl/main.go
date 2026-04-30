@@ -94,8 +94,10 @@ func (c cli) dispatch(args []string) error {
 		return nil
 	case "health", "healthz":
 		return c.do(http.MethodGet, "/healthz", nil)
-	case "message", "chat", "say", "send":
+	case "message", "say", "send":
 		return c.message(strings.Join(args[1:], " "))
+	case "chat":
+		return c.chat(args[1:])
 	case "shell", "interactive", "repl":
 		return c.shell()
 	case "task":
@@ -154,6 +156,37 @@ func (c cli) dispatch(args []string) error {
 		return c.message(strings.Join(args, " "))
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func (c cli) chat(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl chat <message|clear>")
+	}
+	switch commandWord(args[0]) {
+	case "clear":
+		all := false
+		conversationID := ""
+		for _, arg := range args[1:] {
+			switch commandWord(arg) {
+			case "--all", "all":
+				all = true
+			default:
+				if strings.TrimSpace(arg) != "" {
+					conversationID = strings.TrimSpace(arg)
+				}
+			}
+		}
+		if !all && conversationID == "" {
+			return fmt.Errorf("usage: homelabctl chat clear <conversation_id>|--all")
+		}
+		body := map[string]any{"all": all}
+		if conversationID != "" {
+			body["conversation_id"] = conversationID
+		}
+		return c.do(http.MethodPost, "/chat/clear", body)
+	default:
+		return c.message(strings.Join(args, " "))
 	}
 }
 
@@ -948,6 +981,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] health
   homelabctl [-addr http://127.0.0.1:18080] shell
   homelabctl [-addr http://127.0.0.1:18080] message <text>
+  homelabctl [-addr http://127.0.0.1:18080] chat clear <conversation_id>|--all
 
   homelabctl [-addr http://127.0.0.1:18080] task new [--attach <path>] [--agent <agent_id> --workdir <workdir_id>|--workdir-path <path> --backend <backend>] <goal>
   homelabctl [-addr http://127.0.0.1:18080] task list

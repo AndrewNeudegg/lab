@@ -20,6 +20,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
+	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
@@ -35,6 +36,7 @@ type Orchestrator struct {
 	tasks        *taskstore.Store
 	approvals    *approvalstore.Store
 	workflows    *workflowstore.Store
+	knowledge    *knowledgestore.Store
 	registry     *tool.Registry
 	policy       tool.Policy
 	provider     llm.Provider
@@ -104,11 +106,30 @@ type HandleResult struct {
 	Stats  InteractionStats
 }
 
+type HandleRequest struct {
+	From           string
+	Message        string
+	ConversationID string
+	Attachments    []taskstore.Attachment
+}
+
+type ClearChatRequest struct {
+	ConversationID string `json:"conversation_id,omitempty"`
+	All            bool   `json:"all,omitempty"`
+}
+
+type ClearChatResult struct {
+	ConversationID string `json:"conversation_id,omitempty"`
+	All            bool   `json:"all,omitempty"`
+	RemovedEvents  int    `json:"removed_events"`
+}
+
 type interactionStatsContextKey struct{}
 type currentChatTurnContextKey struct{}
 
 type currentChatTurn struct {
-	UserEventID string
+	UserEventID    string
+	ConversationID string
 }
 
 func withInteractionStats(ctx context.Context, stats *InteractionStats) context.Context {
@@ -123,15 +144,16 @@ func interactionStatsFromContext(ctx context.Context) *InteractionStats {
 	return stats
 }
 
-func withCurrentChatTurn(ctx context.Context, eventID string) context.Context {
+func withCurrentChatTurn(ctx context.Context, eventID, conversationID string) context.Context {
 	return context.WithValue(ctx, currentChatTurnContextKey{}, currentChatTurn{
-		UserEventID: strings.TrimSpace(eventID),
+		UserEventID:    strings.TrimSpace(eventID),
+		ConversationID: strings.TrimSpace(conversationID),
 	})
 }
 
 func currentChatTurnFromContext(ctx context.Context) (currentChatTurn, bool) {
 	turn, ok := ctx.Value(currentChatTurnContextKey{}).(currentChatTurn)
-	if !ok || turn.UserEventID == "" {
+	if !ok || (turn.UserEventID == "" && turn.ConversationID == "") {
 		return currentChatTurn{}, false
 	}
 	return turn, true
@@ -320,10 +342,19 @@ func (o *Orchestrator) HandleDetailed(ctx context.Context, from, message string)
 }
 
 func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, message string, attachments []taskstore.Attachment) (HandleResult, error) {
+	return o.HandleDetailedRequest(ctx, HandleRequest{
+		From:        from,
+		Message:     message,
+		Attachments: attachments,
+	})
+}
+
+func (o *Orchestrator) HandleDetailedRequest(ctx context.Context, req HandleRequest) (HandleResult, error) {
 	started := time.Now()
 	stats := &InteractionStats{}
-	message = strings.TrimSpace(message)
-	attachments = prepareTaskAttachments(attachments)
+	message := strings.TrimSpace(req.Message)
+	attachments := prepareTaskAttachments(req.Attachments)
+	conversationID := strings.TrimSpace(req.ConversationID)
 	if message == "" && len(attachments) > 0 {
 		message = "Review the attached files."
 	}
@@ -333,12 +364,15 @@ func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, 
 	}
 	ctx = withInteractionStats(ctx, stats)
 	payload := map[string]any{"message": message}
+	if conversationID != "" {
+		payload["conversation_id"] = conversationID
+	}
 	if len(attachments) > 0 {
 		payload["attachments"] = attachments
 	}
 	userEventID := id.New("evt")
-	_ = o.events.Append(ctx, eventlog.Event{ID: userEventID, Type: "user.message", Actor: from, Payload: eventlog.Payload(payload)})
-	ctx = withCurrentChatTurn(ctx, userEventID)
+	_ = o.events.Append(ctx, eventlog.Event{ID: userEventID, Type: "user.message", Actor: req.From, Payload: eventlog.Payload(payload)})
+	ctx = withCurrentChatTurn(ctx, userEventID, conversationID)
 	reply, source, err := o.handleMessageWithAttachments(ctx, message, attachments)
 	if err != nil && isUserFacingCommandError(err) {
 		reply = userFacingCommandErrorReply(err)
@@ -351,7 +385,7 @@ func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, 
 		err = nil
 	}
 	if err == nil {
-		o.appendChatReply(ctx, from, reply)
+		o.appendChatReply(ctx, req.From, reply)
 	}
 	stats.ElapsedMilliseconds = elapsedMillisecondsSince(started)
 	return HandleResult{Reply: reply, Source: normalizeSource(source), Stats: *stats}, err
@@ -397,9 +431,11 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 	case "help":
 		return programResult(help(), nil)
 	case "history":
-		return programResult(o.formatChatHistoryReply(chatHistoryToolRequest{Limit: chatCommandLimit(fields[1:], defaultChatHistoryLimit), ExcludeLatestUserMessage: message}))
+		req := chatHistoryToolRequest{Limit: chatCommandLimit(fields[1:], defaultChatHistoryLimit), ExcludeLatestUserMessage: message}
+		applyCurrentChatTurn(ctx, &req.ExcludeEventID, &req.ConversationID)
+		return programResult(o.formatChatHistoryReply(req))
 	case "chat":
-		return programResult(o.handleChatMetaCommand(fields, message))
+		return programResult(o.handleChatMetaCommand(ctx, fields, message))
 	case "reflect":
 		return o.reflectOnInteraction(ctx, message)
 	case "deep":
@@ -500,7 +536,9 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 			if query == "" {
 				return programResult("usage: chat search <text>", nil)
 			}
-			return programResult(o.formatChatSearchReply(chatSearchToolRequest{Query: query, ExcludeLatestUserMessage: message}))
+			req := chatSearchToolRequest{Query: query, ExcludeLatestUserMessage: message}
+			applyCurrentChatTurn(ctx, &req.ExcludeEventID, &req.ConversationID)
+			return programResult(o.formatChatSearchReply(req))
 		}
 		if isWebSearchRequest(message) {
 			query := webSearchQueryFromCommand(fields[1:])
@@ -629,11 +667,15 @@ func (o *Orchestrator) appendChatReply(ctx context.Context, to, message string) 
 	if o.events == nil || strings.TrimSpace(message) == "" {
 		return
 	}
+	payload := map[string]any{"message": message, "to": to}
+	if turn, ok := currentChatTurnFromContext(ctx); ok && strings.TrimSpace(turn.ConversationID) != "" {
+		payload["conversation_id"] = strings.TrimSpace(turn.ConversationID)
+	}
 	_ = o.events.Append(ctx, eventlog.Event{
 		ID:      id.New("evt"),
 		Type:    "chat.reply",
 		Actor:   "OrchestratorAgent",
-		Payload: eventlog.Payload(map[string]any{"message": message, "to": to}),
+		Payload: eventlog.Payload(payload),
 	})
 }
 
@@ -1584,6 +1626,34 @@ func (o *Orchestrator) ResolveApproval(ctx context.Context, approvalID string, g
 
 func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
 	return o.events.ReadDay(day)
+}
+
+func (o *Orchestrator) ClearChat(ctx context.Context, req ClearChatRequest) (ClearChatResult, error) {
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if !req.All && conversationID == "" {
+		return ClearChatResult{}, errors.New("conversation_id is required unless all is true")
+	}
+	if o.events == nil {
+		return ClearChatResult{ConversationID: conversationID, All: req.All}, nil
+	}
+	removed, err := o.events.DeleteMatching(ctx, func(event eventlog.Event) bool {
+		if !isChatTranscriptEvent(event) {
+			return false
+		}
+		return req.All || chatEventConversationID(event) == conversationID
+	})
+	if err != nil {
+		return ClearChatResult{}, err
+	}
+	return ClearChatResult{
+		ConversationID: conversationID,
+		All:            req.All,
+		RemovedEvents:  removed,
+	}, nil
+}
+
+func isChatTranscriptEvent(event eventlog.Event) bool {
+	return event.Type == "user.message" || event.Type == "chat.reply"
 }
 
 func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Agent, backend string) (*remoteagent.Assignment, error) {
@@ -3264,18 +3334,20 @@ func (o *Orchestrator) recordAgentResponseRejected(ctx context.Context, actor, t
 }
 
 func (o *Orchestrator) recentChatHistory(day time.Time, limit int) []llm.Message {
-	return o.recentChatHistoryExcludingEvent(day, limit, "")
+	return o.recentChatHistoryExcludingEvent(day, limit, "", "")
 }
 
 func (o *Orchestrator) recentChatHistoryBeforeCurrent(ctx context.Context, day time.Time, limit int) []llm.Message {
 	excludeEventID := ""
+	conversationID := ""
 	if turn, ok := currentChatTurnFromContext(ctx); ok {
 		excludeEventID = turn.UserEventID
+		conversationID = turn.ConversationID
 	}
-	return o.recentChatHistoryExcludingEvent(day, limit, excludeEventID)
+	return o.recentChatHistoryExcludingEvent(day, limit, excludeEventID, conversationID)
 }
 
-func (o *Orchestrator) recentChatHistoryExcludingEvent(day time.Time, limit int, excludeEventID string) []llm.Message {
+func (o *Orchestrator) recentChatHistoryExcludingEvent(day time.Time, limit int, excludeEventID, conversationID string) []llm.Message {
 	if o.events == nil || limit <= 0 {
 		return nil
 	}
@@ -3288,7 +3360,7 @@ func (o *Orchestrator) recentChatHistoryExcludingEvent(day time.Time, limit int,
 		if excludeEventID != "" && event.ID == excludeEventID {
 			continue
 		}
-		msg, ok := chatHistoryMessage(event)
+		msg, ok := chatHistoryMessageForConversation(event, conversationID)
 		if !ok {
 			continue
 		}
@@ -3309,6 +3381,10 @@ func currentRequestBoundaryPrompt() string {
 }
 
 func chatHistoryMessage(event eventlog.Event) (llm.Message, bool) {
+	return chatHistoryMessageForConversation(event, "")
+}
+
+func chatHistoryMessageForConversation(event eventlog.Event, conversationID string) (llm.Message, bool) {
 	var role string
 	switch event.Type {
 	case "user.message":
@@ -3324,6 +3400,9 @@ func chatHistoryMessage(event eventlog.Event) (llm.Message, bool) {
 		Reply   string `json:"reply"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return llm.Message{}, false
+	}
+	if conversationID != "" && chatEventConversationID(event) != conversationID {
 		return llm.Message{}, false
 	}
 	content := strings.TrimSpace(payload.Message)

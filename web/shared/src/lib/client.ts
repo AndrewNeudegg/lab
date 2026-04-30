@@ -3,15 +3,25 @@ import type {
   FetchClientOptions,
   HomelabdApprovalsResponse,
   HomelabdAgentsResponse,
+  HomelabdClearChatRequest,
+  HomelabdClearChatResponse,
   HomelabdClient,
   HomelabdClientOptions,
   HomelabdCreateTaskRequest,
   HomelabdCreateTaskResponse,
+  HomelabdCreateKnowledgeSpaceRequest,
+  HomelabdCreateKnowledgeSpaceResponse,
   HomelabdCreateWorkflowRequest,
+  HomelabdAddKnowledgeSourceRequest,
+  HomelabdAddKnowledgeSourceResponse,
   HomelabdEventsResponse,
+  HomelabdKnowledgeSpace,
+  HomelabdKnowledgeSpacesResponse,
   HomelabdMergeQueueMoveRequest,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
+  HomelabdResearchKnowledgeSpaceRequest,
+  HomelabdResearchKnowledgeSpaceResponse,
   HomelabdSettingsResponse,
   HomelabdTaskActionResponse,
   HomelabdTaskDiffResponse,
@@ -137,6 +147,14 @@ export const createHomelabdClient = (
         body: JSON.stringify(request)
       });
     },
+    clearChat(request: HomelabdClearChatRequest) {
+      return apiFetch<HomelabdClearChatResponse>('/chat/clear', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
     createTask(request: HomelabdCreateTaskRequest) {
       return apiFetch<HomelabdCreateTaskResponse>('/tasks', {
         baseUrl,
@@ -164,6 +182,48 @@ export const createHomelabdClient = (
         method: 'POST',
         body: JSON.stringify(request)
       });
+    },
+    createKnowledgeSpace(request: HomelabdCreateKnowledgeSpaceRequest) {
+      return apiFetch<HomelabdCreateKnowledgeSpaceResponse>('/knowledge/spaces', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
+    listKnowledgeSpaces() {
+      return apiFetch<HomelabdKnowledgeSpacesResponse>('/knowledge/spaces', {
+        baseUrl,
+        fetcher
+      });
+    },
+    getKnowledgeSpace(spaceId: string) {
+      return apiFetch<HomelabdKnowledgeSpace>(`/knowledge/spaces/${encodeURIComponent(spaceId)}`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    addKnowledgeSource(spaceId: string, request: HomelabdAddKnowledgeSourceRequest) {
+      return apiFetch<HomelabdAddKnowledgeSourceResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}/sources`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    researchKnowledgeSpace(spaceId: string, request: HomelabdResearchKnowledgeSpaceRequest) {
+      return apiFetch<HomelabdResearchKnowledgeSpaceResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}/research`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
     },
     createWorkflow(request: HomelabdCreateWorkflowRequest) {
       return apiFetch<HomelabdWorkflowActionResponse>('/workflows', {

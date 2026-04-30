@@ -54,13 +54,16 @@ For one-shot chat commands:
 
 ```bash
 go run ./cmd/homelabctl message "status"
+go run ./cmd/homelabctl chat "status"
+go run ./cmd/homelabctl chat clear chat_123
+go run ./cmd/homelabctl chat clear --all
 go run ./cmd/homelabctl remember "prefer concise validation summaries"
 go run ./cmd/homelabctl memories
 go run ./cmd/homelabctl status
 go run ./cmd/homelabctl agents
 ```
 
-`message`, `chat`, `say`, and chat-command shortcuts print the plain `reply` field by default. Add `-json` when the full response object is needed.
+`message`, `chat`, `say`, and chat-command shortcuts print the plain `reply` field by default. `chat clear <conversation_id>` calls the typed clear endpoint for one dashboard conversation, while `chat clear --all` clears all server-side chat transcript context. Add `-json` when the full response object is needed.
 The JSON response includes `stats` for dashboard chat metadata when homelabd can measure it, currently `model_turns`, `tool_calls`, token counts, and total response `elapsed_ms`.
 
 ## Task Commands
@@ -285,6 +288,7 @@ go run ./cmd/homelabctl terminal close term_123
 
 - `GET /healthz`
 - `POST /message`, returning `reply`, `source`, and optional interaction `stats`
+- `POST /chat/clear`
 - `GET /tasks`
 - `POST /tasks`, including optional remote `target`
 - `GET /tasks/{id}`

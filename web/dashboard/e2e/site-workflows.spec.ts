@@ -101,6 +101,55 @@ const workflow = {
   updated_at: now
 };
 
+const knowledgeSource = {
+  id: 'ksrc_20260428_120000_33333333',
+  title: 'Source transparency notes',
+  kind: 'text',
+  content: 'Source-grounded reports should keep evidence visible beside generated claims.',
+  summary: 'Source-grounded reports should keep evidence visible beside generated claims.',
+  key_terms: ['source', 'evidence', 'reports'],
+  questions: ['What does this source show about evidence?'],
+  word_count: 8,
+  created_at: now,
+  updated_at: now
+};
+
+const knowledgeReport = {
+  id: 'kreport_20260428_120000_44444444',
+  question: 'How should evidence be reviewed?',
+  mode: 'research',
+  answer: 'Answering "How should evidence be reviewed?" from 1 stored source:\n- [S1] Keep evidence visible beside generated claims.',
+  key_findings: ['[S1] Keep evidence visible beside generated claims.'],
+  evidence: [{
+    id: 'evidence_01',
+    source_id: knowledgeSource.id,
+    source_title: knowledgeSource.title,
+    citation_label: 'S1',
+    excerpt: 'Source-grounded reports should keep evidence visible beside generated claims.',
+    terms: ['evidence'],
+    score: 3
+  }],
+  gaps: ['Only stored Knowledge Space sources were used for this report.'],
+  created_at: now
+};
+
+const knowledgeSpace = {
+  id: 'kspace_20260428_120000_55555555',
+  title: 'Research synthesis',
+  objective: 'Keep source-grounded research easy to review.',
+  sources: [knowledgeSource],
+  reports: [knowledgeReport],
+  insight: {
+    source_count: 1,
+    word_count: 8,
+    key_terms: ['source', 'evidence', 'reports'],
+    suggested_questions: ['What does this space show about source?'],
+    updated_at: now
+  },
+  created_at: now,
+  updated_at: now
+};
+
 const healthSnapshot = {
   status: 'healthy',
   started_at: now,
@@ -181,6 +230,7 @@ const installTerminalMocks = async (page: Page) => {
 const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
   let autoMergeEnabled = false;
+  let knowledgeSpaces = [knowledgeSpace];
   await page.route(/\/api\/message$/, async (route) => {
     const body = route.request().postDataJSON() as { content?: string };
     if (body.content === longSuggestedTaskAction) {
@@ -207,6 +257,16 @@ const mockDashboardApis = async (page: Page) => {
         ].join('\n'),
         source: 'program',
         stats: { model_turns: 1, tool_calls: 2, total_tokens: 128, elapsed_ms: 1234 }
+      }
+    });
+  });
+  await page.route(/\/api\/chat\/clear$/, async (route) => {
+    await route.fulfill({
+      json: {
+        reply: 'Cleared chat conversation.',
+        conversation_id: 'chat_test',
+        removed_events: 4,
+        removed_log_entries: 4
       }
     });
   });
@@ -256,6 +316,78 @@ const mockDashboardApis = async (page: Page) => {
   await page.route(/\/api\/workflows\/[^/]+\/run$/, async (route) => {
     await route.fulfill({ json: { workflow: { ...workflow, status: 'completed' }, reply: 'workflow started' } });
   });
+  await page.route(/\/api\/knowledge\/spaces$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON() as { title?: string; objective?: string; description?: string };
+      const created = {
+        ...knowledgeSpace,
+        id: 'kspace_created',
+        title: body.title || 'New space',
+        objective: body.objective,
+        description: body.description,
+        sources: [],
+        reports: [],
+        insight: { source_count: 0, word_count: 0, key_terms: [], suggested_questions: [], updated_at: now },
+        created_at: now,
+        updated_at: now
+      };
+      knowledgeSpaces = [created, ...knowledgeSpaces];
+      await route.fulfill({ status: 201, json: { space: created, reply: 'Knowledge Space created' } });
+      return;
+    }
+    await route.fulfill({ json: { spaces: knowledgeSpaces } });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+$/, async (route) => {
+    await route.fulfill({ json: knowledgeSpaces[0] });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/sources$/, async (route) => {
+    const body = route.request().postDataJSON() as { title?: string; kind?: string; content?: string; uri?: string };
+    const source = {
+      ...knowledgeSource,
+      id: 'ksrc_created',
+      title: body.title || 'Added source',
+      kind: body.kind || 'text',
+      uri: body.uri,
+      content: body.content || '',
+      summary: body.content || 'Added source summary.',
+      word_count: (body.content || '').split(/\s+/).filter(Boolean).length,
+      created_at: now,
+      updated_at: now
+    };
+    const current = knowledgeSpaces[0];
+    const updated = {
+      ...current,
+      sources: [source, ...(current.sources || [])],
+      insight: {
+        ...current.insight,
+        source_count: (current.sources || []).length + 1,
+        word_count: (current.insight?.word_count || 0) + source.word_count,
+        key_terms: ['source', 'evidence', 'review'],
+        updated_at: now
+      },
+      updated_at: now
+    };
+    knowledgeSpaces = [updated, ...knowledgeSpaces.slice(1)];
+    await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source processed' } });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research$/, async (route) => {
+    const body = route.request().postDataJSON() as { question?: string; mode?: string };
+    const report = {
+      ...knowledgeReport,
+      id: 'kreport_created',
+      question: body.question || knowledgeReport.question,
+      mode: body.mode || 'research',
+      created_at: now
+    };
+    const current = knowledgeSpaces[0];
+    const updated = {
+      ...current,
+      reports: [report, ...(current.reports || [])],
+      updated_at: now
+    };
+    knowledgeSpaces = [updated, ...knowledgeSpaces.slice(1)];
+    await route.fulfill({ json: { space: updated, report, reply: 'Research report created' } });
+  });
   await page.route(/\/api\/terminal\/sessions$/, async (route) => {
     await route.fulfill({ status: 201, json: { id: 'term_site', shell: '/bin/sh', cwd: '/workspace', created_at: now, persistent: true } });
   });
@@ -299,7 +431,7 @@ const expectNoVisualArtifacts = async (page: Page) => {
       return false;
     };
     const contentRoots = Array.from(
-      document.querySelectorAll('main, .task-pane, .chat-card, .docs-shell, .workflow-page, .terminal-panel, .app-shell')
+      document.querySelectorAll('main, .task-pane, .chat-card, .docs-shell, .workflow-page, .knowledge-page, .terminal-panel, .app-shell')
     )
       .map((element) => {
         const rect = element.getBoundingClientRect();
@@ -328,7 +460,7 @@ const expectNoVisualArtifacts = async (page: Page) => {
     const navbarOverlaps =
       navbarBottom === null || window.scrollY > 2
         ? []
-        : Array.from(document.querySelectorAll('main, .shell, .docs-shell, .workflow-page, .terminal-panel'))
+        : Array.from(document.querySelectorAll('main, .shell, .docs-shell, .workflow-page, .knowledge-page, .terminal-panel'))
             .filter((element) => {
               if (isHidden(element)) {
                 return false;
@@ -460,6 +592,19 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
     if (route === '/chat') {
       await expectChatNavbarPinned(page);
+      const clearRequest = page.waitForRequest((request) =>
+        request.url().endsWith('/api/chat/clear') && request.method() === 'POST'
+      );
+      page.once('dialog', async (dialog) => {
+        expect(dialog.message()).toContain('Clear this chat?');
+        await dialog.accept();
+      });
+      await page.getByRole('button', { name: 'Clear', exact: true }).click();
+      const request = await clearRequest;
+      const body = request.postDataJSON() as { conversation_id?: string };
+      expect(body.conversation_id).toMatch(/^chat_/);
+      await expect(page.locator('.message')).toHaveCount(0);
+      await expect(page.getByRole('status').getByRole('heading', { name: 'New chat' })).toBeVisible();
     }
   } else if (route === '/tasks') {
     await page.waitForLoadState('networkidle');
@@ -498,6 +643,20 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
       .getByRole('button', { name: 'Run', exact: true })
       .click();
     await expect(page.getByText('workflow started')).toBeVisible();
+  } else if (route === '/knowledge') {
+    await page.getByPlaceholder('Search Knowledge Space').fill('Research');
+    await page.getByRole('link', { name: /Research synthesis/ }).click();
+    await page.getByRole('tab', { name: 'Sources' }).click();
+    await page.getByLabel('Source title').fill('Review notes');
+    await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
+    await page.getByRole('button', { name: 'Add source' }).click();
+    await expect(page.getByText('Source processed')).toBeVisible();
+    await page.getByRole('tab', { name: 'Research' }).click();
+    await page.getByLabel('Question').fill('How should evidence be reviewed?');
+    await page.getByLabel('Mode', { exact: true }).selectOption('brief');
+    await page.getByRole('button', { name: 'Run' }).click();
+    await expect(page.getByText('Research report created')).toBeVisible();
+    await expect(page.locator('[aria-label="Report evidence"]')).toContainText('[S1]');
   } else if (route.startsWith('/docs')) {
     if (mobile) {
       const docsNavigationToggle = page.getByRole('button', { name: 'Expand docs navigation' });
@@ -528,6 +687,7 @@ const routes = [
   '/',
   '/chat',
   '/tasks',
+  '/knowledge',
   '/workflows',
   '/terminal',
   '/docs',

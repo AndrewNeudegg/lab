@@ -110,6 +110,20 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantQuery:  "date=2026-04-26&limit=2",
 		},
 		{
+			name:       "chat clear conversation",
+			args:       []string{"chat", "clear", "chat_123"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/chat/clear",
+			wantBody:   map[string]any{"all": false, "conversation_id": "chat_123"},
+		},
+		{
+			name:       "chat clear all",
+			args:       []string{"chat", "clear", "--all"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/chat/clear",
+			wantBody:   map[string]any{"all": true},
+		},
+		{
 			name:       "workflow create",
 			args:       []string{"workflow", "new", "Research", "bundle:", "Find", "sources"},
 			wantMethod: http.MethodPost,

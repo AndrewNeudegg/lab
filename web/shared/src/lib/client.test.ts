@@ -90,6 +90,29 @@ describe('homelabd client', () => {
     expect(attempts).toBe(1);
   });
 
+  test('clears chat history through the typed chat endpoint', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        return jsonResponse({ reply: 'cleared', removed_events: 2 });
+      }
+    });
+
+    const response = await client.clearChat({ conversation_id: 'chat_123' });
+
+    expect(response.reply).toBe('cleared');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('http://homelabd/chat/clear');
+    expect(requests[0].init?.method).toBe('POST');
+    expect(requests[0].body).toEqual({ conversation_id: 'chat_123' });
+  });
+
   test('creates a remote-targeted task with explicit target metadata', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({
@@ -274,6 +297,89 @@ describe('homelabd client', () => {
       name: 'Research',
       goal: 'Find sources',
       steps: [{ name: 'Search', kind: 'tool', tool: 'internet.search', args: { query: 'agents' } }]
+    });
+  });
+
+  test('uses typed Knowledge Space endpoints', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        return jsonResponse({
+          reply: 'ok',
+          space: {
+            id: 'kspace_1',
+            title: 'Research',
+            insight: { source_count: 1, word_count: 12 },
+            sources: [],
+            reports: [],
+            created_at: '2026-04-30T00:00:00Z',
+            updated_at: '2026-04-30T00:00:00Z'
+          },
+          source: {
+            id: 'ksrc_1',
+            title: 'Source',
+            kind: 'text',
+            content: 'source text',
+            summary: 'source text',
+            word_count: 2,
+            created_at: '2026-04-30T00:00:00Z',
+            updated_at: '2026-04-30T00:00:00Z'
+          },
+          report: {
+            id: 'kreport_1',
+            question: 'What matters?',
+            mode: 'research',
+            answer: 'Answer',
+            created_at: '2026-04-30T00:00:00Z'
+          },
+          spaces: []
+        });
+      }
+    });
+
+    await client.createKnowledgeSpace({
+      title: 'Research',
+      objective: 'Understand source-grounded answers'
+    });
+    await client.listKnowledgeSpaces();
+    await client.getKnowledgeSpace('kspace_1');
+    await client.addKnowledgeSource('kspace_1', {
+      title: 'Source',
+      kind: 'text',
+      content: 'source text'
+    });
+    await client.researchKnowledgeSpace('kspace_1', {
+      question: 'What matters?',
+      mode: 'research',
+      source_ids: ['ksrc_1']
+    });
+
+    expect(requests.map((request) => `${request.init?.method || 'GET'} ${request.url}`)).toEqual([
+      'POST http://homelabd/knowledge/spaces',
+      'GET http://homelabd/knowledge/spaces',
+      'GET http://homelabd/knowledge/spaces/kspace_1',
+      'POST http://homelabd/knowledge/spaces/kspace_1/sources',
+      'POST http://homelabd/knowledge/spaces/kspace_1/research'
+    ]);
+    expect(requests[0].body).toEqual({
+      title: 'Research',
+      objective: 'Understand source-grounded answers'
+    });
+    expect(requests[3].body).toEqual({
+      title: 'Source',
+      kind: 'text',
+      content: 'source text'
+    });
+    expect(requests[4].body).toEqual({
+      question: 'What matters?',
+      mode: 'research',
+      source_ids: ['ksrc_1']
     });
   });
 });

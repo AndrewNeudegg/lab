@@ -16,6 +16,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/healthd"
+	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
@@ -91,6 +92,48 @@ func TestMessageEndpointReturnsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestChatClearEndpointRemovesConversationEventsAndHTTPTranscript(t *testing.T) {
+	server, _, cfg := newHTTPTestServer(t)
+	server.ChatLogDir = filepath.Join(cfg.DataDir, "chat")
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"help","conversation_id":"chat_alpha"}`, "", http.StatusOK)
+	requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"status","conversation_id":"chat_beta"}`, "", http.StatusOK)
+
+	response := requestJSON(t, mux, http.MethodPost, "/chat/clear", `{"conversation_id":"chat_alpha"}`, "", http.StatusOK)
+	var cleared struct {
+		RemovedEvents     int `json:"removed_events"`
+		RemovedLogEntries int `json:"removed_log_entries"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&cleared); err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RemovedEvents != 2 || cleared.RemovedLogEntries != 2 {
+		t.Fatalf("clear response = %#v, want two event and two transcript removals", cleared)
+	}
+
+	events := requestJSON(t, mux, http.MethodGet, "/events", "", "", http.StatusOK)
+	if strings.Contains(events.Body.String(), "chat_alpha") || strings.Contains(events.Body.String(), "help") {
+		t.Fatalf("events still contain cleared conversation: %s", events.Body.String())
+	}
+	if !strings.Contains(events.Body.String(), "chat_beta") {
+		t.Fatalf("events did not keep other conversation: %s", events.Body.String())
+	}
+
+	logBytes, err := os.ReadFile(filepath.Join(server.ChatLogDir, time.Now().UTC().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if strings.Contains(logText, "chat_alpha") || strings.Contains(logText, "help") {
+		t.Fatalf("chat log still contains cleared conversation: %s", logText)
+	}
+	if !strings.Contains(logText, "chat_beta") {
+		t.Fatalf("chat log did not keep other conversation: %s", logText)
+	}
+}
+
 func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
 	server, _, _ := newHTTPTestServer(t)
 	mux := http.NewServeMux()
@@ -109,6 +152,55 @@ func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
 	reloaded := requestJSON(t, mux, http.MethodGet, "/settings", "", "", http.StatusOK)
 	if !strings.Contains(reloaded.Body.String(), `"auto_merge_enabled":true`) {
 		t.Fatalf("reloaded settings = %s", reloaded.Body.String())
+	}
+}
+
+func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Research space","objective":"Understand grounded answers"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+		Reply string               `json:"reply"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	if createBody.Space.ID == "" || createBody.Space.Title != "Research space" {
+		t.Fatalf("create body = %#v, want created space", createBody)
+	}
+
+	sourcePath := "/knowledge/spaces/" + createBody.Space.ID + "/sources"
+	added := requestJSON(t, mux, http.MethodPost, sourcePath, `{"title":"Evidence note","kind":"text","content":"Evidence should stay beside generated answers. Research reports need source labels so reviewers can verify claims."}`, "", http.StatusCreated)
+	var sourceBody struct {
+		Space  knowledgestore.Space  `json:"space"`
+		Source knowledgestore.Source `json:"source"`
+	}
+	if err := json.NewDecoder(added.Body).Decode(&sourceBody); err != nil {
+		t.Fatal(err)
+	}
+	if sourceBody.Space.Insight.SourceCount != 1 || sourceBody.Source.Summary == "" {
+		t.Fatalf("source body = %#v, want processed source and updated insight", sourceBody)
+	}
+
+	reportPath := "/knowledge/spaces/" + createBody.Space.ID + "/research"
+	reported := requestJSON(t, mux, http.MethodPost, reportPath, `{"question":"How should reviewers verify answers?","mode":"research"}`, "", http.StatusOK)
+	var reportBody struct {
+		Space  knowledgestore.Space  `json:"space"`
+		Report knowledgestore.Report `json:"report"`
+	}
+	if err := json.NewDecoder(reported.Body).Decode(&reportBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(reportBody.Report.Evidence) == 0 || len(reportBody.Space.Reports) != 1 {
+		t.Fatalf("report body = %#v, want stored report with evidence", reportBody)
+	}
+
+	listed := requestJSON(t, mux, http.MethodGet, "/knowledge/spaces", "", "", http.StatusOK)
+	if !strings.Contains(listed.Body.String(), createBody.Space.ID) {
+		t.Fatalf("list body = %s, want created space", listed.Body.String())
 	}
 }
 

@@ -2637,26 +2637,45 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": source, "model": resp.Model, "message": resp.Message.Content, "usage": resp.Usage})})
 		parsed, err := parseAgentResponse(resp.Message.Content)
 		if err != nil {
-			if strings.TrimSpace(resp.Message.Content) != "" {
-				return strings.TrimSpace(resp.Message.Content), source, nil
+			rawMessage := strings.TrimSpace(resp.Message.Content)
+			if rawMessage != "" {
+				if goal, ok := assistantDevelopmentCommitmentGoal(rawMessage); ok {
+					taskReply, err := o.createTaskWithAttachments(ctx, goal, nil)
+					if err != nil {
+						return "", source, err
+					}
+					return strings.TrimSpace(taskReply), "program", nil
+				}
+				filteredMessage, rejected := filterAssistantMetaReply(rawMessage)
+				if !rejected {
+					return filteredMessage, source, nil
+				}
+				messages = append(messages, llm.Message{Role: "assistant", Content: rawMessage})
+				messages = append(messages, llm.Message{Role: "user", Content: antiMetaResponseFilterPrompt()})
+				continue
 			}
 			return programResult("I could not parse the model response. Use `help`, `status`, or describe development work to start a task.", nil)
 		}
+		if goal, ok := assistantDevelopmentCommitmentGoal(parsed.Message); ok && (len(parsed.ToolCalls) == 0 || parsed.Done) {
+			taskReply, err := o.createTaskWithAttachments(ctx, goal, nil)
+			if err != nil {
+				return "", source, err
+			}
+			return strings.TrimSpace(taskReply), "program", nil
+		}
+		filteredMessage, rejected := filterAssistantMetaReply(parsed.Message)
+		if rejected && (len(parsed.ToolCalls) == 0 || parsed.Done) {
+			messages = append(messages, llm.Message{Role: "assistant", Content: mustJSON(parsed)})
+			messages = append(messages, llm.Message{Role: "user", Content: antiMetaResponseFilterPrompt()})
+			continue
+		}
+		parsed.Message = filteredMessage
 		if parsed.Message != "" {
 			lastMessage = parsed.Message
 		}
 		if len(parsed.ToolCalls) == 0 || parsed.Done {
 			if lastMessage == "" {
 				lastMessage = "Done."
-			}
-			if goal, ok := assistantDevelopmentCommitmentGoal(lastMessage); ok {
-				taskReply, err := o.createTaskWithAttachments(ctx, goal, nil)
-				if err != nil {
-					return "", source, err
-				}
-				if strings.TrimSpace(taskReply) != "" {
-					return strings.TrimSpace(lastMessage) + "\n\n" + taskReply, "program", nil
-				}
 			}
 			return lastMessage, source, nil
 		}
@@ -2718,6 +2737,165 @@ func assistantDevelopmentCommitmentGoal(message string) (string, bool) {
 		action = strings.ToUpper(action[:1]) + action[1:]
 	}
 	return cleanNewTaskGoal(action), true
+}
+
+func filterAssistantMetaReply(message string) (string, bool) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", false
+	}
+	cleaned, changed := assistantReplyWithoutMetaSentences(message)
+	if !changed {
+		return message, false
+	}
+	if strings.TrimSpace(cleaned) == "" {
+		return "", true
+	}
+	return cleaned, false
+}
+
+func assistantReplyWithoutMetaSentences(message string) (string, bool) {
+	segments := replySentenceSegments(message)
+	if len(segments) == 0 {
+		return strings.TrimSpace(message), false
+	}
+	kept := make([]string, 0, len(segments))
+	changed := false
+	for _, segment := range segments {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
+		if isAssistantMetaSentence(segment) {
+			changed = true
+			continue
+		}
+		kept = append(kept, segment)
+	}
+	if !changed {
+		return strings.TrimSpace(message), false
+	}
+	return strings.Join(kept, " "), true
+}
+
+func replySentenceSegments(message string) []string {
+	var segments []string
+	start := 0
+	for i := 0; i < len(message); i++ {
+		switch message[i] {
+		case '\n':
+			segments = append(segments, message[start:i])
+			start = i + 1
+		case '.', '!', '?':
+			end := i + 1
+			if end == len(message) || message[end] == ' ' || message[end] == '\t' || message[end] == '\n' || message[end] == '\r' {
+				segments = append(segments, message[start:end])
+				start = end
+			}
+		}
+	}
+	if start < len(message) {
+		segments = append(segments, message[start:])
+	}
+	return segments
+}
+
+func isAssistantMetaSentence(sentence string) bool {
+	normalized := normalizeAssistantMetaSentence(sentence)
+	normalized = trimAssistantMetaLeadIn(normalized)
+	if normalized == "" {
+		return false
+	}
+	for _, prefix := range []string{
+		"as an ai ",
+		"as orchestratoragent ",
+		"here is what i will do",
+		"here is what i'll do",
+		"here's what i will do",
+		"here's what i'll do",
+		"heres what i will do",
+		"heres what i'll do",
+		"my next step is ",
+		"next i will ",
+		"next i'll ",
+	} {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"let me ",
+		"i can help",
+		"i can take ",
+		"i can start ",
+		"i can create ",
+		"i can make ",
+		"i can update ",
+		"i can fix ",
+	} {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	for _, marker := range []string{"i'll ", "i will ", "i am going to ", "i'm going to ", "im going to "} {
+		if strings.HasPrefix(normalized, marker) {
+			return startsWithMetaProcessVerb(strings.TrimSpace(normalized[len(marker):]))
+		}
+	}
+	return false
+}
+
+func normalizeAssistantMetaSentence(value string) string {
+	value = strings.NewReplacer(
+		"\u2018", "'",
+		"\u2019", "'",
+		"\u201c", "\"",
+		"\u201d", "\"",
+	).Replace(value)
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Trim(value, " \t\r\n-*:;,.!?")
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func trimAssistantMetaLeadIn(value string) string {
+	for {
+		trimmed := false
+		for _, prefix := range []string{"sure, ", "sure ", "ok, ", "ok ", "okay, ", "okay ", "yes, ", "yes ", "yep, ", "yep ", "thanks, ", "thanks "} {
+			if strings.HasPrefix(value, prefix) {
+				value = strings.TrimSpace(value[len(prefix):])
+				trimmed = true
+				break
+			}
+		}
+		if !trimmed {
+			return value
+		}
+	}
+}
+
+func startsWithMetaProcessVerb(value string) bool {
+	value = strings.Trim(value, " \t\r\n-*:;,.!?")
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return true
+	}
+	if fields[0] == "not" {
+		return false
+	}
+	switch fields[0] {
+	case "add", "analyse", "analyze", "answer", "begin", "build", "change", "check", "compare", "create", "debug", "do", "explain", "fetch", "find", "fix", "gather", "handle", "implement", "improve", "inspect", "investigate", "look", "make", "patch", "provide", "read", "refactor", "remove", "repair", "replace", "review", "run", "search", "start", "summarise", "summarize", "take", "test", "tighten", "update", "upgrade", "use", "validate", "verify", "work", "write":
+		return true
+	default:
+		return false
+	}
+}
+
+func antiMetaResponseFilterPrompt() string {
+	return strings.Join([]string{
+		"The previous candidate reply was rejected by the response filter because it described future process instead of answering directly.",
+		"Return exactly one JSON object.",
+		"If implementation work is needed, call task.create now; otherwise answer the user's request with concrete content and no plan, promise, or process narration.",
+	}, " ")
 }
 
 func messageReferencesCreatedTask(message string) bool {

@@ -75,6 +75,12 @@ func TestBunScriptTimeoutsHaveReviewSafeMinimums(t *testing.T) {
 	if got := atLeastTimeout(time.Second, minBunScriptTimeout); got != 3*time.Minute {
 		t.Fatalf("bun script timeout = %s, want 3m", got)
 	}
+	if got := bunScriptTimeout(time.Second, "build"); got != 6*time.Minute {
+		t.Fatalf("bun build timeout = %s, want 6m", got)
+	}
+	if got := bunScriptTimeout(time.Second, "check"); got != 3*time.Minute {
+		t.Fatalf("bun check timeout = %s, want 3m", got)
+	}
 	if got := atLeastTimeout(time.Second, minBunUATTasksTime); got != 5*time.Minute {
 		t.Fatalf("task UAT timeout = %s, want 5m", got)
 	}

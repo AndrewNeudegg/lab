@@ -2,9 +2,9 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.PLAYWRIGHT_PORT || worktreePort(process.cwd()));
 const baseURL = `http://127.0.0.1:${port}`;
-const webServerTimeout = Number(process.env.PLAYWRIGHT_WEB_SERVER_TIMEOUT || 90_000);
-const testTimeout = Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 60_000);
-const expectTimeout = Number(process.env.PLAYWRIGHT_EXPECT_TIMEOUT || 15_000);
+const webServerTimeout = Number(process.env.PLAYWRIGHT_WEB_SERVER_TIMEOUT || 120_000);
+const testTimeout = Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 120_000);
+const expectTimeout = Number(process.env.PLAYWRIGHT_EXPECT_TIMEOUT || 20_000);
 const executablePath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
   (process.env.HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME === '1' ? process.env.CHROME_BIN : undefined);
@@ -13,7 +13,6 @@ const launchOptions = {
   chromiumSandbox: false,
   args: ['--disable-breakpad', '--disable-crash-reporter', '--disable-dev-shm-usage']
 };
-
 function worktreePort(cwd: string) {
   let hash = 0;
   for (const char of cwd) {

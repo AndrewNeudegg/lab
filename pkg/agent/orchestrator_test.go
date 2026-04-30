@@ -805,6 +805,10 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	if !strings.Contains(reply, "Created queued task") || strings.Contains(reply, "Child phases:") {
 		t.Fatalf("reply = %q, want single queued task summary", reply)
 	}
+	wantLink := fmt.Sprintf("Created queued task [%s](/tasks?task=%s) (%s).", created.Title, created.ID, created.ID)
+	if !strings.Contains(reply, wantLink) {
+		t.Fatalf("reply = %q, want task title link %q", reply, wantLink)
+	}
 	want := "Next:\n```\nstatus\nrun " + created.ID + "\ndelegate " + created.ID + " to codex\n```"
 	if !strings.Contains(reply, want) {
 		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
@@ -1027,7 +1031,8 @@ func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
 	}
 	goal := "Work this task to completion if possible. Inspect the task workspace before editing. Task goal: when tasks are created their title should be derived from an automatic LLM summarisation of the user's input"
 
-	if _, err := orch.Handle(context.Background(), "test", "new "+goal); err != nil {
+	reply, err := orch.Handle(context.Background(), "test", "new "+goal)
+	if err != nil {
 		t.Fatal(err)
 	}
 	tasks, err := orch.tasks.List()
@@ -1039,6 +1044,9 @@ func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
 	}
 	if tasks[0].Title != "Summarise task creation titles" {
 		t.Fatalf("title = %q, want summarized title", tasks[0].Title)
+	}
+	if !strings.Contains(reply, "[Summarise task creation titles](/tasks?task="+tasks[0].ID+")") {
+		t.Fatalf("reply = %q, want summarized task title link", reply)
 	}
 	if summarizer.text != goal {
 		t.Fatalf("summarizer text = %q, want original goal", summarizer.text)

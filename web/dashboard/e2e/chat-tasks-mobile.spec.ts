@@ -172,12 +172,56 @@ test('chat mobile keeps typed draft text through layout changes', async ({ page 
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 });
 
+test('created task chat reply links to the task with SPA navigation', async ({ page }) => {
+  await mockTaskApi(page);
+  await page.route('**/api/message', async (route) => {
+    await route.fulfill({
+      json: {
+        reply:
+          'Created queued task [Review queue behavior on mobile](/tasks?task=task_20260426_150000_11111111).',
+        source: 'program'
+      }
+    });
+  });
+
+  await page.goto('/chat');
+  await page.evaluate(() => {
+    (window as Window & { __spaMarker?: string }).__spaMarker = 'same-document';
+  });
+  await page.getByRole('textbox', { name: 'Message' }).fill('new review queue behavior on mobile');
+  await page.getByRole('button', { name: 'Send' }).click();
+  const taskLink = page.getByRole('link', { name: 'Review queue behavior on mobile' });
+  await expect(taskLink).toBeVisible();
+
+  await taskLink.click();
+  await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150000_11111111$/, {
+    timeout: 20_000
+  });
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible({
+    timeout: 20_000
+  });
+  await expect(page.locator('.workbench')).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => (window as Window & { __spaMarker?: string }).__spaMarker))
+    .toBe('same-document');
+
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+  await page.locator('.triage button').filter({ hasText: 'All' }).click();
+  await page.getByRole('link', { name: /Document mobile task flow/ }).click();
+  await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150200_33333333$/);
+  await expect(page.getByRole('heading', { name: 'Document mobile task flow' })).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150000_11111111$/);
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible();
+});
+
 test('tasks mobile switches between queue and selected task detail', async ({ page }) => {
   test.setTimeout(60_000);
   await mockTaskApi(page);
   await page.goto('/tasks');
 
-  const rows = page.getByRole('button', { name: /Review queue behavior on mobile/ });
+  const rows = page.getByRole('link', { name: /Review queue behavior on mobile/ });
   const queue = page.locator('.task-pane');
   const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
@@ -420,7 +464,7 @@ test('navbar help stays available on desktop and submits without screen capture 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/tasks');
   await expect(
-    page.getByRole('button', { name: /Review queue behavior on mobile/ })
+    page.getByRole('link', { name: /Review queue behavior on mobile/ })
   ).toBeVisible();
   await expect(page.locator('.desktop-nav')).toBeVisible();
   await expect(page.locator('.help-button')).toBeVisible();

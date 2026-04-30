@@ -2,6 +2,7 @@
 
 The dashboard has these primary operator surfaces:
 
+- `/assistant`: Assistant capability catalogue, life-improving activities, API-owned workflow templates, and agentic UX patterns.
 - `/chat`: resumable conversations, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
 - `/knowledge`: Knowledge Space source collections, source processing, and source-grounded reports.
@@ -34,7 +35,7 @@ Use the shared responsive navbar on every dashboard page.
 - Constrained widths: collapse destinations behind a labelled `Menu` hamburger button to preserve content width. When the compact menu is open, dim the page with a scrim and close the menu when the operator taps outside the menu or selects a destination.
 - Keep the `Help` button visible on desktop, tablet, and mobile. It captures browser context, asks for screen-capture permission only when the browser and page security context support it, prompts for a short bug note, and creates a task with the captured attachments. If inline navigation would crowd the bar, collapse destinations behind `Menu` before hiding `Help`.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Chat`, `Tasks`, `Knowledge`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
+- Keep top-level destinations flat: `Assistant`, `Chat`, `Tasks`, `Knowledge`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 - Show compact Tasks attention badges only when action is needed. Red counts failed, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
 - Keep the navbar pinned to the viewport top on pages with internal scroll regions, including `/chat`, so mobile and desktop operators can reach navigation without first scrolling the conversation.
@@ -51,6 +52,7 @@ Dashboard state that operators naturally share must have a URL and must use Svel
 - Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
 - Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.
 - Chat messages expose hash links such as `/chat#message-assistant-2`.
+- Assistant capabilities live at `/assistant`. The page calls `GET /assistant` with optional `area` and `q` query parameters so the control-plane API owns the capability catalogue, activities, UX patterns, safeguards, and workflow templates.
 - Chat sessions are selected in the `/chat` history pane. A message hash applies to the currently selected chat session.
 
 Back and forward browser controls should restore the selected task, workflow, terminal tab, documentation page, or chat message anchor without losing local dashboard state.
@@ -109,6 +111,12 @@ Agents should write plain Mermaid and let the dashboard apply the brand palette.
 - Marker.io and Sentry feedback widgets: bug reporting should be available in context, attach screenshots, collect useful browser state, and ask the user for the missing human detail before submission.
 - MDN Screen Capture API guidance: web pages must request screen capture through `getDisplayMedia()`, which prompts the user to select and grant capture permission.
 - Jira attachment guidance: work items can carry files and screenshots when attachments are enabled, and the issue view should make attached evidence visible.
+- Google Gemini assistant: broad assistants combine natural-language requests, events and reminders, connected app context, screen awareness, messages, routines, and multi-step task completion.
+- Microsoft Copilot: personal assistants are moving toward daily briefs, connected services, file context, and natural-language action across approved data.
+- OpenAI ChatGPT Tasks and Pulse: assistants should support one-off and recurring proactive work, offline execution, notifications, and scannable daily research summaries.
+- OpenAI ChatGPT Projects: longer-running personal organisation benefits from files, project-specific instructions, memory, and connected app context.
+- Microsoft human-AI interaction guidelines: assistants should set expectations, show relevant context, support dismissal and correction, explain behaviour, and provide global controls.
+- Agentic UX guidance: state-changing capabilities need autonomy settings, intent previews, confidence signals, receipts, undo or recovery paths, and clear escalation.
 
 Sources:
 
@@ -154,6 +162,12 @@ Sources:
 - https://sentry.io/changelog/user-feedback-widget-screenshots/
 - https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia
 - https://support.atlassian.com/jira-cloud-administration/docs/configure-file-attachments/
+- https://gemini.google/assistant/?hl=en
+- https://www.microsoft.com/en-us/microsoft-copilot/for-individuals/features
+- https://help.openai.com/en/articles/10291617-tasks-in-chatgpt
+- https://help.openai.com/en/articles/10169521-projects-in-chatgpt
+- https://www.microsoft.com/en-us/research/articles/guidelines-for-human-ai-interaction-eighteen-best-practices-for-human-centered-ai-design/
+- https://www.smashingmagazine.com/2026/02/designing-agentic-ai-practical-ux-patterns/
 
 ## Layout Rationale
 
@@ -184,6 +198,14 @@ For `/workflows`, every visible component must answer one of these questions:
 3. Which step is encoded?
 4. What happened on the latest run?
 
+For `/assistant`, every visible component must answer one of these questions:
+
+1. What activity makes the operator's life easier?
+2. Which Assistant capability supports it?
+3. What autonomy level and safeguards apply?
+4. Which UI pattern makes the behaviour understandable and controllable?
+5. Which workflow template or existing dashboard surface can operationalise it?
+
 If a component does not answer one of those questions, it should not be in the primary surface.
 
 ## Component Placement
@@ -208,6 +230,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Attachments: selected task records show attached evidence inside `State and context`. Image attachments get a thumbnail and download link; text/context attachments show an inline preview. Keep this visible near state because bug-report attachments explain why the task exists.
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
+- `/assistant` page: catalogue of life-improving activities and capabilities backed by `GET /assistant`. Keep the API as the source of truth for capability names, activity mapping, workflow templates, autonomy levels, safeguards, and UX pattern guidance. The UI may filter and select, but it must not invent Assistant behaviour that the API did not return.
 - `/chat` page: chat-session history, selected transcript, and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs. `New chat` creates or selects an empty local session and sends future dashboard messages with that session's `conversation_id`, so orchestration history and chat search stay scoped to the selected conversation. `Clear` removes the selected browser session and asks homelabd to delete matching server event-log and HTTP transcript entries; `Clear all` clears every local session and all server chat transcript context.
 - Chat message footers: small, persistent metadata at the bottom of each bubble. The footer shows the exchange number, and assistant replies also show returned orchestration stats such as model turns, tool calls, token count, and API-measured elapsed response time when available. Keep it secondary but readable; do not hide these counts behind hover-only controls.
 - `/chat` attachments: the composer supports desktop file picking, mobile file picking, and drag-and-drop into the composer. Attachment chips show the file name, media type, and size before send; sent messages keep visible attachment metadata. The API receives attachment data with the chat message so task-creation commands and LLM context can include the uploaded evidence.

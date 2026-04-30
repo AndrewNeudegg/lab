@@ -123,3 +123,51 @@ test('dashboard update action asks a waiting service worker to take over', async
     )
     .toEqual({ type: 'SKIP_WAITING' });
 });
+
+test('dashboard update detection rechecks for waiting workers after registration update', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    let waitingWorker: ServiceWorker | null = null;
+
+    const makeWaitingWorker = () => {
+      const worker = new EventTarget() as ServiceWorker & {
+        postMessage: (message: unknown) => void;
+      };
+      Object.defineProperty(worker, 'state', { value: 'installed' });
+      worker.postMessage = (message: unknown) => {
+        (window as Window & { __pwaUpdateMessage?: unknown }).__pwaUpdateMessage = message;
+      };
+      return worker;
+    };
+
+    const registration = new EventTarget() as ServiceWorkerRegistration & {
+      update: () => Promise<void>;
+    };
+    Object.defineProperty(registration, 'waiting', {
+      get: () => waitingWorker
+    });
+    Object.defineProperty(registration, 'installing', { get: () => null });
+    registration.update = async () => {
+      waitingWorker = makeWaitingWorker();
+    };
+
+    const serviceWorker = new EventTarget() as ServiceWorkerContainer;
+    Object.defineProperty(serviceWorker, 'ready', { value: Promise.resolve(registration) });
+    Object.defineProperty(serviceWorker, 'controller', { value: {} });
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: serviceWorker
+    });
+  });
+
+  await page.goto('/chat');
+  const update = page.getByRole('button', { name: 'Update app' });
+  await expect(update).toBeVisible();
+  await update.click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as Window & { __pwaUpdateMessage?: unknown }).__pwaUpdateMessage)
+    )
+    .toEqual({ type: 'SKIP_WAITING' });
+});

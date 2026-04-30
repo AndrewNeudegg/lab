@@ -14,6 +14,8 @@ const apiPrefixes = ['/api', '/healthd-api', '/supervisord-api'];
 const appAssets = new Set([...build, ...files]);
 const precacheUrls = Array.from(new Set([...appAssets, offlineFallback]));
 const skipWaitingMessage = 'SKIP_WAITING';
+const updateActivatedMessage = 'DASHBOARD_UPDATE_ACTIVATED';
+let shouldRefreshClientsAfterActivation = false;
 
 const isApiRequest = (url: URL) => apiPrefixes.some((prefix) => url.pathname.startsWith(prefix));
 
@@ -46,11 +48,35 @@ const networkFirstPage = async (request: Request) => {
   }
 };
 
+const refreshDashboardClients = async () => {
+  const clients = await worker.clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true
+  });
+  await Promise.all(
+    clients.map(async (client) => {
+      const url = new URL(client.url);
+      if (url.origin !== worker.location.origin) {
+        return;
+      }
+      client.postMessage({ type: updateActivatedMessage, version });
+      if ('navigate' in client && typeof client.navigate === 'function') {
+        await client.navigate(client.url).catch(() => undefined);
+      }
+    })
+  );
+};
+
 worker.addEventListener('install', (event: ExtendableEvent) => {
   event.waitUntil(
     (async () => {
+      const replacingExistingWorker = Boolean(worker.registration.active);
+      shouldRefreshClientsAfterActivation = replacingExistingWorker;
       const cache = await caches.open(assetCacheName);
       await cache.addAll(precacheUrls);
+      if (replacingExistingWorker) {
+        await worker.skipWaiting();
+      }
     })()
   );
 });
@@ -64,6 +90,9 @@ worker.addEventListener('activate', (event: ExtendableEvent) => {
         }
       }
       await worker.clients.claim();
+      if (shouldRefreshClientsAfterActivation) {
+        await refreshDashboardClients();
+      }
     })()
   );
 });
@@ -88,6 +117,7 @@ worker.addEventListener('fetch', (event: FetchEvent) => {
 
 worker.addEventListener('message', (event: ExtendableMessageEvent) => {
   if ((event.data as { type?: string } | undefined)?.type === skipWaitingMessage) {
+    shouldRefreshClientsAfterActivation = true;
     event.waitUntil(worker.skipWaiting());
   }
 });

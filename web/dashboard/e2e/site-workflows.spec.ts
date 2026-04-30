@@ -186,7 +186,7 @@ const mockDashboardApis = async (page: Page) => {
           '```'
         ].join('\n'),
         source: 'program',
-        stats: { model_turns: 1, tool_calls: 2, total_tokens: 128 }
+        stats: { model_turns: 1, tool_calls: 2, total_tokens: 128, elapsed_ms: 1234 }
       }
     });
   });
@@ -410,7 +410,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Status:')).toBeVisible();
-    await expect(page.getByText('1 model turn · 2 tool calls')).toBeVisible();
+    await expect(page.getByText('1 model turn · 2 tool calls · 128 tokens · 1.2 s elapsed')).toBeVisible();
     await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
     if (route === '/chat') {
       await expectChatNavbarPinned(page);

@@ -36,11 +36,12 @@ describe('chat interaction stats', () => {
           model_turns: 2,
           tool_calls: 1,
           input_tokens: 30,
-          output_tokens: 12
+          output_tokens: 12,
+          elapsed_ms: 1234
         }),
         3
       )
-    ).toBe('Exchange 3 · 2 model turns · 1 tool call · 42 tokens');
+    ).toBe('Exchange 3 · 2 model turns · 1 tool call · 42 tokens · 1.2 s elapsed');
   });
 
   test('shows zero tool calls when a model answered without tools', () => {
@@ -60,5 +61,11 @@ describe('chat interaction stats', () => {
         2
       )
     ).toBe('Exchange 2');
+  });
+
+  test('shows API-provided elapsed time even without model stats', () => {
+    expect(
+      formatInteractionStats(message('assistant', 'assistant-1', { elapsed_ms: 85 }), 1)
+    ).toBe('Exchange 1 · 85 ms elapsed');
   });
 });

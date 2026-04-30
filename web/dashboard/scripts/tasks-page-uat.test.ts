@@ -54,6 +54,10 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('mobile selected task did not show action buttons');
     expect(scriptSource).toContain('mobile Back to queue did not hide detail');
     expect(scriptSource).toContain('mobile selected detail has horizontal overflow');
+    expect(scriptSource).toContain('mobile page scrolled instead of task list');
+    expect(scriptSource).toContain('mobile empty queue page scrolled below the footer');
+    expect(scriptSource).toContain('mobile empty queue document has a vertical scroll range');
+    expect(scriptSource).toContain('mobile empty queue footer fell below the layout viewport');
   });
 
   test('checks constrained desktop diff readability', () => {

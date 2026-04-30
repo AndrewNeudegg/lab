@@ -3436,6 +3436,119 @@ func TestOpenEndedChatRetainsHistory(t *testing.T) {
 	assertContainsLLMMessage(t, got, llm.Message{Role: "user", Content: "what did I ask first?"})
 }
 
+func TestChatMetaToolsExposeTranscript(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	if _, err := orch.Handle(context.Background(), "dashboard", "help"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(orch.toolCatalog(), "chat.history") ||
+		!strings.Contains(orch.toolCatalog(), "chat.search") ||
+		!strings.Contains(orch.toolCatalog(), "chat.send") {
+		t.Fatalf("chat meta tools missing from catalog: %s", orch.toolCatalog())
+	}
+
+	history := orch.executeProposedTool(context.Background(), "OrchestratorAgent", proposedToolCall{
+		Tool: "chat.history",
+		Args: json.RawMessage(`{"limit":10}`),
+	}, "")
+	if !history.Allowed || history.Error != "" {
+		t.Fatalf("chat.history result = %#v, want allowed without error", history)
+	}
+	var historyPayload struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(history.Result, &historyPayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(historyPayload.Entries) < 2 {
+		t.Fatalf("history entries = %#v, want user and assistant messages", historyPayload.Entries)
+	}
+	if historyPayload.Entries[0].Role != "user" || historyPayload.Entries[0].Message != "help" {
+		t.Fatalf("first history entry = %#v, want user help message", historyPayload.Entries[0])
+	}
+	last := historyPayload.Entries[len(historyPayload.Entries)-1]
+	if last.Role != "assistant" || !strings.Contains(last.Message, "commands:") {
+		t.Fatalf("last history entry = %#v, want assistant help reply", last)
+	}
+
+	search := orch.executeProposedTool(context.Background(), "OrchestratorAgent", proposedToolCall{
+		Tool: "chat.search",
+		Args: json.RawMessage(`{"query":"commands","limit":5}`),
+	}, "")
+	if !search.Allowed || search.Error != "" {
+		t.Fatalf("chat.search result = %#v, want allowed without error", search)
+	}
+	var searchPayload struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(search.Result, &searchPayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(searchPayload.Entries) == 0 || searchPayload.Entries[0].Role != "assistant" {
+		t.Fatalf("search entries = %#v, want assistant match", searchPayload.Entries)
+	}
+}
+
+func TestChatMetaSendRecordsAssistantMessage(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	result := orch.executeProposedTool(context.Background(), "OrchestratorAgent", proposedToolCall{
+		Tool: "chat.send",
+		Args: json.RawMessage(`{"message":"separate assistant note","to":"dashboard"}`),
+	}, "")
+	if !result.Allowed || result.Error != "" {
+		t.Fatalf("chat.send result = %#v, want allowed without error", result)
+	}
+
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type != "chat.reply" {
+			continue
+		}
+		var payload struct {
+			Message string `json:"message"`
+			To      string `json:"to"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Message == "separate assistant note" && payload.To == "dashboard" {
+			return
+		}
+	}
+	t.Fatalf("chat.send did not record assistant chat reply: %#v", events)
+}
+
+func TestChatMetaCommandsSearchRecordedConversation(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	if _, err := orch.Handle(context.Background(), "dashboard", "help"); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := orch.Handle(context.Background(), "dashboard", "chat search commands")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, `Chat matches for "commands"`) || !strings.Contains(reply, "assistant OrchestratorAgent") {
+		t.Fatalf("chat search reply = %q, want recorded assistant match", reply)
+	}
+	if strings.Contains(reply, "chat search commands") {
+		t.Fatalf("chat search reply = %q, should not report the search command itself", reply)
+	}
+
+	reply, err = orch.Handle(context.Background(), "dashboard", "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Recent chat history:") || strings.Contains(reply, "user dashboard: history") {
+		t.Fatalf("history reply = %q, want prior messages without current command", reply)
+	}
+}
+
 func TestOpenEndedChatReportsProviderSource(t *testing.T) {
 	provider := &recordingProvider{}
 	orch := newTestOrchestrator(t, nil)

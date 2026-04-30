@@ -170,4 +170,8 @@ func TestPseudoToolAllowlist(t *testing.T) {
 	if !decision.Allowed {
 		t.Fatalf("expected OrchestratorAgent workflow.run pseudo-tool to be allowed: %s", decision.Reason)
 	}
+	decision = policy.DecideNamed("OrchestratorAgent", "chat.search", json.RawMessage(`{"query":"previous message"}`))
+	if !decision.Allowed {
+		t.Fatalf("expected OrchestratorAgent chat.search pseudo-tool to be allowed: %s", decision.Reason)
+	}
 }

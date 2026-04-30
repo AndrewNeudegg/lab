@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { Markdown, Navbar } from '@homelab/shared';
+  import { docsURL, Markdown, Navbar } from '@homelab/shared';
   import { filterDocs, type DocsEntry } from './library';
 
   export let docs: DocsEntry[] = [];
@@ -36,8 +36,7 @@
   const preferredDocSlugs = new Set(preferredDocOrder);
 
   let search = '';
-  let jumpSlug = selectedSlug;
-  let lastJumpSourceSlug = selectedSlug;
+  let jumpSelect: HTMLSelectElement;
   let controlsReady = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
@@ -79,26 +78,59 @@
     currentDocIndex >= 0 && currentDocIndex < navigationDocs.length - 1
       ? navigationDocs[currentDocIndex + 1]
       : undefined;
-  $: if (selectedSlug !== lastJumpSourceSlug) {
-    jumpSlug = selectedSlug;
-    lastJumpSourceSlug = selectedSlug;
+  let requestedSlug = '';
+  $: if (requestedSlug === selectedSlug) {
+    requestedSlug = '';
   }
-
-  const openSelectedDoc = (event: Event) => {
-    const slug = (event.currentTarget as HTMLSelectElement).value;
-
-    if (slug && slug !== selectedSlug) {
-      void goto(`/docs/${slug}`);
+  const openSelectedDoc = (slug: string) => {
+    if (slug && slug !== selectedSlug && slug !== requestedSlug) {
+      requestedSlug = slug;
+      void goto(docsURL(slug), { keepFocus: true, noScroll: true });
     }
   };
 
   onMount(() => {
     controlsReady = true;
+    jumpSelect.dataset.docsEnhanced = 'true';
+    const handleJump = () => openSelectedDoc(jumpSelect.value);
+    jumpSelect.addEventListener('input', handleJump);
+    jumpSelect.addEventListener('change', handleJump);
+    return () => {
+      delete jumpSelect.dataset.docsEnhanced;
+      jumpSelect.removeEventListener('input', handleJump);
+      jumpSelect.removeEventListener('change', handleJump);
+    };
   });
 </script>
 
 <svelte:head>
   <title>{selectedDoc.title} - Docs - homelabd</title>
+  <script>
+    (() => {
+      if (window.__homelabDocsJumpFallback) {
+        return;
+      }
+      window.__homelabDocsJumpFallback = true;
+
+      const docsPath = (slug) => slug.split('/').map(encodeURIComponent).join('/');
+      const openDocsJump = (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLSelectElement) || target.dataset.docsJump !== 'true') {
+          return;
+        }
+        if (target.dataset.docsEnhanced === 'true') {
+          return;
+        }
+        const slug = target.value.trim();
+        if (slug) {
+          window.location.assign(`/docs/${docsPath(slug)}`);
+        }
+      };
+
+      document.addEventListener('input', openDocsJump);
+      document.addEventListener('change', openDocsJump);
+    })();
+  </script>
 </svelte:head>
 
 <Navbar title="Docs" subtitle="Library" current="/docs" />
@@ -114,15 +146,9 @@
 
       <div class="mobile-jump">
         <label for="docs-jump">Current document</label>
-        <select
-          id="docs-jump"
-          bind:value={jumpSlug}
-          disabled={!controlsReady}
-          on:change={openSelectedDoc}
-          aria-label="Jump to document"
-        >
+        <select id="docs-jump" bind:this={jumpSelect} data-docs-jump="true" aria-label="Jump to document">
           {#each navigationDocs as doc}
-            <option value={doc.slug}>{doc.title}</option>
+            <option value={doc.slug} selected={doc.slug === selectedSlug}>{doc.title}</option>
           {/each}
         </select>
       </div>
@@ -149,7 +175,7 @@
                 {#each group.docs as doc}
                   <a
                     class:selected={doc.slug === selectedSlug}
-                    href={`/docs/${doc.slug}`}
+                    href={docsURL(doc.slug)}
                     aria-current={doc.slug === selectedSlug ? 'page' : undefined}
                   >
                     <span class="doc-title">{doc.title}</span>
@@ -193,14 +219,14 @@
       {#if previousDoc || nextDoc}
         <nav class="doc-pagination" aria-label="Document pagination">
           {#if previousDoc}
-            <a class="previous" href={`/docs/${previousDoc.slug}`}>
+            <a class="previous" href={docsURL(previousDoc.slug)}>
               <span>Previous</span>
               <strong>{previousDoc.title}</strong>
             </a>
           {/if}
 
           {#if nextDoc}
-            <a class="next" href={`/docs/${nextDoc.slug}`}>
+            <a class="next" href={docsURL(nextDoc.slug)}>
               <span>Next</span>
               <strong>{nextDoc.title}</strong>
             </a>

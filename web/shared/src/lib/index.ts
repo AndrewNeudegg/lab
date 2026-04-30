@@ -7,6 +7,7 @@ export * from './markdown';
 export * from './mermaid';
 export * from './tasks';
 export * from './theme';
+export * from './urlRefs';
 export { default as Counter } from './Counter.svelte';
 export { default as Header } from './Header.svelte';
 export { default as Markdown } from './Markdown.svelte';

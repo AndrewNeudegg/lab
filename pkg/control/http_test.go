@@ -255,6 +255,17 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSpaceListEndpointReturnsEmptyArray(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	listed := requestJSON(t, mux, http.MethodGet, "/knowledge/spaces", "", "", http.StatusOK)
+	if listed.Body.String() != "{\"spaces\":[]}\n" {
+		t.Fatalf("list body = %s, want empty spaces array", listed.Body.String())
+	}
+}
+
 func TestTaskRunsEndpointListsExternalArtifacts(t *testing.T) {
 	server, _, cfg := newHTTPTestServer(t)
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "runs"), 0o755); err != nil {

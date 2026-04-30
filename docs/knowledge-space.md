@@ -22,7 +22,7 @@ flowchart LR
 
 ## HTTP API
 
-- `GET /knowledge/spaces`: list spaces.
+- `GET /knowledge/spaces`: list spaces. An empty store returns `{"spaces":[]}` and the dashboard shows the empty state.
 - `POST /knowledge/spaces`: create a space with `title`, optional `objective`, and optional `description`.
 - `GET /knowledge/spaces/{space_id}`: load one space.
 - `POST /knowledge/spaces/{space_id}/sources`: add and process a source with `title`, optional `kind`, optional `uri`, and `content`.
@@ -31,5 +31,7 @@ flowchart LR
 ## Operator Notes
 
 Processing lives in `homelabd`, not in the browser. The dashboard only submits source text, chooses the selected sources, and renders the processed summaries, key terms, evidence, gaps, and saved reports returned by the API.
+
+An empty Knowledge Space store is normal on a new install or after a data reset. The `/knowledge` page should show `0` spaces and `0` sources with the `New space` control; a raw `response.spaces is null` or iterator error is a bug, not an operator action.
 
 The current implementation is deterministic and local to stored sources. Future work can add web retrieval, richer document parsing, collaboration, and export without changing the page model: sources enter the space, backend processing updates the space, and reports remain tied to evidence.

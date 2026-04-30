@@ -88,11 +88,11 @@ func (s *Store) List() ([]Space, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return []Space{}, nil
 		}
 		return nil, err
 	}
-	var spaces []Space
+	spaces := []Space{}
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue

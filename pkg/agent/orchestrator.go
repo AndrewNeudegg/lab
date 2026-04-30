@@ -2787,6 +2787,9 @@ func replySentenceSegments(message string) []string {
 			segments = append(segments, message[start:i])
 			start = i + 1
 		case '.', '!', '?':
+			if message[i] == '.' && isNumberedListSentenceMarker(message, start, i) {
+				continue
+			}
 			end := i + 1
 			if end == len(message) || message[end] == ' ' || message[end] == '\t' || message[end] == '\n' || message[end] == '\r' {
 				segments = append(segments, message[start:end])
@@ -2800,11 +2803,30 @@ func replySentenceSegments(message string) []string {
 	return segments
 }
 
+func isNumberedListSentenceMarker(message string, start, dot int) bool {
+	if dot <= start || dot > len(message) {
+		return false
+	}
+	prefix := strings.TrimSpace(message[start:dot])
+	if prefix == "" {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if prefix[i] < '0' || prefix[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func isAssistantMetaSentence(sentence string) bool {
 	normalized := normalizeAssistantMetaSentence(sentence)
 	normalized = trimAssistantMetaLeadIn(normalized)
 	if normalized == "" {
 		return false
+	}
+	if hasAssistantMetaProcessClause(normalized) {
+		return true
 	}
 	for _, prefix := range []string{
 		"as an ai ",
@@ -2837,11 +2859,6 @@ func isAssistantMetaSentence(sentence string) bool {
 			return true
 		}
 	}
-	for _, marker := range []string{"i'll ", "i will ", "i am going to ", "i'm going to ", "im going to "} {
-		if strings.HasPrefix(normalized, marker) {
-			return startsWithMetaProcessVerb(strings.TrimSpace(normalized[len(marker):]))
-		}
-	}
 	return false
 }
 
@@ -2860,7 +2877,16 @@ func normalizeAssistantMetaSentence(value string) string {
 func trimAssistantMetaLeadIn(value string) string {
 	for {
 		trimmed := false
-		for _, prefix := range []string{"sure, ", "sure ", "ok, ", "ok ", "okay, ", "okay ", "yes, ", "yes ", "yep, ", "yep ", "thanks, ", "thanks "} {
+		before := value
+		value = trimAssistantMetaListPrefix(value)
+		if value != before {
+			trimmed = true
+		}
+		for _, prefix := range []string{
+			"sure, ", "sure ", "ok, ", "ok ", "okay, ", "okay ", "yes, ", "yes ", "yep, ", "yep ", "thanks, ", "thanks ",
+			"first, ", "first ", "firstly, ", "firstly ", "next, ", "next ", "then, ", "then ", "now, ", "now ",
+			"to answer that, ", "to answer that ", "for that, ", "for that ", "for this, ", "for this ",
+		} {
 			if strings.HasPrefix(value, prefix) {
 				value = strings.TrimSpace(value[len(prefix):])
 				trimmed = true
@@ -2873,6 +2899,58 @@ func trimAssistantMetaLeadIn(value string) string {
 	}
 }
 
+func trimAssistantMetaListPrefix(value string) string {
+	for {
+		value = strings.TrimSpace(value)
+		for _, prefix := range []string{"- ", "* ", "+ ", "\u2022 ", "[ ] ", "[x] "} {
+			if strings.HasPrefix(value, prefix) {
+				value = strings.TrimSpace(value[len(prefix):])
+				continue
+			}
+		}
+		digits := 0
+		for digits < len(value) && value[digits] >= '0' && value[digits] <= '9' {
+			digits++
+		}
+		if digits > 0 && digits < len(value) && (value[digits] == '.' || value[digits] == ')') {
+			next := digits + 1
+			if next == len(value) || value[next] == ' ' || value[next] == '\t' {
+				value = strings.TrimSpace(value[next:])
+				continue
+			}
+		}
+		return value
+	}
+}
+
+func hasAssistantMetaProcessClause(normalized string) bool {
+	for _, marker := range []string{
+		"i'll ", "i will ", "i am going to ", "i'm going to ", "im going to ",
+		"i can ", "i need to ", "i should ", "i plan to ", "let me ", "let's ",
+	} {
+		for start := 0; start < len(normalized); {
+			idx := strings.Index(normalized[start:], marker)
+			if idx < 0 {
+				break
+			}
+			idx += start
+			if idx > 0 && isAssistantMetaWordByte(normalized[idx-1]) {
+				start = idx + len(marker)
+				continue
+			}
+			if startsWithMetaProcessVerb(strings.TrimSpace(normalized[idx+len(marker):])) {
+				return true
+			}
+			start = idx + len(marker)
+		}
+	}
+	return false
+}
+
+func isAssistantMetaWordByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+}
+
 func startsWithMetaProcessVerb(value string) bool {
 	value = strings.Trim(value, " \t\r\n-*:;,.!?")
 	fields := strings.Fields(value)
@@ -2883,7 +2961,7 @@ func startsWithMetaProcessVerb(value string) bool {
 		return false
 	}
 	switch fields[0] {
-	case "add", "analyse", "analyze", "answer", "begin", "build", "change", "check", "compare", "create", "debug", "do", "explain", "fetch", "find", "fix", "gather", "handle", "implement", "improve", "inspect", "investigate", "look", "make", "patch", "provide", "read", "refactor", "remove", "repair", "replace", "review", "run", "search", "start", "summarise", "summarize", "take", "test", "tighten", "update", "upgrade", "use", "validate", "verify", "work", "write":
+	case "add", "analyse", "analyze", "answer", "begin", "build", "change", "check", "checking", "compare", "create", "creating", "debug", "debugging", "do", "explain", "fetch", "find", "fix", "fixing", "gather", "gathering", "handle", "implement", "implementing", "improve", "improving", "inspect", "inspecting", "investigate", "investigating", "look", "looking", "make", "need", "patch", "provide", "read", "reading", "refactor", "refactoring", "remove", "repair", "replace", "review", "reviewing", "run", "running", "search", "searching", "start", "summarise", "summarize", "take", "test", "testing", "tighten", "tightening", "update", "updating", "upgrade", "use", "validate", "validating", "verify", "verifying", "work", "working", "write", "writing":
 		return true
 	default:
 		return false
@@ -2894,7 +2972,7 @@ func antiMetaResponseFilterPrompt() string {
 	return strings.Join([]string{
 		"The previous candidate reply was rejected by the response filter because it described future process instead of answering directly.",
 		"Return exactly one JSON object.",
-		"If implementation work is needed, call task.create now; otherwise answer the user's request with concrete content and no plan, promise, or process narration.",
+		"If implementation work is needed, call task.create now; otherwise answer the user's request with concrete content and no plan, promise, or process narration such as \"I'll check\", \"I need to inspect\", or \"First, I'll\".",
 	}, " ")
 }
 
@@ -2934,7 +3012,7 @@ func firstAssistantDevelopmentCommitment(message string) string {
 }
 
 func firstCommitmentMarker(value string) (int, string) {
-	markers := []string{"i'll ", "i will "}
+	markers := []string{"i'll ", "i will ", "i am going to ", "i'm going to ", "im going to ", "i can ", "i need to ", "let me "}
 	bestIdx := -1
 	bestMarker := ""
 	for _, marker := range markers {

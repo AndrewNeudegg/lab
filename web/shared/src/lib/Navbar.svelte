@@ -19,6 +19,7 @@
   export let links: { href: string; label: string }[] = [
     { href: '/chat', label: 'Chat' },
     { href: '/tasks', label: 'Tasks' },
+    { href: '/knowledge', label: 'Knowledge' },
     { href: '/workflows', label: 'Workflows' },
     { href: '/docs', label: 'Docs' },
     { href: '/terminal', label: 'Terminal' },
@@ -1060,7 +1061,7 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 1rem;
+    gap: 0.75rem;
     min-height: 4rem;
     padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--border-soft, #dbe3ef);
@@ -1107,7 +1108,7 @@
   .right {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.35rem;
   }
 
   .desktop-nav.compact {
@@ -1151,7 +1152,7 @@
 
   .desktop-nav a,
   .nav-measure a {
-    padding: 0.45rem 0.75rem;
+    padding: 0.42rem 0.55rem;
   }
 
   .nav-label {
@@ -1218,9 +1219,9 @@
   }
 
   .api {
-    max-width: 16rem;
+    max-width: 10rem;
     overflow: hidden;
-    padding: 0.42rem 0.65rem;
+    padding: 0.4rem 0.55rem;
     border: 1px solid var(--border, #cbd5e1);
     border-radius: 999px;
     color: var(--muted, #475569);
@@ -1264,7 +1265,7 @@
   .help-button,
   .menu-button {
     min-height: 2.4rem;
-    padding: 0 0.75rem;
+    padding: 0 0.65rem;
     border: 1px solid var(--border, #cbd5e1);
     border-radius: 0.65rem;
     color: var(--text, #243047);
@@ -1302,6 +1303,12 @@
     align-items: center;
     justify-content: center;
     min-width: 3.2rem;
+  }
+
+  @media (max-width: 1320px) {
+    .api {
+      display: none;
+    }
   }
 
   .menu-button {

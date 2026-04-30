@@ -2103,7 +2103,9 @@
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 0.45rem;
+    min-width: 0;
     min-height: 2.25rem;
+    overflow: hidden;
     padding: 0 0.65rem;
     list-style: none;
     border: 0;
@@ -2219,6 +2221,8 @@
   }
 
   .merge-queue summary small {
+    min-width: 0;
+    max-width: clamp(4.25rem, 22vw, 6.5rem);
     overflow: hidden;
     color: var(--muted, #64748b);
     font-size: 0.7rem;

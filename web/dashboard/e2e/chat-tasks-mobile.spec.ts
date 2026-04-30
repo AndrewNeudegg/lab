@@ -90,7 +90,7 @@ const mockTaskApi = async (page: Page) => {
     await route.fulfill({ json: { tasks } });
   });
   let autoMergeEnabled = false;
-  await page.route('**/api/settings', async (route) => {
+  await page.route(/\/api\/settings$/, async (route) => {
     if (route.request().method() === 'POST') {
       const body = JSON.parse(route.request().postData() || '{}') as {
         auto_merge_enabled?: boolean;
@@ -99,19 +99,19 @@ const mockTaskApi = async (page: Page) => {
     }
     await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });
   });
-  await page.route('**/api/approvals', async (route) => {
+  await page.route(/\/api\/approvals$/, async (route) => {
     await route.fulfill({ json: { approvals: [approvalFor(tasks[0].id)] } });
   });
-  await page.route('**/api/events?**', async (route) => {
+  await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
-  await page.route('**/api/agents', async (route) => {
+  await page.route(/\/api\/agents$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
   });
-  await page.route('**/api/tasks/*/runs', async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
   });
-  await page.route('**/api/tasks/*/diff', async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
     await route.fulfill({
       json: {
         task_id: tasks[0].id,
@@ -218,7 +218,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   );
   await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
-	await page.getByRole('button', { name: 'Back to queue' }).click();
+  await page.getByRole('button', { name: 'Back to queue' }).click();
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
   await expect(rows).toHaveCount(1);

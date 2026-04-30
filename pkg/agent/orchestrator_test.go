@@ -4674,8 +4674,8 @@ func seedTaskGraph(t *testing.T, orch *Orchestrator, goal string) (taskstore.Tas
 }
 
 type delegateStub struct {
-	started  chan struct{}
-	release  chan struct{}
+	started chan struct{}
+	release chan struct{}
 	finished chan struct{}
 }
 
@@ -4954,14 +4954,15 @@ func (s agentDelegateStub) Run(ctx context.Context, raw json.RawMessage) (json.R
 		Workspace string `json:"workspace"`
 	}
 	_ = json.Unmarshal(raw, &req)
-	if s.stub.finished != nil {
-		defer func() {
-			select {
-			case s.stub.finished <- struct{}{}:
-			default:
-			}
-		}()
-	}
+	defer func() {
+		if s.stub.finished == nil {
+			return
+		}
+		select {
+		case s.stub.finished <- struct{}{}:
+		default:
+		}
+	}()
 	select {
 	case s.stub.started <- struct{}{}:
 	default:

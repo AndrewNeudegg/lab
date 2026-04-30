@@ -20,6 +20,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
+	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
@@ -35,6 +36,7 @@ type Orchestrator struct {
 	tasks        *taskstore.Store
 	approvals    *approvalstore.Store
 	workflows    *workflowstore.Store
+	knowledge    *knowledgestore.Store
 	registry     *tool.Registry
 	policy       tool.Policy
 	provider     llm.Provider

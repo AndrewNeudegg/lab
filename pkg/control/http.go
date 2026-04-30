@@ -68,6 +68,8 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
 	mux.HandleFunc("/settings", s.withCORS(s.handleSettings))
+	mux.HandleFunc("/knowledge/spaces", s.withCORS(s.handleKnowledgeSpaces))
+	mux.HandleFunc("/knowledge/spaces/", s.withCORS(s.handleKnowledgeSpace))
 	mux.HandleFunc("/workflows", s.withCORS(s.handleWorkflows))
 	mux.HandleFunc("/workflows/", s.withCORS(s.handleWorkflow))
 	mux.HandleFunc("/agents", s.withCORS(s.handleAgents))

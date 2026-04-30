@@ -23,6 +23,7 @@ import (
 	agentrunner "github.com/andrewneudegg/lab/pkg/externalagent"
 	"github.com/andrewneudegg/lab/pkg/healthd"
 	"github.com/andrewneudegg/lab/pkg/id"
+	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
@@ -159,6 +160,7 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	timeout := time.Duration(cfg.Limits.MaxShellSeconds) * time.Second
 	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
 	workflows := workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows"))
+	knowledge := knowledgestore.NewStore(filepath.Join(cfg.DataDir, "knowledge"))
 	events := eventlog.NewStore(filepath.Join(cfg.DataDir, "events"))
 	if err := repotools.Register(registry, repotools.Base{Root: cfg.Repo.Root, WorkspaceRoot: cfg.Repo.WorkspaceRoot, MaxFileBytes: cfg.Limits.MaxFileBytes}); err != nil {
 		return runtimeServices{}, err
@@ -223,7 +225,8 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 		WithLogger(slog.Default()).
 		WithMemory(memoryStore).
 		WithRemoteAgents(remoteAgents).
-		WithWorkflows(workflows)
+		WithWorkflows(workflows).
+		WithKnowledge(knowledge)
 	return runtimeServices{Orchestrator: orch, RemoteAgents: remoteAgents}, nil
 }
 

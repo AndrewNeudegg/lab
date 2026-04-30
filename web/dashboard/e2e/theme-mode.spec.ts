@@ -257,6 +257,9 @@ const mockDashboardApis = async (page: Page) => {
   await page.route(/\/api\/events\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
+  await page.route(/\/api\/agents\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { agents: [] } });
+  });
 
   await page.route(/\/api\/terminal\/sessions$/, async (route) => {
     await route.fulfill({

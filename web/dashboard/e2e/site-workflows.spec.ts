@@ -227,6 +227,19 @@ const installTerminalMocks = async (page: Page) => {
   });
 };
 
+const mockScreenCaptureUnavailable = async (page: Page) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getDisplayMedia: async () => {
+          throw new Error('Screen capture is not available in this browser.');
+        }
+      }
+    });
+  });
+};
+
 const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
   let autoMergeEnabled = false;
@@ -674,6 +687,52 @@ const routes = [
   '/supervisord'
 ];
 const docsRouteTimeoutMs = 120_000;
+
+test.describe('knowledge empty state', () => {
+  test.use({ viewport: { width: 480, height: 897 }, isMobile: true, hasTouch: true });
+
+  test('handles a null spaces response and submits page-context help', async ({ page }) => {
+    await mockScreenCaptureUnavailable(page);
+    const pageErrors: string[] = [];
+    let helpTaskBody: any;
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+
+    await page.route(/\/api\/knowledge\/spaces$/, async (route) => {
+      await route.fulfill({ json: { spaces: null } });
+    });
+    await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+      if (route.request().method() === 'POST') {
+        helpTaskBody = route.request().postDataJSON();
+        await route.fulfill({ status: 201, json: { reply: 'created help task' } });
+        return;
+      }
+      await route.fulfill({ json: { tasks: [] } });
+    });
+    await page.route(/\/api\/approvals(?:\?.*)?$/, async (route) => {
+      await route.fulfill({ json: { approvals: [] } });
+    });
+
+    await page.goto('/knowledge');
+    await expect(page.getByText('No Knowledge Space matches this view.')).toBeVisible();
+    await expect(page.getByText('No Knowledge Space selected')).toBeVisible();
+    await expect(page.getByText(/response\.spaces is null|Symbol\.iterator/)).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+
+    await page.locator('.help-button').click();
+    const dialog = page.locator('dialog.help-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('textbox', { name: 'More detail' }).fill('Knowledge page showed a raw null spaces error.');
+    await dialog.getByRole('button', { name: 'Submit help task' }).click();
+    await expect(dialog).not.toBeVisible();
+
+    expect(helpTaskBody.goal).toContain('Dashboard help task from /knowledge');
+    expect(helpTaskBody.goal).toContain('Knowledge page showed a raw null spaces error.');
+    expect(helpTaskBody.attachments).toHaveLength(1);
+    const browserContext = JSON.parse(helpTaskBody.attachments[0].text);
+    expect(browserContext.visible_text).toContain('No Knowledge Space selected');
+    expect(browserContext.visible_text).not.toMatch(/response\.spaces is null|Symbol\.iterator/);
+  });
+});
 
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 1000, mobile: false },

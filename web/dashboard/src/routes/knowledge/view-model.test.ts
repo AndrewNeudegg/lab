@@ -3,6 +3,7 @@ import type { HomelabdKnowledgeSpace } from '@homelab/shared';
 import {
   compactKnowledgeID,
   filterKnowledgeSpaces,
+  knowledgeSpacesFromResponse,
   latestReport,
   selectKnowledgeSpace,
   spaceSourceCount,
@@ -55,6 +56,17 @@ describe('knowledge view model', () => {
     expect(selectKnowledgeSpace(spaces, spaces, 'kspace_a', 'kspace_b')).toBe('kspace_b');
     expect(selectKnowledgeSpace(spaces, spaces, 'kspace_a', '')).toBe('kspace_a');
     expect(selectKnowledgeSpace(spaces, [spaces[1]], 'missing', '')).toBe('kspace_b');
+  });
+
+  test('normalises empty Knowledge Space list responses', () => {
+    const spaces = [space('kspace_a', 'A', '2026-04-28T09:00:00Z')];
+
+    expect(knowledgeSpacesFromResponse({ spaces })).toBe(spaces);
+    expect(knowledgeSpacesFromResponse({ spaces: null })).toEqual([]);
+    expect(knowledgeSpacesFromResponse(undefined)).toEqual([]);
+    expect(() =>
+      knowledgeSpacesFromResponse({ spaces: {} as never })
+    ).toThrow('Knowledge Space response did not include a spaces array.');
   });
 
   test('derives counts, compact ids, and latest report', () => {

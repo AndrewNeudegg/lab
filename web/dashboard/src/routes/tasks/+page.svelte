@@ -42,6 +42,7 @@
     type TaskFilter,
     type TaskQueueFilter,
     type TaskQueueView,
+    type TaskSyncSelection,
     type WorkerTraceRun
   } from './view-model';
   import { createCoalescedAsync } from './refresh-state';
@@ -119,6 +120,7 @@
   let refreshStateSequence = 0;
   let lastAppliedRouteTaskId = '';
   let pendingRouteTaskId = '';
+  let pendingOverviewRoute = false;
 
   let tasks: HomelabdTask[] = [];
   let agents: HomelabdRemoteAgent[] = [];
@@ -185,6 +187,7 @@
     if (currentRoutePath() === next) {
       return;
     }
+    pendingOverviewRoute = false;
     pendingRouteTaskId = taskId;
     void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
       if (pendingRouteTaskId === taskId) {
@@ -207,9 +210,27 @@
   const navigateToTaskOverview = (replaceState = true) => {
     applyTaskOverviewSelection();
     if (!browser || currentRoutePath() === '/tasks') {
+      pendingOverviewRoute = false;
       return;
     }
-    void goto('/tasks', { keepFocus: true, noScroll: true, replaceState });
+    pendingOverviewRoute = true;
+    void goto('/tasks', { keepFocus: true, noScroll: true, replaceState }).catch(() => {
+      pendingOverviewRoute = false;
+    });
+  };
+
+  const applySyncedTaskSelection = (syncSelection: TaskSyncSelection) => {
+    const previousSelectedTaskId = selectedTaskId;
+    selectedTaskId = syncSelection.selectedTaskId;
+    if (syncSelection.selectedTaskId) {
+      return;
+    }
+    loadedRunsTaskId = '';
+    loadedDiffTaskId = '';
+    selectedDiffFilePath = '';
+    if (previousSelectedTaskId) {
+      navigateToTaskOverview();
+    }
   };
 
   const applyRouteTaskSelection = (taskId: string) => {
@@ -246,9 +267,11 @@
     window.setTimeout(() => {
       const taskId = taskRouteIdFromLocation();
       if (!taskId) {
+        pendingOverviewRoute = false;
         applyTaskOverviewSelection();
         return;
       }
+      pendingOverviewRoute = false;
       applyRouteTaskSelection(taskId);
       lastAppliedRouteTaskId = taskId;
     }, 0);
@@ -260,9 +283,11 @@
     }
     const taskId = to.url.searchParams.get('task') || '';
     if (!taskId) {
+      pendingOverviewRoute = false;
       applyTaskOverviewSelection();
       return;
     }
+    pendingOverviewRoute = false;
     if (pendingRouteTaskId === taskId) {
       lastAppliedRouteTaskId = taskId;
       pendingRouteTaskId = '';
@@ -463,7 +488,12 @@
   $: currentSecondaryOperations = secondaryTaskOperations(currentTask, approvals);
   $: if (browser) {
     const routeTaskId = currentTaskRouteId();
-    if (routeTaskId && routeTaskId !== lastAppliedRouteTaskId && routeTaskId !== pendingRouteTaskId) {
+    if (
+      routeTaskId &&
+      !pendingOverviewRoute &&
+      routeTaskId !== lastAppliedRouteTaskId &&
+      routeTaskId !== pendingRouteTaskId
+    ) {
       lastAppliedRouteTaskId = routeTaskId;
       applyRouteTaskSelection(routeTaskId);
     }
@@ -758,7 +788,7 @@
       taskSearch,
       selectedTaskId
     });
-    selectedTaskId = syncSelection.selectedTaskId;
+    applySyncedTaskSelection(syncSelection);
   };
 
   const refreshState = () => {
@@ -807,12 +837,7 @@
           taskSearch,
           selectedTaskId
         });
-        selectedTaskId = syncSelection.selectedTaskId;
-        if (!syncSelection.selectedTaskId) {
-          loadedRunsTaskId = '';
-          loadedDiffTaskId = '';
-          selectedDiffFilePath = '';
-        }
+        applySyncedTaskSelection(syncSelection);
         lastRefresh = syncTimeLabel();
         void applySecondaryRefresh(
           sequence,

@@ -28,7 +28,8 @@
     if (!root) {
       return;
     }
-    for (const diagram of root.querySelectorAll<HTMLElement>('.mermaid-diagram')) {
+    const diagrams = Array.from(root.querySelectorAll<HTMLElement>('.mermaid-diagram'));
+    for (const diagram of diagrams) {
       delete diagram.dataset.mermaidRendered;
       diagram.dataset.mermaidStatus = 'pending';
       const output = diagram.querySelector<HTMLElement>('.mermaid-output');
@@ -44,10 +45,13 @@
   };
 
   const renderMermaidDiagrams = async () => {
-    if (!mounted || !root) {
+    if (!mounted) {
       return;
     }
     await tick();
+    if (!mounted || !root) {
+      return;
+    }
     const diagrams = Array.from(
       root.querySelectorAll<HTMLElement>('.mermaid-diagram[data-mermaid-source]')
     );

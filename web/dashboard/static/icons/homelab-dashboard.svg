@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">homelabd Dashboard</title>
+  <desc id="description">A dashboard app icon with terminal and status panels.</desc>
+  <rect width="512" height="512" rx="112" fill="#0f172a" />
+  <rect x="84" y="98" width="344" height="316" rx="56" fill="#f8fafc" />
+  <rect x="120" y="136" width="272" height="88" rx="24" fill="#0f766e" />
+  <rect x="120" y="256" width="118" height="112" rx="24" fill="#38bdf8" />
+  <rect x="274" y="256" width="118" height="112" rx="24" fill="#f59e0b" />
+  <path d="M164 162l38 18-38 18v-18z" fill="#f8fafc" />
+  <rect x="220" y="174" width="84" height="14" rx="7" fill="#f8fafc" />
+</svg>

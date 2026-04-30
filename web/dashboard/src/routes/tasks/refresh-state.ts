@@ -12,3 +12,16 @@ export const createCoalescedAsync = <T>() => {
     return inFlight;
   };
 };
+
+export const createMutationRevision = () => {
+  let revision = 0;
+
+  return {
+    current: () => revision,
+    bump: () => {
+      revision += 1;
+      return revision;
+    },
+    matches: (candidate: number) => candidate === revision
+  };
+};

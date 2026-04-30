@@ -449,7 +449,7 @@ test('navbar help stays available on desktop and submits without screen capture 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/tasks');
   await expect(
-    page.getByRole('button', { name: /Review queue behavior on mobile/ })
+    page.getByRole('link', { name: /Review queue behavior on mobile/ })
   ).toBeVisible();
   await expect(page.locator('.desktop-nav')).toBeVisible();
   await expect(page.locator('.help-button')).toBeVisible();

@@ -18,7 +18,7 @@
     {
       id: 'start-here',
       label: 'Start here',
-      slugs: ['dashboard', 'homelabctl']
+      slugs: ['dashboard', 'knowledge-space', 'homelabctl']
     },
     {
       id: 'operator-workflows',

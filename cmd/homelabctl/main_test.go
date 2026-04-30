@@ -149,6 +149,53 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantPath:   "/settings",
 			wantBody:   map[string]any{"auto_merge_enabled": true},
 		},
+		{
+			name:       "knowledge list",
+			args:       []string{"knowledge", "list"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/knowledge/spaces",
+		},
+		{
+			name:       "knowledge show",
+			args:       []string{"kspace", "show", "kspace_123"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/knowledge/spaces/kspace_123",
+		},
+		{
+			name:       "knowledge create",
+			args:       []string{"knowledge", "create", "--objective", "Compare examples", "--description", "Operator examples", "--created-by", "operator", "Cheese", "examples"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces",
+			wantBody: map[string]any{
+				"title":       "Cheese examples",
+				"objective":   "Compare examples",
+				"description": "Operator examples",
+				"created_by":  "operator",
+			},
+		},
+		{
+			name:       "knowledge source content",
+			args:       []string{"knowledge", "source", "add", "kspace_123", "--kind", "note", "--uri", "manual", "--content", "Curated source text", "Curated", "note"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces/kspace_123/sources",
+			wantBody: map[string]any{
+				"title":   "Curated note",
+				"kind":    "note",
+				"uri":     "manual",
+				"content": "Curated source text",
+			},
+		},
+		{
+			name:       "knowledge research",
+			args:       []string{"knowledge", "research", "kspace_123", "--mode", "brief", "--source", "ksrc_1", "--source", "ksrc_2", "How", "should", "operators", "review", "evidence?"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces/kspace_123/research",
+			wantBody: map[string]any{
+				"question":   "How should operators review evidence?",
+				"mode":       "brief",
+				"source_ids": []any{"ksrc_1", "ksrc_2"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -171,6 +218,33 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 				t.Fatalf("stdout did not contain pretty JSON response: %q", stdout)
 			}
 		})
+	}
+}
+
+func TestKnowledgeSourceAddReadsFile(t *testing.T) {
+	path := t.TempDir() + "/knowledge.md"
+	if err := os.WriteFile(path, []byte("Knowledge Space source text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var observed observedRequest
+	_, stderr, code := runAgainstServer(t, []string{"knowledge", "source", "add", "kspace_1", "--file", path, "Knowledge docs"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		observed = observeRequest(t, req)
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{"ok": true})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if observed.Method != http.MethodPost || observed.Path != "/knowledge/spaces/kspace_1/sources" {
+		t.Fatalf("request = %s %s, want POST /knowledge/spaces/kspace_1/sources", observed.Method, observed.Path)
+	}
+	want := map[string]any{
+		"title":   "Knowledge docs",
+		"kind":    "file",
+		"uri":     path,
+		"content": "Knowledge Space source text\n",
+	}
+	if !reflect.DeepEqual(observed.Body, want) {
+		t.Fatalf("body = %#v, want %#v", observed.Body, want)
 	}
 }
 

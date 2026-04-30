@@ -41,6 +41,23 @@ type cli struct {
 	json            bool
 }
 
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		*f = append(*f, value)
+	}
+	return nil
+}
+
 func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string) string, httpClient *http.Client) int {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -102,6 +119,8 @@ func (c cli) dispatch(args []string) error {
 		return c.shell()
 	case "task":
 		return c.task(args[1:])
+	case "knowledge", "knowledge-space", "kspace":
+		return c.knowledge(args[1:])
 	case "workflow":
 		return c.workflow(args[1:])
 	case "workflows":
@@ -272,6 +291,169 @@ func parseOnOff(value string) (bool, error) {
 	default:
 		return false, fmt.Errorf("expected on or off, got %q", value)
 	}
+}
+
+func (c cli) knowledge(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl knowledge <list|show|create|source|research>")
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl knowledge list")
+		}
+		return c.do(http.MethodGet, "/knowledge/spaces", nil)
+	case "show", "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl knowledge show <space_id>")
+		}
+		return c.do(http.MethodGet, path("knowledge", "spaces", args[1]), nil)
+	case "create", "new":
+		return c.knowledgeCreate(args[1:])
+	case "source", "sources":
+		return c.knowledgeSource(args[1:])
+	case "add-source", "add":
+		return c.knowledgeSource(withAction("add", args[1:]))
+	case "research", "ask", "report":
+		return c.knowledgeResearch(args[1:])
+	default:
+		return fmt.Errorf("unknown knowledge command %q", args[0])
+	}
+}
+
+func (c cli) knowledgeCreate(args []string) error {
+	flags := flag.NewFlagSet("knowledge create", flag.ContinueOnError)
+	flags.SetOutput(c.err)
+	objective := flags.String("objective", "", "space objective")
+	description := flags.String("description", "", "space description")
+	createdBy := flags.String("created-by", "", "creator label")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	title := strings.TrimSpace(strings.Join(flags.Args(), " "))
+	if title == "" {
+		return fmt.Errorf("usage: homelabctl knowledge create [--objective TEXT] [--description TEXT] [--created-by NAME] <title>")
+	}
+	body := map[string]any{"title": title}
+	if value := strings.TrimSpace(*objective); value != "" {
+		body["objective"] = value
+	}
+	if value := strings.TrimSpace(*description); value != "" {
+		body["description"] = value
+	}
+	if value := strings.TrimSpace(*createdBy); value != "" {
+		body["created_by"] = value
+	}
+	return c.do(http.MethodPost, "/knowledge/spaces", body)
+}
+
+func (c cli) knowledgeSource(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl knowledge source <add>")
+	}
+	switch commandWord(args[0]) {
+	case "add", "create":
+		return c.knowledgeSourceAdd(args[1:])
+	default:
+		return fmt.Errorf("unknown knowledge source command %q", args[0])
+	}
+}
+
+func (c cli) knowledgeSourceAdd(args []string) error {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("usage: homelabctl knowledge source add <space_id> [--kind text|url|file|note] [--uri URI] [--file PATH|--content TEXT] <title>")
+	}
+	spaceID := args[0]
+	flags := flag.NewFlagSet("knowledge source add", flag.ContinueOnError)
+	flags.SetOutput(c.err)
+	kind := flags.String("kind", "", "source kind: text, url, file, or note")
+	uri := flags.String("uri", "", "source reference URI or path")
+	filePath := flags.String("file", "", "read source content from this file, or - for stdin")
+	contentFlag := flags.String("content", "", "source content")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	title := strings.TrimSpace(strings.Join(flags.Args(), " "))
+	if title == "" {
+		return fmt.Errorf("usage: homelabctl knowledge source add <space_id> [--kind text|url|file|note] [--uri URI] [--file PATH|--content TEXT] <title>")
+	}
+	fileValue := strings.TrimSpace(*filePath)
+	contentValue := *contentFlag
+	if fileValue != "" && strings.TrimSpace(contentValue) != "" {
+		return fmt.Errorf("--file and --content cannot be used together")
+	}
+	if fileValue != "" {
+		content, err := readKnowledgeSourceContent(c.in, fileValue)
+		if err != nil {
+			return err
+		}
+		contentValue = content
+	}
+	if strings.TrimSpace(contentValue) == "" {
+		return fmt.Errorf("knowledge source content is required; use --file or --content")
+	}
+	body := map[string]any{
+		"title":   title,
+		"content": contentValue,
+	}
+	sourceKind := strings.TrimSpace(*kind)
+	if sourceKind == "" && fileValue != "" {
+		sourceKind = "file"
+	}
+	if sourceKind != "" {
+		body["kind"] = sourceKind
+	}
+	sourceURI := strings.TrimSpace(*uri)
+	if sourceURI == "" && fileValue != "" && fileValue != "-" {
+		sourceURI = fileValue
+	}
+	if sourceURI != "" {
+		body["uri"] = sourceURI
+	}
+	return c.do(http.MethodPost, path("knowledge", "spaces", spaceID, "sources"), body)
+}
+
+func readKnowledgeSourceContent(in io.Reader, filePath string) (string, error) {
+	if filePath == "-" {
+		data, err := io.ReadAll(in)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (c cli) knowledgeResearch(args []string) error {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("usage: homelabctl knowledge research <space_id> [--mode research|brief|study] [--source SOURCE_ID]... <question>")
+	}
+	spaceID := args[0]
+	flags := flag.NewFlagSet("knowledge research", flag.ContinueOnError)
+	flags.SetOutput(c.err)
+	mode := flags.String("mode", "", "research mode: research, brief, or study")
+	var sourceIDs stringListFlag
+	flags.Var(&sourceIDs, "source", "limit research to a source id; repeat for multiple sources")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	question := strings.TrimSpace(strings.Join(flags.Args(), " "))
+	if question == "" {
+		return fmt.Errorf("usage: homelabctl knowledge research <space_id> [--mode research|brief|study] [--source SOURCE_ID]... <question>")
+	}
+	body := map[string]any{"question": question}
+	if value := strings.TrimSpace(*mode); value != "" {
+		body["mode"] = value
+	}
+	if len(sourceIDs) > 0 {
+		body["source_ids"] = []string(sourceIDs)
+	}
+	return c.do(http.MethodPost, path("knowledge", "spaces", spaceID, "research"), body)
 }
 
 func (c cli) task(args []string) error {
@@ -998,6 +1180,12 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] task retry <task_id> [codex|claude|gemini] [instruction]
   homelabctl [-addr http://127.0.0.1:18080] task delete <task_id>
 
+  homelabctl [-addr http://127.0.0.1:18080] knowledge list
+  homelabctl [-addr http://127.0.0.1:18080] knowledge show <space_id>
+  homelabctl [-addr http://127.0.0.1:18080] knowledge create [--objective TEXT] [--description TEXT] [--created-by NAME] <title>
+  homelabctl [-addr http://127.0.0.1:18080] knowledge source add <space_id> [--kind text|url|file|note] [--uri URI] [--file PATH|--content TEXT] <title>
+  homelabctl [-addr http://127.0.0.1:18080] knowledge research <space_id> [--mode research|brief|study] [--source SOURCE_ID]... <question>
+
   homelabctl [-addr http://127.0.0.1:18080] workflow new <name>: <goal>
   homelabctl [-addr http://127.0.0.1:18080] workflow list
   homelabctl [-addr http://127.0.0.1:18080] workflow show <workflow_id>
@@ -1033,6 +1221,7 @@ func usage(out io.Writer) {
 Top-level shortcuts:
   homelabctl new <goal>
   homelabctl run|review|queue|accept|restart|reopen|cancel|retry|delete <task_id> [...]
+  homelabctl kspace list
   homelabctl approve|deny <approval_id>
   homelabctl memories|remember|unlearn ...
   homelabctl errors [-limit N] [app]

@@ -131,6 +131,7 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   await expect(page.getByText('./docs/dashboard.md')).toBeVisible();
   await expectDocsLibraryClearOfArticle(page);
   await expect.poll(async () => page.locator('#docs-list a').count()).toBeGreaterThanOrEqual(6);
+  await expect(page.locator('#docs-list a', { hasText: 'Knowledge Space' })).toBeVisible();
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
     2
   );

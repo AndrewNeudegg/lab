@@ -372,6 +372,10 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 	switch cmd {
 	case "help":
 		return programResult(help(), nil)
+	case "history":
+		return programResult(o.formatChatHistoryReply(chatHistoryToolRequest{Limit: chatCommandLimit(fields[1:], defaultChatHistoryLimit), ExcludeLatestUserMessage: message}))
+	case "chat":
+		return programResult(o.handleChatMetaCommand(fields, message))
 	case "reflect":
 		return o.reflectOnInteraction(ctx, message)
 	case "deep":
@@ -442,6 +446,13 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 	case "search":
 		if len(fields) < 2 {
 			return programResult("usage: search <text>", nil)
+		}
+		if isChatSearchRequest(message) {
+			query := chatSearchQueryFromCommand(fields[1:])
+			if query == "" {
+				return programResult("usage: chat search <text>", nil)
+			}
+			return programResult(o.formatChatSearchReply(chatSearchToolRequest{Query: query, ExcludeLatestUserMessage: message}))
 		}
 		if isWebSearchRequest(message) {
 			query := webSearchQueryFromCommand(fields[1:])
@@ -2478,6 +2489,9 @@ func help() string {
 		"  workflow run <workflow_id> run a workflow through policy-bound steps",
 		"  status                     show active tasks and next actions",
 		"  what's cooking             show active tasks and next actions",
+		"  history                    show recent user and assistant chat messages",
+		"  chat history [limit]       show recent user and assistant chat messages",
+		"  chat search <text>         search recorded chat messages",
 		"  memories                   list durable chat lessons",
 		"  remember <lesson>          distil and store a durable chat lesson",
 		"  unlearn <id|text>          remove a durable chat lesson",
@@ -2883,6 +2897,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		`{"message":"short user-facing status","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"TODO"}}]}`,
 		`{"message":"final answer","done":true,"tool_calls":[]}`,
 		"Use tools for inspection before answering repo-specific questions.",
+		"Use chat.history or chat.search before answering questions about earlier user messages, assistant replies, or the chat stream.",
 		"Use internet.research for broad, current, multi-source questions before synthesizing advice.",
 		"Use text.correct to fix likely spelling or grammar issues before internet.search when the user query looks typo-prone; preserve exact code symbols and quoted strings.",
 		"Use text.summarize when a long user task or note needs a compact label.",
@@ -2914,6 +2929,21 @@ func (o *Orchestrator) toolCatalog() string {
 		Description: "Create a development task with an isolated local worktree or explicit remote target. Args: {\"goal\":\"...\",\"target\":{...}}.",
 		Risk:        tool.RiskLow,
 		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"},"target":{"type":"object"}}}`),
+	}, {
+		Name:        "chat.history",
+		Description: "List recent user and assistant chat messages from the event log. Args: {\"date\":\"YYYY-MM-DD\",\"days\":1,\"limit\":40}.",
+		Risk:        tool.RiskReadOnly,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"date":{"type":"string"},"days":{"type":"integer","minimum":1,"maximum":30},"limit":{"type":"integer","minimum":1,"maximum":200}}}`),
+	}, {
+		Name:        "chat.search",
+		Description: "Search recorded user and assistant chat messages. Args: {\"query\":\"...\",\"date\":\"YYYY-MM-DD\",\"days\":7,\"limit\":50}.",
+		Risk:        tool.RiskReadOnly,
+		Schema:      json.RawMessage(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"date":{"type":"string"},"days":{"type":"integer","minimum":1,"maximum":30},"limit":{"type":"integer","minimum":1,"maximum":200}}}`),
+	}, {
+		Name:        "chat.send",
+		Description: "Record an explicit assistant message in the chat transcript. Args: {\"message\":\"...\",\"to\":\"...\"}. Normally use the final reply instead.",
+		Risk:        tool.RiskLow,
+		Schema:      json.RawMessage(`{"type":"object","required":["message"],"properties":{"message":{"type":"string"},"to":{"type":"string"}}}`),
 	}, {
 		Name:        "task.run",
 		Description: "Run CoderAgent on an existing task. Args: {\"task_id\":\"...\"}.",
@@ -7621,6 +7651,13 @@ func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, ca
 			return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
 		}
 		return o.executeTaskRun(ctx, actor, raw)
+	}
+	if strings.HasPrefix(name, "chat.") {
+		decision := o.policy.DecideNamed(actor, name, raw)
+		if !decision.Allowed || decision.NeedsApproval {
+			return o.handlePolicyDecision(ctx, actor, taskID, name, raw, decision)
+		}
+		return o.executeChatTool(ctx, actor, name, raw)
 	}
 	if strings.HasPrefix(name, "workflow.") {
 		decision := o.policy.DecideNamed(actor, name, raw)

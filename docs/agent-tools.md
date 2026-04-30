@@ -49,7 +49,7 @@ The dispatcher normalises empty `args` to `{}`, checks the actor's allow-list, a
 
 `cmd/homelabd/main.go` builds the runtime registry at startup by registering packages under `pkg/tools/*`. The Orchestrator then injects a sorted JSON catalogue into agent prompts from the registry plus its pseudo-tools in `pkg/agent/orchestrator.go`. That catalogue contains each tool's name, description, risk level, and JSON schema; this document is the human-readable companion and should be updated when schemas, policy, commands, or limits change.
 
-Pseudo-tools such as `task.create`, `task.run`, and `workflow.run` are not package tools, but they still appear in the catalogue and pass through the same policy path. Package tools implement `pkg/tool.Tool`; tools with input-dependent risk, such as `shell.run_limited`, also implement `RiskFor`.
+Pseudo-tools such as `chat.history`, `task.create`, `task.run`, and `workflow.run` are not package tools, but they still appear in the catalogue and pass through the same policy path. Package tools implement `pkg/tool.Tool`; tools with input-dependent risk, such as `shell.run_limited`, also implement `RiskFor`.
 
 ## Argument Conventions
 
@@ -73,7 +73,7 @@ Tools declare one of these risk levels:
 
 Default role access:
 
-- `OrchestratorAgent`: task and workflow pseudo-tools, external delegation, memory list/read/remember/unlearn/proposal, text, internet, health error reads, repo read/diff, git read/write/worktree, Go/Bun validation, limited and approved shell.
+- `OrchestratorAgent`: chat history/search/send pseudo-tools, task and workflow pseudo-tools, external delegation, memory list/read/remember/unlearn/proposal, text, internet, health error reads, repo read/diff, git read/write/worktree, Go/Bun validation, limited and approved shell.
 - `CoderAgent`: text, internet, repo read/write patch/diff, git read, Go/Bun validation, limited shell.
 - `UXAgent`: same as `CoderAgent`, with UX/browser-UAT expectations in its prompt.
 - `ResearchAgent`: text, internet, and memory proposals.
@@ -191,6 +191,16 @@ Use `internet.fetch` on promising result URLs before relying on page details, an
 - `text.summarize`: required args: `text`. Optional args: `purpose`, `max_characters`. Summarises into a compact label with the configured LLM provider, or an extractive fallback. `purpose` is `task_title` or `generic`; default max is 84 characters and the range is 12-200. Input is limited to 8,000 characters.
 
 `text.correct` is useful before web search for typo-prone user text. Preserve exact code symbols, names, and quoted strings when precision matters.
+
+## Chat Meta Tools
+
+`chat.*` tools are Orchestrator pseudo-tools backed by the event log. They expose only user chat messages and assistant chat replies, not raw provider prompts or unrelated task events.
+
+- `chat.history`: required args: none. Optional args: `date`, `days`, `limit`. Lists recent chat entries in chronological order. `date` is `YYYY-MM-DD` and defaults to today UTC; `days` defaults to 1 and clamps to 30; `limit` defaults to 40 and clamps to 200.
+- `chat.search`: required args: `query`. Optional args: `date`, `days`, `limit`. Searches user messages, assistant replies, actors, and recipients. `days` defaults to 7 and clamps to 30; `limit` defaults to 50 and clamps to 200.
+- `chat.send`: required args: `message`. Optional args: `to`. Records an explicit assistant reply event in the chat transcript. Normal chat answers should use the final assistant response instead; this tool is for explicit transcript writes in agent-managed flows.
+
+Use `chat.history` or `chat.search` before answering questions such as "what did I ask earlier?", "what did you tell me?", or "how did I respond?".
 
 ## Task And Workflow Tools
 

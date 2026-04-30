@@ -43,6 +43,19 @@ reflect on our recent interaction and suggest one improvement
 
 The reply includes a `new <goal>` command. In the dashboard this appears as a suggested action button, so you can create the follow-up task directly from the reflection result.
 
+## Chat History And Search
+
+Use chat history commands when you want homelabd to inspect the recorded conversation rather than rely on short prompt context:
+
+```text
+history
+chat history 20
+chat search browser UAT
+search chat for what did you tell me about workflows
+```
+
+The Orchestrator can also call `chat.history` and `chat.search` before answering questions about earlier user messages, assistant replies, what it sent, or how you responded. These tools read the server event log for `user.message` and `chat.reply` entries. Dashboard-only local messages, such as the welcome bubble before anything is sent to homelabd, are not part of that server log.
+
 ## Memory And Personality
 
 Use memory when you want chat to carry a durable lesson into future decisions without copying your wording or tone:

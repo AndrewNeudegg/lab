@@ -4006,18 +4006,7 @@
   }
 
   @media (max-width: 760px) {
-    :global(html),
-    :global(body) {
-      height: 100%;
-      overflow: hidden;
-    }
-
-    :global(body > div) {
-      min-height: 0;
-      height: 100%;
-    }
-
-    :global(.navbar) {
+    .tasks-page :global(.navbar) {
       position: fixed !important;
       top: 0 !important;
       right: 0;
@@ -4027,12 +4016,14 @@
 
     .tasks-page {
       box-sizing: border-box;
+      position: fixed;
+      inset: 0;
       display: grid;
       grid-template-rows: minmax(0, 1fr);
       min-height: 0;
-      height: 100%;
+      height: auto;
       overflow: hidden;
-      padding-top: calc(3.75rem + 1px);
+      padding-top: calc(4rem + 1px);
     }
 
     .toast-notice {

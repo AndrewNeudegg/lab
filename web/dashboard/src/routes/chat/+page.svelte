@@ -464,7 +464,9 @@
   <meta name="description" content="Global homelabd chat interface" />
 </svelte:head>
 
-<Navbar title="Chat" subtitle="homelabd" current="/chat" taskApiBase={apiBase} />
+<div class="chat-nav-scope">
+  <Navbar title="Chat" subtitle="homelabd" current="/chat" taskApiBase={apiBase} />
+</div>
 
 <div class="chat-shell">
   <main class="chat-card">
@@ -632,13 +634,6 @@
 </div>
 
 <style>
-  :global(html),
-  :global(body),
-  :global(body > div) {
-    height: 100%;
-    overflow: hidden;
-  }
-
   :global(body) {
     margin: 0;
     color: #172033;
@@ -653,6 +648,10 @@
     font: inherit;
   }
 
+  .chat-nav-scope {
+    display: contents;
+  }
+
   .chat-shell {
     --chat-navbar-height: 4rem;
     box-sizing: border-box;
@@ -665,7 +664,7 @@
     padding-top: var(--chat-navbar-height);
   }
 
-  :global(.navbar) {
+  .chat-nav-scope :global(.navbar) {
     position: fixed !important;
     top: 0 !important;
     right: 0;

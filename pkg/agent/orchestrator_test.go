@@ -4728,8 +4728,8 @@ func seedTaskGraph(t *testing.T, orch *Orchestrator, goal string) (taskstore.Tas
 }
 
 type delegateStub struct {
-	started chan struct{}
-	release chan struct{}
+	started  chan struct{}
+	release  chan struct{}
 	finished chan struct{}
 }
 

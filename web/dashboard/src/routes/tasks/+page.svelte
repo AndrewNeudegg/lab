@@ -1145,8 +1145,8 @@
         on:input={handleTaskSearchInput}
       />
 
-      <div class="merge-queue-shell">
-        <details class="merge-queue" aria-label="Merge queue" open>
+      <div class="merge-queue-shell" role="group" aria-label="Merge queue">
+        <details class="merge-queue" open>
           <summary>
             <span>Merge queue</span>
             <strong>{mergeQueueItems.length}</strong>
@@ -1211,7 +1211,6 @@
           class:busy={autoMergeSaving}
           class="auto-merge-toggle"
           title="Automatically merge reviewed queue-head tasks"
-          on:click|preventDefault={() => void setAutoMerge(!autoMergeEnabled)}
         >
           <input
             class="auto-merge-input"

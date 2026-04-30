@@ -11,6 +11,8 @@ const launchOptions = {
   chromiumSandbox: false,
   args: ['--disable-breakpad', '--disable-crash-reporter', '--disable-dev-shm-usage']
 };
+const uatTestTimeout = 120_000;
+const uatExpectTimeout = 15_000;
 
 function worktreePort(cwd: string) {
   let hash = 0;

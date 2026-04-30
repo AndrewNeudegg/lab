@@ -158,7 +158,7 @@ const installTerminalMocks = async (page: Page) => {
 
 const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
-  let autoMergeEnabled = true;
+  let autoMergeEnabled = false;
   await page.route(/\/api\/message$/, async (route) => {
     await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
   });
@@ -167,7 +167,8 @@ const mockDashboardApis = async (page: Page) => {
   });
   await page.route('**/api/settings', async (route) => {
     if (route.request().method() === 'POST') {
-      autoMergeEnabled = true;
+      const body = route.request().postDataJSON() as { auto_merge_enabled?: boolean };
+      autoMergeEnabled = Boolean(body.auto_merge_enabled);
     }
     await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });
   });
@@ -304,11 +305,17 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     const mergeQueue = page.locator('[aria-label="Merge queue"]');
     await expect(mergeQueue).toBeVisible();
     await expect(mergeQueue).toContainText('Merge queue');
+    const queueMove = mergeQueue.getByRole('button', {
+      name: /Move Queued docs follow-up up in merge queue/
+    });
+    await expect(queueMove).toBeVisible();
     const autoMerge = mergeQueue.getByRole('switch', {
       name: 'Auto merge reviewed queue-head tasks'
     });
+    await expect(autoMerge).toHaveAttribute('aria-checked', 'false');
+    await autoMerge.click();
     await expect(autoMerge).toHaveAttribute('aria-checked', 'true');
-    await mergeQueue.getByRole('button', { name: /Move Queued docs follow-up up in merge queue/ }).click();
+    await queueMove.click();
     const queueNotice = mobile ? page.locator('.task-pane .queue-notice') : page.locator('.workbench .notice');
     await expect(queueNotice.getByText('Merge queue updated')).toBeVisible();
     await page.locator('.task-row').first().click();
@@ -332,8 +339,13 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   } else if (route.startsWith('/docs')) {
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
     await expect(page.locator('#docs-list')).toBeVisible();
+    await expect(
+      page.locator(
+        '.mermaid-diagram[data-mermaid-status="pending"], .mermaid-diagram[data-mermaid-status="rendering"]'
+      )
+    ).toHaveCount(0, { timeout: 15_000 });
   } else if (route === '/terminal') {
-    await expect(page.locator('.xterm')).toBeVisible();
+    await expect(page.locator('.xterm')).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: 'Add terminal tab' }).click();
     await expect(page.locator('.terminal-tab')).toHaveCount(2);
   } else if (route === '/healthd') {
@@ -364,7 +376,7 @@ for (const viewport of [
         await exerciseRoute(page, route, viewport.mobile);
         await expectNoVisualArtifacts(page);
         await testInfo.attach(`${viewport.name}-${route.replaceAll('/', '-') || 'root'}.png`, {
-          body: await page.screenshot({ fullPage: true }),
+          body: await page.screenshot({ fullPage: !route.startsWith('/docs') }),
           contentType: 'image/png'
         });
       });

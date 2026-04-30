@@ -122,7 +122,9 @@ const mockTaskApi = async (page: Page, onCreateTask?: (body: any) => void) => {
   let autoMergeEnabled = false;
   await page.route(/\/api\/settings$/, async (route) => {
     if (route.request().method() === 'POST') {
-      const body = route.request().postDataJSON() as { auto_merge_enabled?: boolean };
+      const body = JSON.parse(route.request().postData() || '{}') as {
+        auto_merge_enabled?: boolean;
+      };
       autoMergeEnabled = Boolean(body.auto_merge_enabled);
     }
     await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });

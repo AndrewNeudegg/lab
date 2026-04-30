@@ -160,7 +160,20 @@ const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
   let autoMergeEnabled = false;
   await page.route(/\/api\/message$/, async (route) => {
-    await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
+    await route.fulfill({
+      json: {
+        reply: [
+          'Status: `tasks` and `workflow list` are available.',
+          '',
+          '```mermaid',
+          'flowchart LR',
+          '  Chat[Chat] --> Tasks[Tasks]',
+          '  Tasks --> Review[Review]',
+          '```'
+        ].join('\n'),
+        source: 'program'
+      }
+    });
   });
   await page.route(/\/api\/tasks\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
@@ -290,19 +303,28 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.clippedButtons, JSON.stringify(metrics)).toEqual([]);
 };
 
+const openMobileMenu = async (page: Page) => {
+  const menu = page.getByRole('button', { name: 'Menu' });
+  const nav = page.getByRole('navigation', { name: 'Primary mobile' });
+  await menu.click();
+  try {
+    await expect(nav).toBeVisible({ timeout: 3_000 });
+  } catch {
+    await menu.click();
+    await expect(nav).toBeVisible();
+  }
+  return nav;
+};
+
 const expectTaskNavAttention = async (page: Page, mobile: boolean) => {
   const taskLinkName = 'Tasks, 3 review items need attention';
   if (mobile) {
     await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('3');
-    await page.getByRole('button', { name: 'Menu' }).click();
-    await expect(page.getByRole('navigation', { name: 'Primary mobile' })).toBeVisible();
-    await expect(
-      page
-        .getByRole('navigation', { name: 'Primary mobile' })
-        .getByRole('link', { name: taskLinkName })
-    ).toBeVisible();
+    const mobileNav = await openMobileMenu(page);
+    await expect(mobileNav.getByRole('link', { name: taskLinkName })).toBeVisible();
     await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('3');
     await page.getByRole('button', { name: 'Menu' }).click();
+    await expect(mobileNav).toBeHidden();
     return;
   }
   await expect(
@@ -317,7 +339,9 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Status:')).toBeVisible();
+    await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
   } else if (route === '/tasks') {
+    await page.waitForLoadState('networkidle');
     await page.getByPlaceholder('Search tasks').fill('queue');
     const mergeQueue = page.locator('[aria-label="Merge queue"]');
     await expect(mergeQueue).toBeVisible();

@@ -4127,6 +4127,7 @@ func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) st
 		"Goal: " + t.Goal,
 		"Attachments: " + formatTaskAttachmentsForPrompt(t.Attachments),
 		"",
+		agentDiagramGuidance,
 		"Inspect the directory first, make the smallest practical change, run relevant validation, and report changed files plus commands run.",
 	}, "\n")
 }
@@ -6438,8 +6439,8 @@ func diffRequiresSiteUAT(diff string) bool {
 		switch path {
 		case "web/package.json",
 			"web/bun.lock",
-			"web/shared/package.json",
 			"web/dashboard/package.json",
+			"web/shared/package.json",
 			"config.example.json",
 			"web/dashboard/playwright.config.ts":
 			return true

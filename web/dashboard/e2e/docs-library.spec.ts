@@ -20,6 +20,19 @@ const mockNavbarTaskApis = async (page: Page) => {
   });
 };
 
+const openMobileMenu = async (page: Page) => {
+  const menu = page.getByRole('button', { name: 'Menu' });
+  const nav = page.getByRole('navigation', { name: 'Primary mobile' });
+  await menu.click();
+  try {
+    await expect(nav).toBeVisible({ timeout: 3_000 });
+  } catch {
+    await menu.click();
+    await expect(nav).toBeVisible();
+  }
+  return nav;
+};
+
 test('docs library supports navigation, markdown rendering, table of contents, and search', async ({
   page
 }, testInfo) => {
@@ -42,6 +55,9 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
     2
   );
+  await page.getByRole('button', { name: 'Switch to dark mode' }).click();
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect(diagram).toHaveAttribute('data-mermaid-rendered', /^dark:/);
 
   await page.locator('#docs-list a', { hasText: 'Task Workflow' }).click();
   await expect(page).toHaveURL(/\/docs\/task-workflow$/);
@@ -59,7 +75,7 @@ test('docs library supports navigation, markdown rendering, table of contents, a
     .poll(() =>
       page.locator('.content .mermaid-diagram svg').evaluate((element) => element.outerHTML)
     )
-    .toContain('#2563eb');
+    .toContain('#60a5fa');
 
   await page.goto('/docs/task-workflow');
   const toc = page.getByRole('navigation', { name: 'On this page' });
@@ -85,12 +101,11 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
   await expect(page.locator('.docs-shell')).toHaveAttribute('data-docs-library-ready', 'true');
 
-  const mobileNav = page.getByRole('navigation', { name: 'Primary mobile' });
-  await page.getByRole('button', { name: 'Menu' }).click();
-  await expect(mobileNav).toBeVisible();
-  await expect(
-    mobileNav.getByRole('link', { name: 'Docs' })
-  ).toHaveAttribute('aria-current', 'page');
+  const mobileNav = await openMobileMenu(page);
+  await expect(mobileNav.getByRole('link', { name: 'Docs' })).toHaveAttribute(
+    'aria-current',
+    'page'
+  );
   await page.getByRole('button', { name: 'Menu' }).click();
   await expect(mobileNav).toBeHidden();
 

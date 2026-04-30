@@ -3,6 +3,8 @@ import type {
   FetchClientOptions,
   HomelabdApprovalsResponse,
   HomelabdAgentsResponse,
+  HomelabdClearChatRequest,
+  HomelabdClearChatResponse,
   HomelabdClient,
   HomelabdClientOptions,
   HomelabdCreateTaskRequest,
@@ -131,6 +133,14 @@ export const createHomelabdClient = (
   return {
     sendMessage(request: HomelabdMessageRequest) {
       return apiFetch<HomelabdMessageResponse>('/message', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
+    clearChat(request: HomelabdClearChatRequest) {
+      return apiFetch<HomelabdClearChatResponse>('/chat/clear', {
         baseUrl,
         fetcher,
         method: 'POST',

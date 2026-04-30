@@ -3933,6 +3933,128 @@ func TestChatMetaCommandsSearchRecordedConversation(t *testing.T) {
 	}
 }
 
+func TestChatConversationHistoryIsScopedByConversationID(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "help",
+		ConversationID: "chat_alpha",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "status",
+		ConversationID: "chat_beta",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := orch.chatHistoryPayload(chatHistoryToolRequest{
+		Limit:          10,
+		ConversationID: "chat_alpha",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) == 0 {
+		t.Fatalf("entries = %#v, want chat_alpha history", result.Entries)
+	}
+	for _, entry := range result.Entries {
+		if entry.ConversationID != "chat_alpha" {
+			t.Fatalf("entry = %#v, want only chat_alpha", entry)
+		}
+	}
+}
+
+func TestClearChatRemovesOnlySelectedConversationEvents(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "help",
+		ConversationID: "chat_alpha",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "status",
+		ConversationID: "chat_beta",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := orch.ClearChat(context.Background(), ClearChatRequest{ConversationID: "chat_alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RemovedEvents != 2 {
+		t.Fatalf("removed events = %d, want user and assistant events", cleared.RemovedEvents)
+	}
+
+	payload, err := orch.chatHistoryPayload(chatHistoryToolRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) == 0 {
+		t.Fatalf("entries = %#v, want remaining chat_beta history", result.Entries)
+	}
+	for _, entry := range result.Entries {
+		if entry.ConversationID == "chat_alpha" || strings.Contains(entry.Message, "help") {
+			t.Fatalf("entry = %#v, cleared conversation still present", entry)
+		}
+	}
+}
+
+func TestClearChatAllRemovesEveryConversationEvent(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	for _, req := range []HandleRequest{
+		{From: "dashboard", Message: "help", ConversationID: "chat_alpha"},
+		{From: "dashboard", Message: "status", ConversationID: "chat_beta"},
+	} {
+		if _, err := orch.HandleDetailedRequest(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleared, err := orch.ClearChat(context.Background(), ClearChatRequest{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RemovedEvents != 4 {
+		t.Fatalf("removed events = %d, want both user and assistant events for both conversations", cleared.RemovedEvents)
+	}
+
+	payload, err := orch.chatHistoryPayload(chatHistoryToolRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Entries []chatMetaEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 0 {
+		t.Fatalf("entries = %#v, want all chat history removed", result.Entries)
+	}
+}
+
 func TestOpenEndedChatReportsProviderSource(t *testing.T) {
 	provider := &recordingProvider{}
 	orch := newTestOrchestrator(t, nil)

@@ -325,10 +325,10 @@ const themePages: ThemePage[] = [
   {
     name: 'chat',
     path: '/chat',
-    surfaces: ['.chat-card', '.message', '.prompt-actions button', '.composer'],
+    surfaces: ['.session-sidebar', '.chat-toolbar', '.chat-card', '.prompt-actions button', '.composer'],
     async ready(page) {
       await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-      await expect(page.getByText('This is global chat')).toBeVisible();
+      await expect(page.getByRole('status').getByRole('heading', { name: 'New chat' })).toBeVisible();
     }
   },
   {

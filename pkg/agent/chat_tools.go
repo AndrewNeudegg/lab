@@ -29,6 +29,7 @@ type chatHistoryToolRequest struct {
 	Limit                    int    `json:"limit,omitempty"`
 	ExcludeEventID           string `json:"-"`
 	ExcludeLatestUserMessage string `json:"-"`
+	ConversationID           string `json:"-"`
 }
 
 type chatSearchToolRequest struct {
@@ -38,6 +39,7 @@ type chatSearchToolRequest struct {
 	Limit                    int    `json:"limit,omitempty"`
 	ExcludeEventID           string `json:"-"`
 	ExcludeLatestUserMessage string `json:"-"`
+	ConversationID           string `json:"-"`
 }
 
 type chatSendToolRequest struct {
@@ -51,27 +53,39 @@ type chatMetaEntry struct {
 	Type            string `json:"type"`
 	Role            string `json:"role"`
 	Actor           string `json:"actor"`
+	ConversationID  string `json:"conversation_id,omitempty"`
 	To              string `json:"to,omitempty"`
 	TaskID          string `json:"task_id,omitempty"`
 	Message         string `json:"message"`
 	AttachmentCount int    `json:"attachment_count,omitempty"`
 }
 
-func (o *Orchestrator) handleChatMetaCommand(fields []string, message string) (string, error) {
+func (o *Orchestrator) handleChatMetaCommand(ctx context.Context, fields []string, message string) (string, error) {
 	if len(fields) < 2 {
 		return "usage: chat <history|search>", nil
 	}
 	switch commandWord(fields[1]) {
 	case "history", "log", "stream":
-		return o.formatChatHistoryReply(chatHistoryToolRequest{Limit: chatCommandLimit(fields[2:], defaultChatHistoryLimit), ExcludeLatestUserMessage: message})
+		req := chatHistoryToolRequest{Limit: chatCommandLimit(fields[2:], defaultChatHistoryLimit), ExcludeLatestUserMessage: message}
+		applyCurrentChatTurn(ctx, &req.ExcludeEventID, &req.ConversationID)
+		return o.formatChatHistoryReply(req)
 	case "search", "find":
 		query := strings.TrimSpace(strings.TrimPrefix(message, fields[0]+" "+fields[1]))
 		if query == "" {
 			return "usage: chat search <text>", nil
 		}
-		return o.formatChatSearchReply(chatSearchToolRequest{Query: query, ExcludeLatestUserMessage: message})
+		req := chatSearchToolRequest{Query: query, ExcludeLatestUserMessage: message}
+		applyCurrentChatTurn(ctx, &req.ExcludeEventID, &req.ConversationID)
+		return o.formatChatSearchReply(req)
 	default:
 		return "usage: chat <history|search>", nil
+	}
+}
+
+func applyCurrentChatTurn(ctx context.Context, excludeEventID, conversationID *string) {
+	if turn, ok := currentChatTurnFromContext(ctx); ok {
+		*excludeEventID = turn.UserEventID
+		*conversationID = turn.ConversationID
 	}
 }
 
@@ -85,18 +99,14 @@ func (o *Orchestrator) executeChatTool(ctx context.Context, actor, name string, 
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return toolExecution{Tool: name, Allowed: false, Error: err.Error()}
 		}
-		if turn, ok := currentChatTurnFromContext(ctx); ok {
-			req.ExcludeEventID = turn.UserEventID
-		}
+		applyCurrentChatTurn(ctx, &req.ExcludeEventID, &req.ConversationID)
 		payload, err = o.chatHistoryPayload(req)
 	case "chat.search":
 		var req chatSearchToolRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return toolExecution{Tool: name, Allowed: false, Error: err.Error()}
 		}
-		if turn, ok := currentChatTurnFromContext(ctx); ok {
-			req.ExcludeEventID = turn.UserEventID
-		}
+		applyCurrentChatTurn(ctx, &req.ExcludeEventID, &req.ConversationID)
 		payload, err = o.chatSearchPayload(req)
 	case "chat.send":
 		var req chatSendToolRequest
@@ -170,6 +180,7 @@ func (o *Orchestrator) chatHistoryPayload(req chatHistoryToolRequest) (json.RawM
 	if err != nil {
 		return nil, err
 	}
+	entries = filterChatEntriesByConversation(entries, req.ConversationID)
 	entries = excludeCurrentChatTurn(entries, req.ExcludeEventID, req.ExcludeLatestUserMessage)
 	total := len(entries)
 	if len(entries) > limit {
@@ -195,6 +206,7 @@ func (o *Orchestrator) chatSearchPayload(req chatSearchToolRequest) (json.RawMes
 	if err != nil {
 		return nil, err
 	}
+	entries = filterChatEntriesByConversation(entries, req.ConversationID)
 	entries = excludeCurrentChatTurn(entries, req.ExcludeEventID, req.ExcludeLatestUserMessage)
 	needle := strings.ToLower(query)
 	var matches []chatMetaEntry
@@ -276,11 +288,12 @@ func chatMetaEntryFromEvent(event eventlog.Event) (chatMetaEntry, bool) {
 		return chatMetaEntry{}, false
 	}
 	var payload struct {
-		Message     string            `json:"message"`
-		Content     string            `json:"content"`
-		Reply       string            `json:"reply"`
-		To          string            `json:"to"`
-		Attachments []json.RawMessage `json:"attachments"`
+		Message        string            `json:"message"`
+		Content        string            `json:"content"`
+		Reply          string            `json:"reply"`
+		To             string            `json:"to"`
+		ConversationID string            `json:"conversation_id"`
+		Attachments    []json.RawMessage `json:"attachments"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return chatMetaEntry{}, false
@@ -301,11 +314,36 @@ func chatMetaEntryFromEvent(event eventlog.Event) (chatMetaEntry, bool) {
 		Type:            event.Type,
 		Role:            role,
 		Actor:           event.Actor,
+		ConversationID:  strings.TrimSpace(payload.ConversationID),
 		To:              strings.TrimSpace(payload.To),
 		TaskID:          event.TaskID,
 		Message:         message,
 		AttachmentCount: len(payload.Attachments),
 	}, true
+}
+
+func filterChatEntriesByConversation(entries []chatMetaEntry, conversationID string) []chatMetaEntry {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return entries
+	}
+	filtered := make([]chatMetaEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ConversationID == conversationID {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func chatEventConversationID(event eventlog.Event) string {
+	var payload struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.ConversationID)
 }
 
 func excludeLatestUserMessage(entries []chatMetaEntry, message string) []chatMetaEntry {

@@ -45,6 +45,7 @@ export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
 export interface HomelabdMessageRequest {
   from?: string;
   content: string;
+  conversation_id?: string;
   attachments?: HomelabdTaskAttachment[];
 }
 
@@ -53,6 +54,19 @@ export interface HomelabdMessageResponse {
   reply: string;
   source?: string;
   stats?: ChatInteractionStats;
+}
+
+export interface HomelabdClearChatRequest {
+  conversation_id?: string;
+  all?: boolean;
+}
+
+export interface HomelabdClearChatResponse {
+  reply: string;
+  conversation_id?: string;
+  all?: boolean;
+  removed_events?: number;
+  removed_log_entries?: number;
 }
 
 export type TaskStatus =
@@ -494,6 +508,7 @@ export interface SupervisorSnapshot {
 
 export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
+  clearChat(request: HomelabdClearChatRequest): Promise<HomelabdClearChatResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;
   getSettings(): Promise<HomelabdSettingsResponse>;

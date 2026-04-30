@@ -31,6 +31,8 @@ The dashboard applies the homelabd brand diagram palette automatically, strips M
 | Muted | `#64748b` | `#94a3b8` |
 | Border | `#cbd5e1` | `#334155` |
 
+Invalid diagrams fall back to their source block so the syntax can be corrected. See [Diagramming And Brand Colours](/docs/diagramming-and-brand-colours).
+
 ## Reflection
 
 Use reflection when you want one improvement from the recent interaction and a follow-up task you can action:
@@ -69,7 +71,7 @@ create a task to fix running task recovery after homelabd restarts
 
 `homelabd` treats `new`, `task:`, `create a task to ...`, and similar creation phrases as task creation even when the goal text mentions words like `running`, `active tasks`, or `in progress`.
 
-New local development tasks create one queued task record and one isolated worktree. The task supervisor starts an available worker automatically, or you can run it explicitly:
+New local development tasks create one queued task record and one isolated worktree. The chat reply links the summarised task title to `/tasks?task=<task_id>`, so opening it selects the new task in the dashboard without a full page reload. The task supervisor starts an available worker automatically, or you can run it explicitly:
 
 ```text
 run <task_id>

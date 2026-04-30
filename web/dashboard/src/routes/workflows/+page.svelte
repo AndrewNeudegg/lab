@@ -1,8 +1,12 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
+  import { afterNavigate, goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import {
     createHomelabdClient,
     Navbar,
+    workflowURL,
     type HomelabdWorkflow,
     type HomelabdWorkflowStep
   } from '@homelab/shared';
@@ -28,6 +32,7 @@
   let error = '';
   let notice = '';
   let lastRefresh = '';
+  let lastAppliedRouteWorkflowId = '';
 
   let nameDraft = '';
   let descriptionDraft = '';
@@ -46,6 +51,13 @@
   $: activeCount = workflows.filter((workflow) =>
     ['draft', 'running', 'waiting', 'awaiting_approval'].includes(workflow.status)
   ).length;
+  $: if (browser) {
+    const routeWorkflowId = currentWorkflowRouteId();
+    if (routeWorkflowId && routeWorkflowId !== lastAppliedRouteWorkflowId) {
+      lastAppliedRouteWorkflowId = routeWorkflowId;
+      applyRouteWorkflowSelection(routeWorkflowId);
+    }
+  }
 
   const syncTimeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -67,12 +79,81 @@
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const currentWorkflowRouteId = () =>
+    browser ? $page.url.searchParams.get('workflow') || '' : '';
+
+  const workflowRouteIdFromLocation = () =>
+    typeof window !== 'undefined'
+      ? new URL(window.location.href).searchParams.get('workflow') || ''
+      : '';
+
+  const currentRoutePath = () =>
+    browser ? `${$page.url.pathname}${$page.url.search}${$page.url.hash}` : '';
+
+  const navigateToWorkflow = (workflowId: string, replaceState = false) => {
+    if (!browser || !workflowId) {
+      return;
+    }
+    const next = workflowURL(workflowId);
+    if (currentRoutePath() === next) {
+      return;
+    }
+    lastAppliedRouteWorkflowId = workflowId;
+    void goto(next, { keepFocus: true, noScroll: true, replaceState });
+  };
+
+  const applyRouteWorkflowSelection = (workflowId: string) => {
+    if (!workflowId) {
+      return;
+    }
+    selectedWorkflowId = workflowId;
+    filter = 'all';
+    search = '';
+  };
+
+  const selectWorkflow = (workflowId: string) => {
+    selectedWorkflowId = workflowId;
+    navigateToWorkflow(workflowId);
+  };
+
+  const handleWorkflowRowClick = (event: MouseEvent, workflowId: string) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    selectWorkflow(workflowId);
+  };
+
+  const handleWorkflowPopState = () => {
+    window.setTimeout(() => {
+      const workflowId = workflowRouteIdFromLocation();
+      if (!workflowId) {
+        return;
+      }
+      applyRouteWorkflowSelection(workflowId);
+      lastAppliedRouteWorkflowId = workflowId;
+    }, 0);
+  };
+
+  afterNavigate(({ to }) => {
+    if (!browser || to?.url.pathname !== '/workflows') {
+      return;
+    }
+    const workflowId = to.url.searchParams.get('workflow') || '';
+    if (!workflowId || workflowId === selectedWorkflowId) {
+      return;
+    }
+    applyRouteWorkflowSelection(workflowId);
+    lastAppliedRouteWorkflowId = workflowId;
+  });
+
   const updateWorkflow = (workflow: HomelabdWorkflow) => {
     const existing = workflows.some((item) => item.id === workflow.id);
     workflows = existing
       ? workflows.map((item) => (item.id === workflow.id ? workflow : item))
       : [workflow, ...workflows];
     selectedWorkflowId = workflow.id;
+    navigateToWorkflow(workflow.id);
   };
 
   const refreshWorkflows = async () => {
@@ -83,6 +164,12 @@
       workflows = [...response.workflows].sort(
         (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
       );
+      const routeWorkflowId = currentWorkflowRouteId();
+      if (routeWorkflowId && workflows.some((workflow) => workflow.id === routeWorkflowId)) {
+        filter = 'all';
+        search = '';
+        selectedWorkflowId = routeWorkflowId;
+      }
       if (!workflows.some((workflow) => workflow.id === selectedWorkflowId)) {
         selectedWorkflowId = workflows[0]?.id || '';
       }
@@ -145,7 +232,11 @@
     const interval = window.setInterval(() => {
       void refreshWorkflows();
     }, 8000);
-    return () => window.clearInterval(interval);
+    window.addEventListener('popstate', handleWorkflowPopState);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('popstate', handleWorkflowPopState);
+    };
   });
 </script>
 
@@ -241,11 +332,11 @@
       <div class="rows" aria-label="Workflow rows">
         {#if visibleWorkflows.length}
           {#each visibleWorkflows as workflow (workflow.id)}
-            <button
-              type="button"
+            <a
+              href={workflowURL(workflow.id)}
               class="workflow-row"
               class:selected={selectedWorkflow?.id === workflow.id}
-              on:click={() => (selectedWorkflowId = workflow.id)}
+              on:click={(event) => handleWorkflowRowClick(event, workflow.id)}
             >
               <span class={`dot ${workflowStatusTone(workflow.status)}`}></span>
               <span>
@@ -253,7 +344,7 @@
                 <small>{compactWorkflowID(workflow.id)} · {statusLabel(workflow.status)}</small>
               </span>
               <em>{workflow.estimate?.estimated_minutes || 0}m</em>
-            </button>
+            </a>
           {/each}
         {:else}
           <p class="empty">No workflows match this view.</p>
@@ -593,7 +684,14 @@
     gap: 0.65rem;
     min-height: 4.25rem;
     padding: 0.65rem;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 0.5rem;
+    color: var(--text-strong, #0f172a);
+    background: var(--surface, #ffffff);
+    font-weight: 750;
+    cursor: pointer;
     text-align: left;
+    text-decoration: none;
   }
 
   .workflow-row.selected {

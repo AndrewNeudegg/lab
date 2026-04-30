@@ -17,6 +17,7 @@ var goPackagePatterns = []string{"./cmd/...", "./pkg/...", "./constraints"}
 
 const (
 	minBunScriptTimeout = 3 * time.Minute
+	minBunBuildTime     = 6 * time.Minute
 	minBunUATTasksTime  = 5 * time.Minute
 	minBunUATSiteTime   = 10 * time.Minute
 )
@@ -46,7 +47,7 @@ func Register(reg *tool.Registry, base Base) error {
 }
 
 func runBunScript(ctx context.Context, timeout time.Duration, repoRoot, dir, script string) (json.RawMessage, error) {
-	return runBunScriptWithOptions(ctx, atLeastTimeout(timeout, minBunScriptTimeout), repoRoot, dir, script)
+	return runBunScriptWithOptions(ctx, bunScriptTimeout(timeout, script), repoRoot, dir, script)
 }
 
 func runBrowserUATScript(ctx context.Context, timeout time.Duration, repoRoot, dir, script string) (json.RawMessage, error) {
@@ -66,6 +67,14 @@ func runBunScriptWithOptions(ctx context.Context, timeout time.Duration, repoRoo
 		return run(ctx, timeout, dir, "bun", "run", script)
 	}
 	return runBunScriptInNix(ctx, timeout, repoRoot, dir, script)
+}
+
+func bunScriptTimeout(timeout time.Duration, script string) time.Duration {
+	minimum := minBunScriptTimeout
+	if script == "build" {
+		minimum = minBunBuildTime
+	}
+	return atLeastTimeout(timeout, minimum)
 }
 
 func atLeastTimeout(timeout, minimum time.Duration) time.Duration {

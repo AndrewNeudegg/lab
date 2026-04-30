@@ -805,6 +805,10 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	if !strings.Contains(reply, "Created queued task") || strings.Contains(reply, "Child phases:") {
 		t.Fatalf("reply = %q, want single queued task summary", reply)
 	}
+	wantLink := fmt.Sprintf("Created queued task [%s](/tasks?task=%s) (%s).", created.Title, created.ID, created.ID)
+	if !strings.Contains(reply, wantLink) {
+		t.Fatalf("reply = %q, want task title link %q", reply, wantLink)
+	}
 	want := "Next:\n```\nstatus\nrun " + created.ID + "\ndelegate " + created.ID + " to codex\n```"
 	if !strings.Contains(reply, want) {
 		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
@@ -1027,7 +1031,8 @@ func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
 	}
 	goal := "Work this task to completion if possible. Inspect the task workspace before editing. Task goal: when tasks are created their title should be derived from an automatic LLM summarisation of the user's input"
 
-	if _, err := orch.Handle(context.Background(), "test", "new "+goal); err != nil {
+	reply, err := orch.Handle(context.Background(), "test", "new "+goal)
+	if err != nil {
 		t.Fatal(err)
 	}
 	tasks, err := orch.tasks.List()
@@ -1039,6 +1044,9 @@ func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
 	}
 	if tasks[0].Title != "Summarise task creation titles" {
 		t.Fatalf("title = %q, want summarized title", tasks[0].Title)
+	}
+	if !strings.Contains(reply, "[Summarise task creation titles](/tasks?task="+tasks[0].ID+")") {
+		t.Fatalf("reply = %q, want summarized task title link", reply)
 	}
 	if summarizer.text != goal {
 		t.Fatalf("summarizer text = %q, want original goal", summarizer.text)
@@ -2575,7 +2583,7 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
 	release()
-	waitForTaskEvent(t, orch, task.ID, "task.review.completed", "task.review.failed")
+	waitForDelegationReviewEvent(t, orch, task.ID)
 }
 
 func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
@@ -2630,7 +2638,7 @@ func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
 	release()
-	waitForTaskEvent(t, orch, task.ID, "task.review.completed", "task.review.failed")
+	waitForDelegationReviewEvent(t, orch, task.ID)
 }
 
 func TestAutomaticRecoveryFailureRemainsRetryableAfterCooldown(t *testing.T) {
@@ -3476,7 +3484,7 @@ func TestOpenEndedChatIncludesDurableMemory(t *testing.T) {
 	if !strings.Contains(system, "Prefer distilled lessons over language mimicry.") {
 		t.Fatalf("system prompt missing durable memory: %s", system)
 	}
-	if !strings.Contains(system, "Mermaid fenced diagram") || !strings.Contains(system, "brand colour scheme") {
+	if !strings.Contains(system, "Mermaid fenced diagrams") || !strings.Contains(system, "brand diagram palette") {
 		t.Fatalf("system prompt missing diagram guidance: %s", system)
 	}
 }
@@ -3547,7 +3555,7 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
 	}
 	system := provider.requests[0].Messages[0].Content
-	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production", "Mermaid fenced diagram", "brand colour scheme"} {
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("UX prompt missing %q:\n%s", want, system)
 		}
@@ -3572,6 +3580,7 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 		"do not stop or restart production",
 		"For remote tasks",
 		"Mermaid fenced diagrams",
+		"docs/diagramming-and-brand-colours.md",
 		"#2563eb",
 		"#60a5fa",
 	} {
@@ -4467,7 +4476,7 @@ func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
 		ID:        "task_123",
 		Workspace: "/tmp/workspaces/task_123",
 	})
-	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
+	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md", "#2563eb", "#60a5fa"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
 		}
@@ -4794,6 +4803,27 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func waitForDelegationReviewEvent(t *testing.T, orch *Orchestrator, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := orch.events.ReadDay(time.Now().UTC())
+		if err == nil {
+			for _, event := range events {
+				if event.TaskID != taskID {
+					continue
+				}
+				switch event.Type {
+				case "task.review.completed", "task.review.failed":
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("delegation review event was not written")
 }
 
 type restartGateCalls struct {

@@ -2893,7 +2893,8 @@ func (o *Orchestrator) createTaskWithAttachments(ctx context.Context, goal strin
 		return "usage: new <goal>", nil
 	}
 	t := created.Task
-	return fmt.Sprintf("Created queued task %s.\nPlan created and reviewed before execution.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", t.ID, t.Workspace, created.Branch, commandBlock(
+	taskLink := fmt.Sprintf("[%s](%s)", markdownLinkLabel(taskLinkTitle(t)), dashboardTaskURL(t.ID))
+	return fmt.Sprintf("Created queued task %s (%s).\nPlan created and reviewed before execution.\nWorkspace: %s\nBranch: %s\nThe task supervisor will start an available worker automatically.\nNext:\n%s", taskLink, t.ID, t.Workspace, created.Branch, commandBlock(
 		"status",
 		"run "+t.ID,
 		"delegate "+t.ID+" to codex",
@@ -2924,6 +2925,27 @@ func formatCreatedGraphChildren(children []taskstore.Task) string {
 
 func commandBlock(commands ...string) string {
 	return "```\n" + strings.Join(commands, "\n") + "\n```"
+}
+
+func dashboardTaskURL(taskID string) string {
+	return "/tasks?task=" + url.QueryEscape(strings.TrimSpace(taskID))
+}
+
+func taskLinkTitle(t taskstore.Task) string {
+	title := strings.TrimSpace(t.Title)
+	if title == "" {
+		return friendlyTaskTitle(t)
+	}
+	return title
+}
+
+func markdownLinkLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "task"
+	}
+	label = strings.NewReplacer("\r", " ", "\n", " ", "[", "(", "]", ")").Replace(label)
+	return strings.Join(strings.Fields(label), " ")
 }
 
 type createdTask struct {

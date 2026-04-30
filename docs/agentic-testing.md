@@ -10,7 +10,7 @@ On NixOS, `repo.root` and `repo.workspace_root` must be writable runtime paths, 
 
 Remote tasks run on the selected `homelab-agent` in the selected advertised workdir. The control plane records the result, but it does not create a local worktree, compare remote `HEAD`, or merge remote changes.
 
-Browser UAT starts from the task worktree, not from the supervised dashboard. The default Playwright config derives a stable per-worktree port, starts Vite on `127.0.0.1`, refuses to reuse an existing server on that port, and runs with one worker for reproducibility.
+Browser UAT starts from the task worktree, not from the supervised dashboard. The default Playwright config derives a stable per-worktree port, starts Vite on `127.0.0.1`, refuses to reuse an existing server on that port, allows up to 120 seconds for first-route SSR warm-up, gives each test up to 120 seconds, gives expectations up to 20 seconds, and runs with one worker for reproducibility. Set `PLAYWRIGHT_WEB_SERVER_TIMEOUT`, `PLAYWRIGHT_TEST_TIMEOUT`, or `PLAYWRIGHT_EXPECT_TIMEOUT` when debugging unusually slow worker hardware.
 
 ## Standard Commands
 
@@ -68,7 +68,7 @@ Remote review only acknowledges the remote result and moves the task to verifica
 
 `uat:tasks`, `uat:docs`, `uat:site`, and `e2e` install the Playwright-managed Chromium build and run `browser:preflight` before running tests. The repo does not use `CHROME_BIN` by default because the system Chromium available in some agent environments can crash before the first page opens. To force a known-good system browser, set `HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME=1` with `CHROME_BIN`, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` directly.
 
-The Playwright config uses larger default budgets for cold Vite dependency optimisation and lazy route bundles: `PLAYWRIGHT_WEB_SERVER_TIMEOUT_MS`, `PLAYWRIGHT_TEST_TIMEOUT_MS`, and `PLAYWRIGHT_EXPECT_TIMEOUT_MS` can override the defaults when a worker is unusually slow. Keep overrides in milliseconds and prefer fixing deterministic test hangs over increasing these values.
+The Playwright config uses larger default budgets for cold Vite dependency optimisation and lazy route bundles: `PLAYWRIGHT_WEB_SERVER_TIMEOUT`, `PLAYWRIGHT_TEST_TIMEOUT`, and `PLAYWRIGHT_EXPECT_TIMEOUT` can override the defaults when a worker is unusually slow. Legacy `*_MS` names are still accepted. Keep overrides in milliseconds and prefer fixing deterministic test hangs over increasing these values.
 
 Outside Nix, install Playwright browsers and OS dependencies with the official Playwright installer before running custom browser commands.
 

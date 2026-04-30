@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { afterNavigate, goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { onDestroy, onMount, tick } from 'svelte';
-  import { Navbar } from '@homelab/shared';
+  import { Navbar, terminalURL } from '@homelab/shared';
   import type { HomelabdAgentsResponse, HomelabdRemoteAgent } from '@homelab/shared';
   import '@xterm/xterm/css/xterm.css';
   import {
@@ -106,6 +108,9 @@
   let reconnectAttempt = 0;
   let reconnecting = false;
   let destroyed = false;
+  let terminalRouteReady = false;
+  let terminalRouteInitialized = false;
+  let lastAppliedTerminalRoute = '';
   const lastEventSeqByTab = new Map<string, number>();
   const queuedInputByTab = new Map<string, string>();
   const queuedInputNoticeByTab = new Set<string>();
@@ -118,6 +123,14 @@
   }
   $: activeTab = tabs.find((tab) => tab.id === activeTabId);
   $: session = activeTab?.session;
+  $: if (terminalRouteReady) {
+    const route = currentTerminalRoute();
+    const key = terminalRouteKey(route);
+    if (key && key !== lastAppliedTerminalRoute) {
+      lastAppliedTerminalRoute = key;
+      void applyTerminalRoute(route);
+    }
+  }
 
   async function requestFrom<T>(base: string, path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
@@ -135,6 +148,120 @@
   const request = <T,>(path: string, init: RequestInit = {}) => requestFrom<T>(apiBase, path, init);
   const requestForTab = <T,>(tab: TerminalTab, path: string, init: RequestInit = {}) =>
     requestFrom<T>(tab.apiBase || apiBase, path, init);
+
+  const currentTerminalRoute = () => ({
+    sessionId: $page.url.searchParams.get('session') || '',
+    tabId: $page.url.searchParams.get('tab') || ''
+  });
+
+  const terminalRouteFromLocation = () => {
+    const url = new URL(window.location.href);
+    return {
+      sessionId: url.searchParams.get('session') || '',
+      tabId: url.searchParams.get('tab') || ''
+    };
+  };
+
+  const terminalRouteKey = (route = currentTerminalRoute()) => {
+    if (route.sessionId) {
+      return `session:${route.sessionId}`;
+    }
+    if (route.tabId) {
+      return `tab:${route.tabId}`;
+    }
+    return '';
+  };
+
+  const terminalRouteForTab = (tab: TerminalTab, nextSession = tab.session) =>
+    terminalURL({ sessionId: nextSession?.id, tabId: tab.id });
+
+  const currentRoutePath = () => `${$page.url.pathname}${$page.url.search}${$page.url.hash}`;
+
+  const navigateToTerminalTab = (
+    tab: TerminalTab,
+    nextSession = tab.session,
+    replaceState = false
+  ) => {
+    if (!terminalRouteReady) {
+      return;
+    }
+    const next = terminalRouteForTab(tab, nextSession);
+    if (currentRoutePath() === next) {
+      return;
+    }
+    terminalRouteInitialized = true;
+    lastAppliedTerminalRoute = terminalRouteKey({
+      sessionId: nextSession?.id || '',
+      tabId: nextSession?.id ? '' : tab.id
+    });
+    void goto(next, { keepFocus: true, noScroll: true, replaceState });
+  };
+
+  const findTabForRoute = (route = currentTerminalRoute()) => {
+    if (route.sessionId) {
+      return tabs.find((tab) => tab.session?.id === route.sessionId);
+    }
+    if (route.tabId) {
+      return tabs.find((tab) => tab.id === route.tabId);
+    }
+    return undefined;
+  };
+
+  const createTabForSessionRoute = (sessionId: string, target = tabTarget(terminalTargets[0])): TerminalTab => ({
+    id: `tab_${sessionId}`,
+    title: sessionId.slice(0, 16) || 'Terminal',
+    targetId: target.id,
+    targetLabel: target.label,
+    apiBase: target.apiBase,
+    session: {
+      id: sessionId,
+      shell: '',
+      cwd: '',
+      created_at: ''
+    }
+  });
+
+  const applyTerminalRoute = async (route = currentTerminalRoute()) => {
+    let tab = findTabForRoute(route);
+    if (!tab && route.sessionId) {
+      tab = createTabForSessionRoute(route.sessionId);
+      tabs = [tab, ...tabs];
+    }
+    if (!tab || tab.id === activeTabId) {
+      persistTabs();
+      return;
+    }
+    editingTabId = '';
+    editingTitle = '';
+    activeTabId = tab.id;
+    persistTabs();
+    await tick();
+    await connectActiveTab(false);
+  };
+
+  const handleTerminalPopState = () => {
+    window.setTimeout(() => {
+      const route = terminalRouteFromLocation();
+      lastAppliedTerminalRoute = terminalRouteKey(route);
+      void applyTerminalRoute(route);
+    }, 0);
+  };
+
+  afterNavigate(({ to }) => {
+    if (!terminalRouteReady || to?.url.pathname !== '/terminal') {
+      return;
+    }
+    const route = {
+      sessionId: to.url.searchParams.get('session') || '',
+      tabId: to.url.searchParams.get('tab') || ''
+    };
+    const key = terminalRouteKey(route);
+    if (!key) {
+      return;
+    }
+    lastAppliedTerminalRoute = key;
+    void applyTerminalRoute(route);
+  });
 
   const currentGeometry = () =>
     clampTerminalGeometry({
@@ -218,6 +345,17 @@
       tabs = [tab];
       activeTabId = tab.id;
     }
+    const route = currentTerminalRoute();
+    const routeTab = findTabForRoute(route);
+    if (routeTab) {
+      activeTabId = routeTab.id;
+    } else if (route.sessionId) {
+      const tab = createTabForSessionRoute(route.sessionId, fallbackTarget);
+      tabs = [tab, ...tabs];
+      activeTabId = tab.id;
+    }
+    lastAppliedTerminalRoute = terminalRouteKey(route);
+    terminalRouteInitialized = Boolean(lastAppliedTerminalRoute);
     persistTabs();
   };
 
@@ -238,6 +376,14 @@
     await tick();
     renameInput?.focus();
     renameInput?.select();
+  };
+
+  const handleTabClick = (event: MouseEvent, tab: TerminalTab) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    void startRename(tab);
   };
 
   const commitRename = () => {
@@ -601,7 +747,7 @@
     return created;
   };
 
-  const connectActiveTab = async () => {
+  const connectActiveTab = async (updateRoute = true) => {
     const tab = activeTab;
     if (!tab) {
       return;
@@ -617,6 +763,9 @@
       lastEventSeqByTab.set(tab.id, 0);
       lastResize = `${geometry.cols}x${geometry.rows}`;
       terminal?.writeln(`\x1b[90m${tab.title || 'Terminal'} · ${tab.targetLabel} · ${nextSession.cwd}\x1b[0m`);
+      if (updateRoute) {
+        navigateToTerminalTab(tab, nextSession, !terminalRouteInitialized && terminalRouteKey() === '');
+      }
       connectTransport(tab, nextSession, true);
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to connect terminal.';
@@ -659,6 +808,11 @@
     if (!closing) {
       return;
     }
+    const closingRouteKey = terminalRouteKey({
+      sessionId: closing.session?.id || '',
+      tabId: closing.session?.id ? '' : closing.id
+    });
+    const routeWasClosing = terminalRouteKey(terminalRouteFromLocation()) === closingRouteKey;
     const closingIndex = tabs.findIndex((tab) => tab.id === tabId);
     const wasActive = activeTabId === tabId;
     if (editingTabId === tabId) {
@@ -688,6 +842,8 @@
     if (wasActive) {
       await tick();
       await connectActiveTab();
+    } else if (routeWasClosing && activeTab) {
+      navigateToTerminalTab(activeTab, activeTab.session, true);
     }
   };
 
@@ -776,6 +932,7 @@
     window.addEventListener('online', recoverActiveTab);
     window.addEventListener('focus', recoverActiveTab);
     window.addEventListener('pageshow', recoverActiveTab);
+    window.addEventListener('popstate', handleTerminalPopState);
     document.addEventListener('visibilitychange', handleVisibilityChange);
   };
 
@@ -783,6 +940,7 @@
     destroyed = false;
     void Promise.all([initialiseTerminal(), loadAgents()]).then(async () => {
       loadTabs();
+      terminalRouteReady = true;
       await tick();
       await connectActiveTab();
     }).catch((err) => {
@@ -793,6 +951,8 @@
 
   onDestroy(() => {
     destroyed = true;
+    terminalRouteReady = false;
+    terminalRouteInitialized = false;
     if (typeof window !== 'undefined') {
       window.clearTimeout(resizeTimer);
       window.clearTimeout(socketFallbackTimer);
@@ -804,6 +964,7 @@
       window.removeEventListener('online', recoverActiveTab);
       window.removeEventListener('focus', recoverActiveTab);
       window.removeEventListener('pageshow', recoverActiveTab);
+      window.removeEventListener('popstate', handleTerminalPopState);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       disconnectTransport();
       persistTabs();
@@ -838,15 +999,15 @@
                 on:blur={commitRename}
               />
             {:else}
-              <button
-                type="button"
+              <a
+                href={terminalRouteForTab(tab)}
                 class="tab-select"
                 aria-current={tab.id === activeTabId ? 'page' : undefined}
                 title={tab.id === activeTabId ? 'Rename tab' : `Switch to ${tab.title || 'Terminal'}`}
-                on:click={() => void startRename(tab)}
+                on:click={(event) => handleTabClick(event, tab)}
               >
                 <span>{tab.title || 'Terminal'}</span>
-              </button>
+              </a>
             {/if}
             <button
               type="button"
@@ -1060,6 +1221,8 @@
   }
 
   .tab-select {
+    display: inline-flex;
+    align-items: center;
     min-height: 2.4rem;
     min-width: 4.5rem;
     max-width: 10.5rem;
@@ -1069,6 +1232,7 @@
     border: 0;
     background: transparent;
     text-align: left;
+    text-decoration: none;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1215,6 +1379,7 @@
   }
 
   button:focus-visible,
+  .tab-select:focus-visible,
   .target-picker:focus-visible,
   .tab-title-editor:focus-visible {
     position: relative;

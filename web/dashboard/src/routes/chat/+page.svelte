@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
+    chatMessageElementID,
+    chatMessageURL,
     fileToTaskAttachment,
     formatAttachmentSize,
     isImageAttachment,
@@ -216,6 +219,26 @@
     });
   };
 
+  const scrollToMessageHash = () => {
+    if (typeof window === 'undefined' || !window.location.hash.startsWith('#message-')) {
+      return false;
+    }
+    void tick().then(() => {
+      document.getElementById(window.location.hash.slice(1))?.scrollIntoView({
+        block: 'center'
+      });
+    });
+    return true;
+  };
+
+  const navigateMarkdownLink = (href: string) => {
+    if (href.startsWith('#')) {
+      window.location.hash = href;
+      return;
+    }
+    void goto(href, { keepFocus: true });
+  };
+
   const addMessage = (
     role: ChatRole,
     content: string,
@@ -276,8 +299,12 @@
     draft = inputEl?.value || readStoredChatDraft();
     persistChatDraft(draft);
     messageId = messages.length;
-    scrollMessages();
+    if (!scrollToMessageHash()) {
+      scrollMessages();
+    }
+    window.addEventListener('hashchange', scrollToMessageHash);
     focusInput();
+    return () => window.removeEventListener('hashchange', scrollToMessageHash);
   });
 
   const sendMessage = async (content = draft) => {
@@ -420,15 +447,19 @@
     <section class="messages" bind:this={messagesEl} aria-live="polite">
       {#each messages as message (message.id)}
         <article
+          id={chatMessageElementID(message.id)}
           class="message"
           class:user={message.role === 'user'}
           class:failed={message.delivery_status === 'failed'}
         >
           <div class="meta">
             <span>{message.role === 'user' ? 'You' : `homelabd - ${sourceLabel(message.source)}`}</span>
-            <time>{message.time}</time>
+            <span class="message-meta-actions">
+              <a href={chatMessageURL(message.id)} aria-label="Link to message">#</a>
+              <time>{message.time}</time>
+            </span>
           </div>
-          <Markdown content={message.content} />
+          <Markdown content={message.content} navigate={navigateMarkdownLink} />
           {#if message.attachments?.length}
             <div class="attachment-list message-attachments" aria-label="Message attachments">
               {#each message.attachments as attachment}
@@ -791,9 +822,27 @@
     font-size: 0.74rem;
   }
 
-  .meta span {
+  .message-meta-actions {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+  }
+
+  .meta > span:first-child {
     color: #243047;
     font-weight: 800;
+  }
+
+  .meta a {
+    color: #64748b;
+    font-weight: 900;
+    text-decoration: none;
+  }
+
+  .meta a:hover,
+  .meta a:focus-visible {
+    color: #1d4ed8;
+    text-decoration: underline;
   }
 
   .error {

@@ -10,6 +10,7 @@
 
   export let content = '';
   export let headingIds = false;
+  export let navigate: ((href: string) => void) | undefined = undefined;
 
   let root: HTMLDivElement | undefined;
   let mounted = false;
@@ -124,10 +125,42 @@
     queueMermaidRender();
   }
 
+  const handleMarkdownClick = (event: MouseEvent) => {
+    if (
+      !navigate ||
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const anchor = target.closest('a');
+    if (!(anchor instanceof HTMLAnchorElement) || !root?.contains(anchor)) {
+      return;
+    }
+    const href = anchor.getAttribute('href') || '';
+    if (!href || anchor.target || anchor.hasAttribute('download')) {
+      return;
+    }
+    if (!href.startsWith('/') && !href.startsWith('#')) {
+      return;
+    }
+    event.preventDefault();
+    navigate(href);
+  };
+
   onMount(() => {
     mounted = true;
     themeMode = currentThemeMode();
     const initialRenderRetry = window.setTimeout(() => queueMermaidRender(), 250);
+    root?.addEventListener('click', handleMarkdownClick);
     const observer = new MutationObserver(() => {
       const nextMode = currentThemeMode();
       if (nextMode !== themeMode) {
@@ -142,6 +175,7 @@
       mounted = false;
       renderVersion += 1;
       window.clearTimeout(initialRenderRetry);
+      root?.removeEventListener('click', handleMarkdownClick);
       observer.disconnect();
     };
   });

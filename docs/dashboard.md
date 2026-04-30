@@ -27,6 +27,18 @@ Use the shared responsive navbar on every dashboard page.
 - Show active page state with `aria-current="page"` and visible styling.
 - Show compact Tasks attention badges only when action is needed. Red counts failed, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
 
+## URL References
+
+Dashboard state that operators naturally share must have a URL and must use SvelteKit navigation, not full document reloads.
+
+- Task rows and chat-created task links use `/tasks?task=<task_id>` and open the selected task record. Chat task creation replies display the summarised task title as the link text.
+- Workflow rows use `/workflows?workflow=<workflow_id>` and open the selected workflow detail.
+- Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
+- Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.
+- Chat messages expose hash links such as `/chat#message-assistant-2`.
+
+Back and forward browser controls should restore the selected task, workflow, terminal tab, documentation page, or chat message anchor without losing local dashboard state.
+
 ## Documentation Library
 
 The `/docs` page imports every Markdown file under `./docs` into the dashboard. It shows a searchable, grouped document catalogue, selected document content, heading anchors, an on-page table of contents, and previous/next document links. Keep document titles specific and include the terms operators and LLM agents are likely to search for.
@@ -228,7 +240,7 @@ The browser renders each session with xterm.js, streams terminal output over `GE
 
 Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colours, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
 
-The Terminal page has persistent tabs. Use the `+` button beside the session target picker to add a shell, click an inactive tab once to switch to it, click the active tab name to rename it, and close a tab to delete its backend session. Reloading the dashboard, navigating away, or locking a phone detaches the browser transport only; it keeps local tab metadata and reattaches to the stored session ids. A transient network or API failure while reattaching keeps the stored session id and retries; only a `404` from `/terminal/sessions/{id}` means the stored backend session is gone and a replacement may be created. The session target picker chooses the target for the next new tab: `homelabd local` opens a PTY on the control plane, while online remote agents appear when their heartbeat metadata includes `terminal_base_url`.
+The Terminal page has persistent, URL-addressable tabs. Use the `+` button beside the session target picker to add a shell, click an inactive tab once to switch to it, click the active tab name to rename it, and close a tab to delete its backend session. Reloading the dashboard, navigating away, using browser back/forward, or locking a phone detaches the browser transport only; it keeps local tab metadata and reattaches to the stored session ids. A transient network or API failure while reattaching keeps the stored session id and retries; only a `404` from `/terminal/sessions/{id}` means the stored backend session is gone and a replacement may be created. The session target picker chooses the target for the next new tab: `homelabd local` opens a PTY on the control plane, while online remote agents appear when their heartbeat metadata includes `terminal_base_url`.
 
 This is an operator shell. Run it only where the homelabd HTTP API is already trusted, because anyone who can reach the endpoint can execute commands as the homelabd process user.
 

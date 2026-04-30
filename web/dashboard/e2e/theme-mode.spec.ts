@@ -359,7 +359,7 @@ const themePages: ThemePage[] = [
     path: '/terminal',
     surfaces: ['.terminal-header', '.target-picker'],
     async ready(page) {
-      await expect(page.getByRole('button', { name: 'Terminal 1', exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Terminal 1', exact: true })).toBeVisible();
       await expect(page.locator('.xterm')).toBeVisible();
       await expect(page.getByText('Connected')).toBeVisible();
     }
@@ -590,7 +590,7 @@ test('terminal tab emphasis stays clear in light and dark themes', async ({ page
   await mockDashboardApis(page);
   await initLightTheme(page);
   await page.goto('/terminal');
-  await expect(page.getByRole('button', { name: 'Terminal 1', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Terminal 1', exact: true })).toBeVisible();
   await expect(page.locator('.xterm')).toBeVisible();
   await expect(page.getByText('Connected')).toBeVisible();
   await page.getByRole('button', { name: 'Add terminal tab' }).click();

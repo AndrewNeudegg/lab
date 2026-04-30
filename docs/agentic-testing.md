@@ -10,7 +10,7 @@ On NixOS, `repo.root` and `repo.workspace_root` must be writable runtime paths, 
 
 Remote tasks run on the selected `homelab-agent` in the selected advertised workdir. The control plane records the result, but it does not create a local worktree, compare remote `HEAD`, or merge remote changes.
 
-Browser UAT starts from the task worktree, not from the supervised dashboard. The default Playwright config derives a stable per-worktree port, starts Vite on `127.0.0.1`, refuses to reuse an existing server on that port, and runs with one worker for reproducibility.
+Browser UAT starts from the task worktree, not from the supervised dashboard. The default Playwright config derives a stable per-worktree port, starts Vite on `127.0.0.1`, refuses to reuse an existing server on that port, allows up to 120 seconds for first-route SSR warm-up, gives each test up to 120 seconds, gives expectations up to 20 seconds, and runs with one worker for reproducibility. Set `PLAYWRIGHT_WEB_SERVER_TIMEOUT`, `PLAYWRIGHT_TEST_TIMEOUT`, or `PLAYWRIGHT_EXPECT_TIMEOUT` when debugging unusually slow worker hardware.
 
 ## Standard Commands
 

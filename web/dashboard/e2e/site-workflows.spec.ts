@@ -162,7 +162,7 @@ const mockDashboardApis = async (page: Page) => {
   await page.route(/\/api\/message$/, async (route) => {
     await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
   });
-  await page.route(/\/api\/tasks$/, async (route) => {
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
   await page.route('**/api/settings', async (route) => {

@@ -2523,12 +2523,18 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDelegate)
+		})
+	}
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
 	})
 	defer func() {
-		close(releaseDelegate)
+		release()
 		waitForTaskInactive(t, orch, "task_20260428_200514_0d62653b")
 	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
@@ -2581,17 +2587,25 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
+	release()
+	waitForDelegationReviewEvent(t, orch, task.ID)
 }
 
 func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDelegate)
+		})
+	}
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
 	})
 	defer func() {
-		close(releaseDelegate)
+		release()
 		waitForTaskInactive(t, orch, "task_20260429_065348_8f7391fb")
 	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
@@ -2633,6 +2647,8 @@ func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
+	release()
+	waitForDelegationReviewEvent(t, orch, task.ID)
 }
 
 func TestAutomaticRecoveryFailureRemainsRetryableAfterCooldown(t *testing.T) {
@@ -3444,7 +3460,7 @@ func TestOpenEndedChatIncludesDurableMemory(t *testing.T) {
 	if !strings.Contains(system, "Prefer distilled lessons over language mimicry.") {
 		t.Fatalf("system prompt missing durable memory: %s", system)
 	}
-	if !strings.Contains(system, "Mermaid fenced diagram") || !strings.Contains(system, "brand colour scheme") {
+	if !strings.Contains(system, "Mermaid fenced diagrams") || !strings.Contains(system, "brand diagram palette") {
 		t.Fatalf("system prompt missing diagram guidance: %s", system)
 	}
 }
@@ -3515,7 +3531,7 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
 	}
 	system := provider.requests[0].Messages[0].Content
-	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production", "Mermaid fenced diagram", "brand colour scheme"} {
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("UX prompt missing %q:\n%s", want, system)
 		}
@@ -3540,6 +3556,7 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 		"do not stop or restart production",
 		"For remote tasks",
 		"Mermaid fenced diagrams",
+		"docs/diagramming-and-brand-colours.md",
 		"#2563eb",
 		"#60a5fa",
 	} {
@@ -4435,7 +4452,7 @@ func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
 		ID:        "task_123",
 		Workspace: "/tmp/workspaces/task_123",
 	})
-	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "#2563eb", "#60a5fa"} {
+	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md", "#2563eb", "#60a5fa"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
 		}
@@ -4703,6 +4720,27 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func waitForDelegationReviewEvent(t *testing.T, orch *Orchestrator, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := orch.events.ReadDay(time.Now().UTC())
+		if err == nil {
+			for _, event := range events {
+				if event.TaskID != taskID {
+					continue
+				}
+				switch event.Type {
+				case "task.review.completed", "task.review.failed":
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("delegation review event was not written")
 }
 
 type restartGateCalls struct {

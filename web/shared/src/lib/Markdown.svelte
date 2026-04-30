@@ -4,8 +4,9 @@
 
 <script lang="ts">
   import { afterUpdate, onMount, tick } from 'svelte';
-  import { mermaidBrandThemeVariables, type BrandDiagramMode } from './brand';
+  import type { BrandDiagramMode } from './brand';
   import { renderMarkdown } from './markdown';
+  import { mermaidConfigForTheme } from './mermaid';
 
   export let content = '';
   export let headingIds = false;
@@ -60,16 +61,7 @@
       themeMode = mode;
     }
     const { default: mermaid } = await import('mermaid');
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      secure: ['securityLevel', 'theme', 'themeVariables', 'themeCSS', 'darkMode', 'fontFamily'],
-      theme: 'base',
-      darkMode: mode === 'dark',
-      fontFamily:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      themeVariables: mermaidBrandThemeVariables(mode)
-    });
+    mermaid.initialize(mermaidConfigForTheme(mode));
 
     await Promise.all(
       diagrams.map(async (diagram, index) => {
@@ -325,7 +317,7 @@
 
   .markdown :global(.mermaid-diagram[data-mermaid-status='error']) {
     border-color: #d97706;
-    background: #fffbeb;
+    background: #f8fafc;
   }
 
   .markdown :global(a) {
@@ -372,6 +364,6 @@
 
   :global(html[data-theme='dark'] .markdown .mermaid-diagram[data-mermaid-status='error']) {
     border-color: #fbbf24;
-    background: #422006;
+    background: #0f172a;
   }
 </style>

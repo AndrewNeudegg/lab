@@ -233,8 +233,10 @@ test('terminal mobile accepts direct typing and control keys without horizontal 
   await page.goto('/terminal');
   await expect(page.getByText('Operator PTY')).toHaveCount(0);
   await expect(page.getByText('Click in the terminal and type normally')).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Terminal 1', exact: true })).toBeVisible();
-  await expect(page.locator('.xterm')).toBeVisible();
+  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('link', { name: 'Terminal 1', exact: true })).toBeVisible({
+    timeout: 15_000
+  });
 
   await page.locator('.xterm').click();
   await expect(page.getByLabel('Session target')).toContainText('homelabd local');
@@ -247,6 +249,8 @@ test('terminal mobile accepts direct typing and control keys without horizontal 
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowDown');
   await expect.poll(() => state.sent.join('')).toContain('\u001b[D');
+  await expect.poll(() => state.sent.join('')).toContain('\u001b[C');
+  await expect.poll(() => state.sent.join('')).toContain('\u001b[A');
   await expect.poll(() => state.sent.join('')).toContain('\u001b[B');
   const physicalSent = state.sent;
   expect(physicalSent).toContain('\u001b[D');

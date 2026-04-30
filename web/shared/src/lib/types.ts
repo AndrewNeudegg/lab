@@ -25,9 +25,18 @@ export interface ChatTranscriptMessage {
   time: string;
   source?: string;
   actions?: string[];
+  stats?: ChatInteractionStats;
   attachments?: HomelabdTaskAttachment[];
   delivery_status?: ChatDeliveryStatus;
   delivery_error?: string;
+}
+
+export interface ChatInteractionStats {
+  model_turns?: number;
+  tool_calls?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
 }
 
 export type QuickAction = 'help' | 'status' | 'tasks' | 'agents' | 'approvals';
@@ -39,8 +48,10 @@ export interface HomelabdMessageRequest {
 }
 
 export interface HomelabdMessageResponse {
+  id?: string;
   reply: string;
   source?: string;
+  stats?: ChatInteractionStats;
 }
 
 export type TaskStatus =

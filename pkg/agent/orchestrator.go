@@ -85,9 +85,59 @@ type toolExecution struct {
 	Reason        string          `json:"reason,omitempty"`
 }
 
+type InteractionStats struct {
+	ModelTurns   int `json:"model_turns,omitempty"`
+	ToolCalls    int `json:"tool_calls,omitempty"`
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
+	TotalTokens  int `json:"total_tokens,omitempty"`
+}
+
+func (s InteractionStats) HasValues() bool {
+	return s.ModelTurns > 0 || s.ToolCalls > 0 || s.InputTokens > 0 || s.OutputTokens > 0 || s.TotalTokens > 0
+}
+
 type HandleResult struct {
 	Reply  string
 	Source string
+	Stats  InteractionStats
+}
+
+type interactionStatsContextKey struct{}
+
+func withInteractionStats(ctx context.Context, stats *InteractionStats) context.Context {
+	if stats == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, interactionStatsContextKey{}, stats)
+}
+
+func interactionStatsFromContext(ctx context.Context) *InteractionStats {
+	stats, _ := ctx.Value(interactionStatsContextKey{}).(*InteractionStats)
+	return stats
+}
+
+func recordInteractionModelTurn(ctx context.Context, usage llm.Usage) {
+	stats := interactionStatsFromContext(ctx)
+	if stats == nil {
+		return
+	}
+	stats.ModelTurns++
+	stats.InputTokens += usage.InputTokens
+	stats.OutputTokens += usage.OutputTokens
+	if usage.TotalTokens > 0 {
+		stats.TotalTokens += usage.TotalTokens
+		return
+	}
+	stats.TotalTokens += usage.InputTokens + usage.OutputTokens
+}
+
+func recordInteractionToolCall(ctx context.Context) {
+	stats := interactionStatsFromContext(ctx)
+	if stats == nil {
+		return
+	}
+	stats.ToolCalls++
 }
 
 type RuntimeSettings struct {
@@ -250,6 +300,8 @@ func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, 
 	if message == "" {
 		return HandleResult{Reply: "empty message", Source: "program"}, nil
 	}
+	stats := &InteractionStats{}
+	ctx = withInteractionStats(ctx, stats)
 	payload := map[string]any{"message": message}
 	if len(attachments) > 0 {
 		payload["attachments"] = attachments
@@ -269,7 +321,7 @@ func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, 
 	if err == nil {
 		o.appendChatReply(ctx, from, reply)
 	}
-	return HandleResult{Reply: reply, Source: normalizeSource(source)}, err
+	return HandleResult{Reply: reply, Source: normalizeSource(source), Stats: *stats}, err
 }
 
 func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, string, error) {
@@ -2477,6 +2529,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "error": err.Error()})})
 			return programResult("I couldn't reach the configured LLM provider. I did not create a task. Use `status` for active work, or describe development work to start a task.", nil)
 		}
+		recordInteractionModelTurn(ctx, resp.Usage)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": source, "model": resp.Model, "message": resp.Message.Content, "usage": resp.Usage})})
 		parsed, err := parseAgentResponse(resp.Message.Content)
 		if err != nil {
@@ -2550,6 +2603,7 @@ func (o *Orchestrator) reflectOnInteraction(ctx context.Context, message string)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": o.provider.Name(), "error": err.Error()})})
 		return programResult("I couldn't reach the configured LLM provider. I did not create a task. Use `new <goal>` to create one directly.", nil)
 	}
+	recordInteractionModelTurn(ctx, resp.Usage)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": source, "model": resp.Model, "message": resp.Message.Content, "usage": resp.Usage})})
 
 	var result reflectionResult
@@ -7334,6 +7388,7 @@ func (o *Orchestrator) executeProposedTool(ctx context.Context, actor string, ca
 	if name == "" {
 		return toolExecution{Allowed: false, Error: "tool name is required"}
 	}
+	recordInteractionToolCall(ctx)
 	raw := call.Args
 	if len(raw) == 0 {
 		raw = json.RawMessage(`{}`)
@@ -7467,6 +7522,7 @@ func (o *Orchestrator) runTool(ctx context.Context, actor, name string, args any
 	if !ok {
 		return nil, fmt.Errorf("tool %s not registered", name)
 	}
+	recordInteractionToolCall(ctx)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.requested", Actor: actor, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"tool": name, "args": args})})
 	decision := o.policy.Decide(actor, t, raw)
 	if !decision.Allowed {

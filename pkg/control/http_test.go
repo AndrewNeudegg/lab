@@ -16,6 +16,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/healthd"
+	"github.com/andrewneudegg/lab/pkg/llm"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	"github.com/andrewneudegg/lab/pkg/tool"
@@ -50,6 +51,43 @@ func TestHealthzIsLightweight(t *testing.T) {
 	}
 	if rw.Body.String() != "{\"ok\":true}\n" {
 		t.Fatalf("healthz body = %q", rw.Body.String())
+	}
+}
+
+func TestMessageEndpointReturnsInteractionStats(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = filepath.Join(dir, "data")
+	cfg.Repo.Root = dir
+	cfg.Repo.WorkspaceRoot = filepath.Join(dir, "workspaces")
+	orch := agent.NewOrchestrator(
+		cfg,
+		eventlog.NewStore(filepath.Join(cfg.DataDir, "events")),
+		taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks")),
+		approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals")),
+		tool.NewRegistry(),
+		tool.NewPolicy(nil),
+		messageStatsProvider{},
+		"test-model",
+	)
+	server := Server{Orchestrator: orch}
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	response := requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"what did that take?"}`, "", http.StatusOK)
+	var got struct {
+		Reply  string                 `json:"reply"`
+		Source string                 `json:"source"`
+		Stats  agent.InteractionStats `json:"stats"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Reply != "Measured reply." || got.Source != "test-provider" {
+		t.Fatalf("response = %#v, want measured provider reply", got)
+	}
+	if got.Stats.ModelTurns != 1 || got.Stats.ToolCalls != 0 || got.Stats.TotalTokens != 17 {
+		t.Fatalf("stats = %#v, want one model turn, zero tool calls, and token usage", got.Stats)
 	}
 }
 
@@ -605,6 +643,26 @@ func requestJSON(t *testing.T, mux *http.ServeMux, method, path, body, token str
 		t.Fatalf("%s %s status = %d, want %d: %s", method, path, rw.Code, wantStatus, rw.Body.String())
 	}
 	return rw
+}
+
+type messageStatsProvider struct{}
+
+func (messageStatsProvider) Name() string { return "test-provider" }
+
+func (messageStatsProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	return llm.CompletionResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: `{"message":"Measured reply.","done":true,"tool_calls":[]}`,
+		},
+		Usage: llm.Usage{
+			InputTokens:  11,
+			OutputTokens: 6,
+			TotalTokens:  17,
+		},
+		Provider: messageStatsProvider{}.Name(),
+		Model:    req.Model,
+	}, nil
 }
 
 func writeJSONFile(t *testing.T, path string, value any) {

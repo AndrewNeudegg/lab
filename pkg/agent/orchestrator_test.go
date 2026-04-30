@@ -2523,12 +2523,7 @@ func TestApprovalAutoRebaseConflictMovesToConflictResolution(t *testing.T) {
 func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() {
-		releaseOnce.Do(func() {
-			close(releaseDelegate)
-		})
-	}
+	release := closeOnce(releaseDelegate)
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
@@ -2594,12 +2589,7 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() {
-		releaseOnce.Do(func() {
-			close(releaseDelegate)
-		})
-	}
+	release := closeOnce(releaseDelegate)
 	orch := newTestOrchestrator(t, &delegateStub{
 		started: delegateStarted,
 		release: releaseDelegate,
@@ -3381,6 +3371,40 @@ func TestOpenEndedChatReportsProviderSource(t *testing.T) {
 	}
 	if result.Source != "recording" {
 		t.Fatalf("source = %q, want recording", result.Source)
+	}
+}
+
+func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
+	search := &repoSearchStub{}
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"Searching","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"orchestrator"}}]}`,
+		`{"message":"Found it.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+	if err := orch.registry.Register(search); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := orch.HandleDetailed(context.Background(), "test", "where is orchestrator search handled?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reply != "Found it." {
+		t.Fatalf("reply = %q, want final scripted response", result.Reply)
+	}
+	if result.Stats.ModelTurns != 2 {
+		t.Fatalf("model turns = %d, want 2", result.Stats.ModelTurns)
+	}
+	if result.Stats.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d, want 1", result.Stats.ToolCalls)
+	}
+	if result.Stats.InputTokens != 30 || result.Stats.OutputTokens != 12 || result.Stats.TotalTokens != 42 {
+		t.Fatalf("usage stats = %#v, want aggregated token usage", result.Stats)
+	}
+	if search.query != "orchestrator" {
+		t.Fatalf("repo search query = %q, want orchestrator", search.query)
 	}
 }
 
@@ -4548,6 +4572,34 @@ func (p *staticProvider) Complete(_ context.Context, req llm.CompletionRequest) 
 	}, nil
 }
 
+type scriptedProvider struct {
+	contents []string
+	requests []llm.CompletionRequest
+}
+
+func (p *scriptedProvider) Name() string { return "scripted" }
+
+func (p *scriptedProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.requests = append(p.requests, req)
+	index := len(p.requests) - 1
+	content := `{"message":"done","done":true,"tool_calls":[]}`
+	if index >= 0 && index < len(p.contents) {
+		content = p.contents[index]
+	}
+	return llm.CompletionResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: content,
+		},
+		Usage: llm.Usage{
+			InputTokens:  10 + index*10,
+			OutputTokens: 4 + index*4,
+			TotalTokens:  14 + index*14,
+		},
+		Provider: p.Name(),
+	}, nil
+}
+
 type workflowTextCorrectStub struct{}
 
 func (workflowTextCorrectStub) Name() string        { return "text.correct" }
@@ -4588,6 +4640,28 @@ func waitForTaskStatus(t *testing.T, orch *Orchestrator, taskID, status string) 
 		t.Fatal(err)
 	}
 	t.Fatalf("task status = %q, want %q", updated.Status, status)
+}
+
+func waitForTaskEvent(t *testing.T, orch *Orchestrator, taskID string, eventTypes ...string) {
+	t.Helper()
+	wanted := make(map[string]bool, len(eventTypes))
+	for _, eventType := range eventTypes {
+		wanted[eventType] = true
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := orch.events.ReadDay(time.Now().UTC())
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.TaskID == taskID && wanted[event.Type] {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task %s event %s", taskID, strings.Join(eventTypes, " or "))
 }
 
 func taskByPhase(tasks []taskstore.Task, phase string) taskstore.Task {
@@ -4654,9 +4728,18 @@ func seedTaskGraph(t *testing.T, orch *Orchestrator, goal string) (taskstore.Tas
 }
 
 type delegateStub struct {
-	started chan struct{}
-	release chan struct{}
+	started  chan struct{}
+	release  chan struct{}
 	finished chan struct{}
+}
+
+func closeOnce(ch chan struct{}) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(ch)
+		})
+	}
 }
 
 func newTestOrchestrator(t *testing.T, delegate *delegateStub) *Orchestrator {

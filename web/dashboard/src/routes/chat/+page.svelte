@@ -13,10 +13,12 @@
     Navbar,
     persistChatDraft,
     readStoredChatDraft,
+    type ChatInteractionStats,
     type ChatRole,
     type ChatTranscriptMessage,
     type HomelabdTaskAttachment
   } from '@homelab/shared';
+  import { formatInteractionStats, messageExchangeNumber } from './interaction-stats';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
@@ -98,6 +100,14 @@
       candidate.actions === undefined ||
       (Array.isArray(candidate.actions) &&
         candidate.actions.every((action) => typeof action === 'string'));
+    const validStats =
+      candidate.stats === undefined ||
+      (candidate.stats !== null &&
+        typeof candidate.stats === 'object' &&
+        ['model_turns', 'tool_calls', 'input_tokens', 'output_tokens', 'total_tokens'].every((key) => {
+          const stat = (candidate.stats as Record<string, unknown>)[key];
+          return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
+        }));
     const validAttachments =
       candidate.attachments === undefined ||
       (Array.isArray(candidate.attachments) &&
@@ -119,6 +129,7 @@
       typeof candidate.content === 'string' &&
       typeof candidate.time === 'string' &&
       validActions &&
+      validStats &&
       validAttachments &&
       validDeliveryStatus &&
       validDeliveryError
@@ -243,7 +254,8 @@
     role: ChatRole,
     content: string,
     source?: string,
-    attachments: HomelabdTaskAttachment[] = []
+    attachments: HomelabdTaskAttachment[] = [],
+    stats?: ChatInteractionStats
   ) => {
     messageId += 1;
     const message: ChatTranscriptMessage = {
@@ -253,6 +265,7 @@
       source,
       attachments: attachments.length ? attachments : undefined,
       actions: role === 'assistant' ? extractCommands(content) : undefined,
+      stats,
       time: timeLabel()
     };
     messages = [...messages, message];
@@ -282,7 +295,13 @@
         attachments: message.attachments || []
       });
       updateMessage(message.id, { delivery_status: undefined, delivery_error: undefined });
-      addMessage('assistant', response.reply || 'No reply returned.', response.source || 'program');
+      addMessage(
+        'assistant',
+        response.reply || 'No reply returned.',
+        response.source || 'program',
+        [],
+        response.stats
+      );
     } catch (err) {
       updateMessage(message.id, {
         delivery_status: 'failed',
@@ -351,6 +370,9 @@
     selectedFiles = undefined;
     void addFiles(files);
   }
+
+  const messageFooter = (message: ChatTranscriptMessage, index: number) =>
+    formatInteractionStats(message, messageExchangeNumber(messages, index));
 
   async function addFiles(files: FileList | File[]) {
     const selected = Array.from(files);
@@ -445,7 +467,7 @@
 
   <main class="chat-card">
     <section class="messages" bind:this={messagesEl} aria-live="polite">
-      {#each messages as message (message.id)}
+      {#each messages as message, index (message.id)}
         <article
           id={chatMessageElementID(message.id)}
           class="message"
@@ -507,6 +529,9 @@
                 </svg>
               </button>
             </div>
+          {/if}
+          {#if messageFooter(message, index)}
+            <div class="message-footer">{messageFooter(message, index)}</div>
           {/if}
         </article>
       {/each}
@@ -831,6 +856,14 @@
   .meta > span:first-child {
     color: #243047;
     font-weight: 800;
+  }
+
+  .message-footer {
+    color: #64748b;
+    font-size: 0.68rem;
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .meta a {

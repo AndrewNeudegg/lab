@@ -173,7 +173,8 @@ const mockDashboardApis = async (page: Page) => {
           '  Tasks --> Review[Review]',
           '```'
         ].join('\n'),
-        source: 'program'
+        source: 'program',
+        stats: { model_turns: 1, tool_calls: 2, total_tokens: 128 }
       }
     });
   });
@@ -341,6 +342,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Status:')).toBeVisible();
+    await expect(page.getByText('1 model turn · 2 tool calls')).toBeVisible();
     await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
   } else if (route === '/tasks') {
     await page.waitForLoadState('networkidle');

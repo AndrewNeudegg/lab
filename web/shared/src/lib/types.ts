@@ -375,6 +375,102 @@ export interface AssistantCatalogueOptions {
   area?: string;
 }
 
+export interface HomelabdKnowledgeSpace {
+  id: string;
+  title: string;
+  description?: string;
+  objective?: string;
+  sources?: HomelabdKnowledgeSource[];
+  reports?: HomelabdKnowledgeReport[];
+  insight: HomelabdKnowledgeInsight;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HomelabdKnowledgeInsight {
+  source_count: number;
+  word_count: number;
+  key_terms?: string[];
+  suggested_questions?: string[];
+  updated_at?: string;
+}
+
+export interface HomelabdKnowledgeSource {
+  id: string;
+  title: string;
+  kind: 'text' | 'url' | 'file' | 'note' | string;
+  uri?: string;
+  content: string;
+  summary: string;
+  key_terms?: string[];
+  questions?: string[];
+  word_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HomelabdKnowledgeReport {
+  id: string;
+  question: string;
+  mode: 'research' | 'brief' | 'study' | string;
+  answer: string;
+  key_findings?: string[];
+  evidence?: HomelabdKnowledgeEvidence[];
+  gaps?: string[];
+  created_at: string;
+}
+
+export interface HomelabdKnowledgeEvidence {
+  id: string;
+  source_id: string;
+  source_title: string;
+  citation_label: string;
+  excerpt: string;
+  terms?: string[];
+  score: number;
+}
+
+export interface HomelabdKnowledgeSpacesResponse {
+  spaces: HomelabdKnowledgeSpace[];
+}
+
+export interface HomelabdCreateKnowledgeSpaceRequest {
+  title: string;
+  description?: string;
+  objective?: string;
+}
+
+export interface HomelabdCreateKnowledgeSpaceResponse {
+  space: HomelabdKnowledgeSpace;
+  reply: string;
+}
+
+export interface HomelabdAddKnowledgeSourceRequest {
+  title: string;
+  kind?: string;
+  uri?: string;
+  content: string;
+}
+
+export interface HomelabdAddKnowledgeSourceResponse {
+  space: HomelabdKnowledgeSpace;
+  source: HomelabdKnowledgeSource;
+  reply: string;
+}
+
+export interface HomelabdResearchKnowledgeSpaceRequest {
+  question: string;
+  mode?: 'research' | 'brief' | 'study' | string;
+  source_ids?: string[];
+}
+
+export interface HomelabdResearchKnowledgeSpaceResponse {
+  space: HomelabdKnowledgeSpace;
+  report: HomelabdKnowledgeReport;
+  reply: string;
+}
+
 export interface HomelabdTaskRetryRequest {
   backend?: string;
   instruction?: string;
@@ -588,6 +684,19 @@ export interface HomelabdClient {
   listTasks(): Promise<HomelabdTasksResponse>;
   getSettings(): Promise<HomelabdSettingsResponse>;
   updateSettings(request: HomelabdUpdateSettingsRequest): Promise<HomelabdSettingsResponse>;
+  createKnowledgeSpace(
+    request: HomelabdCreateKnowledgeSpaceRequest
+  ): Promise<HomelabdCreateKnowledgeSpaceResponse>;
+  listKnowledgeSpaces(): Promise<HomelabdKnowledgeSpacesResponse>;
+  getKnowledgeSpace(spaceId: string): Promise<HomelabdKnowledgeSpace>;
+  addKnowledgeSource(
+    spaceId: string,
+    request: HomelabdAddKnowledgeSourceRequest
+  ): Promise<HomelabdAddKnowledgeSourceResponse>;
+  researchKnowledgeSpace(
+    spaceId: string,
+    request: HomelabdResearchKnowledgeSpaceRequest
+  ): Promise<HomelabdResearchKnowledgeSpaceResponse>;
   createWorkflow(request: HomelabdCreateWorkflowRequest): Promise<HomelabdWorkflowActionResponse>;
   listWorkflows(): Promise<HomelabdWorkflowsResponse>;
   getWorkflow(workflowId: string): Promise<HomelabdWorkflow>;

@@ -5,6 +5,7 @@ The dashboard has these primary operator surfaces:
 - `/assistant`: Assistant capability catalogue, life-improving activities, API-owned workflow templates, and agentic UX patterns.
 - `/chat`: global conversation, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
+- `/knowledge`: Knowledge Space source collections, source processing, and source-grounded reports.
 - `/workflows`: durable LLM/tool workflow creation, cost estimates, run status, and latest outputs.
 - `/docs`: searchable documentation library generated from Markdown files in `./docs`.
 - `/terminal`: browser terminal backed by a homelabd shell session for direct operator commands.
@@ -34,7 +35,7 @@ Use the shared responsive navbar on every dashboard page.
 - Constrained widths: collapse destinations behind a labelled `Menu` hamburger button to preserve content width. When the compact menu is open, dim the page with a scrim and close the menu when the operator taps outside the menu or selects a destination.
 - Keep the `Help` button visible on desktop, tablet, and mobile. It captures browser context, asks for screen-capture permission only when the browser and page security context support it, prompts for a short bug note, and creates a task with the captured attachments. If inline navigation would crowd the bar, collapse destinations behind `Menu` before hiding `Help`.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
-- Keep top-level destinations flat: `Assistant`, `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
+- Keep top-level destinations flat: `Assistant`, `Chat`, `Tasks`, `Knowledge`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 - Show compact Tasks attention badges only when action is needed. Red counts failed, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
 - Keep the navbar pinned to the viewport top on pages with internal scroll regions, including `/chat`, so mobile and desktop operators can reach navigation without first scrolling the conversation.
@@ -46,6 +47,7 @@ Dashboard state that operators naturally share must have a URL and must use Svel
 - Task rows and chat-created task links use `/tasks?task=<task_id>` and open the selected task record. Chat task creation replies display the summarised task title as the link text.
 - Plain `/tasks` is the task queue overview and does not auto-select the first task. From the overview, selecting a task pushes `/tasks?task=<task_id>`, so browser Back returns to the overview instead of another task detail.
 - Returning from a task record preserves the active task triage and execution-queue filters. Direct task links fall back to `All` only when the task is hidden by the current queue context.
+- Knowledge Space rows use `/knowledge?space=<space_id>` and open the selected source collection.
 - Workflow rows use `/workflows?workflow=<workflow_id>` and open the selected workflow detail.
 - Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
 - Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.

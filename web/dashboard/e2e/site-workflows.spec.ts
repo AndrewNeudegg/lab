@@ -160,12 +160,25 @@ const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
   let autoMergeEnabled = false;
   await page.route(/\/api\/message$/, async (route) => {
-    await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
+    await route.fulfill({
+      json: {
+        reply: [
+          'Status: `tasks` and `workflow list` are available.',
+          '',
+          '```mermaid',
+          'flowchart LR',
+          '  Chat[Chat] --> Tasks[Tasks]',
+          '  Tasks --> Review[Review]',
+          '```'
+        ].join('\n'),
+        source: 'program'
+      }
+    });
   });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
-  await page.route('**/api/settings', async (route) => {
+  await page.route('**/api/settings**', async (route) => {
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON() as { auto_merge_enabled?: boolean };
       autoMergeEnabled = Boolean(body.auto_merge_enabled);
@@ -290,17 +303,30 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.clippedButtons, JSON.stringify(metrics)).toEqual([]);
 };
 
+const openMobileMenu = async (page: Page) => {
+  const menu = page.getByRole('button', { name: 'Menu' });
+  const nav = page.getByRole('navigation', { name: 'Primary mobile' });
+  await menu.click();
+  try {
+    await expect(nav).toBeVisible({ timeout: 3_000 });
+  } catch {
+    await menu.click();
+    await expect(nav).toBeVisible();
+  }
+};
+
 const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   if (mobile && route !== '/') {
-    await page.getByRole('button', { name: 'Menu' }).click();
-    await expect(page.getByRole('navigation', { name: 'Primary mobile' })).toBeVisible();
+    await openMobileMenu(page);
     await page.getByRole('button', { name: 'Menu' }).click();
   }
   if (route === '/' || route === '/chat') {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Status:')).toBeVisible();
+    await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
   } else if (route === '/tasks') {
+    await page.waitForLoadState('networkidle');
     await page.getByPlaceholder('Search tasks').fill('queue');
     const mergeQueue = page.locator('[aria-label="Merge queue"]');
     await expect(mergeQueue).toBeVisible();

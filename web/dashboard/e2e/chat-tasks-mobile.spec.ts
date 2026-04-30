@@ -913,6 +913,46 @@ test('chat marks failed sends inline and retries the original message', async ({
   expect(sentBodies.map((body) => body.content)).toEqual([text, text]);
 });
 
+test('chat times out stalled sends and re-enables composer actions', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as Window & { __homelabdChatSendTimeoutMs?: number }).__homelabdChatSendTimeoutMs = 80;
+  });
+
+  let attempts = 0;
+  await page.route('**/api/message', async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await sleep(250);
+      await route.abort('timedout').catch(() => undefined);
+      return;
+    }
+    await route.fulfill({ json: { reply: 'retry after timeout received', source: 'program' } });
+  });
+
+  await page.goto('/chat');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+  const text = 'send should recover after a stalled request';
+  await page.getByRole('textbox', { name: 'Message' }).fill(text);
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.locator('.message.pending')).toBeVisible();
+
+  const failedMessage = page.locator('.message.user').filter({ hasText: text });
+  await expect(failedMessage).toContainText('Message failed to send');
+  await expect(failedMessage.getByRole('button', { name: 'Resend failed message' })).toHaveAttribute(
+    'title',
+    /Message send timed out after 1s/
+  );
+  await expect(page.locator('.message.pending')).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Attach' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Brief me' })).toBeEnabled();
+
+  await failedMessage.getByRole('button', { name: 'Resend failed message' }).click();
+  await expect(page.getByText('retry after timeout received')).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
 test('chat renders Mermaid diagrams with the brand palette in light and dark modes', async ({
   page
 }) => {

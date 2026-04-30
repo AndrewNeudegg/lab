@@ -95,6 +95,16 @@ create a task to fix running task recovery after homelabd restarts
 
 `homelabd` treats `new`, `task:`, `create a task to ...`, and similar creation phrases as task creation even when the goal text mentions words like `running`, `active tasks`, or `in progress`.
 
+Large homelabd feature requests, such as a new mode or product surface like Knowledge Space or Assistant, pause before implementation. OrchestratorAgent creates a concise design brief with objectives, scope, UX direction, API changes, and test strategy, then stores it as a pending `task.create` approval. No task or worktree exists until you confirm it:
+
+```text
+approve <approval_id>
+refine <approval_id> start read-only and keep the first slice dashboard-only
+deny <approval_id>
+```
+
+Approving the planning brief creates the implementation task and starts the worker. Refining the approval updates the brief while preserving the original request and still leaves implementation unqueued.
+
 Open-ended chat also converts assistant commitments to implementation work into a task in the same turn. If OrchestratorAgent says it will fix, tighten, update, or improve homelabd behaviour, the reply includes the normal `/tasks?task=<task_id>` task link instead of leaving the commitment as prose.
 
 Open-ended chat also filters LLM candidate replies that describe the agent's future process instead of answering directly. Meta sentences such as "I'll check that", "First, I'll inspect", or "I need to inspect" are removed when a concrete answer remains; meta-only replies are rejected and regenerated. If the candidate is an implementation commitment, including "I'm going to fix ...", OrchestratorAgent creates the task and returns the task link instead of the promise.

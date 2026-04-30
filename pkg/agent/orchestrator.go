@@ -416,7 +416,7 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 		}
 	}
 	if goal, ok := taskCreationGoal(message); ok {
-		return programResult(o.createTaskWithAttachments(ctx, goal, attachments))
+		return programResult(o.createTaskOrPlanningBriefWithAttachments(ctx, goal, attachments, true))
 	}
 	if isToolIntrospectionRequest(message) {
 		return programResult(o.formatAvailableTools(), nil)
@@ -456,7 +456,7 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 	case "forget", "unlearn":
 		return programResult(o.unlearnInteractionLesson(strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
 	case "new", "task":
-		return programResult(o.createTaskWithAttachments(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])), attachments))
+		return programResult(o.createTaskOrPlanningBriefWithAttachments(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])), attachments, true))
 	case "tasks":
 		return programResult(o.listTasks())
 	case "restart":
@@ -464,6 +464,17 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 			return programResult("usage: restart <task_id>", nil)
 		}
 		return programResult(o.restartTaskPostMerge(ctx, fields[1]))
+	case "refine", "revise":
+		if len(fields) < 3 {
+			return programResult("usage: refine <approval_id> <notes>", nil)
+		}
+		approvalID := fields[1]
+		idx := strings.Index(message, approvalID)
+		notes := ""
+		if idx >= 0 {
+			notes = strings.TrimSpace(message[idx+len(approvalID):])
+		}
+		return programResult(o.refinePlanningApproval(ctx, approvalID, notes))
 	case "workflow", "workflows":
 		return programResult(o.handleWorkflowCommand(ctx, fields, message))
 	case "agents":
@@ -634,7 +645,7 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 			return o.reflectOnInteraction(ctx, message)
 		}
 		if isPlainWorkRequest(message) {
-			return programResult(o.startOneShotWorkWithAttachments(ctx, message, attachments))
+			return programResult(o.startOneShotWorkOrPlanningBriefWithAttachments(ctx, message, attachments))
 		}
 		return o.handleWithLLM(ctx, messageWithAttachmentContext(message, attachments))
 	}
@@ -1451,6 +1462,16 @@ func isDelegationTarget(name string) bool {
 
 func (o *Orchestrator) CreateTask(ctx context.Context, goal string) (string, error) {
 	return o.createTaskWithAttachments(ctx, goal, nil)
+}
+
+type taskCreateRequest struct {
+	Goal         string                     `json:"goal"`
+	Target       *taskstore.ExecutionTarget `json:"target,omitempty"`
+	Attachments  []taskstore.Attachment     `json:"attachments,omitempty"`
+	AutoRun      bool                       `json:"auto_run,omitempty"`
+	PlanningGate bool                       `json:"planning_gate,omitempty"`
+	DesignBrief  string                     `json:"design_brief,omitempty"`
+	Refinements  []string                   `json:"refinements,omitempty"`
 }
 
 func (o *Orchestrator) CreateTaskWithTarget(ctx context.Context, goal string, target *taskstore.ExecutionTarget) (string, error) {
@@ -2643,6 +2664,7 @@ func help() string {
 	return strings.Join([]string{
 		"commands:",
 		"  new <goal>                 create task and isolated worktree",
+		"                             large homelabd features first create a design brief approval",
 		"  tasks                      list tasks",
 		"  workflows                  list durable LLM/tool workflows",
 		"  workflow new <name>: <goal> create a simple workflow",
@@ -2675,6 +2697,8 @@ func help() string {
 		"  review <task_id>           run tests, show diff, request merge approval",
 		"  accept <task_id>           mark merged task verified and done",
 		"  restart <task_id>          retry a failed post-merge restart gate",
+		"  refine <approval_id> <notes>",
+		"                             revise a pending large-feature design brief before approval",
 		"  reopen <task_id> [reason]  mark task not done and continue work",
 		"  retry <task_id> [agent] [instruction]",
 		"                             rerun blocked or conflict work with preserved failure context",
@@ -2740,7 +2764,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 		}
 		lastValidationErr = nil
 		if goal, ok := assistantDevelopmentCommitmentGoal(parsed.Message); ok && (len(parsed.ToolCalls) == 0 || parsed.Done) {
-			taskReply, err := o.createTaskWithAttachments(ctx, goal, nil)
+			taskReply, err := o.createTaskOrPlanningBriefWithAttachments(ctx, goal, nil, true)
 			if err != nil {
 				return "", source, err
 			}
@@ -3432,6 +3456,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
 		"Pass the complete unsummarised task brief in task.create goal; homelabd stores it as task context and summarises only the display title.",
+		"Large homelabd feature requests are planning-gated: task.create returns a design brief approval instead of queuing implementation until the user approves or refines it.",
 		"Never leave a promise like \"I'll fix/tighten/update\" as prose; call task.create in that turn or avoid the promise.",
 		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
@@ -3452,9 +3477,9 @@ type catalogTool struct {
 func (o *Orchestrator) catalogTools() []catalogTool {
 	catalog := []catalogTool{{
 		Name:        "task.create",
-		Description: "Create a local or remote development task. Pass the full unsummarised brief as goal; homelabd stores it intact and summarises only the display title. Args: {\"goal\":\"...\",\"target\":{...}}.",
+		Description: "Create a local or remote development task. Pass the full unsummarised brief as goal; homelabd stores it intact and summarises only the display title. Large homelabd feature goals return a design brief approval before queuing. Args: {\"goal\":\"...\",\"target\":{...},\"attachments\":[...]}.",
 		Risk:        tool.RiskLow,
-		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"},"target":{"type":"object"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"},"target":{"type":"object"},"attachments":{"type":"array","items":{"type":"object"}}}}`),
 	}, {
 		Name:        "chat.history",
 		Description: "List recent user and assistant chat messages from the event log, excluding the current live request during an agent turn. Args: {\"date\":\"YYYY-MM-DD\",\"days\":1,\"limit\":40}.",
@@ -3700,6 +3725,18 @@ func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, err
 	return o.createTaskWithAttachments(ctx, goal, nil)
 }
 
+func (o *Orchestrator) createTaskOrPlanningBriefWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment, autoRun bool) (string, error) {
+	req := taskCreateRequest{
+		Goal:        goal,
+		Attachments: attachments,
+		AutoRun:     autoRun,
+	}
+	if largeFeaturePlanningRequired(goal) {
+		return o.createLargeFeaturePlanningApproval(ctx, req)
+	}
+	return o.createTaskWithAttachments(ctx, goal, attachments)
+}
+
 func (o *Orchestrator) createTaskWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (string, error) {
 	created, err := o.createTaskRecordWithAttachments(ctx, goal, attachments)
 	if err != nil {
@@ -3837,6 +3874,246 @@ func indentBlock(value, prefix string) string {
 		lines[i] = prefix + line
 	}
 	return strings.Join(lines, "\n")
+}
+
+func largeFeaturePlanningRequired(goal string) bool {
+	normalized := normalizeIntentText(goal)
+	if normalized == "" {
+		return false
+	}
+	if strings.Contains(normalized, "knowledge space") {
+		return true
+	}
+	if containsAnyNormalized(normalized, "large homelabd feature", "major homelabd feature") {
+		return true
+	}
+	if mentionsHomelabdFeatureArea(normalized) && containsAnyNormalized(normalized,
+		"new mode",
+		"mode called",
+		"mode like",
+		"assistant mode",
+		"assistant feature",
+		"assistant experience",
+	) {
+		return true
+	}
+	if mentionsHomelabdFeatureArea(normalized) && strings.Contains(normalized, "assistant") && strings.Contains(normalized, "new") {
+		return true
+	}
+	if strings.Contains(normalized, "homelabd") && containsDevelopmentVerb(normalized) && containsAnyNormalized(normalized,
+		"new feature",
+		"large feature",
+		"major feature",
+		"new product",
+		"new surface",
+		"new workspace",
+		"new experience",
+		"feature area",
+	) {
+		return true
+	}
+	return false
+}
+
+func containsAnyNormalized(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionsHomelabdFeatureArea(normalized string) bool {
+	return strings.Contains(normalized, "homelabd") ||
+		strings.Contains(normalized, "dashboard") ||
+		strings.Contains(normalized, "orchestratoragent")
+}
+
+func containsDevelopmentVerb(normalized string) bool {
+	for _, field := range strings.Fields(normalized) {
+		switch field {
+		case "add", "build", "create", "implement", "make", "ship", "introduce":
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Orchestrator) createLargeFeaturePlanningApproval(ctx context.Context, req taskCreateRequest) (string, error) {
+	req.Goal = strings.TrimSpace(req.Goal)
+	if req.Goal == "" {
+		return "usage: new <goal>", nil
+	}
+	req.Attachments = prepareTaskAttachments(req.Attachments)
+	req.PlanningGate = true
+	req.AutoRun = true
+	req.DesignBrief = buildLargeFeatureDesignBrief(req)
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+	approvalID := id.New("approval")
+	approval := approvalstore.Request{
+		ID:     approvalID,
+		Tool:   "task.create",
+		Args:   raw,
+		Reason: "large feature design brief requires confirmation before task creation",
+		Status: approvalstore.StatusPending,
+	}
+	if err := o.approvals.Save(approval); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.planning_brief.created", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{
+		"approval":     approvalID,
+		"goal":         req.Goal,
+		"design_brief": req.DesignBrief,
+	})})
+	return formatLargeFeaturePlanningApprovalReply(approvalID, req), nil
+}
+
+func (o *Orchestrator) refinePlanningApproval(ctx context.Context, approvalID, notes string) (string, error) {
+	approvalID = strings.TrimSpace(approvalID)
+	notes = strings.TrimSpace(notes)
+	if approvalID == "" || notes == "" {
+		return "usage: refine <approval_id> <notes>", nil
+	}
+	req, err := o.approvals.Load(approvalID)
+	if err != nil {
+		return "", err
+	}
+	if req.Status != approvalstore.StatusPending {
+		return "approval is already " + req.Status, nil
+	}
+	if req.Tool != "task.create" {
+		return fmt.Sprintf("approval %s is for %s, not a planning brief", approvalID, req.Tool), nil
+	}
+	args, err := parseTaskCreateRequest(req.Args)
+	if err != nil {
+		return "", err
+	}
+	if !args.PlanningGate {
+		return fmt.Sprintf("approval %s is not a large-feature planning brief", approvalID), nil
+	}
+	args.Refinements = append(args.Refinements, notes)
+	args.DesignBrief = buildLargeFeatureDesignBrief(args)
+	args.AutoRun = true
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	req.Args = raw
+	req.Reason = appendApprovalReason(req.Reason, "refined by human")
+	if err := o.approvals.Save(req); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.planning_brief.refined", Actor: "human", Payload: eventlog.Payload(map[string]any{
+		"approval":     approvalID,
+		"notes":        notes,
+		"design_brief": args.DesignBrief,
+	})})
+	return formatLargeFeaturePlanningApprovalReply(approvalID, args), nil
+}
+
+func parseTaskCreateRequest(raw json.RawMessage) (taskCreateRequest, error) {
+	var req taskCreateRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return taskCreateRequest{}, err
+	}
+	req.Goal = strings.TrimSpace(req.Goal)
+	req.DesignBrief = strings.TrimSpace(req.DesignBrief)
+	req.Attachments = prepareTaskAttachments(req.Attachments)
+	req.Refinements = uniqueStrings(req.Refinements)
+	return req, nil
+}
+
+func buildLargeFeatureDesignBrief(req taskCreateRequest) string {
+	label := featurePlanningLabel(req.Goal)
+	sections := []string{
+		briefSection("Objectives",
+			"Define "+label+" as an operator-facing homelabd capability with a clear success outcome.",
+			"Confirm the first usable slice before implementation starts.",
+		),
+		briefSection("Scope",
+			"Build the smallest end-to-end path across durable state, dashboard entry points, commands/help, and migration/backfill only where needed.",
+			"Defer secondary automation, imports, and polish unless the approved brief makes them necessary.",
+		),
+		briefSection("UX direction",
+			"Use existing dashboard patterns for navigation, empty states, primary actions, loading, error, and recovery states.",
+			"Keep tool workflows task-focused and accessible rather than adding a marketing-style landing page.",
+		),
+		briefSection("API changes",
+			"Identify required HTTP, homelabctl, event-log, task/workflow, and storage contract changes before coding.",
+			"Preserve compatibility for existing chat, task, workflow, approval, and remote-agent records.",
+		),
+		briefSection("Test strategy",
+			"Add Go coverage for orchestration and API contracts plus Bun unit coverage for view/state logic.",
+			"Run browser UAT from an isolated dashboard server for changed UI flows, or report browser preflight failures.",
+		),
+	}
+	if req.Target != nil && strings.EqualFold(req.Target.Mode, "remote") {
+		sections = append(sections, briefSection("Execution target",
+			"Run the approved implementation on the selected remote workdir and report exact validation commands, ports, and URLs.",
+		))
+	}
+	if len(req.Refinements) > 0 {
+		sections = append(sections, briefSection("Refinements", req.Refinements...))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func featurePlanningLabel(goal string) string {
+	label := strings.TrimSpace(firstLine(goal))
+	label = strings.Trim(label, " \t\r\n.:")
+	if label == "" {
+		return "the requested feature"
+	}
+	if len([]rune(label)) > 72 {
+		label = clipTaskTitle(label, 72)
+	}
+	return `"` + label + `"`
+}
+
+func briefSection(title string, bullets ...string) string {
+	var b strings.Builder
+	b.WriteString(title)
+	for _, bullet := range bullets {
+		bullet = strings.TrimSpace(bullet)
+		if bullet == "" {
+			continue
+		}
+		b.WriteString("\n- ")
+		b.WriteString(bullet)
+	}
+	return b.String()
+}
+
+func formatLargeFeaturePlanningApprovalReply(approvalID string, req taskCreateRequest) string {
+	brief := strings.TrimSpace(req.DesignBrief)
+	if brief == "" {
+		brief = buildLargeFeatureDesignBrief(req)
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("Design brief pending approval `%s`.", approvalID),
+		"",
+		brief,
+		"",
+		"No implementation task has been created yet.",
+		fmt.Sprintf("Next: `approve %s` to create and run the task, `refine %s <notes>` to revise the brief, or `deny %s` to cancel.", approvalID, approvalID, approvalID),
+	}, "\n")
+}
+
+func approvedTaskCreateGoal(req taskCreateRequest) string {
+	goal := strings.TrimSpace(req.Goal)
+	if !req.PlanningGate || strings.TrimSpace(req.DesignBrief) == "" {
+		return goal
+	}
+	return strings.Join([]string{
+		goal,
+		"",
+		"Approved design brief:",
+		strings.TrimSpace(req.DesignBrief),
+	}, "\n")
 }
 
 func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (createdTask, error) {
@@ -6234,6 +6511,17 @@ func (o *Orchestrator) startOneShotWork(ctx context.Context, goal string) (strin
 	return o.startOneShotWorkWithAttachments(ctx, goal, nil)
 }
 
+func (o *Orchestrator) startOneShotWorkOrPlanningBriefWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (string, error) {
+	if largeFeaturePlanningRequired(goal) {
+		return o.createLargeFeaturePlanningApproval(ctx, taskCreateRequest{
+			Goal:        goal,
+			Attachments: attachments,
+			AutoRun:     true,
+		})
+	}
+	return o.startOneShotWorkWithAttachments(ctx, goal, attachments)
+}
+
 func (o *Orchestrator) startOneShotWorkWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (string, error) {
 	created, err := o.createTaskRecordWithAttachments(ctx, goal, attachments)
 	if err != nil {
@@ -7889,6 +8177,9 @@ func (o *Orchestrator) listApprovals() (string, error) {
 		fmt.Fprintf(&b, "%s [%s] task=%s tool=%s reason=%s\n", r.ID, r.Status, r.TaskID, r.Tool, r.Reason)
 		if r.Status == approvalstore.StatusPending {
 			fmt.Fprintf(&b, "  next: `approve %s`, `deny %s`, or `approval edit %s {\"...\":\"...\"}`\n", r.ID, r.ID, r.ID)
+			if r.Tool == "task.create" && strings.Contains(strings.ToLower(r.Reason), "design brief") {
+				fmt.Fprintf(&b, "  planning: `refine %s <notes>` updates the brief before task creation\n", r.ID)
+			}
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
@@ -8011,6 +8302,9 @@ func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID 
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.reconciled", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "output": strings.TrimSpace(reconcileOut)})})
 		}
 	}
+	if req.Tool == "task.create" {
+		return o.resolveTaskCreateApproval(ctx, req, actor)
+	}
 	if _, err := o.runApprovedTool(ctx, req.Tool, req.Args, req.TaskID); err != nil {
 		req.Status = approvalstore.StatusFailed
 		req.Reason = appendApprovalReason(req.Reason, "failed: "+err.Error())
@@ -8104,6 +8398,79 @@ func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID 
 		}
 	}
 	return "Approved and executed " + approvalID, nil
+}
+
+func (o *Orchestrator) resolveTaskCreateApproval(ctx context.Context, approval approvalstore.Request, actor string) (string, error) {
+	req, err := parseTaskCreateRequest(approval.Args)
+	if err != nil {
+		return o.failApproval(ctx, approval, actor, err)
+	}
+	goal := approvedTaskCreateGoal(req)
+	if strings.TrimSpace(goal) == "" {
+		return o.failApproval(ctx, approval, actor, fmt.Errorf("goal is required"))
+	}
+	reply, taskID, err := o.createApprovedTaskFromRequest(ctx, req, goal)
+	if err != nil {
+		return o.failApproval(ctx, approval, actor, err)
+	}
+	approval.Status = approvalstore.StatusGranted
+	approval.TaskID = taskID
+	if err := o.approvals.Save(approval); err != nil {
+		return "", err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.granted", Actor: actor, TaskID: taskID, Payload: eventlog.Payload(approval)})
+	return fmt.Sprintf("Approved %s.\n%s", approval.ID, reply), nil
+}
+
+func (o *Orchestrator) failApproval(ctx context.Context, approval approvalstore.Request, actor string, err error) (string, error) {
+	approval.Status = approvalstore.StatusFailed
+	approval.Reason = appendApprovalReason(approval.Reason, "failed: "+err.Error())
+	if saveErr := o.approvals.Save(approval); saveErr != nil {
+		return "", saveErr
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: actor, TaskID: approval.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approval, "error": err.Error()})})
+	return fmt.Sprintf("Approval %s failed while executing %s.\nReason: %s", approval.ID, approval.Tool, err.Error()), nil
+}
+
+func (o *Orchestrator) createApprovedTaskFromRequest(ctx context.Context, req taskCreateRequest, goal string) (string, string, error) {
+	if req.Target != nil && strings.EqualFold(req.Target.Mode, "remote") {
+		task, err := o.createRemoteTaskRecord(ctx, goal, *req.Target, req.Attachments)
+		if err != nil {
+			return "", "", err
+		}
+		return fmt.Sprintf("Created remote task %s for %s on %s.\nThe remote agent will claim it on its next poll.\nNext:\n%s", task.ID, task.Target.AgentID, task.Target.Workdir, commandBlock(
+			"status",
+			"show "+task.ID,
+		)), task.ID, nil
+	}
+	created, err := o.createTaskRecordWithAttachments(ctx, goal, req.Attachments)
+	if err != nil {
+		return "", "", err
+	}
+	if created.Task.ID == "" {
+		return "usage: new <goal>", "", nil
+	}
+	taskID := created.firstChildID()
+	taskLink := fmt.Sprintf("[%s](%s)", markdownLinkLabel(taskLinkTitle(created.Task)), dashboardTaskURL(created.Task.ID))
+	if !req.AutoRun {
+		return fmt.Sprintf("Created queued task %s. Worker will start automatically.", taskLink), taskID, nil
+	}
+	if err := o.startDelegationForTask(context.Background(), taskID, "codex", strings.Join([]string{
+		goal,
+		"",
+		"Work only in this task worktree. Follow the approved design brief, inspect first, make the smallest practical patch, update relevant docs/help text when behavior or commands change, run relevant formatting and tests, and leave a concise summary with how to use the change.",
+	}, "\n")); err != nil {
+		shortID := taskShortID(created.Task.ID)
+		return fmt.Sprintf("Created queued task %s, but could not start codex: %v\nNext:\n%s", taskLink, err, commandBlock(
+			"run "+shortID,
+			"delegate "+shortID+" to codex",
+		)), taskID, nil
+	}
+	shortID := taskShortID(created.Task.ID)
+	return fmt.Sprintf("Created task %s and started codex. It is running in the background.\nNext:\n%s", taskLink, commandBlock(
+		"status",
+		"show "+shortID,
+	)), taskID, nil
 }
 
 func (o *Orchestrator) recoverFailedMergeApproval(ctx context.Context, req approvalstore.Request) (string, error) {
@@ -8425,16 +8792,22 @@ func (o *Orchestrator) handlePolicyDecision(ctx context.Context, actor, taskID, 
 }
 
 func (o *Orchestrator) executeTaskCreate(ctx context.Context, actor string, raw json.RawMessage) toolExecution {
-	var req struct {
-		Goal        string                     `json:"goal"`
-		Target      *taskstore.ExecutionTarget `json:"target,omitempty"`
-		Attachments []taskstore.Attachment     `json:"attachments,omitempty"`
-	}
-	if err := json.Unmarshal(raw, &req); err != nil {
+	req, err := parseTaskCreateRequest(raw)
+	if err != nil {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: err.Error()}
 	}
 	if req.Goal == "" {
 		return toolExecution{Tool: "task.create", Allowed: false, Error: "goal is required"}
+	}
+	if largeFeaturePlanningRequired(req.Goal) {
+		req.AutoRun = true
+		resultText, err := o.createLargeFeaturePlanningApproval(ctx, req)
+		result := toolExecution{Tool: "task.create", Allowed: true, Result: eventlog.Payload(map[string]any{"message": resultText})}
+		if err != nil {
+			result.Error = err.Error()
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: actor, Payload: eventlog.Payload(result)})
+		return result
 	}
 	resultText, err := o.CreateTaskWithTargetAndAttachments(ctx, req.Goal, req.Target, req.Attachments)
 	result := toolExecution{Tool: "task.create", Allowed: true, Result: eventlog.Payload(map[string]any{"message": resultText})}

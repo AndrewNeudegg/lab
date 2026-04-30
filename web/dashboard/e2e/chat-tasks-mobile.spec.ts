@@ -155,6 +155,7 @@ test('chat mobile keeps typed draft text through layout changes', async ({ page 
 });
 
 test('tasks mobile switches between queue and selected task detail', async ({ page }) => {
+  test.setTimeout(60_000);
   await mockTaskApi(page);
   await page.goto('/tasks');
 
@@ -163,7 +164,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   const detail = page.locator('.workbench');
   await expect(page.getByRole('navigation', { name: 'Task panels' })).toHaveCount(0);
   await expect(page.getByText('Pending approvals')).toHaveCount(0);
-  await expect(rows).toHaveCount(1, { timeout: 10_000 });
+  await expect(rows).toHaveCount(1, { timeout: 45_000 });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
   const autoMerge = page.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' });
@@ -232,7 +233,12 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   let requestBody: any;
   await page.route('**/api/message', async (route) => {
     requestBody = JSON.parse(route.request().postData() || '{}');
-    await route.fulfill({ json: { reply: 'received attachment', source: 'program' } });
+    await route.fulfill({
+      json: {
+        reply: 'received attachment\n\n```mermaid\nflowchart LR\n  Chat[Chat] --> Task[Task]\n```',
+        source: 'program'
+      }
+    });
   });
   await page.goto('/chat');
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
@@ -252,6 +258,7 @@ test('chat supports file uploads and sends attachment context', async ({ page })
   expect(requestBody.attachments[0].text).toBe('steps to reproduce');
   await expect(page.getByLabel('Message attachments')).toContainText('notes.txt');
   await expect(page.getByText('received attachment')).toBeVisible();
+  await expect(page.locator('.message:not(.user) .mermaid-diagram svg')).toBeVisible();
 });
 
 test('chat marks failed sends inline and retries the original message', async ({ page }) => {

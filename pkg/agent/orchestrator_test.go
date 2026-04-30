@@ -3476,6 +3476,9 @@ func TestOpenEndedChatIncludesDurableMemory(t *testing.T) {
 	if !strings.Contains(system, "Prefer distilled lessons over language mimicry.") {
 		t.Fatalf("system prompt missing durable memory: %s", system)
 	}
+	if !strings.Contains(system, "Mermaid fenced diagram") || !strings.Contains(system, "brand colour scheme") {
+		t.Fatalf("system prompt missing diagram guidance: %s", system)
+	}
 }
 
 func TestReflectIncludesActionableNewTaskCommand(t *testing.T) {
@@ -3544,7 +3547,7 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
 	}
 	system := provider.requests[0].Messages[0].Content
-	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production"} {
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production", "Mermaid fenced diagram", "brand colour scheme"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("UX prompt missing %q:\n%s", want, system)
 		}

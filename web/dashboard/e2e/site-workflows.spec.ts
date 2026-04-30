@@ -245,6 +245,17 @@ const expectNoVisualArtifacts = async (page: Page) => {
       }
       return false;
     };
+    const isHidden = (element: Element) => {
+      let current: Element | null = element;
+      while (current && current !== document.body) {
+        const style = getComputedStyle(current);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
+    };
     const contentRoots = Array.from(
       document.querySelectorAll('main, .task-pane, .chat-card, .docs-shell, .workflow-page, .terminal-panel, .app-shell')
     )
@@ -256,7 +267,7 @@ const expectNoVisualArtifacts = async (page: Page) => {
       .filter((height) => height > 0);
     const escaped = Array.from(document.querySelectorAll('h1,h2,h3,p,a,button,summary,label,span,strong'))
       .filter((element) => {
-        if (element.closest('.xterm') || hasScrollableXAncestor(element)) {
+        if (element.closest('.xterm') || hasScrollableXAncestor(element) || isHidden(element)) {
           return false;
         }
         const rect = element.getBoundingClientRect();

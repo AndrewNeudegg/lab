@@ -136,7 +136,7 @@ test('workflows page creates, selects, estimates, and runs a workflow', async ({
   await expect(
     page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Workflows' })
   ).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('button', { name: /Research bundle/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Research bundle/ })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Workflow cost estimate' })).toContainText('LLM');
   await expect(page.getByRole('region', { name: 'Workflow cost estimate' })).toContainText('Runtime');
 
@@ -153,7 +153,7 @@ test('workflows page creates, selects, estimates, and runs a workflow', async ({
     goal: 'Search for agent workflow UI patterns.',
     steps: [{ name: 'Search', kind: 'tool', tool: 'internet.search', args: { query: 'agent workflow design' } }]
   });
-  await expect(page.getByRole('button', { name: /Created workflow/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Created workflow/ })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Workflow cost estimate' })).toContainText('Tools');
   await expect(page.getByRole('region', { name: 'Workflow cost estimate' })).toContainText('1');
 
@@ -177,8 +177,8 @@ test('workflows page remains usable on mobile', async ({ page }) => {
 
   await page.getByRole('button', { name: 'All' }).click();
   await page.getByRole('searchbox', { name: 'Search workflows' }).fill('deployment');
-  await expect(page.getByRole('button', { name: /Deployment watch/ })).toBeVisible();
-  await page.getByRole('button', { name: /Deployment watch/ }).click();
+  await expect(page.getByRole('link', { name: /Deployment watch/ })).toBeVisible();
+  await page.getByRole('link', { name: /Deployment watch/ }).click();
   await expect(page.getByRole('region', { name: 'Workflow detail' })).toContainText('Health gate');
   await expectNoHorizontalOverflow(page);
 });

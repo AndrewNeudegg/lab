@@ -1,10 +1,14 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
+  import { afterNavigate, goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
     formatAttachmentSize,
     isImageAttachment,
     Navbar,
+    taskURL,
     taskInputText,
     taskIsActive,
     taskRuntimeMs,
@@ -108,6 +112,7 @@
   let notice: Notice | undefined;
   let noticeId = 0;
   let refreshStateSequence = 0;
+  let lastAppliedRouteTaskId = '';
 
   let tasks: HomelabdTask[] = [];
   let agents: HomelabdRemoteAgent[] = [];
@@ -156,6 +161,79 @@
       }
     });
   };
+
+  const currentTaskRouteId = () => (browser ? $page.url.searchParams.get('task') || '' : '');
+
+  const taskRouteIdFromLocation = () =>
+    typeof window !== 'undefined' ? new URL(window.location.href).searchParams.get('task') || '' : '';
+
+  const currentRoutePath = () =>
+    browser ? `${$page.url.pathname}${$page.url.search}${$page.url.hash}` : '';
+
+  const navigateToTask = (taskId: string, replaceState = false) => {
+    if (!browser || !taskId) {
+      return;
+    }
+    const next = taskURL(taskId);
+    if (currentRoutePath() === next) {
+      return;
+    }
+    lastAppliedRouteTaskId = taskId;
+    void goto(next, { keepFocus: true, noScroll: true, replaceState });
+  };
+
+  const applyRouteTaskSelection = (taskId: string) => {
+    if (!taskId) {
+      return;
+    }
+    selectedTaskId = taskId;
+    taskFilter = 'all';
+    queueFilter = 'all';
+    taskSearch = '';
+    showMobilePanel('detail');
+    loadedRunsTaskId = '';
+    loadedDiffTaskId = '';
+    selectedDiffFilePath = '';
+    const selected = tasks.find((task) => task.id === taskId);
+    if (selected) {
+      void refreshSelectedTaskDetails(taskId, {
+        force: true,
+        resetDiffSelection: true,
+        task: selected
+      });
+    }
+  };
+
+  const handleTaskRowClick = (event: MouseEvent, taskId: string) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    selectTask(taskId);
+  };
+
+  const handleTaskPopState = () => {
+    window.setTimeout(() => {
+      const taskId = taskRouteIdFromLocation();
+      if (!taskId) {
+        return;
+      }
+      applyRouteTaskSelection(taskId);
+      lastAppliedRouteTaskId = taskId;
+    }, 0);
+  };
+
+  afterNavigate(({ to }) => {
+    if (!browser || to?.url.pathname !== '/tasks') {
+      return;
+    }
+    const taskId = to.url.searchParams.get('task') || '';
+    if (!taskId || taskId === selectedTaskId) {
+      return;
+    }
+    applyRouteTaskSelection(taskId);
+    lastAppliedRouteTaskId = taskId;
+  });
 
   const syncTimeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -320,6 +398,13 @@
   $: currentPendingApproval = pendingApprovalForTask(currentTask, approvals);
   $: currentPrimaryAction = primaryTaskAction(currentTask, approvals);
   $: currentSecondaryOperations = secondaryTaskOperations(currentTask, approvals);
+  $: if (browser) {
+    const routeTaskId = currentTaskRouteId();
+    if (routeTaskId && routeTaskId !== lastAppliedRouteTaskId) {
+      lastAppliedRouteTaskId = routeTaskId;
+      applyRouteTaskSelection(routeTaskId);
+    }
+  }
 
   const eventLabel = (event: HomelabdEvent) => event.type.replaceAll('.', ' ');
 
@@ -642,6 +727,13 @@
             );
             tasks = nextTasks;
             taskLoadError = '';
+            const routeTaskId = currentTaskRouteId();
+            if (routeTaskId && nextTasks.some((task) => task.id === routeTaskId)) {
+              taskFilter = 'all';
+              queueFilter = 'all';
+              taskSearch = '';
+              selectedTaskId = routeTaskId;
+            }
           } catch (err) {
             taskLoadError = errorMessage(err, 'Unable to load tasks.');
             refreshErrors.push(taskLoadError);
@@ -697,7 +789,11 @@
     const interval = window.setInterval(() => {
       void refreshState();
     }, 8000);
-    return () => window.clearInterval(interval);
+    window.addEventListener('popstate', handleTaskPopState);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('popstate', handleTaskPopState);
+    };
   });
 
   const createTargetedTask = async () => {
@@ -744,6 +840,7 @@
       resetDiffSelection: true,
       task: tasks.find((task) => task.id === id)
     });
+    navigateToTask(id);
   };
 
   const syncSelectionForCurrentFilters = () => {
@@ -762,6 +859,7 @@
       selectedDiffFilePath = '';
       return;
     }
+    navigateToTask(nextTaskId, true);
     void refreshSelectedTaskDetails(nextTaskId, {
       resetDiffSelection: true,
       task: tasks.find((task) => task.id === nextTaskId)
@@ -1132,11 +1230,11 @@
           <p class="empty">{emptyTaskListMessage}</p>
         {:else}
           {#each visibleTaskItems as task}
-            <button
-              type="button"
+            <a
+              href={taskURL(task.id)}
               class="task-row"
               class:selected={currentTask?.id === task.id}
-              on:click={() => selectTask(task.id)}
+              on:click={(event) => handleTaskRowClick(event, task.id)}
             >
               <span
                 class={`dot ${taskTone(task)}`}
@@ -1156,7 +1254,7 @@
                   {/if}
                 </em>
               </span>
-            </button>
+            </a>
           {/each}
         {/if}
       </section>
@@ -2024,6 +2122,7 @@
   .task-row {
     align-items: flex-start;
     gap: 0.7rem;
+    box-sizing: border-box;
     width: 100%;
     min-width: 0;
     min-height: 5.4rem;
@@ -2032,7 +2131,9 @@
     border-radius: 0.75rem;
     color: inherit;
     background: transparent;
+    cursor: pointer;
     text-align: left;
+    text-decoration: none;
   }
 
   .task-row:hover,

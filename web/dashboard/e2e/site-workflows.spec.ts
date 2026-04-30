@@ -164,7 +164,7 @@ const mockDashboardApis = async (page: Page) => {
   await page.route(/\/api\/message$/, async (route) => {
     await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
   });
-  await page.route(/\/api\/tasks$/, async (route) => {
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
   await page.route('**/api/settings**', async (route) => {
@@ -332,7 +332,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     }
   } else if (route === '/workflows') {
     await page.getByPlaceholder('Search workflows').fill('Deploy');
-    await page.getByRole('button', { name: /Deploy homelab dashboard/ }).click();
+    await page.getByRole('link', { name: /Deploy homelab dashboard/ }).click();
     await page
       .locator('[aria-label="Workflow actions"]')
       .getByRole('button', { name: 'Run', exact: true })

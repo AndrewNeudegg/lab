@@ -4,11 +4,13 @@
 
 <script lang="ts">
   import { afterUpdate, onMount, tick } from 'svelte';
-  import { mermaidBrandThemeVariables, type BrandDiagramMode } from './brand';
+  import type { BrandDiagramMode } from './brand';
   import { renderMarkdown } from './markdown';
+  import { mermaidConfigForTheme } from './mermaid';
 
   export let content = '';
   export let headingIds = false;
+  export let navigate: ((href: string) => void) | undefined = undefined;
 
   let root: HTMLDivElement | undefined;
   let mounted = false;
@@ -63,16 +65,7 @@
       themeMode = mode;
     }
     const { default: mermaid } = await import('mermaid');
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      secure: ['securityLevel', 'theme', 'themeVariables', 'themeCSS', 'darkMode', 'fontFamily'],
-      theme: 'base',
-      darkMode: mode === 'dark',
-      fontFamily:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      themeVariables: mermaidBrandThemeVariables(mode)
-    });
+    mermaid.initialize(mermaidConfigForTheme(mode));
 
     await Promise.all(
       diagrams.map(async (diagram, index) => {
@@ -130,9 +123,41 @@
     });
   };
 
+  const handleMarkdownClick = (event: MouseEvent) => {
+    if (
+      !navigate ||
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const anchor = target.closest('a');
+    if (!(anchor instanceof HTMLAnchorElement) || !root?.contains(anchor)) {
+      return;
+    }
+    const href = anchor.getAttribute('href') || '';
+    if (!href || anchor.target || anchor.hasAttribute('download')) {
+      return;
+    }
+    if (!href.startsWith('/') && !href.startsWith('#')) {
+      return;
+    }
+    event.preventDefault();
+    navigate(href);
+  };
+
   onMount(() => {
     mounted = true;
     themeMode = currentThemeMode();
+    root?.addEventListener('click', handleMarkdownClick);
     const observer = new MutationObserver(() => {
       const nextMode = currentThemeMode();
       if (nextMode !== themeMode) {
@@ -146,6 +171,7 @@
     return () => {
       mounted = false;
       renderVersion += 1;
+      root?.removeEventListener('click', handleMarkdownClick);
       observer.disconnect();
     };
   });
@@ -295,7 +321,7 @@
 
   .markdown :global(.mermaid-diagram[data-mermaid-status='error']) {
     border-color: #d97706;
-    background: #fffbeb;
+    background: #f8fafc;
   }
 
   .markdown :global(a) {
@@ -342,6 +368,6 @@
 
   :global(html[data-theme='dark'] .markdown .mermaid-diagram[data-mermaid-status='error']) {
     border-color: #fbbf24;
-    background: #422006;
+    background: #0f172a;
   }
 </style>

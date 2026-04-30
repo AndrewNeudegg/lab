@@ -147,6 +147,15 @@ Remote agents validate in their selected remote workdir. They should report exac
 
 ## Search
 
+Use tool introspection when you want the current policy-bound tool catalogue from chat without asking the LLM to infer it:
+
+```text
+tools
+what tools are available?
+```
+
+The reply lists registered tools and Orchestrator pseudo-tools with a short description and top-level required or optional parameters. For the fuller policy model, schemas, examples, and limits, see `docs/agent-tools.md`.
+
 Use repo search when you want to inspect local code:
 
 ```text

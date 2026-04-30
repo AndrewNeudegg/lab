@@ -221,14 +221,40 @@ test('created task chat reply links to the task with SPA navigation', async ({ p
     .toBe('same-document');
 
   await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
   await page.locator('.triage button').filter({ hasText: 'All' }).click();
   await page.getByRole('link', { name: /Document mobile task flow/ }).click();
   await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150300_33333333$/);
   await expect(page.getByRole('heading', { name: 'Document mobile task flow' })).toBeVisible();
 
   await page.goBack();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(page.locator('.task-pane')).toBeVisible();
+  await expect(page.locator('.workbench')).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+});
+
+test('tasks overview remains the browser Back target after selecting a task', async ({ page }) => {
+  await mockTaskApi(page);
+
+  await page.goto('/chat');
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page.getByRole('link', { name: /Tasks/ }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(page.locator('.task-pane')).toBeVisible();
+  await expect(page.locator('.workbench')).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+
+  await page.getByRole('link', { name: /Review queue behavior on mobile/ }).click();
   await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150000_11111111$/);
   await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible();
+  await expect(page.locator('.workbench')).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(page.locator('.task-pane')).toBeVisible();
+  await expect(page.locator('.workbench')).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
 });
 
 test('tasks mobile switches between queue and selected task detail', async ({ page }) => {
@@ -249,6 +275,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(reviewRow).toHaveCount(1, { timeout: taskLoadTimeoutMs });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
   const autoMerge = page.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' });
   await expect(autoMerge).toHaveAttribute('aria-checked', 'false');
   await autoMerge.click();
@@ -309,10 +336,12 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
-  await expect(rows).toHaveCount(2);
   await expect(rows.first()).toBeVisible();
+  expect(await rows.count()).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
 
   const overflow = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,

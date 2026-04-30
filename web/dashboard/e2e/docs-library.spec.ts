@@ -11,6 +11,34 @@ const expectNoHorizontalOverflow = async (page: Page) => {
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 };
 
+const expectDocsLibraryBelowNavbar = async (page: Page) => {
+  const metrics = await page.evaluate(() => {
+    const navbar = document.querySelector<HTMLElement>('.navbar');
+    const library = document.querySelector<HTMLElement>('.library');
+    if (!navbar || !library) {
+      return null;
+    }
+    return {
+      navbarBottom: navbar.getBoundingClientRect().bottom,
+      libraryTop: library.getBoundingClientRect().top
+    };
+  });
+  expect(metrics).not.toBeNull();
+  expect(metrics!.libraryTop, JSON.stringify(metrics)).toBeGreaterThanOrEqual(
+    metrics!.navbarBottom
+  );
+};
+
+const expandDocsNavigation = async (page: Page) => {
+  const toggle = page.getByRole('button', { name: 'Expand docs navigation' });
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  await expect(page.getByRole('button', { name: 'Collapse docs navigation' })).toHaveAttribute(
+    'aria-expanded',
+    'true'
+  );
+};
+
 const mockNavbarTaskApis = async (page: Page) => {
   await page.route(/\/api\/tasks\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [] } });
@@ -98,8 +126,18 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await expect(
     page.locator('.content pre code').filter({ hasText: 'reflect on our recent interaction' })
   ).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
+  await expectDocsLibraryBelowNavbar(page);
+  const docsNavigationToggle = page.getByRole('button', { name: 'Expand docs navigation' });
+  await expect(docsNavigationToggle).toBeVisible();
+  await expect(docsNavigationToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeHidden();
   await expect(page.locator('.docs-shell')).toHaveAttribute('data-docs-library-ready', 'true');
+
+  await page.evaluate(() => window.scrollTo(0, 260));
+  await expectDocsLibraryBelowNavbar(page);
+  await expandDocsNavigation(page);
+  await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, 0));
 
   const mobileNav = await openMobileMenu(page);
   await expect(mobileNav.getByRole('link', { name: 'Docs' })).toHaveAttribute(
@@ -119,6 +157,7 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await page.goto('/docs/chat-commands');
   await expect(page.locator('.content .mermaid-diagram svg')).toBeVisible();
 
+  await expandDocsNavigation(page);
   await page.getByRole('searchbox', { name: 'Search documentation' }).fill('operator interface');
   await expect(page.locator('#docs-list a')).toHaveCount(1);
   await expect(page.locator('#docs-list a')).toContainText('homelabctl');

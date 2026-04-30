@@ -24,8 +24,15 @@ describe('tasks page UAT flow', () => {
   test('exercises manual task pane sync against the browser network layer', () => {
     expect(scriptSource).toContain('manual Sync did not reload all task pane data sources');
     expect(scriptSource).toContain("path === '/api/tasks'");
-    expect(scriptSource).toContain('manual Sync did not leave a selected visible task');
+    expect(scriptSource).toContain('manual Sync changed the overview URL before task selection');
+    expect(scriptSource).toContain('manual Sync auto-selected a visible task before task click');
     expect(scriptSource).toContain('manual Sync freshness timestamp did not include seconds');
+  });
+
+  test('checks browser history returns from task detail to overview', () => {
+    expect(scriptSource).toContain('browser Back from a selected task did not return to overview URL');
+    expect(scriptSource).toContain('browser Back left a task selected on the overview route');
+    expect(scriptSource).toContain('browser Back did not restore the overview empty record');
   });
 
   test('checks diff labels, wrapping, dark theme, and mode buttons in the browser', () => {

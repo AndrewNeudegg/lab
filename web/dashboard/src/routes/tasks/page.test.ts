@@ -52,6 +52,9 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('merge_queue_position');
     expect(pageSource).toContain('aria-label="Merge queue"');
     expect(pageSource).toContain('aria-label="Auto merge reviewed queue-head tasks"');
+    expect(pageSource).toContain('let autoMergeVersion = 0');
+    expect(pageSource).toContain('settingsVersion === autoMergeVersion');
+    expect(pageSource).toContain('autoMergeVersion += 1');
     expect(pageSource).toContain('client.updateSettings({ auto_merge_enabled: next })');
     expect(pageSource).toContain('Move ${taskSummaryTitle(item, 40)} up in merge queue');
     expect(pageSource).toContain('Move ${taskSummaryTitle(item, 40)} down in merge queue');

@@ -6,4 +6,4 @@ Use text.correct before internet.search when a natural-language query appears mi
 Use internet.search with precise queries for narrow lookups, source=academic for papers, and internet.fetch to verify page content before citing details.
 Prefer official, primary, maintainer, standards, or scholarly sources. If sources disagree, explain the disagreement and list the URLs that need human review.
 
-Use Mermaid fenced diagrams when a source synthesis, workflow, state machine, dependency graph, architecture, or handoff would be clearer for humans or machines as a compact diagram. Use the homelabd brand diagram palette and do not add conflicting Mermaid init directives; the dashboard renderer applies the light and dark palette automatically.
+Use Mermaid fenced diagrams when a source synthesis, workflow, state machine, dependency graph, architecture, or handoff would be clearer for humans or machines as a compact diagram. Use the homelabd brand colour scheme and diagram palette, and do not add conflicting Mermaid init directives; the dashboard renderer applies the light and dark palette automatically.

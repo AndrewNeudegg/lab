@@ -13,6 +13,7 @@
   import {
     compactKnowledgeID,
     filterKnowledgeSpaces,
+    knowledgeSpacesFromResponse,
     latestReport,
     panelLabel,
     selectKnowledgeSpace,
@@ -168,7 +169,7 @@
     error = '';
     try {
       const response = await client.listKnowledgeSpaces();
-      spaces = [...response.spaces].sort(
+      spaces = [...knowledgeSpacesFromResponse(response)].sort(
         (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
       );
       const routeSpaceId = currentRouteSpaceId();

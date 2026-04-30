@@ -101,6 +101,109 @@ const workflow = {
   updated_at: now
 };
 
+const assistantCatalogue = {
+  name: 'Assistant',
+  summary: 'A life-improving operating layer for briefs, planning, research, workflows, memory, and safe action.',
+  updated_at: now,
+  principles: [
+    { name: 'Plan before action', summary: 'Preview state-changing work before execution.' }
+  ],
+  activities: [
+    {
+      id: 'prepare-decision',
+      name: 'Research a decision',
+      area: 'research',
+      cadence: 'On demand',
+      description: 'Investigate options and compare trade-offs.',
+      outcome: 'A sourced decision brief with risks and next action.',
+      capability_ids: ['research-prepare']
+    },
+    {
+      id: 'start-day',
+      name: 'Start my day',
+      area: 'focus',
+      cadence: 'Daily',
+      description: 'Summarise priorities and blockers.',
+      outcome: 'A short morning brief with focus blocks.',
+      capability_ids: ['brief-prioritise']
+    }
+  ],
+  capabilities: [
+    {
+      id: 'brief-prioritise',
+      name: 'Brief and prioritise',
+      area: 'focus',
+      summary: 'Produce daily and situation-specific briefs from task state and health signals.',
+      promise: 'Tell me what matters now.',
+      cadence: 'Daily',
+      autonomy: 'observe',
+      inputs: ['Tasks', 'Health'],
+      outputs: ['Priority list', 'Blockers'],
+      surfaces: [{ label: 'Inspect Tasks', href: '/tasks', surface: 'tasks' }],
+      ux_pattern_ids: ['mission-control'],
+      safeguards: ['Show source counts'],
+      workflow_template: {
+        name: 'Assistant daily brief',
+        goal: 'Create a concise daily brief with priorities and risks.',
+        steps: [{ name: 'Write brief', kind: 'llm', prompt: 'Summarise the day.' }]
+      }
+    },
+    {
+      id: 'research-prepare',
+      name: 'Research and prepare',
+      area: 'research',
+      summary: 'Run sourced research for decisions, meetings, purchases, travel, and investigations.',
+      promise: 'Give me a brief that is current, cited, comparable, and ready to act on.',
+      cadence: 'On demand',
+      autonomy: 'plan',
+      inputs: ['Question', 'Web sources', 'Docs'],
+      outputs: ['Sourced brief', 'Comparison', 'Recommendation'],
+      surfaces: [{ label: 'Open Chat', href: '/chat', surface: 'chat' }],
+      ux_pattern_ids: ['source-tray', 'confidence-signals'],
+      safeguards: ['Show sources and recency', 'Separate facts from inference'],
+      workflow_template: {
+        name: 'Assistant research brief',
+        goal: 'Research the question, compare options, cite sources, and recommend next action.',
+        steps: [
+          { name: 'Search current sources', kind: 'tool', tool: 'internet.search' },
+          { name: 'Synthesize decision brief', kind: 'llm', prompt: 'Compare options.' }
+        ]
+      }
+    }
+  ],
+  ux_patterns: [
+    {
+      id: 'mission-control',
+      name: 'Mission control',
+      summary: 'Show active outcomes and decisions in one scan-friendly surface.',
+      applies_to: 'Briefs',
+      implementation: 'Use count badges, status text, and source links.'
+    },
+    {
+      id: 'source-tray',
+      name: 'Source tray',
+      summary: 'Keep citations and retrieved material close to the answer.',
+      applies_to: 'Research',
+      implementation: 'Separate sourced facts from model inference.'
+    },
+    {
+      id: 'confidence-signals',
+      name: 'Confidence signals',
+      summary: 'Show uncertainty and missing data.',
+      applies_to: 'Research',
+      implementation: 'Use open questions and escalation prompts.'
+    }
+  ],
+  research_sources: [],
+  filters: {
+    areas: [
+      { value: 'all', label: 'All areas', count: 2 },
+      { value: 'focus', label: 'Daily focus', count: 1 },
+      { value: 'research', label: 'Research', count: 1 }
+    ]
+  }
+};
+
 const knowledgeSource = {
   id: 'ksrc_20260428_120000_33333333',
   title: 'Source transparency notes',
@@ -227,6 +330,19 @@ const installTerminalMocks = async (page: Page) => {
   });
 };
 
+const mockScreenCaptureUnavailable = async (page: Page) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getDisplayMedia: async () => {
+          throw new Error('Screen capture is not available in this browser.');
+        }
+      }
+    });
+  });
+};
+
 const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
   let autoMergeEnabled = false;
@@ -257,6 +373,36 @@ const mockDashboardApis = async (page: Page) => {
         ].join('\n'),
         source: 'program',
         stats: { model_turns: 1, tool_calls: 2, total_tokens: 128, elapsed_ms: 1234 }
+      }
+    });
+  });
+  await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const area = url.searchParams.get('area') || 'all';
+    const query = (url.searchParams.get('q') || '').toLowerCase();
+    const capabilities = assistantCatalogue.capabilities.filter((capability) => {
+      if (area !== 'all' && capability.area !== area) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return [capability.name, capability.summary, capability.promise, capability.area]
+        .join(' ')
+        .toLowerCase()
+        .includes(query);
+    });
+    const capabilityIDs = new Set(capabilities.map((capability) => capability.id));
+    await route.fulfill({
+      json: {
+        ...assistantCatalogue,
+        capabilities,
+        activities: assistantCatalogue.activities.filter((activity) => {
+          if (area !== 'all' && activity.area !== area) {
+            return false;
+          }
+          return !query || activity.capability_ids.some((id) => capabilityIDs.has(id));
+        })
       }
     });
   });
@@ -431,7 +577,7 @@ const expectNoVisualArtifacts = async (page: Page) => {
       return false;
     };
     const contentRoots = Array.from(
-      document.querySelectorAll('main, .task-pane, .chat-card, .docs-shell, .workflow-page, .knowledge-page, .terminal-panel, .app-shell')
+      document.querySelectorAll('main, .assistant-page, .task-pane, .chat-card, .docs-shell, .workflow-page, .knowledge-page, .terminal-panel, .app-shell')
     )
       .map((element) => {
         const rect = element.getBoundingClientRect();
@@ -580,7 +726,20 @@ const expectTaskNavAttention = async (page: Page, mobile: boolean) => {
 
 const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   await expectTaskNavAttention(page, mobile);
-  if (route === '/' || route === '/chat') {
+  if (route === '/assistant') {
+    await expect(page.getByRole('heading', { name: 'Assistant' })).toBeVisible();
+    await page.getByLabel('Area').selectOption('research');
+    await expect(page.getByRole('button', { name: /Research and prepare/ })).toBeVisible();
+    await page.getByRole('searchbox', { name: 'Search' }).fill('source');
+    await expect(page.getByRole('button', { name: /Research and prepare/ })).toBeVisible();
+    await page.getByRole('button', { name: /Research and prepare/ }).click();
+    await expect(page.getByRole('region', { name: 'Assistant capability detail' })).toContainText(
+      'Source tray'
+    );
+    await expect(page.getByRole('navigation', { name: 'Related assistant surfaces' })).toContainText(
+      'Open Chat'
+    );
+  } else if (route === '/' || route === '/chat') {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Status:')).toBeVisible();
@@ -685,6 +844,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
 
 const routes = [
   '/',
+  '/assistant',
   '/chat',
   '/tasks',
   '/knowledge',
@@ -697,6 +857,52 @@ const routes = [
   '/supervisord'
 ];
 const docsRouteTimeoutMs = 120_000;
+
+test.describe('knowledge empty state', () => {
+  test.use({ viewport: { width: 480, height: 897 }, isMobile: true, hasTouch: true });
+
+  test('handles a null spaces response and submits page-context help', async ({ page }) => {
+    await mockScreenCaptureUnavailable(page);
+    const pageErrors: string[] = [];
+    let helpTaskBody: any;
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+
+    await page.route(/\/api\/knowledge\/spaces$/, async (route) => {
+      await route.fulfill({ json: { spaces: null } });
+    });
+    await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+      if (route.request().method() === 'POST') {
+        helpTaskBody = route.request().postDataJSON();
+        await route.fulfill({ status: 201, json: { reply: 'created help task' } });
+        return;
+      }
+      await route.fulfill({ json: { tasks: [] } });
+    });
+    await page.route(/\/api\/approvals(?:\?.*)?$/, async (route) => {
+      await route.fulfill({ json: { approvals: [] } });
+    });
+
+    await page.goto('/knowledge');
+    await expect(page.getByText('No Knowledge Space matches this view.')).toBeVisible();
+    await expect(page.getByText('No Knowledge Space selected')).toBeVisible();
+    await expect(page.getByText(/response\.spaces is null|Symbol\.iterator/)).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+
+    await page.locator('.help-button').click();
+    const dialog = page.locator('dialog.help-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('textbox', { name: 'More detail' }).fill('Knowledge page showed a raw null spaces error.');
+    await dialog.getByRole('button', { name: 'Submit help task' }).click();
+    await expect(dialog).not.toBeVisible();
+
+    expect(helpTaskBody.goal).toContain('Dashboard help task from /knowledge');
+    expect(helpTaskBody.goal).toContain('Knowledge page showed a raw null spaces error.');
+    expect(helpTaskBody.attachments).toHaveLength(1);
+    const browserContext = JSON.parse(helpTaskBody.attachments[0].text);
+    expect(browserContext.visible_text).toContain('No Knowledge Space selected');
+    expect(browserContext.visible_text).not.toMatch(/response\.spaces is null|Symbol\.iterator/);
+  });
+});
 
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 1000, mobile: false },

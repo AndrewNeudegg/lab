@@ -155,6 +155,57 @@ func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
 	}
 }
 
+func TestAssistantEndpointReturnsFilteredCatalogue(t *testing.T) {
+	server := Server{}
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/assistant?area=research&q=sources", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body.String())
+	}
+	var got struct {
+		Name       string `json:"name"`
+		Activities []struct {
+			ID string `json:"id"`
+		} `json:"activities"`
+		Capabilities []struct {
+			ID               string `json:"id"`
+			Name             string `json:"name"`
+			WorkflowTemplate struct {
+				Steps []struct {
+					Name string `json:"name"`
+					Kind string `json:"kind"`
+				} `json:"steps"`
+			} `json:"workflow_template"`
+		} `json:"capabilities"`
+		UXPatterns []struct {
+			ID string `json:"id"`
+		} `json:"ux_patterns"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Assistant" {
+		t.Fatalf("name = %q, want Assistant", got.Name)
+	}
+	if len(got.Capabilities) != 1 || got.Capabilities[0].ID != "research-prepare" {
+		t.Fatalf("capabilities = %#v, want research-prepare", got.Capabilities)
+	}
+	if len(got.Capabilities[0].WorkflowTemplate.Steps) == 0 {
+		t.Fatalf("workflow template missing steps: %#v", got.Capabilities[0].WorkflowTemplate)
+	}
+	if len(got.Activities) != 1 || got.Activities[0].ID != "prepare-decision" {
+		t.Fatalf("activities = %#v, want prepare-decision", got.Activities)
+	}
+	if len(got.UXPatterns) == 0 {
+		t.Fatal("expected ux patterns in assistant catalogue")
+	}
+}
+
 func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	server, _, _ := newHTTPTestServer(t)
 	mux := http.NewServeMux()
@@ -201,6 +252,17 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	listed := requestJSON(t, mux, http.MethodGet, "/knowledge/spaces", "", "", http.StatusOK)
 	if !strings.Contains(listed.Body.String(), createBody.Space.ID) {
 		t.Fatalf("list body = %s, want created space", listed.Body.String())
+	}
+}
+
+func TestKnowledgeSpaceListEndpointReturnsEmptyArray(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	listed := requestJSON(t, mux, http.MethodGet, "/knowledge/spaces", "", "", http.StatusOK)
+	if listed.Body.String() != "{\"spaces\":[]}\n" {
+		t.Fatalf("list body = %s, want empty spaces array", listed.Body.String())
 	}
 }
 

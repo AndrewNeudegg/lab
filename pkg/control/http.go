@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/andrewneudegg/lab/pkg/agent"
+	"github.com/andrewneudegg/lab/pkg/assistant"
 	"github.com/andrewneudegg/lab/pkg/chat"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/healthd"
@@ -68,6 +69,7 @@ func (s *Server) register(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
+	mux.HandleFunc("/assistant", s.withCORS(s.handleAssistant))
 	mux.HandleFunc("/chat/clear", s.withCORS(s.handleChatClear))
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
@@ -85,6 +87,19 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/terminal/sessions/", s.withCORS(s.handleTerminalSession))
 	mux.HandleFunc("/api/terminal/sessions", s.withCORS(s.handleTerminalSessions))
 	mux.HandleFunc("/api/terminal/sessions/", s.withCORS(s.handleTerminalSession))
+}
+
+func (s *Server) handleAssistant(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	catalogue := assistant.DefaultCatalogue(time.Now().UTC())
+	catalogue = assistant.FilterCatalogue(catalogue, assistant.Query{
+		Search: req.URL.Query().Get("q"),
+		Area:   req.URL.Query().Get("area"),
+	})
+	writeJSON(rw, http.StatusOK, catalogue)
 }
 
 func (s *Server) handleSettings(rw http.ResponseWriter, req *http.Request) {

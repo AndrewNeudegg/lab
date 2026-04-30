@@ -94,6 +94,18 @@ func TestStorePersistsProcessedSpace(t *testing.T) {
 	}
 }
 
+func TestStoreListReturnsEmptySliceWhenNoSpacesExist(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "knowledge"))
+
+	spaces, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spaces == nil || len(spaces) != 0 {
+		t.Fatalf("spaces = %#v, want non-nil empty slice", spaces)
+	}
+}
+
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

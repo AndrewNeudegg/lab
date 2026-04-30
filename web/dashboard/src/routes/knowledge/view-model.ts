@@ -2,6 +2,10 @@ import type { HomelabdKnowledgeReport, HomelabdKnowledgeSpace } from '@homelab/s
 
 export type KnowledgePanel = 'sources' | 'research' | 'reports';
 
+type KnowledgeSpacesResponseLike = {
+  spaces?: HomelabdKnowledgeSpace[] | null;
+};
+
 export const compactKnowledgeID = (id = '') => {
   const trimmed = id.trim();
   if (!trimmed) {
@@ -19,6 +23,18 @@ export const spaceWordCount = (space?: HomelabdKnowledgeSpace) =>
 
 export const latestReport = (space?: HomelabdKnowledgeSpace): HomelabdKnowledgeReport | undefined =>
   [...(space?.reports || [])].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
+
+export const knowledgeSpacesFromResponse = (
+  response?: KnowledgeSpacesResponseLike | null
+): HomelabdKnowledgeSpace[] => {
+  if (response?.spaces == null) {
+    return [];
+  }
+  if (!Array.isArray(response.spaces)) {
+    throw new TypeError('Knowledge Space response did not include a spaces array.');
+  }
+  return response.spaces;
+};
 
 export const filterKnowledgeSpaces = (
   spaces: HomelabdKnowledgeSpace[],

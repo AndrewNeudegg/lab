@@ -254,6 +254,56 @@ const run = async () => {
     );
     assert(afterRunning.active.includes('Running'), 'Running filter did not become active', afterRunning);
 
+    const runningAfterAutoSync = await evalJS(
+      cdp,
+      `(() => {
+        const countTaskResources = () => {
+          let count = 0;
+          for (const entry of performance.getEntriesByType('resource')) {
+            try {
+              const path = new URL(entry.name, location.href).pathname;
+              if (path === '/api/tasks' || path === '/tasks') count += 1;
+            } catch {
+              continue;
+            }
+          }
+          return count;
+        };
+        return new Promise((resolve) => {
+          const before = countTaskResources();
+          const started = Date.now();
+          const sample = () => {
+            const after = countTaskResources();
+            const active = document.querySelector('.triage button.active')?.innerText || '';
+            const elapsed = Date.now() - started;
+            if ((after > before && elapsed >= 8300) || elapsed > 11500) {
+              resolve({
+                active,
+                before,
+                after,
+                elapsed,
+                rows: document.querySelectorAll('.task-row').length,
+                selected: document.querySelector('.task-row.selected')?.innerText || ''
+              });
+              return;
+            }
+            setTimeout(sample, 200);
+          };
+          sample();
+        });
+      })()`
+    );
+    assert(
+      runningAfterAutoSync.after > runningAfterAutoSync.before,
+      'background task sync did not run while waiting on Running filter',
+      runningAfterAutoSync
+    );
+    assert(
+      runningAfterAutoSync.active.includes('Running'),
+      'Running filter changed after background task sync',
+      runningAfterAutoSync
+    );
+
     const afterSelect = await evalJS(
       cdp,
       `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
@@ -657,6 +707,7 @@ const run = async () => {
           afterAll,
           manualSync,
           afterRunning,
+          runningAfterAutoSync,
           afterSelect,
           createForm,
           diffInitial,

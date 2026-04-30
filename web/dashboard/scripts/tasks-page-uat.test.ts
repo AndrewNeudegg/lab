@@ -28,6 +28,12 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('manual Sync freshness timestamp did not include seconds');
   });
 
+  test('keeps the Running queue selected across background sync', () => {
+    expect(scriptSource).toContain('background task sync did not run while waiting on Running filter');
+    expect(scriptSource).toContain('Running filter changed after background task sync');
+    expect(scriptSource).toContain('runningAfterAutoSync');
+  });
+
   test('checks diff labels, wrapping, dark theme, and mode buttons in the browser', () => {
     expect(scriptSource).toContain('changed file list labels were empty or visually collapsed');
     expect(scriptSource).toContain('Unified diff control did not become active');

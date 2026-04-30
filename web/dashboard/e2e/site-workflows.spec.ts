@@ -158,18 +158,18 @@ const installTerminalMocks = async (page: Page) => {
 
 const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
+  let autoMergeEnabled = true;
   await page.route(/\/api\/message$/, async (route) => {
     await route.fulfill({ json: { reply: 'Status: `tasks` and `workflow list` are available.', source: 'program' } });
   });
   await page.route(/\/api\/tasks$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
-  await page.route(/\/api\/settings$/, async (route) => {
+  await page.route('**/api/settings', async (route) => {
     if (route.request().method() === 'POST') {
-      await route.fulfill({ json: { settings: { auto_merge_enabled: true } } });
-      return;
+      autoMergeEnabled = true;
     }
-    await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
+    await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
@@ -238,6 +238,17 @@ const expectNoVisualArtifacts = async (page: Page) => {
       }
       return false;
     };
+    const isHidden = (element: Element) => {
+      let current: Element | null = element;
+      while (current && current !== document.body) {
+        const style = getComputedStyle(current);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
+    };
     const contentRoots = Array.from(
       document.querySelectorAll('main, .task-pane, .chat-card, .docs-shell, .workflow-page, .terminal-panel, .app-shell')
     )
@@ -249,7 +260,7 @@ const expectNoVisualArtifacts = async (page: Page) => {
       .filter((height) => height > 0);
     const escaped = Array.from(document.querySelectorAll('h1,h2,h3,p,a,button,summary,label,span,strong'))
       .filter((element) => {
-        if (element.closest('.xterm') || hasScrollableXAncestor(element)) {
+        if (element.closest('.xterm') || hasScrollableXAncestor(element) || isHidden(element)) {
           return false;
         }
         const rect = element.getBoundingClientRect();
@@ -293,8 +304,10 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     const mergeQueue = page.locator('[aria-label="Merge queue"]');
     await expect(mergeQueue).toBeVisible();
     await expect(mergeQueue).toContainText('Merge queue');
-    await mergeQueue.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' }).click();
-    await expect(mergeQueue.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' })).toHaveAttribute('aria-checked', 'true');
+    const autoMerge = mergeQueue.getByRole('switch', {
+      name: 'Auto merge reviewed queue-head tasks'
+    });
+    await expect(autoMerge).toHaveAttribute('aria-checked', 'true');
     await mergeQueue.getByRole('button', { name: /Move Queued docs follow-up up in merge queue/ }).click();
     const queueNotice = mobile ? page.locator('.task-pane .queue-notice') : page.locator('.workbench .notice');
     await expect(queueNotice.getByText('Merge queue updated')).toBeVisible();

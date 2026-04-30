@@ -30,7 +30,7 @@ Validate PWA metadata with `nix develop -c bun run --cwd web uat:site`. For a pr
 Use the shared responsive navbar on every dashboard page.
 
 - Desktop and tablet: show primary destinations inline because visible navigation is more discoverable than hidden navigation.
-- Constrained widths: collapse destinations behind a labelled `Menu` hamburger button to preserve content width.
+- Constrained widths: collapse destinations behind a labelled `Menu` hamburger button to preserve content width. When the compact menu is open, dim the page with a scrim and close the menu when the operator taps outside the menu or selects a destination.
 - Keep the `Help` button visible on desktop, tablet, and mobile. It captures browser context, asks for screen-capture permission only when the browser and page security context support it, prompts for a short bug note, and creates a task with the captured attachments. If inline navigation would crowd the bar, collapse destinations behind `Menu` before hiding `Help`.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
 - Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.

@@ -608,6 +608,12 @@
         <span aria-hidden="true">☰</span>
         Menu
       </summary>
+      <button
+        type="button"
+        class="mobile-menu-scrim"
+        aria-label="Dismiss navigation"
+        onclickcapture={closeMobileMenu}
+      ></button>
       <nav id="primary-mobile-nav" class="mobile-nav" aria-label="Primary mobile">
         {#each links as link}
           <a
@@ -1199,6 +1205,19 @@
     display: none;
   }
 
+  .mobile-menu-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    display: none;
+    width: 100vw;
+    height: 100dvh;
+    padding: 0;
+    border: 0;
+    background: rgb(15 23 42 / 0.28);
+    cursor: default;
+  }
+
   .mobile-menu.compact {
     display: block;
   }
@@ -1256,6 +1275,8 @@
   }
 
   .menu-button {
+    position: relative;
+    z-index: 3;
     display: none;
     align-items: center;
     justify-content: center;
@@ -1269,6 +1290,10 @@
     display: grid;
   }
 
+  .mobile-menu.compact[open] .mobile-menu-scrim {
+    display: block;
+  }
+
   .menu-button span {
     margin-right: 0.25rem;
   }
@@ -1278,6 +1303,7 @@
     top: calc(100% + 0.35rem);
     right: 0.75rem;
     left: 0.75rem;
+    z-index: 3;
     display: none;
     gap: 0.4rem;
     padding: 0.55rem;
@@ -1476,6 +1502,10 @@
 
     .mobile-menu[open] .mobile-nav {
       display: grid;
+    }
+
+    .mobile-menu[open] .mobile-menu-scrim {
+      display: block;
     }
   }
 

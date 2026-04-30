@@ -149,6 +149,8 @@ search orchestrator
 
 Repo search returns grep-like context by default, including repository-relative paths and line numbers. LLM agents can also call `repo.search` directly with `workspace`, `path`, `context_lines`, and `max_results` when they need focused code context before editing.
 
+The complete agent tool argument reference, policy model, and tool limitations are documented in `docs/agent-tools.md`.
+
 Use web search when you need current external information:
 
 ```text

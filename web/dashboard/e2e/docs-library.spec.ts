@@ -70,14 +70,16 @@ test('docs library remains usable on mobile', async ({ page }) => {
     page.locator('.content pre code').filter({ hasText: 'reflect on our recent interaction' })
   ).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Jump to document' })).toBeVisible();
-  await page.waitForLoadState('networkidle');
+  await expect(page.locator('.docs-shell')).toHaveAttribute('data-docs-library-ready', 'true');
 
+  const mobileNav = page.getByRole('navigation', { name: 'Primary mobile' });
   await page.getByRole('button', { name: 'Menu' }).click();
+  await expect(mobileNav).toBeVisible();
   await expect(
-    page.getByRole('navigation', { name: 'Primary mobile' }).getByRole('link', { name: 'Docs' })
+    mobileNav.getByRole('link', { name: 'Docs' })
   ).toHaveAttribute('aria-current', 'page');
   await page.getByRole('button', { name: 'Menu' }).click();
-  await expect(page.getByRole('navigation', { name: 'Primary mobile' })).not.toBeVisible();
+  await expect(mobileNav).toBeHidden();
 
   const jump = page.getByRole('combobox', { name: 'Jump to document' });
   await jump.selectOption('dashboard');

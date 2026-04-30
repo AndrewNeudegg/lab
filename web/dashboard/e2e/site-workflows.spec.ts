@@ -363,7 +363,18 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   }
 };
 
-const routes = ['/', '/chat', '/tasks', '/workflows', '/terminal', '/docs', '/docs/dashboard', '/healthd', '/supervisord'];
+const routes = [
+  '/',
+  '/chat',
+  '/tasks',
+  '/workflows',
+  '/terminal',
+  '/docs',
+  '/docs/dashboard',
+  '/docs/agent-tools',
+  '/healthd',
+  '/supervisord'
+];
 const docsRouteTimeoutMs = 120_000;
 
 for (const viewport of [
@@ -379,7 +390,16 @@ for (const viewport of [
           testInfo.setTimeout(docsRouteTimeoutMs);
         }
         await mockDashboardApis(page);
+        const taskSettingsReady =
+          route === '/tasks'
+            ? page.waitForResponse(
+                (response) =>
+                  response.url().endsWith('/api/settings') &&
+                  response.request().method() === 'GET'
+              )
+            : Promise.resolve();
         await page.goto(route);
+        await taskSettingsReady;
         if (route === '/') {
           await expect(page).toHaveURL(/\/chat$/);
         }

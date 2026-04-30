@@ -196,7 +196,7 @@ Use `internet.fetch` on promising result URLs before relying on page details, an
 
 ## Chat Meta Tools
 
-`chat.*` tools are Orchestrator pseudo-tools backed by the event log. They expose only user chat messages and assistant chat replies, not raw provider prompts or unrelated task events.
+`chat.*` tools are Orchestrator pseudo-tools backed by the event log. They expose only user chat messages and assistant chat replies, not raw provider prompts or unrelated task events. During an agent turn they exclude the current live user request, so questions about the last message, earlier replies, or the recent interaction inspect the prior transcript.
 
 - `chat.history`: required args: none. Optional args: `date`, `days`, `limit`. Lists recent chat entries in chronological order. `date` is `YYYY-MM-DD` and defaults to today UTC; `days` defaults to 1 and clamps to 30; `limit` defaults to 40 and clamps to 200.
 - `chat.search`: required args: `query`. Optional args: `date`, `days`, `limit`. Searches user messages, assistant replies, actors, and recipients. `days` defaults to 7 and clamps to 30; `limit` defaults to 50 and clamps to 200.

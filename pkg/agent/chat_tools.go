@@ -27,6 +27,7 @@ type chatHistoryToolRequest struct {
 	Date                     string `json:"date,omitempty"`
 	Days                     int    `json:"days,omitempty"`
 	Limit                    int    `json:"limit,omitempty"`
+	ExcludeEventID           string `json:"-"`
 	ExcludeLatestUserMessage string `json:"-"`
 }
 
@@ -35,6 +36,7 @@ type chatSearchToolRequest struct {
 	Date                     string `json:"date,omitempty"`
 	Days                     int    `json:"days,omitempty"`
 	Limit                    int    `json:"limit,omitempty"`
+	ExcludeEventID           string `json:"-"`
 	ExcludeLatestUserMessage string `json:"-"`
 }
 
@@ -83,11 +85,17 @@ func (o *Orchestrator) executeChatTool(ctx context.Context, actor, name string, 
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return toolExecution{Tool: name, Allowed: false, Error: err.Error()}
 		}
+		if turn, ok := currentChatTurnFromContext(ctx); ok {
+			req.ExcludeEventID = turn.UserEventID
+		}
 		payload, err = o.chatHistoryPayload(req)
 	case "chat.search":
 		var req chatSearchToolRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return toolExecution{Tool: name, Allowed: false, Error: err.Error()}
+		}
+		if turn, ok := currentChatTurnFromContext(ctx); ok {
+			req.ExcludeEventID = turn.UserEventID
 		}
 		payload, err = o.chatSearchPayload(req)
 	case "chat.send":
@@ -162,7 +170,7 @@ func (o *Orchestrator) chatHistoryPayload(req chatHistoryToolRequest) (json.RawM
 	if err != nil {
 		return nil, err
 	}
-	entries = excludeLatestUserMessage(entries, req.ExcludeLatestUserMessage)
+	entries = excludeCurrentChatTurn(entries, req.ExcludeEventID, req.ExcludeLatestUserMessage)
 	total := len(entries)
 	if len(entries) > limit {
 		entries = entries[len(entries)-limit:]
@@ -187,7 +195,7 @@ func (o *Orchestrator) chatSearchPayload(req chatSearchToolRequest) (json.RawMes
 	if err != nil {
 		return nil, err
 	}
-	entries = excludeLatestUserMessage(entries, req.ExcludeLatestUserMessage)
+	entries = excludeCurrentChatTurn(entries, req.ExcludeEventID, req.ExcludeLatestUserMessage)
 	needle := strings.ToLower(query)
 	var matches []chatMetaEntry
 	for _, entry := range entries {
@@ -310,6 +318,21 @@ func excludeLatestUserMessage(entries []chatMetaEntry, message string) []chatMet
 		return entries
 	}
 	return entries[:len(entries)-1]
+}
+
+func excludeCurrentChatTurn(entries []chatMetaEntry, eventID, fallbackMessage string) []chatMetaEntry {
+	eventID = strings.TrimSpace(eventID)
+	if eventID != "" {
+		filtered := make([]chatMetaEntry, 0, len(entries))
+		for _, entry := range entries {
+			if entry.EventID == eventID {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		return filtered
+	}
+	return excludeLatestUserMessage(entries, fallbackMessage)
 }
 
 func chatToolDate(value string) (time.Time, error) {

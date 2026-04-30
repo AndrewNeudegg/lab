@@ -3436,6 +3436,112 @@ func TestOpenEndedChatRetainsHistory(t *testing.T) {
 	assertContainsLLMMessage(t, got, llm.Message{Role: "user", Content: "what did I ask first?"})
 }
 
+func TestOpenEndedChatSeparatesPriorTranscriptFromCurrentRequest(t *testing.T) {
+	provider := &recordingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	prior := "alpha beta gamma"
+	current := "what was the third word in my last message?"
+	if _, err := orch.Handle(context.Background(), "test", prior); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.Handle(context.Background(), "test", current); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(provider.requests))
+	}
+
+	messages := provider.requests[1].Messages
+	boundary := -1
+	for i, msg := range messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "Prior transcript ends here") {
+			boundary = i
+			break
+		}
+	}
+	if boundary < 0 {
+		t.Fatalf("messages = %#v, want prior/current boundary prompt", messages)
+	}
+	if boundary >= len(messages)-1 {
+		t.Fatalf("boundary index = %d in messages %#v, want current request after boundary", boundary, messages)
+	}
+	for _, msg := range messages[:boundary] {
+		if msg.Role == "user" && msg.Content == current {
+			t.Fatalf("current request appeared in prior transcript: %#v", messages)
+		}
+	}
+	final := messages[len(messages)-1]
+	if final.Role != "user" || final.Content != current {
+		t.Fatalf("final message = %#v, want current request", final)
+	}
+	assertContainsLLMMessage(t, messages[:boundary], llm.Message{Role: "user", Content: prior})
+	assertContainsLLMMessage(t, messages[:boundary], llm.Message{Role: "assistant", Content: "reply 1"})
+}
+
+func TestOpenEndedChatKeepsRepeatedCurrentRequest(t *testing.T) {
+	provider := &recordingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	repeated := "repeat this exact prompt"
+	if _, err := orch.Handle(context.Background(), "test", repeated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.Handle(context.Background(), "test", repeated); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(provider.requests))
+	}
+
+	userMessages := 0
+	for _, msg := range provider.requests[1].Messages {
+		if msg.Role == "user" && msg.Content == repeated {
+			userMessages++
+		}
+	}
+	if userMessages != 2 {
+		t.Fatalf("messages = %#v, want repeated prompt once in prior transcript and once as current request", provider.requests[1].Messages)
+	}
+}
+
+func TestLLMChatHistoryToolExcludesCurrentRequest(t *testing.T) {
+	current := "what was my last message?"
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"noted","done":true,"tool_calls":[]}`,
+		`{"message":"Checking history","done":false,"tool_calls":[{"tool":"chat.history","args":{"limit":5}}]}`,
+		`{"message":"Previous user message was alpha beta gamma.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	if _, err := orch.Handle(context.Background(), "test", "alpha beta gamma"); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := orch.Handle(context.Background(), "test", current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Previous user message was alpha beta gamma." {
+		t.Fatalf("reply = %q, want scripted final reply", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(provider.requests))
+	}
+	toolResultMessage := provider.requests[2].Messages[len(provider.requests[2].Messages)-1].Content
+	if !strings.Contains(toolResultMessage, "alpha beta gamma") {
+		t.Fatalf("tool result message = %q, want prior user message", toolResultMessage)
+	}
+	if strings.Contains(toolResultMessage, current) {
+		t.Fatalf("tool result message = %q, should exclude current request", toolResultMessage)
+	}
+}
+
 func TestChatMetaToolsExposeTranscript(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 

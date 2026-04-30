@@ -54,7 +54,7 @@ chat search browser UAT
 search chat for what did you tell me about workflows
 ```
 
-The Orchestrator can also call `chat.history` and `chat.search` before answering questions about earlier user messages, assistant replies, what it sent, or how you responded. These tools read the server event log for `user.message` and `chat.reply` entries. Dashboard-only local messages, such as the welcome bubble before anything is sent to homelabd, are not part of that server log.
+The Orchestrator can also call `chat.history` and `chat.search` before answering questions about earlier user messages, assistant replies, what it sent, or how you responded. The LLM harness separates the prior transcript from the current request and excludes the current request from those tool results, so prompts like `what was my last message?`, `what was the third word in my last message?`, or `create a task from that interaction` can inspect the preceding exchange instead of paraphrasing the live prompt. These tools read the server event log for `user.message` and `chat.reply` entries. Dashboard-only local messages, such as the welcome bubble before anything is sent to homelabd, are not part of that server log.
 
 ## Memory And Personality
 

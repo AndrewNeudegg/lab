@@ -100,14 +100,25 @@ type ListState = {
   items: string[];
 };
 
+const mermaidLanguagePattern = /^(mermaid|mmd)$/i;
+const mermaidInitDirectivePattern = /^\s*%%\{\s*(?:init|initialize|config)[\s\S]*?\}%%\s*/i;
+
+const stripMermaidInitDirectives = (code: string) => {
+  let stripped = code;
+  while (mermaidInitDirectivePattern.test(stripped)) {
+    stripped = stripped.replace(mermaidInitDirectivePattern, '');
+  }
+  return stripped;
+};
+
 const renderFencedCode = (language: string, lines: string[]) => {
   const code = lines.join('\n');
-  const normalizedLanguage = language.toLowerCase();
   const languageClass = language ? ` class="language-${escapeAttribute(language)}"` : '';
 
-  if (normalizedLanguage === 'mermaid') {
+  if (mermaidLanguagePattern.test(language)) {
+    const source = stripMermaidInitDirectives(code);
     return [
-      `<figure class="mermaid-diagram" data-mermaid-source="${escapeAttribute(code)}" data-mermaid-status="pending">`,
+      `<figure class="mermaid-diagram" data-mermaid-source="${escapeAttribute(source)}" data-mermaid-status="pending">`,
       '<div class="mermaid-output" role="img" aria-label="Mermaid diagram" hidden></div>',
       `<pre><code${languageClass}>${escapeHtml(code)}</code></pre>`,
       '</figure>'

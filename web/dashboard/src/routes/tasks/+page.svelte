@@ -87,6 +87,7 @@
   let autoMergeSaving = false;
   let autoMergeEnabled = false;
   let autoMergeIssue = '';
+  let autoMergeVersion = 0;
   let diffLoadingTaskId = '';
   let workerRunsIssue = '';
   let taskFilter: TaskFilter = 'attention';
@@ -539,7 +540,8 @@
       settings: Promise<unknown>;
     },
     baseTasks: HomelabdTask[],
-    initialErrors: string[] = []
+    initialErrors: string[],
+    settingsVersion: number
   ) => {
     const refreshErrors = [...initialErrors];
     let nextApprovals = approvals;
@@ -592,11 +594,15 @@
     }
 
     if (settingsResult.status === 'fulfilled') {
-      const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
-      autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
+      if (settingsVersion === autoMergeVersion) {
+        const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
+        autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
+      }
       autoMergeIssue = '';
     } else {
-      autoMergeIssue = errorMessage(settingsResult.reason, 'Unable to load automation settings.');
+      if (settingsVersion === autoMergeVersion) {
+        autoMergeIssue = errorMessage(settingsResult.reason, 'Unable to load automation settings.');
+      }
     }
 
     const syncSelection = resolveTaskSyncSelection({
@@ -621,6 +627,7 @@
       const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
       const agentRequest = withRefreshTimeout('Agents', client.listAgents());
       const settingsRequest = withRefreshTimeout('Settings', client.getSettings());
+      const settingsVersion = autoMergeVersion;
       try {
         const taskResult = await Promise.resolve(taskRequest).then(
           (value) => ({ status: 'fulfilled' as const, value }),
@@ -671,7 +678,8 @@
             settings: settingsRequest
           },
           nextTasks,
-          refreshErrors
+          refreshErrors,
+          settingsVersion
         );
         if (syncSelection.shouldLoadRuns) {
           void refreshSelectedTaskDetails(syncSelection.selectedTaskId, {
@@ -798,6 +806,7 @@
       return;
     }
     const previous = autoMergeEnabled;
+    autoMergeVersion += 1;
     autoMergeEnabled = next;
     autoMergeSaving = true;
     autoMergeIssue = '';

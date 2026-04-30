@@ -19,6 +19,7 @@
     type HomelabdMessageRequest,
     type HomelabdTaskAttachment
   } from '@homelab/shared';
+  import { extractCommands } from './command-actions';
   import { formatInteractionStats, messageExchangeNumber } from './interaction-stats';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
@@ -28,10 +29,6 @@
     import.meta.env.VITE_HOMELABD_CHAT_SEND_TIMEOUT_MS || '',
     10
   );
-  const taskRefPattern = /(?:[a-f0-9]{6,12}|task_\d{8}_\d{6}_[a-f0-9]{8})/i;
-  const workflowRefPattern = /(?:[a-f0-9]{6,12}|workflow_\d{8}_\d{6}_[a-f0-9]{8})/i;
-  const approvalRefPattern = /approval_\d{8}_\d{6}_[a-f0-9]{8}/i;
-
   type PromptAction = {
     label: string;
     command: string;
@@ -176,59 +173,6 @@
     } catch {
       error = 'Chat history could not be persisted locally.';
     }
-  };
-
-  const isSafeCommand = (command: string) => {
-    const normalized = command.trim().replace(/\s+/g, ' ');
-    if (!normalized || normalized.includes('<') || normalized.length > 260) {
-      return false;
-    }
-    const verb = normalized.split(' ')[0]?.toLowerCase() || '';
-    if (['tasks', 'workflows', 'status', 'approvals', 'agents', 'help'].includes(normalized.toLowerCase())) {
-      return true;
-    }
-    if (verb === 'workflow') {
-      const action = normalized.split(' ')[1]?.toLowerCase() || '';
-      if (['list', 'ls'].includes(action)) {
-        return true;
-      }
-      if (['show', 'run', 'start'].includes(action)) {
-        return workflowRefPattern.test(normalized);
-      }
-      if (['new', 'create'].includes(action)) {
-        return normalized.length > 'workflow new '.length;
-      }
-    }
-    if (['new', 'task'].includes(verb)) {
-      return normalized.length > verb.length + 1;
-    }
-    if (['show', 'run', 'ux', 'review', 'diff', 'test', 'delete', 'accept', 'verify'].includes(verb)) {
-      return taskRefPattern.test(normalized);
-    }
-    if (verb === 'delegate') {
-      const parts = normalized.split(' ');
-      return (
-        parts.length >= 4 &&
-        taskRefPattern.test(parts[1]) &&
-        parts[2]?.toLowerCase() === 'to' &&
-        ['codex', 'claude', 'gemini', 'ux'].includes(parts[3]?.toLowerCase())
-      );
-    }
-    if (['approve', 'deny'].includes(verb)) {
-      return approvalRefPattern.test(normalized);
-    }
-    return false;
-  };
-
-  const extractCommands = (content: string): string[] => {
-    const commands = new Set<string>();
-    for (const match of content.matchAll(/`([^`\n]+)`/g)) {
-      const command = match[1].trim().replace(/\s+/g, ' ');
-      if (isSafeCommand(command)) {
-        commands.add(command);
-      }
-    }
-    return [...commands].slice(0, 5);
   };
 
   const focusInput = () => {
@@ -757,6 +701,7 @@
   .message-actions button,
   .prompt-actions button {
     min-height: 2rem;
+    max-width: 100%;
     padding: 0 0.7rem;
     border: 1px solid #cbd5e1;
     border-radius: 0.55rem;
@@ -765,6 +710,8 @@
     font-size: 0.82rem;
     font-weight: 750;
     text-decoration: none;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .chat-card {

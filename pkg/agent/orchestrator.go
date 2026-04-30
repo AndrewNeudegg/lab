@@ -2885,9 +2885,6 @@ func cleanNewTaskGoal(value string) string {
 	value = strings.ReplaceAll(value, "<", "")
 	value = strings.ReplaceAll(value, ">", "")
 	value = strings.Join(strings.Fields(value), " ")
-	if len(value) > 220 {
-		value = strings.TrimSpace(value[:220])
-	}
 	return strings.TrimSpace(strings.TrimPrefix(value, "new "))
 }
 
@@ -3010,6 +3007,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
+		"Pass the complete unsummarised task brief in task.create goal; homelabd stores it as task context and summarises only the display title.",
 		"Never leave a promise like \"I'll fix/tighten/update\" as prose; call task.create in that turn or avoid the promise.",
 		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
@@ -3030,7 +3028,7 @@ type catalogTool struct {
 func (o *Orchestrator) catalogTools() []catalogTool {
 	catalog := []catalogTool{{
 		Name:        "task.create",
-		Description: "Create a development task with an isolated local worktree or explicit remote target. Args: {\"goal\":\"...\",\"target\":{...}}.",
+		Description: "Create a local or remote development task. Pass the full unsummarised brief as goal; homelabd stores it intact and summarises only the display title. Args: {\"goal\":\"...\",\"target\":{...}}.",
 		Risk:        tool.RiskLow,
 		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"},"target":{"type":"object"}}}`),
 	}, {

@@ -7,6 +7,14 @@ const now = '2026-04-28T12:00:00.000Z';
 const taskID = 'task_20260428_120000_11111111';
 const workflowID = 'workflow_20260428_120000_22222222';
 const chatTranscriptStorageKey = 'homelabd.dashboard.chatTranscript.v4';
+const longSuggestedTaskGoal = [
+  'Improve task suggestion handling',
+  'preserve repository scan context, reviewed plan details, validation expectations, and operator constraints',
+  'keep the final risk note because it explains why truncation can drop vital task input',
+  'include the complete model-generated investigation trail and handoff notes'
+].join(' '.repeat(12));
+const longSuggestedTaskCommand = `new ${longSuggestedTaskGoal}`;
+const longSuggestedTaskAction = longSuggestedTaskCommand.replace(/\s+/g, ' ');
 const chatScrollTranscript = Array.from({ length: 24 }, (_, index) => ({
   id: `scroll-regression-${index}`,
   role: index % 2 === 0 ? 'assistant' : 'user',
@@ -174,10 +182,22 @@ const mockDashboardApis = async (page: Page) => {
   await installTerminalMocks(page);
   let autoMergeEnabled = false;
   await page.route(/\/api\/message$/, async (route) => {
+    const body = route.request().postDataJSON() as { content?: string };
+    if (body.content === longSuggestedTaskAction) {
+      await route.fulfill({
+        json: {
+          reply: 'Created task from full suggested brief.',
+          source: 'program',
+          stats: { model_turns: 1, tool_calls: 1, total_tokens: 64, elapsed_ms: 730 }
+        }
+      });
+      return;
+    }
     await route.fulfill({
       json: {
         reply: [
           'Status: `tasks` and `workflow list` are available.',
+          `Action: \`${longSuggestedTaskCommand}\``,
           '',
           '```mermaid',
           'flowchart LR',
@@ -432,6 +452,10 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Status:')).toBeVisible();
+    const longSuggestion = page.getByRole('button', { name: longSuggestedTaskAction });
+    await expect(longSuggestion).toBeVisible();
+    await longSuggestion.click();
+    await expect(page.getByText('Created task from full suggested brief.')).toBeVisible();
     await expect(page.getByText('1 model turn · 2 tool calls · 128 tokens · 1.2 s elapsed')).toBeVisible();
     await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
     if (route === '/chat') {

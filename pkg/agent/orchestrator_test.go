@@ -260,7 +260,8 @@ func TestToolIntrospectionListsAvailableToolsWithoutLLM(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Available tools:",
-		"`task.create`: Create a development task",
+		"`task.create`: Create a local or remote development task",
+		"Pass the full unsummarised brief as goal",
 		"Parameters: required `goal`; optional `target`.",
 		"`workflow.run`: Run a durable workflow",
 		"Parameters: required `workflow_id`.",
@@ -3850,6 +3851,37 @@ func TestReflectIncludesActionableNewTaskCommand(t *testing.T) {
 	}
 	if tasks[0].Goal != goal || tasks[0].ParentID != "" || tasks[0].GraphPhase != "" {
 		t.Fatalf("task = %#v, want standalone task with goal %q", tasks[0], goal)
+	}
+}
+
+func TestReflectPreservesLongTaskGoalInSuggestedAction(t *testing.T) {
+	goal := strings.Join([]string{
+		"Improve task suggestion handling",
+		strings.Repeat("preserve repository scan context, reviewed plan details, validation expectations, and operator constraints ", 4),
+		"keep this final risk note because it explains why truncation can drop vital task input",
+	}, " ")
+	content, err := json.Marshal(reflectionResult{
+		Reflection: "Long task suggestions should remain complete.",
+		TaskGoal:   goal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = &staticProvider{content: string(content)}
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "please reflect on our recent interaction and suggest one improvement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedGoal := strings.Join(strings.Fields(goal), " ")
+	want := "`new " + normalizedGoal + "`"
+	if !strings.Contains(reply, want) {
+		t.Fatalf("reply = %q, want full suggested action %q", reply, want)
+	}
+	if strings.Contains(reply, "[truncated]") {
+		t.Fatalf("reply = %q, should not mark suggested task goal as truncated", reply)
 	}
 }
 

@@ -28,7 +28,7 @@
     {
       id: 'agents-runtime',
       label: 'Agents and runtime',
-      slugs: ['remote-agents', 'external-agents', 'agentic-testing', 'supervisord']
+      slugs: ['remote-agents', 'external-agents', 'agent-tools', 'agentic-testing', 'supervisord']
     }
   ];
 
@@ -37,6 +37,7 @@
 
   let search = '';
   let jumpSelect: HTMLSelectElement;
+  let controlsReady = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -89,6 +90,7 @@
   };
 
   onMount(() => {
+    controlsReady = true;
     jumpSelect.dataset.docsEnhanced = 'true';
     const handleJump = () => openSelectedDoc(jumpSelect.value);
     jumpSelect.addEventListener('input', handleJump);
@@ -133,7 +135,7 @@
 
 <Navbar title="Docs" subtitle="Library" current="/docs" />
 
-<main class="docs-shell">
+<main class="docs-shell" data-docs-library-ready={controlsReady ? 'true' : 'false'}>
   <div class="docs-layout">
     <aside class="library" aria-label="Docs library">
       <div class="library-header">

@@ -798,11 +798,10 @@
   const mergeQueueMoveKey = (taskId: string, direction: MergeQueueDirection) =>
     `merge-queue:${taskId}:${direction}`;
 
-  const setAutoMerge = async (next: boolean) => {
+  const setAutoMerge = async (next: boolean, previous = autoMergeEnabled) => {
     if (autoMergeSaving) {
       return;
     }
-    const previous = autoMergeEnabled;
     autoMergeVersion += 1;
     autoMergeEnabled = next;
     autoMergeSaving = true;
@@ -828,7 +827,10 @@
     }
   };
 
-  const toggleAutoMerge = () => setAutoMerge(!autoMergeEnabled);
+  const handleAutoMergeChange = (event: Event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    void setAutoMerge(input.checked, !input.checked);
+  };
 
   const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
     if (mergeQueueLoading) {
@@ -1045,81 +1047,88 @@
         on:input={handleTaskSearchInput}
       />
 
-      <details class="merge-queue" aria-label="Merge queue" open>
-        <summary>
-          <span>Merge queue</span>
-          <button
-            type="button"
-            class:active={autoMergeEnabled}
-            class:busy={autoMergeSaving}
-            class="auto-merge-toggle"
-            title="Automatically merge reviewed queue-head tasks"
+      <div class="merge-queue-shell">
+        <details class="merge-queue" aria-label="Merge queue" open>
+          <summary>
+            <span>Merge queue</span>
+            <strong>{mergeQueueItems.length}</strong>
+            <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
+          </summary>
+          {#if autoMergeIssue}
+            <p class="merge-queue-note">{autoMergeIssue}</p>
+          {/if}
+          {#if mergeQueueItems.length}
+            <ol>
+              {#each mergeQueueItems as item, index}
+                <li class:selected={currentTask?.id === item.id}>
+                  <button
+                    type="button"
+                    class="merge-queue-task"
+                    aria-label={`Select ${taskSummaryTitle(item, 40)}`}
+                    on:click={() => selectTask(item.id)}
+                  >
+                    <span class="merge-queue-position">{item.merge_queue_position}</span>
+                    <span class="merge-queue-copy">
+                      <strong>{taskSummaryTitle(item, 54)}</strong>
+                      <small>{statusLabel(item.status)}</small>
+                    </span>
+                  </button>
+                  <div class="merge-queue-controls" aria-label={`Reorder ${taskSummaryTitle(item, 40)}`}>
+                    <button
+                      type="button"
+                      title="Move up"
+                      aria-label={`Move ${taskSummaryTitle(item, 40)} up in merge queue`}
+                      disabled={index === 0 ||
+                        mergeQueueLoading !== '' ||
+                        mergeQueueItems[index - 1]?.status === 'awaiting_restart'}
+                      on:click={() => void moveMergeQueueTask(item, 'up')}
+                    >
+                      <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                        <path d="m5 10 5-5 5 5" />
+                        <path d="M10 5v10" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      title="Move down"
+                      aria-label={`Move ${taskSummaryTitle(item, 40)} down in merge queue`}
+                      disabled={index === mergeQueueItems.length - 1 ||
+                        mergeQueueLoading !== '' ||
+                        item.status === 'awaiting_restart'}
+                      on:click={() => void moveMergeQueueTask(item, 'down')}
+                    >
+                      <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                        <path d="m5 10 5 5 5-5" />
+                        <path d="M10 5v10" />
+                      </svg>
+                    </button>
+                  </div>
+                </li>
+              {/each}
+            </ol>
+          {/if}
+        </details>
+        <label
+          class:active={autoMergeEnabled}
+          class:busy={autoMergeSaving}
+          class="auto-merge-toggle"
+          title="Automatically merge reviewed queue-head tasks"
+          on:click|preventDefault={() => void setAutoMerge(!autoMergeEnabled)}
+        >
+          <input
+            class="auto-merge-input"
+            type="checkbox"
             role="switch"
+            bind:checked={autoMergeEnabled}
             aria-checked={autoMergeEnabled}
             aria-label="Auto merge reviewed queue-head tasks"
             disabled={autoMergeSaving}
-            on:click|stopPropagation={toggleAutoMerge}
-          >
-            <span>Auto</span>
-            <i aria-hidden="true"></i>
-          </button>
-          <strong>{mergeQueueItems.length}</strong>
-          <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
-        </summary>
-        {#if autoMergeIssue}
-          <p class="merge-queue-note">{autoMergeIssue}</p>
-        {/if}
-        {#if mergeQueueItems.length}
-          <ol>
-            {#each mergeQueueItems as item, index}
-              <li class:selected={currentTask?.id === item.id}>
-                <button
-                  type="button"
-                  class="merge-queue-task"
-                  aria-label={`Select ${taskSummaryTitle(item, 40)}`}
-                  on:click={() => selectTask(item.id)}
-                >
-                  <span class="merge-queue-position">{item.merge_queue_position}</span>
-                  <span class="merge-queue-copy">
-                    <strong>{taskSummaryTitle(item, 54)}</strong>
-                    <small>{statusLabel(item.status)}</small>
-                  </span>
-                </button>
-                <div class="merge-queue-controls" aria-label={`Reorder ${taskSummaryTitle(item, 40)}`}>
-                  <button
-                    type="button"
-                    title="Move up"
-                    aria-label={`Move ${taskSummaryTitle(item, 40)} up in merge queue`}
-                    disabled={index === 0 ||
-                      mergeQueueLoading !== '' ||
-                      mergeQueueItems[index - 1]?.status === 'awaiting_restart'}
-                    on:click={() => void moveMergeQueueTask(item, 'up')}
-                  >
-                    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                      <path d="m5 10 5-5 5 5" />
-                      <path d="M10 5v10" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    title="Move down"
-                    aria-label={`Move ${taskSummaryTitle(item, 40)} down in merge queue`}
-                    disabled={index === mergeQueueItems.length - 1 ||
-                      mergeQueueLoading !== '' ||
-                      item.status === 'awaiting_restart'}
-                    on:click={() => void moveMergeQueueTask(item, 'down')}
-                  >
-                    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                      <path d="m5 10 5 5 5-5" />
-                      <path d="M10 5v10" />
-                    </svg>
-                  </button>
-                </div>
-              </li>
-            {/each}
-          </ol>
-        {/if}
-      </details>
+            on:change={handleAutoMergeChange}
+          />
+          <span>Auto</span>
+          <i aria-hidden="true"></i>
+        </label>
+      </div>
 
       <section class="task-list" aria-label="Task list">
         {#if visibleTaskItems.length === 0}
@@ -2080,8 +2089,12 @@
     white-space: nowrap;
   }
 
-  .merge-queue {
+  .merge-queue-shell {
     grid-area: merge;
+    position: relative;
+  }
+
+  .merge-queue {
     overflow: hidden;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 0.7rem;
@@ -2090,11 +2103,11 @@
 
   .merge-queue summary {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 0.45rem;
     min-height: 2.25rem;
-    padding: 0 0.65rem;
+    padding: 0 4.7rem 0 0.65rem;
     list-style: none;
     border: 0;
     border-radius: 0.7rem;
@@ -2119,6 +2132,9 @@
 
   .auto-merge-toggle {
     display: inline-grid;
+    position: absolute;
+    top: 0.56rem;
+    right: 0.65rem;
     grid-template-columns: auto auto;
     align-items: center;
     gap: 0.35rem;
@@ -2128,6 +2144,14 @@
     color: var(--muted, #64748b);
     background: transparent;
     cursor: pointer;
+  }
+
+  .auto-merge-input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: inherit;
   }
 
   .auto-merge-toggle span {
@@ -2178,12 +2202,12 @@
     transform: translateX(0.86rem);
   }
 
-  .auto-merge-toggle:focus-visible i {
+  .auto-merge-input:focus-visible ~ i {
     box-shadow: 0 0 0 3px rgb(37 99 235 / 0.18);
   }
 
-  .auto-merge-toggle:disabled {
-    pointer-events: none;
+  .auto-merge-input:disabled {
+    cursor: not-allowed;
   }
 
   .auto-merge-toggle.busy {

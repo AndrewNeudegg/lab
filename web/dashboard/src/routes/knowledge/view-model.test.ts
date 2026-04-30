@@ -1,0 +1,74 @@
+import { describe, expect, test } from 'bun:test';
+import type { HomelabdKnowledgeSpace } from '@homelab/shared';
+import {
+  compactKnowledgeID,
+  filterKnowledgeSpaces,
+  latestReport,
+  selectKnowledgeSpace,
+  spaceSourceCount,
+  spaceWordCount
+} from './view-model';
+
+const space = (
+  id: string,
+  title: string,
+  updatedAt: string,
+  overrides: Partial<HomelabdKnowledgeSpace> = {}
+): HomelabdKnowledgeSpace => ({
+  id,
+  title,
+  insight: { source_count: 0, word_count: 0 },
+  created_at: updatedAt,
+  updated_at: updatedAt,
+  ...overrides
+});
+
+describe('knowledge view model', () => {
+  test('filters and sorts spaces by text from titles, sources, and terms', () => {
+    const spaces = [
+      space('kspace_old', 'Release notes', '2026-04-28T09:00:00Z', {
+        sources: [{ id: 's1', title: 'Operational checklist' } as never]
+      }),
+      space('kspace_new', 'Research hub', '2026-04-29T09:00:00Z', {
+        insight: { source_count: 1, word_count: 500, key_terms: ['retrieval'] }
+      })
+    ];
+
+    expect(filterKnowledgeSpaces(spaces, '').map((item) => item.id)).toEqual([
+      'kspace_new',
+      'kspace_old'
+    ]);
+    expect(filterKnowledgeSpaces(spaces, 'checklist').map((item) => item.id)).toEqual([
+      'kspace_old'
+    ]);
+    expect(filterKnowledgeSpaces(spaces, 'retrieval').map((item) => item.id)).toEqual([
+      'kspace_new'
+    ]);
+  });
+
+  test('selects routed, existing, or first visible space', () => {
+    const spaces = [
+      space('kspace_a', 'A', '2026-04-28T09:00:00Z'),
+      space('kspace_b', 'B', '2026-04-29T09:00:00Z')
+    ];
+
+    expect(selectKnowledgeSpace(spaces, spaces, 'kspace_a', 'kspace_b')).toBe('kspace_b');
+    expect(selectKnowledgeSpace(spaces, spaces, 'kspace_a', '')).toBe('kspace_a');
+    expect(selectKnowledgeSpace(spaces, [spaces[1]], 'missing', '')).toBe('kspace_b');
+  });
+
+  test('derives counts, compact ids, and latest report', () => {
+    const item = space('kspace_20260430_abcd1234', 'Research', '2026-04-29T09:00:00Z', {
+      insight: { source_count: 2, word_count: 42 },
+      reports: [
+        { id: 'r1', question: 'old', mode: 'brief', answer: 'old', created_at: '2026-04-28T09:00:00Z' },
+        { id: 'r2', question: 'new', mode: 'research', answer: 'new', created_at: '2026-04-29T09:00:00Z' }
+      ]
+    });
+
+    expect(compactKnowledgeID(item.id)).toBe('abcd1234');
+    expect(spaceSourceCount(item)).toBe(2);
+    expect(spaceWordCount(item)).toBe(42);
+    expect(latestReport(item)?.id).toBe('r2');
+  });
+});

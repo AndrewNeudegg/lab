@@ -6,6 +6,9 @@ export const taskURL = (taskId: string) =>
 export const workflowURL = (workflowId: string) =>
   workflowId.trim() ? `/workflows?workflow=${encodeRef(workflowId)}` : '/workflows';
 
+export const knowledgeSpaceURL = (spaceId: string) =>
+  spaceId.trim() ? `/knowledge?space=${encodeRef(spaceId)}` : '/knowledge';
+
 export const terminalURL = (ref: { tabId?: string; sessionId?: string } = {}) => {
   if (ref.sessionId?.trim()) {
     return `/terminal?session=${encodeRef(ref.sessionId)}`;

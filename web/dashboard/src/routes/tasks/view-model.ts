@@ -229,6 +229,9 @@ export const selectTaskForQueue = (
   if (selectedTaskId && visibleTaskItems.some((task) => task.id === selectedTaskId)) {
     return selectedTaskId;
   }
+  if (!selectedTaskId) {
+    return '';
+  }
   return visibleTaskItems[0]?.id || '';
 };
 

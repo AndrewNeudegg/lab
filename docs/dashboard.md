@@ -42,6 +42,7 @@ Use the shared responsive navbar on every dashboard page.
 Dashboard state that operators naturally share must have a URL and must use SvelteKit navigation, not full document reloads.
 
 - Task rows and chat-created task links use `/tasks?task=<task_id>` and open the selected task record. Chat task creation replies display the summarised task title as the link text.
+- Plain `/tasks` is the task queue overview and does not auto-select the first task. From the overview, selecting a task pushes `/tasks?task=<task_id>`, so browser Back returns to the overview instead of another task detail.
 - Workflow rows use `/workflows?workflow=<workflow_id>` and open the selected workflow detail.
 - Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
 - Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.

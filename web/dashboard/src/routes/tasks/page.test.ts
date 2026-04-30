@@ -27,6 +27,15 @@ describe('tasks page composition', () => {
     expect(pageSource).not.toContain('selectedTaskId = taskQueueView.selectedTaskId');
   });
 
+  test('keeps plain tasks routes as an overview history entry', () => {
+    expect(pageSource).toContain('const applyTaskOverviewSelection = () =>');
+    expect(pageSource).toContain('const navigateToTaskOverview = (replaceState = true) =>');
+    expect(pageSource).toContain("void goto('/tasks', { keepFocus: true, noScroll: true, replaceState })");
+    expect(pageSource).toContain('if (!taskId) {');
+    expect(pageSource).toContain('applyTaskOverviewSelection();');
+    expect(pageSource).toContain('on:click={() => navigateToTaskOverview()}');
+  });
+
   test('uses direct task and approval endpoints instead of a chat command composer', () => {
     expect(pageSource).toContain('client.runTask(taskId)');
     expect(pageSource).toContain('client.reviewTask(taskId)');

@@ -10,7 +10,9 @@ const launchOptions = {
   chromiumSandbox: false,
   args: ['--disable-breakpad', '--disable-crash-reporter', '--disable-dev-shm-usage']
 };
-const uatTimeout = 120_000;
+const uatTestTimeout = 120_000;
+const uatExpectTimeout = 20_000;
+const uatWebServerTimeout = 120_000;
 
 function worktreePort(cwd: string) {
   let hash = 0;
@@ -22,15 +24,15 @@ function worktreePort(cwd: string) {
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: uatTimeout,
+  timeout: uatTestTimeout,
   workers: 1,
   expect: {
-    timeout: 20_000
+    timeout: uatExpectTimeout
   },
   webServer: {
     command: `bun run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
     url: `${baseURL}/chat`,
-    timeout: uatTimeout,
+    timeout: uatWebServerTimeout,
     reuseExistingServer: false
   },
   use: {

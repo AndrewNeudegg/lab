@@ -38,6 +38,7 @@
   let search = '';
   let jumpSelect: HTMLSelectElement;
   let controlsReady = false;
+  let mobileLibraryOpen = false;
 
   $: docsBySlug = new Map(docs.map((doc) => [doc.slug, doc]));
   $: navigationDocs = [
@@ -139,59 +140,77 @@
   <div class="docs-layout">
     <aside class="library" aria-label="Docs library">
       <div class="library-header">
-        <p class="eyebrow">Documentation</p>
-        <p class="library-title">Browse docs</p>
-        <span>{navigationDocs.length} Markdown files</span>
+        <div class="library-heading">
+          <p class="eyebrow">Documentation</p>
+          <p class="library-title">Browse docs</p>
+          <span>{navigationDocs.length} Markdown files</span>
+        </div>
+        <button
+          type="button"
+          class="library-toggle"
+          aria-controls="docs-library-controls"
+          aria-expanded={mobileLibraryOpen}
+          aria-label={mobileLibraryOpen ? 'Collapse docs navigation' : 'Expand docs navigation'}
+          on:click={() => (mobileLibraryOpen = !mobileLibraryOpen)}
+        >
+          <span class="toggle-arrow" aria-hidden="true"></span>
+        </button>
       </div>
 
-      <div class="mobile-jump">
-        <label for="docs-jump">Current document</label>
-        <select id="docs-jump" bind:this={jumpSelect} data-docs-jump="true" aria-label="Jump to document">
-          {#each navigationDocs as doc}
-            <option value={doc.slug} selected={doc.slug === selectedSlug}>{doc.title}</option>
-          {/each}
-        </select>
-      </div>
+      <div
+        id="docs-library-controls"
+        class="library-controls"
+        class:mobile-open={mobileLibraryOpen}
+      >
+        <div class="mobile-jump">
+          <label for="docs-jump">Current document</label>
+          <select id="docs-jump" bind:this={jumpSelect} data-docs-jump="true" aria-label="Jump to document">
+            {#each navigationDocs as doc}
+              <option value={doc.slug} selected={doc.slug === selectedSlug}>{doc.title}</option>
+            {/each}
+          </select>
+        </div>
 
-      <div class="search-block">
-        <label class="search-label" for="docs-search">Search documentation</label>
-        <input
-          id="docs-search"
-          type="search"
-          bind:value={search}
-          placeholder="Search titles, paths, and contents"
-          autocomplete="off"
-          aria-controls="docs-list"
-        />
-        <p id="docs-result-count" class="result-count" aria-live="polite">{resultText}</p>
-      </div>
+        <div class="search-block">
+          <label class="search-label" for="docs-search">Search documentation</label>
+          <input
+            id="docs-search"
+            type="search"
+            bind:value={search}
+            placeholder="Search titles, paths, and contents"
+            autocomplete="off"
+            aria-controls="docs-list"
+          />
+          <p id="docs-result-count" class="result-count" aria-live="polite">{resultText}</p>
+        </div>
 
-      <nav id="docs-list" class="doc-list" aria-label="Documents" aria-describedby="docs-result-count">
-        {#if filteredDocs.length > 0}
-          {#each visibleDocGroups as group}
-            <section class="doc-group" aria-labelledby={`docs-group-${group.id}`}>
-              <h2 id={`docs-group-${group.id}`}>{group.label}</h2>
-              <div class="doc-group-links">
-                {#each group.docs as doc}
-                  <a
-                    class:selected={doc.slug === selectedSlug}
-                    href={docsURL(doc.slug)}
-                    aria-current={doc.slug === selectedSlug ? 'page' : undefined}
-                  >
-                    <span class="doc-title">{doc.title}</span>
-                    <span class="doc-meta">{doc.path}</span>
-                    {#if searchActive}
-                      <span class="doc-summary">{doc.summary}</span>
-                    {/if}
-                  </a>
-                {/each}
-              </div>
-            </section>
-          {/each}
-        {:else}
-          <p class="empty">No matching documents.</p>
-        {/if}
-      </nav>
+        <nav id="docs-list" class="doc-list" aria-label="Documents" aria-describedby="docs-result-count">
+          {#if filteredDocs.length > 0}
+            {#each visibleDocGroups as group}
+              <section class="doc-group" aria-labelledby={`docs-group-${group.id}`}>
+                <h2 id={`docs-group-${group.id}`}>{group.label}</h2>
+                <div class="doc-group-links">
+                  {#each group.docs as doc}
+                    <a
+                      class:selected={doc.slug === selectedSlug}
+                      href={docsURL(doc.slug)}
+                      aria-current={doc.slug === selectedSlug ? 'page' : undefined}
+                    >
+                      <span class="doc-title">{doc.title}</span>
+                      <span class="doc-meta">{doc.path}</span>
+                      {#if searchActive}
+                        <span class="doc-summary">{doc.summary}</span>
+                      {/if}
+                    </a>
+                  {/each}
+                </div>
+              </section>
+            {/each}
+          {:else}
+            <p class="empty">No matching documents.</p>
+          {/if}
+        </nav>
+      </div>
     </aside>
 
     <article class="article" aria-labelledby="doc-title">
@@ -270,13 +289,63 @@
   }
 
   .library-header {
-    display: grid;
-    gap: 0.25rem;
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.75rem;
     padding: 0 0.35rem;
   }
 
-  .library-header p,
-  .library-header span,
+  .library-heading,
+  .library-controls {
+    display: grid;
+    gap: 1.1rem;
+    min-width: 0;
+  }
+
+  .library-heading {
+    gap: 0.25rem;
+  }
+
+  .library-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 2.35rem;
+    height: 2.35rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.5rem;
+    color: var(--text-strong, #0f172a);
+    background: var(--surface-muted, #f8fafc);
+    cursor: pointer;
+  }
+
+  .library-toggle:hover {
+    border-color: var(--border, #cbd5e1);
+    background: var(--surface-hover, #eef5ff);
+  }
+
+  .library-toggle:focus-visible {
+    border-color: var(--accent, #2563eb);
+    outline: 3px solid color-mix(in srgb, var(--accent, #2563eb) 22%, transparent);
+  }
+
+  .toggle-arrow {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: translateY(-0.1rem) rotate(45deg);
+    transition: transform 0.16s ease;
+  }
+
+  .library-toggle[aria-expanded='true'] .toggle-arrow {
+    transform: translateY(0.12rem) rotate(225deg);
+  }
+
+  .library-heading p,
+  .library-heading span,
   .article-header p,
   .article-header h1,
   .article-header span,
@@ -306,7 +375,7 @@
     letter-spacing: 0;
   }
 
-  .library-header span,
+  .library-heading span,
   .article-header span {
     color: var(--muted, #64748b);
     font-size: 0.86rem;
@@ -638,8 +707,32 @@
 
     .library {
       position: static;
-      max-height: none;
-      padding: 0.9rem;
+      top: auto;
+      z-index: auto;
+      max-height: calc(100dvh - 5rem);
+      overflow: hidden;
+      padding: 0.85rem;
+    }
+
+    .library-header {
+      align-items: center;
+      padding: 0;
+    }
+
+    .library-toggle {
+      display: inline-flex;
+    }
+
+    .library-controls {
+      display: none;
+      min-height: 0;
+      overflow-y: auto;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border-soft, #dbe3ef);
+    }
+
+    .library-controls.mobile-open {
+      display: grid;
     }
 
     .mobile-jump {

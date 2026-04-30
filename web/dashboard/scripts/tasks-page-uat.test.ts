@@ -24,8 +24,21 @@ describe('tasks page UAT flow', () => {
   test('exercises manual task pane sync against the browser network layer', () => {
     expect(scriptSource).toContain('manual Sync did not reload all task pane data sources');
     expect(scriptSource).toContain("path === '/api/tasks'");
-    expect(scriptSource).toContain('manual Sync did not leave a selected visible task');
+    expect(scriptSource).toContain('manual Sync changed the overview URL before task selection');
+    expect(scriptSource).toContain('manual Sync auto-selected a visible task before task click');
     expect(scriptSource).toContain('manual Sync freshness timestamp did not include seconds');
+  });
+
+  test('keeps the Running queue selected across background sync', () => {
+    expect(scriptSource).toContain('background task sync did not run while waiting on Running filter');
+    expect(scriptSource).toContain('Running filter changed after background task sync');
+    expect(scriptSource).toContain('runningAfterAutoSync');
+  });
+
+  test('checks browser history returns from task detail to overview', () => {
+    expect(scriptSource).toContain('browser Back from a selected task did not return to overview URL');
+    expect(scriptSource).toContain('browser Back left a task selected on the overview route');
+    expect(scriptSource).toContain('browser Back did not restore the overview empty record');
   });
 
   test('checks diff labels, wrapping, dark theme, and mode buttons in the browser', () => {
@@ -47,6 +60,10 @@ describe('tasks page UAT flow', () => {
     expect(scriptSource).toContain('mobile selected task did not show action buttons');
     expect(scriptSource).toContain('mobile Back to queue did not hide detail');
     expect(scriptSource).toContain('mobile selected detail has horizontal overflow');
+    expect(scriptSource).toContain('mobile page scrolled instead of task list');
+    expect(scriptSource).toContain('mobile empty queue page scrolled below the footer');
+    expect(scriptSource).toContain('mobile empty queue document has a vertical scroll range');
+    expect(scriptSource).toContain('mobile empty queue footer fell below the layout viewport');
   });
 
   test('checks constrained desktop diff readability', () => {

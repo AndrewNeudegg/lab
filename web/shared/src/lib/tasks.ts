@@ -72,6 +72,15 @@ export const taskStateDescription = (status = '') => {
   }
 };
 
+export const taskStatusLabel = (status = '') => {
+  switch (status) {
+    case 'ready_for_review':
+      return 'queued for review';
+    default:
+      return status.replaceAll('_', ' ');
+  }
+};
+
 export const taskStateTransitions = (status = '') => {
   switch (status) {
     case 'queued':

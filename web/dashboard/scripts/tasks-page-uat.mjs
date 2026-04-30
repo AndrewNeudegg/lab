@@ -151,8 +151,10 @@ const run = async () => {
               resolve({
                 active,
                 rows,
+                path: location.pathname + location.search,
                 selected: document.querySelector('.task-row.selected')?.innerText || '',
                 actionText: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
+                emptyRecord: document.querySelector('.empty-record')?.innerText || '',
                 workflowState: document.querySelector('.state-machine')?.innerText || ''
               });
               return;
@@ -164,13 +166,9 @@ const run = async () => {
     );
     assert(afterAll.active.includes('All'), 'All filter did not become active', afterAll);
     assert(afterAll.rows > 0, 'All queue rendered no task rows', afterAll);
-    assert(afterAll.selected, 'All queue did not leave a selected task', afterAll);
-    assert(afterAll.actionText.length > 0, 'direct task action panel did not render', afterAll);
-    assert(
-      afterAll.workflowState.toLowerCase().includes('workflow state'),
-      'workflow state did not render',
-      afterAll
-    );
+    assert(afterAll.path === '/tasks', 'All queue changed the overview URL before task selection', afterAll);
+    assert(!afterAll.selected, 'All queue auto-selected a task before task click', afterAll);
+    assert(afterAll.emptyRecord.includes('Select a task'), 'overview did not show the empty task record', afterAll);
 
     const manualSync = await evalJS(
       cdp,
@@ -213,6 +211,7 @@ const run = async () => {
                 after,
                 syncedBefore,
                 syncedAfter: document.querySelector('.task-header span')?.innerText || '',
+                path: location.pathname + location.search,
                 rows: document.querySelectorAll('.task-row').length,
                 selected: document.querySelector('.task-row.selected')?.innerText || ''
               });
@@ -226,7 +225,8 @@ const run = async () => {
     );
     assert(manualSync.completed === true, 'manual Sync did not reload all task pane data sources', manualSync);
     assert(manualSync.rows > 0, 'manual Sync left the task queue empty', manualSync);
-    assert(manualSync.selected, 'manual Sync did not leave a selected visible task', manualSync);
+    assert(manualSync.path === '/tasks', 'manual Sync changed the overview URL before task selection', manualSync);
+    assert(!manualSync.selected, 'manual Sync auto-selected a visible task before task click', manualSync);
     assert(
       /synced\s+\d{1,2}:\d{2}:\d{2}/i.test(manualSync.syncedAfter),
       'manual Sync freshness timestamp did not include seconds',
@@ -254,6 +254,96 @@ const run = async () => {
     );
     assert(afterRunning.active.includes('Running'), 'Running filter did not become active', afterRunning);
 
+    const runningAfterAutoSync = await evalJS(
+      cdp,
+      `(() => {
+        const countTaskResources = () => {
+          let count = 0;
+          for (const entry of performance.getEntriesByType('resource')) {
+            try {
+              const path = new URL(entry.name, location.href).pathname;
+              if (path === '/api/tasks' || path === '/tasks') count += 1;
+            } catch {
+              continue;
+            }
+          }
+          return count;
+        };
+        return new Promise((resolve) => {
+          const before = countTaskResources();
+          const started = Date.now();
+          const sample = () => {
+            const after = countTaskResources();
+            const active = document.querySelector('.triage button.active')?.innerText || '';
+            const elapsed = Date.now() - started;
+            if ((after > before && elapsed >= 8300) || elapsed > 11500) {
+              resolve({
+                active,
+                before,
+                after,
+                elapsed,
+                rows: document.querySelectorAll('.task-row').length,
+                selected: document.querySelector('.task-row.selected')?.innerText || ''
+              });
+              return;
+            }
+            setTimeout(sample, 200);
+          };
+          sample();
+        });
+      })()`
+    );
+    assert(
+      runningAfterAutoSync.after > runningAfterAutoSync.before,
+      'background task sync did not run while waiting on Running filter',
+      runningAfterAutoSync
+    );
+    assert(
+      runningAfterAutoSync.active.includes('Running'),
+      'Running filter changed after background task sync',
+      runningAfterAutoSync
+    );
+
+    const historyBack = await evalJS(
+      cdp,
+      `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
+        new Promise((resolve) => {
+          const started = Date.now();
+          const waitForAll = () => {
+            const active = document.querySelector('.triage button.active')?.innerText || '';
+            const rows = [...document.querySelectorAll('.task-row')];
+            if ((active.includes('All') && rows.length > 0) || Date.now() - started > 2500) {
+              const before = location.pathname + location.search;
+              rows[0]?.click();
+              setTimeout(() => {
+                const selectedPath = location.pathname + location.search;
+                history.back();
+                setTimeout(() => resolve({
+                  before,
+                  selectedPath,
+                  after: location.pathname + location.search,
+                  selected: document.querySelector('.task-row.selected')?.innerText || '',
+                  emptyRecord: document.querySelector('.empty-record')?.innerText || '',
+                  detailVisible: getComputedStyle(document.querySelector('.workbench')).display !== 'none'
+                }), 350);
+              }, 250);
+              return;
+            }
+            setTimeout(waitForAll, 100);
+          };
+          waitForAll();
+        }))`
+    );
+    assert(historyBack.before === '/tasks', 'task selection history did not start from the overview URL', historyBack);
+    assert(
+      historyBack.selectedPath.startsWith('/tasks?task='),
+      'task row click did not navigate to a task-specific URL',
+      historyBack
+    );
+    assert(historyBack.after === '/tasks', 'browser Back from a selected task did not return to overview URL', historyBack);
+    assert(!historyBack.selected, 'browser Back left a task selected on the overview route', historyBack);
+    assert(historyBack.emptyRecord.includes('Select a task'), 'browser Back did not restore the overview empty record', historyBack);
+
     const afterSelect = await evalJS(
       cdp,
       `([...document.querySelectorAll('.triage button')].find((button) => button.innerText.includes('All'))?.click(),
@@ -271,6 +361,7 @@ const run = async () => {
                   .map((button) => ({ text: button.innerText, disabled: button.disabled })),
                 retrySettings: document.querySelector('[aria-label="Retry settings"]')?.innerText || '',
                 reopenReason: document.querySelector('[aria-label="Reopen reason"]')?.innerText || '',
+                workflowState: document.querySelector('.state-machine')?.innerText || '',
                 workerTrace: document.querySelector('[aria-label="Worker runs"]')?.innerText || '',
                 hasComposer: document.querySelector('#message, .composer') !== null
               }), 250);
@@ -285,6 +376,11 @@ const run = async () => {
     assert(afterSelect.selected, 'task click did not select a row', afterSelect);
     assert(afterSelect.actionButtons.length > 0, 'no direct action buttons rendered for selected task', afterSelect);
     assert(afterSelect.hasComposer === false, 'task detail rendered a chat composer after selection', afterSelect);
+    assert(
+      afterSelect.workflowState.toLowerCase().includes('workflow state'),
+      'workflow state did not render after selecting a task',
+      afterSelect
+    );
     assert(
       afterSelect.workerTrace.toLowerCase().includes('worker trace'),
       'worker trace panel did not render',
@@ -632,17 +728,100 @@ const run = async () => {
 
     const mobileScroll = await evalJS(
       cdp,
-      `(window.scrollTo(0, document.body.scrollHeight),
-        new Promise((resolve) => setTimeout(() => resolve({
-        scrollY: window.scrollY,
-        navbarTop: document.querySelector('.navbar')?.getBoundingClientRect().top ?? null
-      }), 100)))`
+      `(() => {
+        const taskList = document.querySelector('.task-list');
+        const taskPane = document.querySelector('.task-pane');
+        if (taskList) {
+          taskList.scrollTop = taskList.scrollHeight;
+        }
+        window.scrollTo(0, document.body.scrollHeight);
+        return new Promise((resolve) => setTimeout(() => resolve({
+          windowScrollY: window.scrollY,
+          navbarTop: document.querySelector('.navbar')?.getBoundingClientRect().top ?? null,
+          taskListScrollTop: Math.round(taskList?.scrollTop || 0),
+          taskListScrollable: Math.round((taskList?.scrollHeight || 0) - (taskList?.clientHeight || 0)),
+          taskListOverflowY: taskList ? getComputedStyle(taskList).overflowY : '',
+          taskPaneOverflowY: taskPane ? getComputedStyle(taskPane).overflowY : '',
+          bodyWidth: document.body.scrollWidth,
+          viewport: window.innerWidth
+        }), 100));
+      })()`
     );
-    assert(mobileScroll.scrollY > 0, 'mobile viewport did not scroll for sticky navbar check', mobileScroll);
+    assert(mobileScroll.windowScrollY <= 2, 'mobile page scrolled instead of task list', mobileScroll);
     assert(
       Math.abs(mobileScroll.navbarTop) <= 1,
       'mobile navbar did not remain sticky at viewport top',
       mobileScroll
+    );
+    assert(mobileScroll.taskListOverflowY === 'auto', 'mobile task list does not own vertical scrolling', mobileScroll);
+    assert(mobileScroll.taskPaneOverflowY === 'hidden', 'mobile task pane allows page-level scrolling', mobileScroll);
+    if (mobileScroll.taskListScrollable > 2) {
+      assert(mobileScroll.taskListScrollTop > 0, 'mobile task list did not scroll independently', mobileScroll);
+    }
+    assert(mobileScroll.bodyWidth <= mobileScroll.viewport + 2, 'mobile scroll check has horizontal overflow', mobileScroll);
+
+    const mobileEmptyQueue = await evalJS(
+      cdp,
+      `(() => {
+        const search = document.querySelector('#task-search');
+        if (search) {
+          search.value = 'zz_no_matching_mobile_tasks_scroll_regression';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return new Promise((resolve) => setTimeout(() => {
+          const taskList = document.querySelector('.task-list');
+          const taskPane = document.querySelector('.task-pane');
+          const footer = document.querySelector('.task-pane footer');
+          window.scrollTo(0, document.body.scrollHeight);
+          resolve({
+            rows: document.querySelectorAll('.task-row').length,
+            emptyText: document.querySelector('.task-list .empty')?.innerText || '',
+            scrollY: window.scrollY,
+            taskListHeight: Math.round(taskList?.getBoundingClientRect().height || 0),
+            taskListOverflowY: taskList ? getComputedStyle(taskList).overflowY : '',
+            taskPaneOverflowY: taskPane ? getComputedStyle(taskPane).overflowY : '',
+            footerBottom: footer?.getBoundingClientRect().bottom ?? null,
+            pageScrollHeight: document.scrollingElement?.scrollHeight ?? document.documentElement.scrollHeight,
+            pageClientHeight: document.scrollingElement?.clientHeight ?? document.documentElement.clientHeight,
+            bodyWidth: document.body.scrollWidth,
+            viewport: window.innerWidth
+          });
+        }, 200));
+      })()`
+    );
+    assert(mobileEmptyQueue.rows === 0, 'mobile empty queue still rendered task rows', mobileEmptyQueue);
+    assert(
+      mobileEmptyQueue.emptyText.includes('No tasks match'),
+      'mobile empty queue message did not render',
+      mobileEmptyQueue
+    );
+    assert(mobileEmptyQueue.scrollY <= 2, 'mobile empty queue page scrolled below the footer', mobileEmptyQueue);
+    assert(mobileEmptyQueue.taskListHeight > 0, 'mobile empty queue list container collapsed', mobileEmptyQueue);
+    assert(
+      mobileEmptyQueue.taskListOverflowY === 'auto',
+      'mobile empty queue task list lost internal scrolling',
+      mobileEmptyQueue
+    );
+    assert(
+      mobileEmptyQueue.taskPaneOverflowY === 'hidden',
+      'mobile empty queue allowed page-level pane scrolling',
+      mobileEmptyQueue
+    );
+    assert(
+      mobileEmptyQueue.pageScrollHeight <= mobileEmptyQueue.pageClientHeight + 1,
+      'mobile empty queue document has a vertical scroll range',
+      mobileEmptyQueue
+    );
+    assert(
+      mobileEmptyQueue.footerBottom === null ||
+        mobileEmptyQueue.footerBottom <= mobileEmptyQueue.pageClientHeight + 1,
+      'mobile empty queue footer fell below the layout viewport',
+      mobileEmptyQueue
+    );
+    assert(
+      mobileEmptyQueue.bodyWidth <= mobileEmptyQueue.viewport + 2,
+      'mobile empty queue has horizontal overflow',
+      mobileEmptyQueue
     );
 
     const errors = await evalJS(cdp, `window.__uatErrors || []`);
@@ -657,6 +836,8 @@ const run = async () => {
           afterAll,
           manualSync,
           afterRunning,
+          runningAfterAutoSync,
+          historyBack,
           afterSelect,
           createForm,
           diffInitial,
@@ -668,7 +849,8 @@ const run = async () => {
           mobileQueue,
           mobileSelect,
           mobileBack,
-          mobileScroll
+          mobileScroll,
+          mobileEmptyQueue
         },
         null,
         2

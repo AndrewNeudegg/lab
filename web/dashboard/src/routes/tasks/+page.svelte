@@ -15,6 +15,7 @@
     taskRuntimeMs,
     taskStartedAt,
     taskStateDescription,
+    taskStatusLabel,
     taskSummaryTitle,
     type HomelabdApproval,
     type HomelabdEvent,
@@ -114,6 +115,7 @@
   let noticeId = 0;
   let refreshStateSequence = 0;
   let lastAppliedRouteTaskId = '';
+  let pendingRouteTaskId = '';
 
   let tasks: HomelabdTask[] = [];
   let agents: HomelabdRemoteAgent[] = [];
@@ -180,8 +182,31 @@
     if (currentRoutePath() === next) {
       return;
     }
-    lastAppliedRouteTaskId = taskId;
-    void goto(next, { keepFocus: true, noScroll: true, replaceState });
+    pendingRouteTaskId = taskId;
+    void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
+      if (pendingRouteTaskId === taskId) {
+        pendingRouteTaskId = '';
+      }
+    });
+  };
+
+  const applyTaskOverviewSelection = () => {
+    selectedTaskId = '';
+    loadedRunsTaskId = '';
+    loadedDiffTaskId = '';
+    selectedDiffFilePath = '';
+    deleteConfirmTaskId = '';
+    lastAppliedRouteTaskId = '';
+    pendingRouteTaskId = '';
+    showMobilePanel('queue');
+  };
+
+  const navigateToTaskOverview = (replaceState = true) => {
+    applyTaskOverviewSelection();
+    if (!browser || currentRoutePath() === '/tasks') {
+      return;
+    }
+    void goto('/tasks', { keepFocus: true, noScroll: true, replaceState });
   };
 
   const applyRouteTaskSelection = (taskId: string) => {
@@ -218,6 +243,7 @@
     window.setTimeout(() => {
       const taskId = taskRouteIdFromLocation();
       if (!taskId) {
+        applyTaskOverviewSelection();
         return;
       }
       applyRouteTaskSelection(taskId);
@@ -230,7 +256,17 @@
       return;
     }
     const taskId = to.url.searchParams.get('task') || '';
-    if (!taskId || taskId === selectedTaskId) {
+    if (!taskId) {
+      applyTaskOverviewSelection();
+      return;
+    }
+    if (pendingRouteTaskId === taskId) {
+      lastAppliedRouteTaskId = taskId;
+      pendingRouteTaskId = '';
+      return;
+    }
+    if (taskId === selectedTaskId) {
+      lastAppliedRouteTaskId = taskId;
       return;
     }
     applyRouteTaskSelection(taskId);
@@ -249,8 +285,6 @@
     const tail = parts[parts.length - 1] || id;
     return tail.length > 8 ? tail.slice(0, 8) : tail;
   };
-
-  const statusLabel = (status = '') => status.replaceAll('_', ' ');
 
   const workdirLabel = (workdir?: HomelabdRemoteAgentWorkdir) => {
     if (!workdir) {
@@ -403,7 +437,7 @@
   $: currentSecondaryOperations = secondaryTaskOperations(currentTask, approvals);
   $: if (browser) {
     const routeTaskId = currentTaskRouteId();
-    if (routeTaskId && routeTaskId !== lastAppliedRouteTaskId) {
+    if (routeTaskId && routeTaskId !== lastAppliedRouteTaskId && routeTaskId !== pendingRouteTaskId) {
       lastAppliedRouteTaskId = routeTaskId;
       applyRouteTaskSelection(routeTaskId);
     }
@@ -730,13 +764,6 @@
             );
             tasks = nextTasks;
             taskLoadError = '';
-            const routeTaskId = currentTaskRouteId();
-            if (routeTaskId && nextTasks.some((task) => task.id === routeTaskId)) {
-              taskFilter = 'all';
-              queueFilter = 'all';
-              taskSearch = '';
-              selectedTaskId = routeTaskId;
-            }
           } catch (err) {
             taskLoadError = errorMessage(err, 'Unable to load tasks.');
             refreshErrors.push(taskLoadError);
@@ -1031,8 +1058,7 @@
         retryInstruction = '';
       }
       if (operation === 'delete') {
-        selectedTaskId = '';
-        showMobilePanel('queue');
+        navigateToTaskOverview();
       }
       deleteConfirmTaskId = '';
       await refreshState();
@@ -1189,7 +1215,7 @@
                   <span class="merge-queue-position">{item.merge_queue_position}</span>
                   <span class="merge-queue-copy">
                     <strong>{taskSummaryTitle(item, 54)}</strong>
-                    <small>{statusLabel(item.status)}</small>
+                    <small>{taskStatusLabel(item.status)}</small>
                   </span>
                 </button>
                 <div class="merge-queue-controls" aria-label={`Reorder ${taskSummaryTitle(item, 40)}`}>
@@ -1248,7 +1274,7 @@
                 <strong>{taskSummaryTitle(task, 84)}</strong>
                 <small>
                   <span>{shortID(task.id)} / updated {compactTime(task.updated_at)}</span>
-                  <span class={`status ${taskTone(task)}`}>{statusLabel(task.status)}</span>
+                  <span class={`status ${taskTone(task)}`}>{taskStatusLabel(task.status)}</span>
                 </small>
                 <em>
                   {targetLabel(task)}
@@ -1358,7 +1384,7 @@
       {#if currentTask}
         <article class="task-record">
           <header class="record-header">
-            <button type="button" class="back-to-queue" aria-label="Back to queue" on:click={() => showMobilePanel('queue')}>
+            <button type="button" class="back-to-queue" aria-label="Back to queue" on:click={() => navigateToTaskOverview()}>
               <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <path d="M12.5 4.5 7 10l5.5 5.5" />
               </svg>
@@ -1368,7 +1394,7 @@
               <p>Selected task</p>
               <h2>{taskSummaryTitle(currentTask)}</h2>
             </div>
-            <span class={`status ${taskTone(currentTask)}`}>{statusLabel(currentTask.status)}</span>
+            <span class={`status ${taskTone(currentTask)}`}>{taskStatusLabel(currentTask.status)}</span>
           </header>
 
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
@@ -1495,13 +1521,13 @@
           <details class="detail-section state-context" aria-label="Task context" open>
             <summary>
               <span>State and context</span>
-              <strong>{statusLabel(currentTask.status)}</strong>
+              <strong>{taskStatusLabel(currentTask.status)}</strong>
             </summary>
             <div class="detail-body">
               <section class="state-machine" aria-label="Workflow state">
                 <div>
                   <span>Workflow state</span>
-                  <strong>{statusLabel(currentTask.status)}</strong>
+                  <strong>{taskStatusLabel(currentTask.status)}</strong>
                 </div>
                 <p>{taskStateDescription(currentTask.status)}</p>
                 <small>{taskOperatorGuidance(currentTask)}</small>
@@ -1524,7 +1550,7 @@
                 <section class="state-machine" aria-label="Post-merge restart">
                   <div>
                     <span>Post-merge restart</span>
-                    <strong>{statusLabel(currentTask.restart_status || 'pending')}</strong>
+                    <strong>{taskStatusLabel(currentTask.restart_status || 'pending')}</strong>
                   </div>
                   <p>
                     Required: {currentTask.restart_required.join(', ')}
@@ -3745,12 +3771,13 @@
   @media (max-width: 760px) {
     :global(html),
     :global(body) {
-      overflow: auto;
+      height: 100%;
+      overflow: hidden;
     }
 
     :global(body > div) {
-      min-height: 100%;
-      height: auto;
+      min-height: 0;
+      height: 100%;
     }
 
     :global(.navbar) {
@@ -3762,15 +3789,19 @@
     }
 
     .tasks-page {
-      display: block;
-      min-height: 100dvh;
-      height: auto;
+      box-sizing: border-box;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
       padding-top: calc(3.75rem + 1px);
     }
 
     .shell {
+      grid-row: 1;
       display: block;
-      overflow: visible;
+      overflow: hidden;
     }
 
     .task-pane[data-mobile-hidden='true'],
@@ -3780,12 +3811,15 @@
 
     .task-pane,
     .workbench {
-      overflow: visible;
+      box-sizing: border-box;
+      height: 100%;
+      overflow: hidden;
     }
 
     .task-pane {
       display: grid;
-      grid-template-rows: auto auto auto auto auto minmax(18rem, auto) auto auto auto auto;
+      grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto auto auto;
+      gap: 0.5rem;
       padding: 0.75rem;
       border-right: 0;
     }
@@ -3817,8 +3851,8 @@
     }
 
     .task-list {
-      overflow: visible;
-      padding-right: 0;
+      overflow-y: auto;
+      padding-right: 0.15rem;
     }
 
     .task-row {
@@ -3840,6 +3874,7 @@
     }
 
     .workbench {
+      overflow-y: auto;
       background: var(--bg, #eef2f7);
     }
 

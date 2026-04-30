@@ -184,6 +184,24 @@
     void goto(next, { keepFocus: true, noScroll: true, replaceState });
   };
 
+  const applyTaskOverviewSelection = () => {
+    selectedTaskId = '';
+    loadedRunsTaskId = '';
+    loadedDiffTaskId = '';
+    selectedDiffFilePath = '';
+    deleteConfirmTaskId = '';
+    lastAppliedRouteTaskId = '';
+    showMobilePanel('queue');
+  };
+
+  const navigateToTaskOverview = (replaceState = true) => {
+    applyTaskOverviewSelection();
+    if (!browser || currentRoutePath() === '/tasks') {
+      return;
+    }
+    void goto('/tasks', { keepFocus: true, noScroll: true, replaceState });
+  };
+
   const applyRouteTaskSelection = (taskId: string) => {
     if (!taskId) {
       return;
@@ -218,6 +236,7 @@
     window.setTimeout(() => {
       const taskId = taskRouteIdFromLocation();
       if (!taskId) {
+        applyTaskOverviewSelection();
         return;
       }
       applyRouteTaskSelection(taskId);
@@ -230,7 +249,11 @@
       return;
     }
     const taskId = to.url.searchParams.get('task') || '';
-    if (!taskId || taskId === selectedTaskId) {
+    if (!taskId) {
+      applyTaskOverviewSelection();
+      return;
+    }
+    if (taskId === selectedTaskId) {
       return;
     }
     applyRouteTaskSelection(taskId);
@@ -1031,8 +1054,7 @@
         retryInstruction = '';
       }
       if (operation === 'delete') {
-        selectedTaskId = '';
-        showMobilePanel('queue');
+        navigateToTaskOverview();
       }
       deleteConfirmTaskId = '';
       await refreshState();
@@ -1358,7 +1380,7 @@
       {#if currentTask}
         <article class="task-record">
           <header class="record-header">
-            <button type="button" class="back-to-queue" aria-label="Back to queue" on:click={() => showMobilePanel('queue')}>
+            <button type="button" class="back-to-queue" aria-label="Back to queue" on:click={() => navigateToTaskOverview()}>
               <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <path d="M12.5 4.5 7 10l5.5 5.5" />
               </svg>

@@ -286,6 +286,95 @@ export interface HomelabdWorkflowActionResponse {
   workflow: HomelabdWorkflow;
 }
 
+export type AssistantAutonomy = 'observe' | 'plan' | 'confirm' | 'automatic' | string;
+
+export interface AssistantFilterOption {
+  value: string;
+  label: string;
+  count: number;
+}
+
+export interface AssistantFilters {
+  areas: AssistantFilterOption[];
+}
+
+export interface AssistantPrinciple {
+  name: string;
+  summary: string;
+}
+
+export interface AssistantActivity {
+  id: string;
+  name: string;
+  area: string;
+  cadence: string;
+  description: string;
+  outcome: string;
+  capability_ids: string[];
+  search_terms?: string[];
+}
+
+export interface AssistantActionLink {
+  label: string;
+  href: string;
+  surface: string;
+}
+
+export interface AssistantWorkflowTemplate {
+  name: string;
+  description?: string;
+  goal: string;
+  steps: HomelabdWorkflowStep[];
+}
+
+export interface AssistantCapability {
+  id: string;
+  name: string;
+  area: string;
+  summary: string;
+  promise: string;
+  cadence: string;
+  autonomy: AssistantAutonomy;
+  inputs: string[];
+  outputs: string[];
+  surfaces: AssistantActionLink[];
+  ux_pattern_ids: string[];
+  safeguards: string[];
+  workflow_template: AssistantWorkflowTemplate;
+  search_terms?: string[];
+}
+
+export interface AssistantUXPattern {
+  id: string;
+  name: string;
+  summary: string;
+  applies_to: string;
+  implementation: string;
+}
+
+export interface AssistantResearchSource {
+  title: string;
+  url: string;
+  summary: string;
+}
+
+export interface AssistantCatalogue {
+  name: string;
+  summary: string;
+  updated_at: string;
+  principles: AssistantPrinciple[];
+  activities: AssistantActivity[];
+  capabilities: AssistantCapability[];
+  ux_patterns: AssistantUXPattern[];
+  research_sources: AssistantResearchSource[];
+  filters: AssistantFilters;
+}
+
+export interface AssistantCatalogueOptions {
+  search?: string;
+  area?: string;
+}
+
 export interface HomelabdTaskRetryRequest {
   backend?: string;
   instruction?: string;
@@ -494,6 +583,7 @@ export interface SupervisorSnapshot {
 
 export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
+  getAssistant(options?: AssistantCatalogueOptions): Promise<AssistantCatalogue>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;
   getSettings(): Promise<HomelabdSettingsResponse>;

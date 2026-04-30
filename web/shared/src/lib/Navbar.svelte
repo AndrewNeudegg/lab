@@ -17,6 +17,7 @@
   export let taskApiBase = '';
   export let taskAttention: TaskAttentionCounts | undefined = undefined;
   export let links: { href: string; label: string }[] = [
+    { href: '/assistant', label: 'Assistant' },
     { href: '/chat', label: 'Chat' },
     { href: '/tasks', label: 'Tasks' },
     { href: '/workflows', label: 'Workflows' },

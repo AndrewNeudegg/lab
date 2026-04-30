@@ -1,4 +1,6 @@
 import type {
+  AssistantCatalogue,
+  AssistantCatalogueOptions,
   FetchClient,
   FetchClientOptions,
   HomelabdApprovalsResponse,
@@ -135,6 +137,20 @@ export const createHomelabdClient = (
         fetcher,
         method: 'POST',
         body: JSON.stringify(request)
+      });
+    },
+    getAssistant(options: AssistantCatalogueOptions = {}) {
+      const params = new URLSearchParams();
+      if (options.search?.trim()) {
+        params.set('q', options.search.trim());
+      }
+      if (options.area?.trim() && options.area !== 'all') {
+        params.set('area', options.area.trim());
+      }
+      const query = params.toString() ? `?${params.toString()}` : '';
+      return apiFetch<AssistantCatalogue>(`/assistant${query}`, {
+        baseUrl,
+        fetcher
       });
     },
     createTask(request: HomelabdCreateTaskRequest) {

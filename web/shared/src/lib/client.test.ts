@@ -176,6 +176,53 @@ describe('homelabd client', () => {
     expect(response.agents[0].workdirs?.[0].path).toBe('/srv/desk/repo');
   });
 
+  test('loads the assistant catalogue with API-owned filters', async () => {
+    const paths: string[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input) => {
+        paths.push(String(input));
+        return jsonResponse({
+          name: 'Assistant',
+          summary: 'Life-improving operating layer.',
+          updated_at: '2026-04-30T21:00:00Z',
+          principles: [],
+          activities: [],
+          capabilities: [
+            {
+              id: 'research-prepare',
+              name: 'Research and prepare',
+              area: 'research',
+              summary: 'Sourced research.',
+              promise: 'Current and cited.',
+              cadence: 'On demand',
+              autonomy: 'plan',
+              inputs: ['Question'],
+              outputs: ['Brief'],
+              surfaces: [{ label: 'Open Chat', href: '/chat', surface: 'chat' }],
+              ux_pattern_ids: ['source-tray'],
+              safeguards: ['Show sources'],
+              workflow_template: {
+                name: 'Research brief',
+                goal: 'Research the question.',
+                steps: [{ name: 'Search', kind: 'tool', tool: 'internet.search' }]
+              }
+            }
+          ],
+          ux_patterns: [],
+          research_sources: [],
+          filters: { areas: [{ value: 'research', label: 'Research', count: 1 }] }
+        });
+      }
+    });
+
+    const response = await client.getAssistant({ search: 'sources', area: 'research' });
+
+    expect(paths).toEqual(['http://homelabd/assistant?q=sources&area=research']);
+    expect(response.name).toBe('Assistant');
+    expect(response.capabilities[0].workflow_template.steps[0].tool).toBe('internet.search');
+  });
+
   test('uses typed task and approval action endpoints', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({

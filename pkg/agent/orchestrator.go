@@ -2564,6 +2564,15 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			if lastMessage == "" {
 				lastMessage = "Done."
 			}
+			if goal, ok := assistantDevelopmentCommitmentGoal(lastMessage); ok {
+				taskReply, err := o.createTaskWithAttachments(ctx, goal, nil)
+				if err != nil {
+					return "", source, err
+				}
+				if strings.TrimSpace(taskReply) != "" {
+					return strings.TrimSpace(lastMessage) + "\n\n" + taskReply, "program", nil
+				}
+			}
 			return lastMessage, source, nil
 		}
 		messages = append(messages, llm.Message{Role: "assistant", Content: mustJSON(parsed)})
@@ -2586,6 +2595,140 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 		lastMessage = "Stopped after reaching the turn limit."
 	}
 	return lastMessage, "program", nil
+}
+
+func assistantDevelopmentCommitmentGoal(message string) (string, bool) {
+	if messageReferencesCreatedTask(message) {
+		return "", false
+	}
+	sentence := firstAssistantDevelopmentCommitment(message)
+	if sentence == "" {
+		return "", false
+	}
+	action := commitmentAction(sentence)
+	if action == "" {
+		return "", false
+	}
+	if goal, ok := taskCreationGoal(action); ok {
+		action = goal
+	}
+	normalized := normalizeIntentText(action)
+	fields := strings.Fields(normalized)
+	if len(fields) == 0 || !isDevelopmentCommitmentVerb(fields[0]) || !hasDevelopmentCommitmentObject(normalized) {
+		return "", false
+	}
+	action = strings.NewReplacer(
+		"my own", "OrchestratorAgent",
+		"My own", "OrchestratorAgent",
+		"I only report", "OrchestratorAgent only reports",
+		"i only report", "OrchestratorAgent only reports",
+		"I report", "OrchestratorAgent reports",
+		"i report", "OrchestratorAgent reports",
+	).Replace(action)
+	action = strings.TrimSpace(strings.Trim(action, " \t\r\n."))
+	if action == "" {
+		return "", false
+	}
+	if action[0] >= 'a' && action[0] <= 'z' {
+		action = strings.ToUpper(action[:1]) + action[1:]
+	}
+	return cleanNewTaskGoal(action), true
+}
+
+func messageReferencesCreatedTask(message string) bool {
+	normalized := strings.ToLower(message)
+	return strings.Contains(normalized, "created queued task") ||
+		strings.Contains(normalized, "/tasks?task=") ||
+		strings.Contains(normalized, "created remote task")
+}
+
+func firstAssistantDevelopmentCommitment(message string) string {
+	normalized := strings.NewReplacer("\u2018", "'", "\u2019", "'", "\n", ". ").Replace(message)
+	lower := strings.ToLower(normalized)
+	for {
+		idx, marker := firstCommitmentMarker(lower)
+		if idx < 0 {
+			return ""
+		}
+		end := len(normalized)
+		for offset, r := range normalized[idx:] {
+			if offset > 0 && (r == '.' || r == '!' || r == '?') {
+				end = idx + offset
+				break
+			}
+		}
+		sentence := strings.TrimSpace(normalized[idx:end])
+		if actionLooksLikeDevelopmentCommitment(commitmentActionFromMarker(sentence, marker)) {
+			return sentence
+		}
+		next := idx + len(marker)
+		if next >= len(normalized) {
+			return ""
+		}
+		normalized = normalized[next:]
+		lower = lower[next:]
+	}
+}
+
+func firstCommitmentMarker(value string) (int, string) {
+	markers := []string{"i'll ", "i will "}
+	bestIdx := -1
+	bestMarker := ""
+	for _, marker := range markers {
+		idx := strings.Index(value, marker)
+		if idx < 0 {
+			continue
+		}
+		if bestIdx < 0 || idx < bestIdx {
+			bestIdx = idx
+			bestMarker = marker
+		}
+	}
+	return bestIdx, bestMarker
+}
+
+func commitmentAction(sentence string) string {
+	normalized := strings.NewReplacer("\u2018", "'", "\u2019", "'").Replace(sentence)
+	lower := strings.ToLower(normalized)
+	_, marker := firstCommitmentMarker(lower)
+	return commitmentActionFromMarker(normalized, marker)
+}
+
+func actionLooksLikeDevelopmentCommitment(action string) bool {
+	normalized := normalizeIntentText(action)
+	fields := strings.Fields(normalized)
+	return len(fields) > 0 && isDevelopmentCommitmentVerb(fields[0]) && hasDevelopmentCommitmentObject(normalized)
+}
+
+func commitmentActionFromMarker(sentence, marker string) string {
+	if marker == "" {
+		return ""
+	}
+	lower := strings.ToLower(sentence)
+	idx := strings.Index(lower, marker)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(sentence[idx+len(marker):])
+}
+
+func isDevelopmentCommitmentVerb(word string) bool {
+	switch word {
+	case "add", "build", "change", "create", "debug", "fix", "implement", "improve", "make", "patch", "refactor", "remove", "repair", "replace", "tighten", "update", "upgrade", "write":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasDevelopmentCommitmentObject(normalized string) bool {
+	for _, word := range strings.Fields(normalized) {
+		switch word {
+		case "agent", "api", "briefing", "code", "command", "dashboard", "docs", "documentation", "homelabd", "logic", "parser", "task", "tasks", "test", "tests", "tool", "ui", "workflow":
+			return true
+		}
+	}
+	return false
 }
 
 type reflectionResult struct {
@@ -2749,6 +2892,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		"Use internet.search when current external documentation, public web context, or academic papers are required.",
 		"Use internet.fetch on promising search result URLs before relying on page details; prefer official, primary, or scholarly sources.",
 		"Create development work with task.create instead of pretending to edit files directly.",
+		"Never leave a promise like \"I'll fix/tighten/update\" as prose; call task.create in that turn or avoid the promise.",
 		"Create or reuse workflows when repeatable LLM/tool/wait logic should be monitored outside this chat turn.",
 		"Do not request dangerous or write tools unless the user clearly asked for that operation; approval may be required.",
 		"Current durable memory:",

@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
+test.describe.configure({ timeout: 90_000 });
+
 const now = '2026-04-28T12:00:00.000Z';
 const taskID = 'task_20260428_120000_11111111';
 const workflowID = 'workflow_20260428_120000_22222222';

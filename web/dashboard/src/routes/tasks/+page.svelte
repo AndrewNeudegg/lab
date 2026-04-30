@@ -929,7 +929,9 @@
     }
   };
 
-  const toggleAutoMerge = () => setAutoMerge(!autoMergeEnabled);
+  const handleAutoMergeChange = (event: Event) => {
+    void setAutoMerge((event.currentTarget as HTMLInputElement).checked);
+  };
 
   const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
     if (mergeQueueLoading) {
@@ -1149,24 +1151,28 @@
       <details class="merge-queue" aria-label="Merge queue" open>
         <summary>
           <span>Merge queue</span>
-          <button
-            type="button"
-            class:active={autoMergeEnabled}
-            class:busy={autoMergeSaving}
-            class="auto-merge-toggle"
-            title="Automatically merge reviewed queue-head tasks"
-            role="switch"
-            aria-checked={autoMergeEnabled}
-            aria-label="Auto merge reviewed queue-head tasks"
-            disabled={autoMergeSaving}
-            on:click|stopPropagation={toggleAutoMerge}
-          >
-            <span>Auto</span>
-            <i aria-hidden="true"></i>
-          </button>
           <strong>{mergeQueueItems.length}</strong>
           <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
         </summary>
+        <label
+          class:active={autoMergeEnabled}
+          class:busy={autoMergeSaving}
+          class="auto-merge-toggle"
+          title="Automatically merge reviewed queue-head tasks"
+        >
+          <input
+            class="auto-merge-input"
+            type="checkbox"
+            role="switch"
+            checked={autoMergeEnabled}
+            aria-checked={autoMergeEnabled}
+            aria-label="Auto merge reviewed queue-head tasks"
+            disabled={autoMergeSaving}
+            on:change={handleAutoMergeChange}
+          />
+          <span>Auto</span>
+          <i aria-hidden="true"></i>
+        </label>
         {#if autoMergeIssue}
           <p class="merge-queue-note">{autoMergeIssue}</p>
         {/if}
@@ -2186,6 +2192,9 @@
 
   .merge-queue {
     grid-area: merge;
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     overflow: hidden;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 0.7rem;
@@ -2193,12 +2202,16 @@
   }
 
   .merge-queue summary {
+    box-sizing: border-box;
+    grid-column: 1 / -1;
+    grid-row: 1;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 0.45rem;
-    min-height: 2.25rem;
-    padding: 0 0.65rem;
+    min-width: 0;
+    min-height: 2.65rem;
+    padding: 0 5.65rem 0 0.65rem;
     list-style: none;
     border: 0;
     border-radius: 0.7rem;
@@ -2222,6 +2235,10 @@
   }
 
   .auto-merge-toggle {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.65rem;
+    z-index: 1;
     display: inline-grid;
     grid-template-columns: auto auto;
     align-items: center;
@@ -2240,6 +2257,17 @@
     font-weight: 900;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+
+  .auto-merge-input {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: inherit;
+    opacity: 0;
   }
 
   .auto-merge-toggle i {
@@ -2282,11 +2310,11 @@
     transform: translateX(0.86rem);
   }
 
-  .auto-merge-toggle:focus-visible i {
+  .auto-merge-toggle:focus-within i {
     box-shadow: 0 0 0 3px rgb(37 99 235 / 0.18);
   }
 
-  .auto-merge-toggle:disabled {
+  .auto-merge-toggle:has(.auto-merge-input:disabled) {
     pointer-events: none;
   }
 
@@ -2307,6 +2335,8 @@
   }
 
   .merge-queue summary small {
+    min-width: 0;
+    max-width: clamp(4.25rem, 22vw, 6.5rem);
     overflow: hidden;
     color: var(--muted, #64748b);
     font-size: 0.7rem;
@@ -2316,6 +2346,7 @@
   }
 
   .merge-queue-note {
+    grid-column: 1 / -1;
     margin: 0;
     padding: 0.45rem 0.65rem;
     border-top: 1px solid var(--border-soft, #e2e8f0);
@@ -2326,6 +2357,7 @@
   }
 
   .merge-queue ol {
+    grid-column: 1 / -1;
     display: grid;
     gap: 0.2rem;
     max-height: min(13.5rem, 32vh);

@@ -33,8 +33,18 @@
     path: string;
   };
 
+  type BeforeInstallPromptEvent = Event & {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  };
+
+  type PwaWindow = Window & {
+    __homelabdPwaInstallPrompt?: BeforeInstallPromptEvent;
+  };
+
   const actionStorageKey = 'homelabd.dashboard.recentActions.v1';
   const helpClientBase = () => apiBase || '/api';
+  const skipWaitingMessage = 'SKIP_WAITING';
 
   let mobileMenuOpen = false;
   let mobileMenu: HTMLDetailsElement | undefined;
@@ -49,6 +59,13 @@
   let helpDialogOpen = false;
   let helpReady = false;
   let helpAttachments: HomelabdTaskAttachment[] = [];
+  let pwaInstallPrompt: BeforeInstallPromptEvent | undefined;
+  let pwaInstallReady = false;
+  let pwaInstalling = false;
+  let pwaInstalled = false;
+  let pwaUpdateWorker: ServiceWorker | null = null;
+  let pwaUpdateReady = false;
+  let pwaRefreshing = false;
   let navbarElement: HTMLElement | undefined;
   let brandElement: HTMLAnchorElement | undefined;
   let navMeasureElement: HTMLElement | undefined;
@@ -98,6 +115,12 @@
     mobileMenuOpen = false;
     mobileMenu?.removeAttribute('open');
   };
+
+  const isStandaloneDisplay = () =>
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+
+  const pwaWindow = () => window as PwaWindow;
 
   const elementLabel = (target: EventTarget | null) => {
     if (!(target instanceof Element)) {
@@ -352,14 +375,77 @@
     }
   };
 
+  const installDashboard = async () => {
+    if (!pwaInstallPrompt || pwaInstalling) {
+      return;
+    }
+    pwaInstalling = true;
+    const prompt = pwaInstallPrompt;
+    pwaInstallPrompt = undefined;
+    pwaWindow().__homelabdPwaInstallPrompt = undefined;
+    pwaInstallReady = false;
+    try {
+      await prompt.prompt();
+      const choice = await prompt.userChoice;
+      pwaInstalled = choice.outcome === 'accepted' || isStandaloneDisplay();
+    } finally {
+      pwaInstalling = false;
+    }
+  };
+
+  const showDashboardInstall = (prompt: BeforeInstallPromptEvent | undefined) => {
+    if (!prompt || pwaInstalled) {
+      return;
+    }
+    pwaInstallPrompt = prompt;
+    pwaInstallReady = true;
+  };
+
+  const applyDashboardUpdate = () => {
+    if (!pwaUpdateWorker || pwaRefreshing) {
+      return;
+    }
+    pwaRefreshing = true;
+    pwaUpdateWorker.postMessage({ type: skipWaitingMessage });
+  };
+
+  const queueDashboardUpdate = (worker: ServiceWorker | null) => {
+    if (!worker || !navigator.serviceWorker?.controller) {
+      return;
+    }
+    pwaUpdateWorker = worker;
+    pwaUpdateReady = true;
+  };
+
   onMount(() => {
     helpReady = true;
+    pwaInstalled = isStandaloneDisplay();
     void refreshTaskAttention().catch(() => undefined);
     const interval = window.setInterval(() => {
       void refreshTaskAttention().catch(() => undefined);
     }, 15000);
     const clickListener = (event: MouseEvent) => recordAction('click', event.target);
     const inputListener = (event: Event) => recordAction('input', event.target);
+    const beforeInstallPromptListener = (event: Event) => {
+      event.preventDefault();
+      const prompt = event as BeforeInstallPromptEvent;
+      pwaWindow().__homelabdPwaInstallPrompt = prompt;
+      showDashboardInstall(prompt);
+    };
+    const installReadyListener = () => {
+      showDashboardInstall(pwaWindow().__homelabdPwaInstallPrompt);
+    };
+    const appInstalledListener = () => {
+      pwaInstallPrompt = undefined;
+      pwaWindow().__homelabdPwaInstallPrompt = undefined;
+      pwaInstallReady = false;
+      pwaInstalled = true;
+    };
+    const controllerChangeListener = () => {
+      if (pwaRefreshing) {
+        window.location.reload();
+      }
+    };
     let animationFrame = 0;
     const scheduleNavUpdate = () => {
       if (animationFrame) {
@@ -375,17 +461,42 @@
     window.addEventListener('click', clickListener, { capture: true });
     window.addEventListener('change', inputListener, { capture: true });
     window.addEventListener('resize', scheduleNavUpdate);
+    window.addEventListener('beforeinstallprompt', beforeInstallPromptListener);
+    window.addEventListener('homelabd-pwa-install-ready', installReadyListener);
+    window.addEventListener('appinstalled', appInstalledListener);
     for (const element of [navbarElement, brandElement, navMeasureElement, rightElement]) {
       if (element) {
         resizeObserver?.observe(element);
       }
     }
     void tick().then(scheduleNavUpdate);
+    showDashboardInstall(pwaWindow().__homelabdPwaInstallPrompt);
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('controllerchange', controllerChangeListener);
+      void navigator.serviceWorker.ready.then((registration) => {
+        queueDashboardUpdate(registration.waiting);
+        registration.addEventListener('updatefound', () => {
+          const worker = registration.installing;
+          worker?.addEventListener('statechange', () => {
+            if (worker.state === 'installed') {
+              queueDashboardUpdate(worker);
+            }
+          });
+        });
+        void registration.update().catch(() => {
+          // Update checks are opportunistic; navigation and live API calls still work without them.
+        });
+      });
+    }
     return () => {
       window.clearInterval(interval);
       window.removeEventListener('click', clickListener, { capture: true });
       window.removeEventListener('change', inputListener, { capture: true });
       window.removeEventListener('resize', scheduleNavUpdate);
+      window.removeEventListener('beforeinstallprompt', beforeInstallPromptListener);
+      window.removeEventListener('homelabd-pwa-install-ready', installReadyListener);
+      window.removeEventListener('appinstalled', appInstalledListener);
+      navigator.serviceWorker?.removeEventListener('controllerchange', controllerChangeListener);
       resizeObserver?.disconnect();
       if (animationFrame) {
         cancelAnimationFrame(animationFrame);
@@ -442,6 +553,29 @@
     <div class="desktop-theme">
       <ThemeToggle />
     </div>
+    {#if pwaUpdateReady}
+      <button
+        type="button"
+        class="pwa-button update"
+        aria-label="Update app"
+        title="Reload to update app"
+        disabled={pwaRefreshing}
+        onclickcapture={applyDashboardUpdate}
+      >
+        {pwaRefreshing ? 'Updating' : 'Update'}
+      </button>
+    {:else if pwaInstallReady && !pwaInstalled}
+      <button
+        type="button"
+        class="pwa-button"
+        aria-label="Install app"
+        title="Install dashboard app"
+        disabled={pwaInstalling}
+        onclickcapture={installDashboard}
+      >
+        {pwaInstalling ? 'Installing' : 'Install'}
+      </button>
+    {/if}
     <button
       type="button"
       class="help-button"
@@ -1064,6 +1198,7 @@
     display: none;
   }
 
+  .pwa-button,
   .help-button,
   .menu-button {
     min-height: 2.4rem;
@@ -1076,6 +1211,28 @@
     font-size: 0.88rem;
     font-weight: 850;
     cursor: pointer;
+  }
+
+  .pwa-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .pwa-button.update {
+    border-color: var(--accent, #2563eb);
+    color: #ffffff;
+    background: var(--accent, #2563eb);
+  }
+
+  .pwa-button:disabled {
+    opacity: 0.72;
+    cursor: wait;
+  }
+
+  .help-button,
+  .menu-button {
+    display: none;
   }
 
   .help-button {
@@ -1289,6 +1446,8 @@
       display: block;
     }
 
+    .help-button,
+    .pwa-button,
     .menu-button {
       display: inline-flex;
     }

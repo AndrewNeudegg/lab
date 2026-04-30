@@ -1,8 +1,7 @@
 import { chromium } from '@playwright/test';
+import { chromiumExecutablePath } from './chromium-executable.mjs';
 
-const executablePath =
-  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
-  (process.env.HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME === '1' ? process.env.CHROME_BIN : undefined);
+const executablePath = chromiumExecutablePath();
 
 const launchOptions = {
   headless: true,
@@ -33,6 +32,9 @@ const hintFor = (message) => {
 };
 
 try {
+  if (executablePath) {
+    console.log(`Using Chromium executable: ${executablePath}`);
+  }
   const browser = await chromium.launch(launchOptions);
   const page = await browser.newPage();
   await page.setContent('<main><h1>browser preflight ok</h1></main>');

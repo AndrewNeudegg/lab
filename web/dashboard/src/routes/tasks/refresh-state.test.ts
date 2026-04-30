@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createCoalescedAsync } from './refresh-state';
+import { createCoalescedAsync, createMutationRevision } from './refresh-state';
 
 describe('task refresh coalescing', () => {
   test('shares a slow in-flight refresh instead of starting another one', async () => {
@@ -31,5 +31,17 @@ describe('task refresh coalescing', () => {
 
     expect(third).toBe(3);
     expect(calls).toBe(2);
+  });
+});
+
+describe('mutation revision guard', () => {
+  test('marks refresh snapshots stale after a mutation', () => {
+    const revision = createMutationRevision();
+    const snapshot = revision.current();
+
+    expect(revision.matches(snapshot)).toBe(true);
+    revision.bump();
+    expect(revision.matches(snapshot)).toBe(false);
+    expect(revision.matches(revision.current())).toBe(true);
   });
 });

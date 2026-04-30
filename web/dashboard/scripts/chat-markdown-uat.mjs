@@ -6,7 +6,7 @@ const seededTranscript = JSON.stringify([
   {
     id: 'long-code-regression',
     role: 'assistant',
-    content: `long-code-regression\n\n\`\`\`ts\nconst token = "${'x'.repeat(320)}";\n\`\`\``,
+    content: `long-code-regression\n\n\`\`\`ts\nconst token = "${'x'.repeat(320)}";\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  Chat[Chat] --> Markdown[Markdown]\n  Markdown --> Diagram[Diagram]\n\`\`\``,
     source: 'program',
     time: 'Now'
   }
@@ -122,6 +122,7 @@ const viewportResult = (width, height, mobile) => `
       .find((element) => element.textContent.includes('long-code-regression'));
     const pre = message?.querySelector('pre');
     const code = pre?.querySelector('code');
+    const mermaid = message?.querySelector('.mermaid-diagram svg');
     if (pre) {
       pre.scrollLeft = pre.scrollWidth;
     }
@@ -136,6 +137,7 @@ const viewportResult = (width, height, mobile) => `
       bodyWidth: document.body.scrollWidth,
       messageFound: Boolean(message),
       preFound: Boolean(pre),
+      mermaidFound: Boolean(mermaid),
       codeTextLength: code?.textContent.length ?? 0,
       messageWidth: messageRect?.width ?? 0,
       preWidth: preRect?.width ?? 0,
@@ -153,6 +155,7 @@ const viewportResult = (width, height, mobile) => `
 const assertCodeBlockFits = (result) => {
   assert(result.messageFound, 'seeded chat message did not render', result);
   assert(result.preFound, 'fenced code block did not render', result);
+  assert(result.mermaidFound, 'mermaid diagram did not render to SVG', result);
   assert(result.codeTextLength > 200, 'seeded code line was unexpectedly short', result);
   assert(result.preScrollWidth > result.preClientWidth, 'long code block did not overflow its own scroll area', result);
   assert(result.preScrollLeft > 0, 'long code block could not be scrolled horizontally', result);

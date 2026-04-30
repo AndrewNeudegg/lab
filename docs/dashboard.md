@@ -57,12 +57,24 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Search filters titles, paths, summaries, and full Markdown content. Search results show summaries; the default browse view uses short labels for faster scanning.
 - Mermaid fenced diagrams render in docs and chat. The renderer applies the shared homelabd light or dark diagram palette, keeps the original source as a code fallback when rendering fails, and prevents diagram-level theme overrides from replacing the brand colours.
 
+## Markdown Diagrams And Brand Colours
+
+Chat replies and docs pages render Mermaid fenced blocks. Use diagrams when a state machine, workflow, queue, dependency graph, or handoff is easier to scan visually than as prose.
+
 ```mermaid
 flowchart LR
-  A[Mermaid fence] --> B[Shared Markdown renderer]
-  B --> C[Light brand palette]
-  B --> D[Dark brand palette]
+  Chat[Chat reply] --> Markdown[Markdown renderer]
+  Docs[Docs page] --> Markdown
+  Markdown --> Mermaid[Mermaid SVG]
+  Mermaid --> Theme{Theme}
+  Theme --> Light[Light brand palette]
+  Theme --> Dark[Dark brand palette]
 ```
+
+Agents should write plain Mermaid and let the dashboard apply the brand palette. Avoid inline colours unless a diagram has a specific semantic need.
+
+- Light palette: `background #f8fafc`, `surface #ffffff`, `primary #2563eb`, `secondary #0f766e`, `success #16a34a`, `warning #d97706`, `danger #dc2626`, `text #172033`, `muted #64748b`, `border #cbd5e1`.
+- Dark palette: `background #0f172a`, `surface #111827`, `primary #60a5fa`, `secondary #2dd4bf`, `success #4ade80`, `warning #fbbf24`, `danger #f87171`, `text #e2e8f0`, `muted #94a3b8`, `border #334155`.
 
 ## Research Inputs
 

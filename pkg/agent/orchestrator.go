@@ -44,6 +44,7 @@ type Orchestrator struct {
 	logger       *slog.Logger
 	activeMu     sync.Mutex
 	active       map[string]activeTaskRun
+	settingsMu   sync.Mutex
 }
 
 func (o *Orchestrator) WithRemoteAgents(store *remoteagent.Store) *Orchestrator {
@@ -87,6 +88,10 @@ type toolExecution struct {
 type HandleResult struct {
 	Reply  string
 	Source string
+}
+
+type RuntimeSettings struct {
+	AutoMergeEnabled bool `json:"auto_merge_enabled"`
 }
 
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
@@ -156,6 +161,75 @@ func (o *Orchestrator) taskActive(taskID string) bool {
 	defer o.activeMu.Unlock()
 	_, ok := o.active[taskID]
 	return ok
+}
+
+func (o *Orchestrator) activeTaskCount() int {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	return len(o.active)
+}
+
+func (o *Orchestrator) maxConcurrentTasks() int {
+	maxConcurrent := o.cfg.Limits.MaxConcurrentTasks
+	if maxConcurrent <= 0 {
+		return 1
+	}
+	return maxConcurrent
+}
+
+func (o *Orchestrator) RuntimeSettings() (RuntimeSettings, error) {
+	o.settingsMu.Lock()
+	defer o.settingsMu.Unlock()
+	return o.loadRuntimeSettingsLocked()
+}
+
+func (o *Orchestrator) UpdateRuntimeSettings(ctx context.Context, settings RuntimeSettings) (RuntimeSettings, error) {
+	o.settingsMu.Lock()
+	if err := o.saveRuntimeSettingsLocked(settings); err != nil {
+		o.settingsMu.Unlock()
+		return RuntimeSettings{}, err
+	}
+	o.settingsMu.Unlock()
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "settings.updated", Actor: "human", Payload: eventlog.Payload(map[string]any{
+		"auto_merge_enabled": settings.AutoMergeEnabled,
+	})})
+	if settings.AutoMergeEnabled {
+		_, _ = o.processAutoMergeApproval(ctx, "auto merge enabled")
+		_, _ = o.processMergeQueueHead(ctx, "auto merge enabled")
+	}
+	return settings, nil
+}
+
+func (o *Orchestrator) loadRuntimeSettingsLocked() (RuntimeSettings, error) {
+	path := o.runtimeSettingsPath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return RuntimeSettings{}, nil
+		}
+		return RuntimeSettings{}, err
+	}
+	var settings RuntimeSettings
+	if err := json.Unmarshal(b, &settings); err != nil {
+		return RuntimeSettings{}, err
+	}
+	return settings, nil
+}
+
+func (o *Orchestrator) saveRuntimeSettingsLocked(settings RuntimeSettings) error {
+	path := o.runtimeSettingsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func (o *Orchestrator) runtimeSettingsPath() string {
+	return filepath.Join(o.cfg.DataDir, "settings", "runtime.json")
 }
 
 func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string, error) {
@@ -1216,6 +1290,10 @@ func (o *Orchestrator) ReviewTask(ctx context.Context, taskID string) (string, e
 	return o.reviewTask(ctx, taskID)
 }
 
+func (o *Orchestrator) MoveTaskInMergeQueue(ctx context.Context, taskID, direction string) (string, error) {
+	return o.moveTaskInMergeQueue(ctx, taskID, direction)
+}
+
 func (o *Orchestrator) AcceptTask(ctx context.Context, taskID string) (string, error) {
 	return o.acceptTask(ctx, taskID)
 }
@@ -1314,7 +1392,7 @@ func (o *Orchestrator) ListApprovals() ([]approvalstore.Request, error) {
 }
 
 func (o *Orchestrator) ResolveApproval(ctx context.Context, approvalID string, grant bool) (string, error) {
-	return o.resolveApproval(ctx, approvalID, grant)
+	return o.resolveApprovalWithActor(ctx, approvalID, grant, "human")
 }
 
 func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
@@ -1508,13 +1586,23 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		o.log().Error("task recovery list failed", "error", err)
 		return 0, err
 	}
-	maxConcurrent := o.cfg.Limits.MaxConcurrentTasks
-	if maxConcurrent <= 0 {
-		maxConcurrent = 1
-	}
+	maxConcurrent := o.maxConcurrentTasks()
 	sem := make(chan struct{}, maxConcurrent)
 	recovered := 0
 	now := time.Now().UTC()
+	startedWorkers := 0
+	hasWorkerCapacity := func() bool {
+		return o.activeTaskCount()+startedWorkers < maxConcurrent
+	}
+	mergeQueue, err := o.ensureMergeQueue(ctx)
+	if err != nil {
+		o.log().Error("merge queue reconciliation failed", "error", err)
+		return 0, err
+	}
+	mergeQueueHeadID := ""
+	if len(mergeQueue) > 0 {
+		mergeQueueHeadID = mergeQueue[0].ID
+	}
 	for _, t := range tasks {
 		if taskTerminal(t.Status) || o.taskActive(t.ID) {
 			continue
@@ -1523,6 +1611,16 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			continue
 		}
 		if t.Status == taskstore.StatusAwaitingRestart {
+			if t.RestartStatus == taskstore.RestartStatusFailed {
+				o.log().Warn("task supervisor leaving failed post-merge restart for explicit retry",
+					"task_id", t.ID,
+					"task_short_id", taskShortID(t.ID),
+					"restart_required", t.RestartRequired,
+					"restart_current", t.RestartCurrent,
+					"restart_error", t.RestartLastError,
+				)
+				continue
+			}
 			recovered++
 			o.log().Info("task supervisor continuing post-merge restart",
 				"task_id", t.ID,
@@ -1602,27 +1700,70 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 				_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.requeued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
 					"reason": "awaiting approval without a pending merge approval",
 				})})
-				go o.runSupervisorReview(t.ID)
+				if t.ID == mergeQueueHeadID {
+					go o.runSupervisorReview(t.ID)
+				}
 				continue
+			}
+			if t.ID == mergeQueueHeadID {
+				merged, err := o.processAutoMergeApproval(ctx, "merge queue head awaiting approval")
+				if err != nil {
+					o.log().Error("auto merge approval failed", "task_id", t.ID, "error", err)
+					continue
+				}
+				if merged {
+					recovered++
+					continue
+				}
 			}
 		}
 		if t.Status == taskstore.StatusReadyForReview {
+			if t.ID == mergeQueueHeadID {
+				recovered++
+				_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.queued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+					"reason": "ready_for_review task picked up at merge queue head",
+				})})
+				go o.runSupervisorReview(t.ID)
+			}
+			continue
+		}
+		if automaticTaskRecoveryExhausted(t) {
+			if err := o.markRecoveryExhausted(ctx, t); err != nil {
+				o.log().Error("task automatic recovery exhaustion save failed", "task_id", t.ID, "error", err)
+				continue
+			}
 			recovered++
-			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.queued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
-				"reason": "ready_for_review task picked up by task supervisor",
-			})})
-			go o.runSupervisorReview(t.ID)
 			continue
 		}
 		if ok, reason := automaticTaskRecoveryCandidate(t, now); ok {
+			if !hasWorkerCapacity() {
+				o.log().Info("task supervisor deferred automatic recovery because worker capacity is full",
+					"task_id", t.ID,
+					"task_short_id", taskShortID(t.ID),
+					"max_concurrent", maxConcurrent,
+					"active", o.activeTaskCount(),
+				)
+				continue
+			}
 			recovered++
 			if err := o.queueAutomaticTaskRecovery(ctx, t, reason); err != nil {
 				o.log().Error("task automatic recovery failed to start", "task_id", t.ID, "error", err)
 				o.markRecoveryBlocked(ctx, t.ID, err)
+			} else {
+				startedWorkers++
 			}
 			continue
 		}
 		if t.Status == taskstore.StatusQueued {
+			if !hasWorkerCapacity() {
+				o.log().Info("task supervisor deferred queued task because worker capacity is full",
+					"task_id", t.ID,
+					"task_short_id", taskShortID(t.ID),
+					"max_concurrent", maxConcurrent,
+					"active", o.activeTaskCount(),
+				)
+				continue
+			}
 			backend, ok := o.preferredWorkerBackend()
 			if !ok {
 				o.log().Warn("queued task has no configured worker", "task_id", t.ID, "task_short_id", taskShortID(t.ID), "title", friendlyTaskTitle(t))
@@ -1642,6 +1783,8 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			})})
 			if err := o.startDelegationForTask(ctx, t.ID, backend, defaultDelegationInstruction(t)); err != nil {
 				o.markRecoveryBlocked(ctx, t.ID, err)
+			} else {
+				startedWorkers++
 			}
 			continue
 		}
@@ -1651,7 +1794,17 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		if !recoverAllRunning && !o.runningTaskStale(t, now) {
 			continue
 		}
+		if !hasWorkerCapacity() {
+			o.log().Info("task supervisor deferred stale running recovery because worker capacity is full",
+				"task_id", t.ID,
+				"task_short_id", taskShortID(t.ID),
+				"max_concurrent", maxConcurrent,
+				"active", o.activeTaskCount(),
+			)
+			continue
+		}
 		recovered++
+		startedWorkers++
 		strategy, backend := o.recoveryPlan(t)
 		o.log().Warn("recovering persisted running task",
 			"task_id", t.ID,
@@ -1708,12 +1861,17 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 	if t.Status == taskstore.StatusConflictResolution {
 		return true, "main-branch conflict"
 	}
+	if t.AutoRecoveryAttempts > 0 {
+		return true, "previous automatic recovery attempt ended blocked"
+	}
 	result := strings.ToLower(strings.TrimSpace(t.Result))
 	switch {
 	case strings.Contains(result, "revieweragent checks failed"):
 		return true, "review checks failed"
 	case strings.Contains(result, "revieweragent could not commit workspace changes"):
 		return true, "workspace git state blocked review"
+	case strings.Contains(result, "automatic recovery failed"):
+		return true, "automatic recovery was interrupted or failed before worker start"
 	case strings.Contains(result, "revieweragent premerge check failed"),
 		strings.Contains(result, "approved merge failed"),
 		strings.Contains(result, "premerge check failed"),
@@ -1725,6 +1883,36 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 	default:
 		return false, ""
 	}
+}
+
+func automaticTaskRecoveryExhausted(t taskstore.Task) bool {
+	if t.Status != taskstore.StatusConflictResolution && t.Status != taskstore.StatusBlocked {
+		return false
+	}
+	if len(t.BlockedBy) > 0 {
+		return false
+	}
+	if t.AutoRecoveryAttempts < maxAutomaticTaskRecoveryAttempts {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(t.Result), "automatic recovery exhausted")
+}
+
+func (o *Orchestrator) markRecoveryExhausted(ctx context.Context, t taskstore.Task) error {
+	previousStatus := t.Status
+	t.Status = taskstore.StatusBlocked
+	t.AssignedTo = "OrchestratorAgent"
+	clearMergeQueueFields(&t)
+	t.Result = appendResultLine(t.Result, fmt.Sprintf("Automatic recovery exhausted after %d attempts. Manual retry is required; inspect the workspace conflict or failure and retry with specific instructions.", t.AutoRecoveryAttempts))
+	if err := o.tasks.Save(t); err != nil {
+		return err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.auto_recovery.exhausted", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"attempts":        t.AutoRecoveryAttempts,
+		"max":             maxAutomaticTaskRecoveryAttempts,
+		"previous_status": previousStatus,
+	})})
+	return nil
 }
 
 func (o *Orchestrator) queueAutomaticTaskRecovery(ctx context.Context, t taskstore.Task, reason string) error {
@@ -1772,6 +1960,239 @@ func automaticRecoveryInstruction(t taskstore.Task, reason string) string {
 		"Keep the task's original goal intact; do not discard task branch changes unless they are clearly obsolete or duplicated by current main.",
 		"Finish with a concise summary of conflicts or checks resolved, validation run, and remaining risk. The system will review the task again when you complete.",
 	}, "\n")
+}
+
+func mergeQueueCandidate(t taskstore.Task) bool {
+	if remoteTask(t) {
+		return false
+	}
+	switch t.Status {
+	case taskstore.StatusReadyForReview, taskstore.StatusAwaitingApproval, taskstore.StatusAwaitingRestart:
+		return true
+	default:
+		return false
+	}
+}
+
+func clearMergeQueueFields(t *taskstore.Task) {
+	t.MergeQueuePosition = 0
+	t.MergeQueueEnteredAt = nil
+}
+
+func mergeQueueSortKey(t taskstore.Task) time.Time {
+	if t.MergeQueueEnteredAt != nil {
+		return *t.MergeQueueEnteredAt
+	}
+	if !t.UpdatedAt.IsZero() {
+		return t.UpdatedAt
+	}
+	return t.CreatedAt
+}
+
+func sortMergeQueue(tasks []taskstore.Task) {
+	sort.SliceStable(tasks, func(i, j int) bool {
+		leftRestarting := tasks[i].Status == taskstore.StatusAwaitingRestart
+		rightRestarting := tasks[j].Status == taskstore.StatusAwaitingRestart
+		if leftRestarting != rightRestarting {
+			return leftRestarting
+		}
+		leftQueued := tasks[i].MergeQueuePosition > 0
+		rightQueued := tasks[j].MergeQueuePosition > 0
+		if leftQueued && rightQueued && tasks[i].MergeQueuePosition != tasks[j].MergeQueuePosition {
+			return tasks[i].MergeQueuePosition < tasks[j].MergeQueuePosition
+		}
+		if leftQueued != rightQueued {
+			return leftQueued
+		}
+		leftTime := mergeQueueSortKey(tasks[i])
+		rightTime := mergeQueueSortKey(tasks[j])
+		if !leftTime.Equal(rightTime) {
+			return leftTime.Before(rightTime)
+		}
+		return tasks[i].ID < tasks[j].ID
+	})
+}
+
+func (o *Orchestrator) ensureMergeQueue(ctx context.Context) ([]taskstore.Task, error) {
+	tasks, err := o.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	queue := make([]taskstore.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if mergeQueueCandidate(t) {
+			queue = append(queue, t)
+			continue
+		}
+		if t.MergeQueuePosition != 0 || t.MergeQueueEnteredAt != nil {
+			clearMergeQueueFields(&t)
+			if err := o.tasks.Save(t); err != nil {
+				return nil, err
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.merge_queue.removed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+				"status": t.Status,
+				"reason": "task is no longer merge-queue eligible",
+			})})
+		}
+	}
+	sortMergeQueue(queue)
+	for i := range queue {
+		changed := false
+		position := i + 1
+		if queue[i].MergeQueuePosition != position {
+			queue[i].MergeQueuePosition = position
+			changed = true
+		}
+		if queue[i].MergeQueueEnteredAt == nil {
+			enteredAt := now
+			queue[i].MergeQueueEnteredAt = &enteredAt
+			changed = true
+		}
+		if changed {
+			if err := o.tasks.Save(queue[i]); err != nil {
+				return nil, err
+			}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.merge_queue.updated", Actor: "homelabd", TaskID: queue[i].ID, Payload: eventlog.Payload(map[string]any{
+				"position": queue[i].MergeQueuePosition,
+				"status":   queue[i].Status,
+			})})
+		}
+	}
+	return queue, nil
+}
+
+func (o *Orchestrator) mergeQueuePosition(ctx context.Context, taskID string) (int, bool, error) {
+	queue, err := o.ensureMergeQueue(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	for index, item := range queue {
+		if item.ID == taskID {
+			return index + 1, index == 0, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func (o *Orchestrator) processMergeQueueHead(ctx context.Context, reason string) (bool, error) {
+	queue, err := o.ensureMergeQueue(ctx)
+	if err != nil {
+		return false, err
+	}
+	if len(queue) == 0 {
+		return false, nil
+	}
+	head := queue[0]
+	if head.Status != taskstore.StatusReadyForReview || o.taskActive(head.ID) {
+		return false, nil
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.merge_queue.review_queued", Actor: "homelabd", TaskID: head.ID, Payload: eventlog.Payload(map[string]any{
+		"reason":   reason,
+		"position": head.MergeQueuePosition,
+	})})
+	go o.runSupervisorReview(head.ID)
+	return true, nil
+}
+
+func (o *Orchestrator) processAutoMergeApproval(ctx context.Context, reason string) (bool, error) {
+	settings, err := o.RuntimeSettings()
+	if err != nil {
+		return false, err
+	}
+	if !settings.AutoMergeEnabled {
+		return false, nil
+	}
+	queue, err := o.ensureMergeQueue(ctx)
+	if err != nil {
+		return false, err
+	}
+	if len(queue) == 0 {
+		return false, nil
+	}
+	head := queue[0]
+	if head.Status != taskstore.StatusAwaitingApproval || o.taskActive(head.ID) {
+		return false, nil
+	}
+	approval, ok, err := o.latestApprovalForTask(head.ID, "git.merge_approved", approvalstore.StatusPending)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.auto_merge.queued", Actor: "homelabd", TaskID: head.ID, Payload: eventlog.Payload(map[string]any{
+		"approval": approval.ID,
+		"reason":   reason,
+	})})
+	reply, err := o.resolveApprovalWithActor(ctx, approval.ID, true, "homelabd")
+	if err != nil {
+		return false, err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.auto_merge.completed", Actor: "homelabd", TaskID: head.ID, Payload: eventlog.Payload(map[string]any{
+		"approval": approval.ID,
+		"reply":    reply,
+	})})
+	return true, nil
+}
+
+func (o *Orchestrator) moveTaskInMergeQueue(ctx context.Context, selector, direction string) (string, error) {
+	taskID, err := o.resolveTaskID(selector)
+	if err != nil {
+		return "", err
+	}
+	direction = strings.ToLower(strings.TrimSpace(direction))
+	if direction != "up" && direction != "down" {
+		return "", fmt.Errorf("merge queue direction must be up or down")
+	}
+	queue, err := o.ensureMergeQueue(ctx)
+	if err != nil {
+		return "", err
+	}
+	index := -1
+	for i, item := range queue {
+		if item.ID == taskID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return fmt.Sprintf("Task %s is not in the merge queue.", taskShortID(taskID)), nil
+	}
+	target := index - 1
+	if direction == "down" {
+		target = index + 1
+	}
+	if queue[index].Status == taskstore.StatusAwaitingRestart && direction == "down" {
+		return fmt.Sprintf("Task %s is enforcing post-merge restarts and must stay at the head of the merge queue until the restart gate completes.", taskShortID(taskID)), nil
+	}
+	if target >= 0 && target < len(queue) && queue[target].Status == taskstore.StatusAwaitingRestart {
+		return fmt.Sprintf("Task %s cannot move ahead of task %s because that task is enforcing post-merge restarts.", taskShortID(taskID), taskShortID(queue[target].ID)), nil
+	}
+	if target < 0 || target >= len(queue) {
+		edge := "top"
+		if direction == "down" {
+			edge = "bottom"
+		}
+		return fmt.Sprintf("Task %s is already at the %s of the merge queue.", taskShortID(taskID), edge), nil
+	}
+	queue[index], queue[target] = queue[target], queue[index]
+	for i := range queue {
+		queue[i].MergeQueuePosition = i + 1
+		if queue[i].MergeQueueEnteredAt == nil {
+			now := time.Now().UTC()
+			queue[i].MergeQueueEnteredAt = &now
+		}
+		if err := o.tasks.Save(queue[i]); err != nil {
+			return "", err
+		}
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.merge_queue.reordered", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{
+		"direction": direction,
+		"position":  target + 1,
+	})})
+	_, _ = o.processMergeQueueHead(ctx, "merge queue reordered")
+	return fmt.Sprintf("Moved task %s %s to merge queue position %d.", taskShortID(taskID), direction, target+1), nil
 }
 
 func recoveryReason(recoverAllRunning bool) string {
@@ -1969,7 +2390,7 @@ func (o *Orchestrator) markRecoveryBlocked(ctx context.Context, taskID string, e
 	if loadErr == nil {
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
-		t.Result = "automatic recovery failed: " + err.Error()
+		t.Result = appendResultLine(t.Result, "automatic recovery failed: "+err.Error())
 		_ = o.tasks.Save(t)
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.recovery.failed", Actor: "homelabd", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"error": err.Error()})})
@@ -4070,6 +4491,7 @@ func (o *Orchestrator) completePostMergeRestart(ctx context.Context, t taskstore
 	t.RestartStatus = taskstore.RestartStatusComplete
 	t.RestartCurrent = ""
 	t.RestartLastError = ""
+	clearMergeQueueFields(&t)
 	completedLine := "post-merge restarts completed"
 	if required := restartRequirementsForTask(t); len(required) > 0 {
 		completedLine += ": " + strings.Join(required, ", ")
@@ -4079,6 +4501,7 @@ func (o *Orchestrator) completePostMergeRestart(ctx context.Context, t taskstore
 		return err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"restart_required": t.RestartRequired, "restart_completed": t.RestartCompleted})})
+	_, _ = o.processMergeQueueHead(ctx, "merge queue head completed restart gate")
 	return nil
 }
 
@@ -5639,10 +6062,18 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	if t.Status != taskstore.StatusReadyForReview {
 		return reviewNotReadyReply(t), nil
 	}
+	if position, head, err := o.mergeQueuePosition(ctx, taskID); err != nil {
+		return "", err
+	} else if !head {
+		if position == 0 {
+			return fmt.Sprintf("ReviewerAgent: task %s is not in the merge queue yet. It will be queued by the task supervisor before review.", shortID), nil
+		}
+		return fmt.Sprintf("ReviewerAgent: task %s is queued for merge review at position %d. It will be reviewed when it reaches the head of the merge queue.", shortID, position), nil
+	}
 	diffOut := ""
 	if workspaceHasGit(t.Workspace) {
 		if _, err := commitReviewWorkspaceChanges(ctx, t.Workspace, taskID); err != nil {
-			if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+			if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 				return "", currentErr
 			} else if !ok {
 				return reply, nil
@@ -5651,13 +6082,15 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			}
 			t.Status = taskstore.StatusBlocked
 			t.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&t)
 			t.Result = "ReviewerAgent could not commit workspace changes before review: " + err.Error()
 			_ = o.tasks.Save(t)
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed pre-review commit")
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review commit: fail\n%s\nNo approval created.\nNext: `delegate %s to codex fix the workspace git state`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
 		}
 		if mergeOut, err := o.reconcileTaskWorkspaceWithMain(ctx, t.Workspace); err != nil {
-			if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+			if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 				return "", currentErr
 			} else if !ok {
 				return reply, nil
@@ -5666,9 +6099,11 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			}
 			t.Status = taskstore.StatusConflictResolution
 			t.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&t)
 			t.Result = "ReviewerAgent could not reconcile task branch with current main before checks: " + err.Error()
 			_ = o.tasks.Save(t)
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.conflict_resolution", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result, "from_status": taskstore.StatusReadyForReview, "to_status": taskstore.StatusConflictResolution})})
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head entered conflict resolution")
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review rebase: fail\n%s\nNo checks or approval created.\nThe task supervisor will queue automatic conflict recovery; use `show %s` to follow it or `delete %s` to stop.", taskstore.StatusReadyForReview, taskstore.StatusConflictResolution, err.Error(), shortID, shortID), nil
 		} else if strings.TrimSpace(mergeOut) != "" {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.reconciled", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"output": strings.TrimSpace(mergeOut)})})
@@ -5685,7 +6120,7 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		}
 	}
 	if diffOut == "no diff" {
-		if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+		if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 			return "", currentErr
 		} else if !ok {
 			return reply, nil
@@ -5694,16 +6129,18 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		}
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
+		clearMergeQueueFields(&t)
 		t.Result = "ReviewerAgent found no diff to approve."
 		_ = o.tasks.Save(t)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+		_, _ = o.processMergeQueueHead(ctx, "merge queue head produced no diff")
 		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
 	}
 	browserUAT := browserUATForDiff(diffOut)
 	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent", browserUAT)
 	status := "pass"
 	if testErr != nil {
-		if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+		if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 			return "", currentErr
 		} else if !ok {
 			return reply, nil
@@ -5713,14 +6150,16 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		status = "fail"
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
+		clearMergeQueueFields(&t)
 		t.Result = "ReviewerAgent checks failed: " + testErr.Error()
 		_ = o.tasks.Save(t)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+		_, _ = o.processMergeQueueHead(ctx, "merge queue head failed checks")
 		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nNo approval created because checks failed.\nNext: `delegate %s to codex fix the failing tests`, `diff %s`, or `delete %s`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), shortID, shortID, shortID), nil
 	}
 	if _, ok := o.registry.Get("git.merge_check"); ok {
 		if _, err := o.runTool(ctx, "ReviewerAgent", "git.merge_check", map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root}, taskID); err != nil {
-			if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+			if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 				return "", currentErr
 			} else if !ok {
 				return reply, nil
@@ -5729,9 +6168,11 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 			}
 			t.Status = taskstore.StatusBlocked
 			t.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&t)
 			t.Result = "ReviewerAgent premerge check failed: " + err.Error()
 			_ = o.tasks.Save(t)
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result, "from_status": taskstore.StatusReadyForReview, "to_status": taskstore.StatusBlocked})})
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed premerge check")
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created. The task supervisor will queue automatic recovery for this retryable merge failure; use `show %s` to follow it or `delete %s` to stop.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, status, strings.TrimSpace(testOut), err.Error(), shortID, shortID), nil
 		}
 	}
@@ -5740,7 +6181,7 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	approvalID := id.New("approval")
 	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID, "restart_required": restartRequired})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
-	if latest, ok, reply, currentErr := o.currentReviewTask(taskID); currentErr != nil {
+	if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 		return "", currentErr
 	} else if !ok {
 		return reply, nil
@@ -5776,6 +6217,15 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		restartLine = "Restart impact: " + restartPlan
 		afterMergeLine = fmt.Sprintf("After merge, homelabd will restart required components and wait for health before verification; then use `accept %s` or `reopen %s <reason>`.", shortID, shortID)
 	}
+	if settings, err := o.RuntimeSettings(); err == nil && settings.AutoMergeEnabled {
+		mergeReply, mergeErr := o.resolveApprovalWithActor(ctx, approvalID, true, "homelabd")
+		if mergeErr != nil {
+			return "", mergeErr
+		}
+		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nAuto merge is on. %s", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, mergeReply), nil
+	} else if err != nil {
+		o.log().Error("runtime settings read failed before auto merge", "task_id", taskID, "error", err)
+	}
 	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\n%s", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, afterMergeLine), nil
 }
 
@@ -5805,14 +6255,22 @@ func taskBlockedByReviewChecks(t taskstore.Task) bool {
 	return t.Status == taskstore.StatusBlocked && strings.HasPrefix(strings.TrimSpace(t.Result), "ReviewerAgent checks failed:")
 }
 
-func (o *Orchestrator) currentReviewTask(taskID string) (taskstore.Task, bool, string, error) {
+func (o *Orchestrator) currentReviewTask(ctx context.Context, taskID string) (taskstore.Task, bool, string, error) {
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return taskstore.Task{}, false, "", err
 	}
+	shortID := taskShortID(taskID)
 	if t.Status != taskstore.StatusReadyForReview {
-		shortID := taskShortID(taskID)
 		return t, false, fmt.Sprintf("ReviewerAgent: review result for %s was ignored because the task changed to %s while checks were running. No task state changed.\nNext: `status` or `show %s`.", shortID, firstNonEmptyString(t.Status, "unknown"), shortID), nil
+	}
+	if position, head, err := o.mergeQueuePosition(ctx, taskID); err != nil {
+		return taskstore.Task{}, false, "", err
+	} else if !head {
+		if position == 0 {
+			return t, false, fmt.Sprintf("ReviewerAgent: review result for %s was ignored because the task left the merge queue while checks were running. No task state changed.\nNext: `status` or `show %s`.", shortID, shortID), nil
+		}
+		return t, false, fmt.Sprintf("ReviewerAgent: review result for %s was ignored because the task moved to merge queue position %d while checks were running. No task state changed.\nNext: `status` or `show %s`.", shortID, position, shortID), nil
 	}
 	return t, true, "", nil
 }
@@ -6472,6 +6930,11 @@ func (o *Orchestrator) listApprovals() (string, error) {
 }
 
 func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, grant bool) (string, error) {
+	return o.resolveApprovalWithActor(ctx, approvalID, grant, "human")
+}
+
+func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID string, grant bool, actor string) (string, error) {
+	actor = firstNonEmptyString(strings.TrimSpace(actor), "human")
 	req, err := o.approvals.Load(approvalID)
 	if err != nil {
 		return "", err
@@ -6487,7 +6950,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 		if err := o.approvals.Save(req); err != nil {
 			return "", err
 		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.denied", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(req)})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.denied", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(req)})
 		return "Denied " + approvalID, nil
 	}
 	task, hasTask, err := o.loadApprovalTask(req)
@@ -6524,6 +6987,14 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.stale", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "superseded_by": newer.ID})})
 			return fmt.Sprintf("Approval %s is stale: task %s has a newer pending merge approval %s. No merge was attempted.", approvalID, taskShortID(req.TaskID), newer.ID), nil
 		}
+		if position, head, err := o.mergeQueuePosition(ctx, task.ID); err != nil {
+			return "", err
+		} else if !head {
+			if position == 0 {
+				return fmt.Sprintf("Approval %s cannot merge task %s because it is not in the merge queue yet. The task supervisor will queue it before merge.", approvalID, taskShortID(req.TaskID)), nil
+			}
+			return fmt.Sprintf("Approval %s is valid, but task %s is merge queue position %d. Move it to the top before approving, or wait for the tasks ahead of it to merge.", approvalID, taskShortID(req.TaskID), position), nil
+		}
 		if reconcileOut, err := o.reconcileApprovedTaskBranch(ctx, task); err != nil {
 			req.Status = approvalstore.StatusFailed
 			req.Reason = appendApprovalReason(req.Reason, "auto-rebase failed: "+err.Error())
@@ -6532,6 +7003,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			}
 			task.Status = taskstore.StatusConflictResolution
 			task.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&task)
 			task.Result = "Approval auto-rebase failed; automatic conflict recovery required: " + err.Error()
 			if saveErr := o.tasks.Save(task); saveErr != nil {
 				return "", saveErr
@@ -6543,6 +7015,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			if recoveryErr := o.queueAutomaticTaskRecovery(ctx, task, "approval auto-rebase failed"); recoveryErr != nil {
 				recoveryLine = "Automatic conflict recovery could not start yet: " + recoveryErr.Error()
 			}
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed approval rebase")
 			return fmt.Sprintf("Approval %s could not auto-rebase task %s onto current main.\nReason: %s\nTask moved to %s; no merge was applied. %s Use `show %s` to follow it or `delete %s` to stop.", approvalID, shortID, err.Error(), taskstore.StatusConflictResolution, recoveryLine, shortID, shortID), nil
 		} else if strings.TrimSpace(reconcileOut) != "" {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.reconciled", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "output": strings.TrimSpace(reconcileOut)})})
@@ -6557,13 +7030,14 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 		if req.Tool == "git.merge_approved" && hasTask && !taskTerminal(task.Status) {
 			task.Status = taskstore.StatusBlocked
 			task.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&task)
 			task.Result = "Approved merge failed: " + err.Error()
 			if saveErr := o.tasks.Save(task); saveErr != nil {
 				return "", saveErr
 			}
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "reason": task.Result})})
 		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": err.Error()})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": err.Error()})})
 		if req.Tool == "git.merge_approved" && req.TaskID != "" {
 			recoveryLine := "Automatic recovery will be queued for retryable merge failures."
 			if hasTask {
@@ -6573,6 +7047,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 					recoveryLine = "Automatic recovery was queued."
 				}
 			}
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed approved merge")
 			return fmt.Sprintf("Approval %s failed while merging task %s.\nReason: %s\nTask moved to blocked; no merge was applied. %s Use `show %s` to follow it or `delete %s` to stop.", approvalID, taskShortID(req.TaskID), err.Error(), recoveryLine, taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
 		}
 		return fmt.Sprintf("Approval %s failed while executing %s.\nReason: %s", approvalID, req.Tool, err.Error()), nil
@@ -6601,6 +7076,7 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 				} else {
 					t.Status = taskstore.StatusAwaitingVerification
 					t.RestartStatus = ""
+					clearMergeQueueFields(&t)
 					t.Result = "merged after approval " + approvalID + "; awaiting human verification"
 				}
 				if postMergeRestartPlan != "" {
@@ -6613,13 +7089,14 @@ func (o *Orchestrator) resolveApproval(ctx context.Context, approvalID string, g
 			_ = o.tasks.Save(t)
 		}
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.granted", Actor: "human", TaskID: req.TaskID, Payload: eventlog.Payload(req)})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.granted", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(req)})
 	if req.Tool == "git.merge_approved" {
 		if postMergeRestartQueued {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_restart", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "restart_required": restartComponentsFromPlan(postMergeRestartPlan)})})
 			o.queuePostMergeRestart(req.TaskID)
 		} else {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.awaiting_verification", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID})})
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head merged")
 		}
 		if req.TaskID != "" {
 			restartPlan := ""

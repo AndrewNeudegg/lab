@@ -76,17 +76,24 @@ go run ./cmd/homelabctl task runs task_123
 go run ./cmd/homelabctl task diff task_123
 go run ./cmd/homelabctl task run task_123
 go run ./cmd/homelabctl task review task_123
+go run ./cmd/homelabctl task queue task_123 up
 go run ./cmd/homelabctl task accept task_123
 go run ./cmd/homelabctl task restart task_123
 go run ./cmd/homelabctl task reopen task_123 "needs rework"
 go run ./cmd/homelabctl task cancel task_123
 go run ./cmd/homelabctl task retry task_123 codex "retry from the current workspace state"
 go run ./cmd/homelabctl task delete task_123
+go run ./cmd/homelabctl settings
+go run ./cmd/homelabctl settings auto-merge on
 ```
 
-`task retry` preserves the previous task result as retry context and forces an immediate worker attempt. The task supervisor also queues automatic recovery for `conflict_resolution` tasks and retryable blocked tasks. In both paths, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
+`task retry` preserves the previous task result as retry context and forces an immediate worker attempt. The task supervisor also queues automatic recovery for `conflict_resolution` tasks and retryable blocked tasks. Worker starts are capped by `limits.max_concurrent_tasks`, so recovery waits instead of launching too many browser-UAT or build-heavy tasks at once. In both paths, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
 
 `task review` normally runs after a local worker has moved the task to `ready_for_review`; the task supervisor starts that review automatically. It can also recheck a blocked task whose result starts with `ReviewerAgent checks failed:` after a test-infrastructure fix. It owns the task while checks run; concurrent run, retry, or delegation attempts are rejected, and a stale review result is ignored if the task state changes before checks finish.
+
+`task queue <task_id> <up|down>` reorders a local task inside the merge queue. Queue order is durable and conflict-aware: only the head task can review, approve, merge, and complete required restart gates. Use this command when operator priority changes; approving a non-head merge approval leaves it pending instead of bypassing earlier queued work.
+
+`settings auto-merge <on|off>` toggles whether `homelabd` automatically grants merge approvals for the merge-queue head after review passes. Auto merge still respects the queue order, pre-merge reconciliation, required restart gates, and health checks. Leave it off when you want every merge approval to require an operator click.
 
 `task restart` retries an enforced post-merge restart gate for a task in `awaiting_restart`. Review stores required supervised components from the diff, approval moves the merged task into `awaiting_restart`, and `homelabd` blocks `accept` until `supervisord` has restarted each component and its configured health URL has returned 2xx.
 
@@ -101,6 +108,7 @@ go run ./cmd/homelabctl new "Fix stale running task recovery"
 go run ./cmd/homelabctl run task_123
 go run ./cmd/homelabctl ux task_123 "audit accessibility, responsive layout, and interaction states"
 go run ./cmd/homelabctl review task_123
+go run ./cmd/homelabctl queue task_123 down
 go run ./cmd/homelabctl accept task_123
 go run ./cmd/homelabctl restart task_123
 go run ./cmd/homelabctl reopen task_123 "needs mobile UAT"
@@ -280,6 +288,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `GET /tasks/{id}/diff`
 - `POST /tasks/{id}/run`
 - `POST /tasks/{id}/review`
+- `POST /tasks/{id}/merge-queue`
 - `POST /tasks/{id}/accept`
 - `POST /tasks/{id}/restart`
 - `POST /tasks/{id}/reopen`

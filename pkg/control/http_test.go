@@ -53,6 +53,27 @@ func TestHealthzIsLightweight(t *testing.T) {
 	}
 }
 
+func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	initial := requestJSON(t, mux, http.MethodGet, "/settings", "", "", http.StatusOK)
+	if !strings.Contains(initial.Body.String(), `"auto_merge_enabled":false`) {
+		t.Fatalf("initial settings = %s", initial.Body.String())
+	}
+
+	updated := requestJSON(t, mux, http.MethodPost, "/settings", `{"auto_merge_enabled":true}`, "", http.StatusOK)
+	if !strings.Contains(updated.Body.String(), `"auto_merge_enabled":true`) {
+		t.Fatalf("updated settings = %s", updated.Body.String())
+	}
+
+	reloaded := requestJSON(t, mux, http.MethodGet, "/settings", "", "", http.StatusOK)
+	if !strings.Contains(reloaded.Body.String(), `"auto_merge_enabled":true`) {
+		t.Fatalf("reloaded settings = %s", reloaded.Body.String())
+	}
+}
+
 func TestTaskRunsEndpointListsExternalArtifacts(t *testing.T) {
 	server, _, cfg := newHTTPTestServer(t)
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "runs"), 0o755); err != nil {
@@ -240,6 +261,53 @@ func TestTaskDeleteEndpointDeletesTask(t *testing.T) {
 	}
 	if _, err := tasks.Load(taskID); err == nil {
 		t.Fatal("deleted task still loads")
+	}
+}
+
+func TestTaskMergeQueueEndpointReordersTask(t *testing.T) {
+	server, tasks, _ := newHTTPTestServer(t)
+	now := time.Now().UTC()
+	firstID := "task_queue_endpoint_first"
+	secondID := "task_queue_endpoint_second"
+	for _, task := range []taskstore.Task{
+		{
+			ID:         firstID,
+			Title:      "first",
+			Goal:       "first",
+			Status:     taskstore.StatusAwaitingApproval,
+			AssignedTo: "codex",
+			CreatedAt:  now.Add(-time.Minute),
+			UpdatedAt:  now.Add(-time.Minute),
+		},
+		{
+			ID:         secondID,
+			Title:      "second",
+			Goal:       "second",
+			Status:     taskstore.StatusAwaitingApproval,
+			AssignedTo: "codex",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		},
+	} {
+		if err := tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	server.register(mux)
+	requestJSON(t, mux, http.MethodPost, "/tasks/"+secondID+"/merge-queue", `{"direction":"up"}`, "", http.StatusOK)
+
+	first, err := tasks.Load(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.MergeQueuePosition != 1 || first.MergeQueuePosition != 2 {
+		t.Fatalf("positions: first=%d second=%d, want first=2 second=1", first.MergeQueuePosition, second.MergeQueuePosition)
 	}
 }
 

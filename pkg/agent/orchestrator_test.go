@@ -242,6 +242,247 @@ func TestPlainWorkRequestIntent(t *testing.T) {
 	}
 }
 
+func TestMergeQueueReviewWaitsForHead(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	firstID := "task_merge_queue_first_11111111"
+	secondID := "task_merge_queue_second_22222222"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  firstID,
+			Title:               "first",
+			Goal:                "first",
+			Status:              taskstore.StatusReadyForReview,
+			AssignedTo:          "codex",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  secondID,
+			Title:               "second",
+			Goal:                "second",
+			Status:              taskstore.StatusReadyForReview,
+			AssignedTo:          "codex",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.reviewTask(context.Background(), secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "position 2") || !strings.Contains(reply, "head of the merge queue") {
+		t.Fatalf("reply = %q, want queued merge review explanation", reply)
+	}
+	updated, err := orch.tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusReadyForReview {
+		t.Fatalf("status = %q, want ready_for_review", updated.Status)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 0 {
+		t.Fatalf("approvals = %#v, want none for non-head review", approvals)
+	}
+}
+
+func TestMoveTaskInMergeQueueReordersPositions(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	firstID := "task_merge_queue_move_first"
+	secondID := "task_merge_queue_move_second"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  firstID,
+			Title:               "first",
+			Goal:                "first",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  secondID,
+			Title:               "second",
+			Goal:                "second",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.moveTaskInMergeQueue(context.Background(), secondID, "up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "position 1") {
+		t.Fatalf("reply = %q, want new position", reply)
+	}
+	first, err := orch.tasks.Load(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := orch.tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.MergeQueuePosition != 1 || first.MergeQueuePosition != 2 {
+		t.Fatalf("positions: first=%d second=%d, want first=2 second=1", first.MergeQueuePosition, second.MergeQueuePosition)
+	}
+}
+
+func TestMergeQueueRestartGateCannotMoveDown(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	restartID := "task_merge_queue_restart_gate"
+	waitingID := "task_merge_queue_waiting_approval"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  restartID,
+			Title:               "restart",
+			Goal:                "restart",
+			Status:              taskstore.StatusAwaitingRestart,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  waitingID,
+			Title:               "waiting",
+			Goal:                "waiting",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.moveTaskInMergeQueue(context.Background(), restartID, "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "post-merge restarts") {
+		t.Fatalf("reply = %q, want restart gate explanation", reply)
+	}
+	restartTask, err := orch.tasks.Load(restartID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitingTask, err := orch.tasks.Load(waitingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restartTask.MergeQueuePosition != 1 || waitingTask.MergeQueuePosition != 2 {
+		t.Fatalf("positions: restart=%d waiting=%d, want restart=1 waiting=2", restartTask.MergeQueuePosition, waitingTask.MergeQueuePosition)
+	}
+}
+
+func TestApprovalRequiresMergeQueueHead(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	firstEntered := now.Add(-time.Minute)
+	secondEntered := now
+	firstID := "task_merge_queue_approval_first"
+	secondID := "task_merge_queue_approval_second"
+	for _, task := range []taskstore.Task{
+		{
+			ID:                  firstID,
+			Title:               "first",
+			Goal:                "first",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           firstEntered,
+			UpdatedAt:           firstEntered,
+			MergeQueuePosition:  1,
+			MergeQueueEnteredAt: &firstEntered,
+		},
+		{
+			ID:                  secondID,
+			Title:               "second",
+			Goal:                "second",
+			Status:              taskstore.StatusAwaitingApproval,
+			AssignedTo:          "OrchestratorAgent",
+			CreatedAt:           secondEntered,
+			UpdatedAt:           secondEntered,
+			MergeQueuePosition:  2,
+			MergeQueueEnteredAt: &secondEntered,
+		},
+	} {
+		if err := orch.tasks.Save(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := approvalstore.Request{
+		ID:     "approval_merge_queue_second",
+		TaskID: secondID,
+		Tool:   "git.merge_approved",
+		Args:   json.RawMessage(`{}`),
+		Reason: "merge reviewed task branch into repo root",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.resolveApproval(context.Background(), req.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "position 2") || !strings.Contains(reply, "Move it to the top") {
+		t.Fatalf("reply = %q, want queue position gate", reply)
+	}
+	updatedApproval, err := orch.approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedApproval.Status != approvalstore.StatusPending {
+		t.Fatalf("approval status = %q, want pending", updatedApproval.Status)
+	}
+	updatedTask, err := orch.tasks.Load(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTask.Status != taskstore.StatusAwaitingApproval {
+		t.Fatalf("task status = %q, want awaiting_approval", updatedTask.Status)
+	}
+}
+
 func TestParseDelegateCommandNaturalForm(t *testing.T) {
 	selector, backend, instruction, ok := parseDelegateCommand([]string{"delegate", "the", "bun", "task", "to", "codex"})
 	if !ok {
@@ -2024,6 +2265,42 @@ func TestPostMergeRestartFailureKeepsTaskAwaitingRestart(t *testing.T) {
 	}
 }
 
+func TestReconcileDoesNotAutoRetryFailedPostMergeRestart(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	supervisor, calls := newRestartGateSupervisor(t, false)
+	defer supervisor.Close()
+	orch.cfg.Supervisord.Addr = supervisor.URL
+	setSupervisorAppHealthURL(t, &orch.cfg, "dashboard", supervisor.URL+"/health/dashboard")
+
+	task := taskstore.Task{
+		ID:               "task_20260429_091500_deadbeef",
+		Title:            "restart failed",
+		Goal:             "restart failed",
+		Status:           taskstore.StatusAwaitingRestart,
+		AssignedTo:       "OrchestratorAgent",
+		RestartRequired:  []string{"dashboard"},
+		RestartStatus:    taskstore.RestartStatusFailed,
+		RestartCurrent:   "dashboard",
+		RestartLastError: "connection refused",
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 {
+		t.Fatalf("recovered = %d, want no automatic retry for failed restart gate", recovered)
+	}
+	if got := calls.snapshot(); len(got) != 0 {
+		t.Fatalf("supervisor calls = %#v, want no retry", got)
+	}
+}
+
 func TestApprovalMergeFailureReturnsChatErrorNotHTTPFailure(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(mergeFailStub{}); err != nil {
@@ -2243,11 +2520,21 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
 	delegateFinished := make(chan struct{}, 1)
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDelegate)
+		})
+	}
 	orch := newTestOrchestrator(t, &delegateStub{
 		started:  delegateStarted,
 		release:  releaseDelegate,
 		finished: delegateFinished,
 	})
+	defer func() {
+		release()
+		waitForTaskInactive(t, orch, "task_20260428_200514_0d62653b")
+	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
 	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260428_200514_0d62653b")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -2298,7 +2585,7 @@ func TestFailedMergeApprovalQueuesAutomaticRecovery(t *testing.T) {
 	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
-	close(releaseDelegate)
+	release()
 	select {
 	case <-delegateFinished:
 	case <-time.After(time.Second):
@@ -2311,11 +2598,21 @@ func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
 	delegateFinished := make(chan struct{}, 1)
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDelegate)
+		})
+	}
 	orch := newTestOrchestrator(t, &delegateStub{
 		started:  delegateStarted,
 		release:  releaseDelegate,
 		finished: delegateFinished,
 	})
+	defer func() {
+		release()
+		waitForTaskInactive(t, orch, "task_20260429_065348_8f7391fb")
+	}()
 	orch.cfg.ExternalAgents = map[string]config.ExternalAgentConfig{"codex": {Enabled: true, Command: "codex"}}
 	workspace := filepath.Join(orch.cfg.Repo.WorkspaceRoot, "task_20260429_065348_8f7391fb")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -2355,13 +2652,58 @@ func TestReconcileConflictResolutionQueuesAutomaticRecovery(t *testing.T) {
 	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "codex" || updated.AutoRecoveryAttempts != 1 {
 		t.Fatalf("task = %#v, want running codex recovery attempt", updated)
 	}
-	close(releaseDelegate)
+	release()
 	select {
 	case <-delegateFinished:
 	case <-time.After(time.Second):
 		t.Fatal("automatic recovery worker did not finish")
 	}
 	waitForTaskEvent(t, orch, task.ID, "task.review.completed", "task.review.failed")
+}
+
+func TestAutomaticRecoveryFailureRemainsRetryableAfterCooldown(t *testing.T) {
+	lastAttempt := time.Now().Add(-10 * time.Minute).UTC()
+	ok, reason := automaticTaskRecoveryCandidate(taskstore.Task{
+		ID:                   "task_automatic_recovery_failed",
+		Status:               taskstore.StatusBlocked,
+		Result:               "signal: terminated",
+		AutoRecoveryAttempts: 1,
+		AutoRecoveryLastAt:   &lastAttempt,
+	}, time.Now().UTC())
+	if !ok || !strings.Contains(reason, "automatic recovery") {
+		t.Fatalf("candidate = %v, %q; want blocked automatic recovery attempts to remain retryable", ok, reason)
+	}
+}
+
+func TestMarkRecoveryBlockedPreservesRetryContext(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	task := taskstore.Task{
+		ID:         "task_retry_context",
+		Title:      "retry context",
+		Goal:       "retry context",
+		Status:     taskstore.StatusConflictResolution,
+		AssignedTo: "OrchestratorAgent",
+		Result:     "ReviewerAgent premerge check failed: merge conflict",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	orch.markRecoveryBlocked(context.Background(), task.ID, context.Canceled)
+
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(updated.Result, "ReviewerAgent premerge check failed") || !strings.Contains(updated.Result, "automatic recovery failed") {
+		t.Fatalf("result = %q, want original retry context plus automatic recovery failure", updated.Result)
+	}
+	ok, _ := automaticTaskRecoveryCandidate(updated, time.Now().Add(10*time.Minute).UTC())
+	if !ok {
+		t.Fatalf("task should remain an automatic recovery candidate after a failed recovery start: %#v", updated)
+	}
 }
 
 func TestPrepareDelegationForConflictResolutionPreservesFailureContext(t *testing.T) {
@@ -3897,6 +4239,118 @@ func TestRecoverRunningTasksSkipsNonRunningTasks(t *testing.T) {
 	}
 }
 
+func TestReconcileAutomaticRecoveryHonoursWorkerCapacity(t *testing.T) {
+	releaseDelegate := make(chan struct{})
+	delegate := &delegateStub{started: make(chan struct{}, 3), release: releaseDelegate, finished: make(chan struct{}, 1)}
+	orch := newTestOrchestrator(t, delegate)
+	orch.cfg.Limits.MaxConcurrentTasks = 1
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDelegate)
+		})
+	}
+	startedRecovery := false
+	defer func() {
+		release()
+		if !startedRecovery {
+			return
+		}
+		select {
+		case <-delegate.finished:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for delegated recovery to finish")
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if orch.activeTaskCount() == 0 {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatalf("active task count = %d, want 0 after delegated recovery", orch.activeTaskCount())
+	}()
+	now := time.Now().UTC()
+	for _, suffix := range []string{"11111111", "22222222", "33333333"} {
+		taskID := "task_20260429_120000_" + suffix
+		if err := orch.tasks.Save(taskstore.Task{
+			ID:                   taskID,
+			Title:                "retryable blocked task",
+			Goal:                 "retryable blocked task",
+			Status:               taskstore.StatusBlocked,
+			AssignedTo:           "OrchestratorAgent",
+			Workspace:            filepath.Join(t.TempDir(), "workspaces", taskID),
+			Result:               "ReviewerAgent checks failed: test failed",
+			AutoRecoveryAttempts: 1,
+			CreatedAt:            now,
+			UpdatedAt:            now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconciled count = %d, want one worker start at capacity", count)
+	}
+	select {
+	case <-delegate.started:
+		startedRecovery = true
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected one delegate to start")
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("started more than one delegate despite capacity of one")
+	default:
+	}
+	if active := orch.activeTaskCount(); active != 1 {
+		t.Fatalf("active task count = %d, want 1", active)
+	}
+	release()
+}
+
+func TestReconcileMarksExhaustedAutomaticRecoveryBlocked(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	taskID := "task_20260429_120000_deadbeef"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:                   taskID,
+		Title:                "exhausted recovery",
+		Goal:                 "exhausted recovery",
+		Status:               taskstore.StatusConflictResolution,
+		AssignedTo:           "OrchestratorAgent",
+		Workspace:            filepath.Join(t.TempDir(), "workspaces", taskID),
+		Result:               "ReviewerAgent could not reconcile task branch with current main before checks: merge conflict",
+		AutoRecoveryAttempts: maxAutomaticTaskRecoveryAttempts,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconciled count = %d, want exhausted task update", count)
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", updated.Status)
+	}
+	if !strings.Contains(updated.Result, "Automatic recovery exhausted after 3 attempts") {
+		t.Fatalf("result = %q, want exhaustion message", updated.Result)
+	}
+}
+
 func TestReconcileQueuedTasksStartsWorker(t *testing.T) {
 	delegateStarted := make(chan struct{}, 1)
 	releaseDelegate := make(chan struct{})
@@ -3940,6 +4394,7 @@ func TestReconcileQueuedTasksStartsWorker(t *testing.T) {
 	}
 	close(releaseDelegate)
 	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+	waitForTaskInactive(t, orch, taskID)
 }
 
 func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
@@ -3993,6 +4448,7 @@ func TestReconcileStaleCoderTaskDelegatesToCodex(t *testing.T) {
 	}
 	close(releaseDelegate)
 	waitForTaskStatus(t, orch, taskID, taskstore.StatusReadyForReview)
+	waitForTaskInactive(t, orch, taskID)
 }
 
 func TestRecoveryPlanPreservesUXAgent(t *testing.T) {
@@ -4377,6 +4833,18 @@ func waitForTask(t *testing.T, orch *Orchestrator, taskID string, done func(task
 	}
 	t.Fatalf("timed out waiting for task %s; last = %#v", taskID, last)
 	return taskstore.Task{}
+}
+
+func waitForTaskInactive(t *testing.T, orch *Orchestrator, taskID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !orch.taskActive(taskID) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task %s to become inactive", taskID)
 }
 
 func writeTestRepoFile(t *testing.T, root, rel, content string) {

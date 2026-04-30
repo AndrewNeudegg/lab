@@ -129,6 +129,9 @@ func TestDefaultSupervisorPreparesDashboardDependencies(t *testing.T) {
 	if dashboardApp.PreStartTimeoutSeconds < 300 {
 		t.Fatalf("dashboard pre-start timeout = %d, want at least 300", dashboardApp.PreStartTimeoutSeconds)
 	}
+	if dashboardApp.HealthStartupGraceSec < 30 {
+		t.Fatalf("dashboard health startup grace = %d, want at least 30", dashboardApp.HealthStartupGraceSec)
+	}
 }
 
 func TestDefaultExternalAgentTimeoutsAreFiveHours(t *testing.T) {

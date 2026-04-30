@@ -82,6 +82,13 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantPath:   "/tasks/task_123/restart",
 		},
 		{
+			name:       "task queue move",
+			args:       []string{"task", "queue", "task_123", "up"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/tasks/task_123/merge-queue",
+			wantBody:   map[string]any{"direction": "up"},
+		},
+		{
 			name:       "task retry with backend",
 			args:       []string{"retry", "task_123", "codex", "inspect", "again"},
 			wantMethod: http.MethodPost,
@@ -114,6 +121,19 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			args:       []string{"workflow", "run", "workflow_123"},
 			wantMethod: http.MethodPost,
 			wantPath:   "/workflows/workflow_123/run",
+		},
+		{
+			name:       "settings show",
+			args:       []string{"settings"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/settings",
+		},
+		{
+			name:       "auto merge on",
+			args:       []string{"settings", "auto-merge", "on"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/settings",
+			wantBody:   map[string]any{"auto_merge_enabled": true},
 		},
 	}
 

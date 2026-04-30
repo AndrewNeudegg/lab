@@ -2258,12 +2258,13 @@
 
   .auto-merge-input {
     position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+    inset: 0;
+    z-index: 2;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: inherit;
+    opacity: 0;
   }
 
   .auto-merge-toggle i {

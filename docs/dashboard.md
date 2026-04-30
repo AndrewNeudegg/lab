@@ -62,6 +62,7 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 - Desktop: keep local documentation navigation visible on the left, but compact enough that the selected document and on-page table of contents remain the primary reading surface.
 - Mobile: avoid horizontal document carousels. Start the documentation navigation collapsed below the sticky navbar, keep it in document flow so it does not cover article text while scrolling, then expand it with the arrow control to show the labelled document jump control, search, and vertical document list.
 - Search filters titles, paths, summaries, and full Markdown content. Search results show summaries; the default browse view uses short labels for faster scanning.
+- Promote high-traffic operator references in the `Start here` group: Dashboard, Knowledge Space, and `homelabctl`.
 - Mermaid fenced diagrams render in docs and chat. The renderer applies the shared homelabd light or dark diagram palette, keeps the original source as a code fallback when rendering fails, and prevents diagram-level theme overrides from replacing the brand colours.
 
 ## Markdown Diagrams And Brand Colours

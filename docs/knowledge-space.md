@@ -20,6 +20,18 @@ flowchart LR
 - Running research is source-bound. The backend ranks matching source excerpts, writes a report answer with evidence labels, records coverage gaps, and saves the report back to the space.
 - The dashboard page is `/knowledge`; direct links use `/knowledge?space=<space_id>`.
 
+## Operator CLI
+
+Use `homelabctl knowledge` for repeatable Knowledge Space setup and inspection instead of raw HTTP calls:
+
+```bash
+go run ./cmd/homelabctl knowledge create --objective "Collect source-grounded examples" "Example space"
+go run ./cmd/homelabctl knowledge source add kspace_123 --file docs/knowledge-space.md "Knowledge Space docs"
+go run ./cmd/homelabctl knowledge research kspace_123 --mode study "How should operators use this space?"
+```
+
+The CLI mirrors the dashboard flow: create a space, add one or more text/file sources, then run a research question against all or selected sources. See `docs/homelabctl.md#knowledge-space-commands` for the full command reference.
+
 ## HTTP API
 
 - `GET /knowledge/spaces`: list spaces.

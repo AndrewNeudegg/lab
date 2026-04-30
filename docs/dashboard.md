@@ -36,6 +36,7 @@ Use the shared responsive navbar on every dashboard page.
 - Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 - Show compact Tasks attention badges only when action is needed. Red counts failed, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
+- Keep the navbar pinned to the viewport top on pages with internal scroll regions, including `/chat`, so mobile and desktop operators can reach navigation without first scrolling the conversation.
 
 ## URL References
 

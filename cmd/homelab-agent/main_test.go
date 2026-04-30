@@ -163,6 +163,22 @@ func TestExecuteAssignmentUsesSelectedWorkdirAndReportsCompletion(t *testing.T) 
 	}
 }
 
+func TestExecuteAssignmentReportsNoChangeRequired(t *testing.T) {
+	runner := &fakeAssignmentRunner{result: agentrunner.RunResult{Output: "No change required: duplicate report\n"}}
+	client := &fakeAgentControl{}
+
+	if err := executeAssignment(context.Background(), client, runner, "desk", "codex", &remoteagent.Assignment{
+		TaskID:      "task_1",
+		Workdir:     "/srv/desk/repo",
+		Instruction: "investigate it",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if client.status != "no_change_required" || !strings.Contains(client.result, "duplicate report") {
+		t.Fatalf("completion = %#v, want no_change_required result", client)
+	}
+}
+
 func TestExecuteAssignmentReportsRunnerFailure(t *testing.T) {
 	runner := &fakeAssignmentRunner{err: fmt.Errorf("runner failed")}
 	client := &fakeAgentControl{}

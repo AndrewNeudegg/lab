@@ -251,8 +251,28 @@ func executeAssignment(ctx context.Context, client agentControl, runner assignme
 		if body == "" {
 			body = errorText
 		}
+	} else if workerReportedNoChangeRequired(body) {
+		status = "no_change_required"
 	}
 	return client.complete(ctx, agentID, assignment.TaskID, status, body, errorText)
+}
+
+func workerReportedNoChangeRequired(result string) bool {
+	for _, line := range strings.Split(result, "\n") {
+		normalized := strings.ToLower(strings.TrimSpace(line))
+		normalized = strings.TrimLeft(normalized, "-*#> ")
+		normalized = strings.ReplaceAll(normalized, "**", "")
+		normalized = strings.Trim(normalized, "*_` ")
+		if normalized == "no change required" ||
+			strings.HasPrefix(normalized, "no change required:") ||
+			strings.HasPrefix(normalized, "no change required -") ||
+			normalized == "no changes required" ||
+			strings.HasPrefix(normalized, "no changes required:") ||
+			strings.HasPrefix(normalized, "no changes required -") {
+			return true
+		}
+	}
+	return false
 }
 
 type controlClient struct {

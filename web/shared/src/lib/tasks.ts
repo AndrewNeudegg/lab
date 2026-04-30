@@ -7,7 +7,8 @@ const attentionStatuses = new Set([
   'ready_for_review',
   'awaiting_approval',
   'awaiting_restart',
-  'awaiting_verification'
+  'awaiting_verification',
+  'no_change_required'
 ]);
 
 const activeStatuses = new Set(['queued', 'running']);
@@ -17,7 +18,8 @@ const decisionAttentionStatuses = new Set([
   'ready_for_review',
   'awaiting_approval',
   'awaiting_restart',
-  'awaiting_verification'
+  'awaiting_verification',
+  'no_change_required'
 ]);
 
 export interface TaskAttentionCounts {
@@ -61,6 +63,8 @@ export const taskStateDescription = (status = '') => {
       return 'Merge landed. Required restarts and health checks are in progress.';
     case 'awaiting_verification':
       return 'Merge landed. Verify the running app before accepting.';
+    case 'no_change_required':
+      return 'Worker found no patch is required. Accept to close without a merge, or reopen with corrected instructions.';
     case 'done':
       return 'Accepted by the human.';
     case 'failed':
@@ -76,6 +80,8 @@ export const taskStatusLabel = (status = '') => {
   switch (status) {
     case 'ready_for_review':
       return 'queued for review';
+    case 'no_change_required':
+      return 'no change required';
     default:
       return status.replaceAll('_', ' ');
   }
@@ -88,7 +94,7 @@ export const taskStateTransitions = (status = '') => {
     case 'running':
       return 'running → ready for review or blocked';
     case 'ready_for_review':
-      return 'ready for review → awaiting approval, conflict resolution, or blocked';
+      return 'ready for review → awaiting approval, conflict resolution, no change required, or blocked';
     case 'blocked':
       return 'blocked → running through automatic recovery, cancelled, or deleted';
     case 'conflict_resolution':
@@ -99,6 +105,8 @@ export const taskStateTransitions = (status = '') => {
       return 'awaiting restart → awaiting verification, queued, or deleted';
     case 'awaiting_verification':
       return 'awaiting verification → done or queued';
+    case 'no_change_required':
+      return 'no change required → done or queued';
     case 'done':
     case 'cancelled':
       return 'terminal';

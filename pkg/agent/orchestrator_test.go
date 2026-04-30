@@ -1204,6 +1204,58 @@ func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
 	}
 }
 
+func TestRemoteTaskCanCompleteWithNoChangeRequired(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:   "repo",
+			Path: "/home/me/project",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.CreateTaskWithTarget(context.Background(), "check duplicate report", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created remote task") {
+		t.Fatalf("reply = %q, want remote task creation", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := tasks[0]
+	if _, err := orch.ClaimRemoteTask(context.Background(), agent, "codex"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", task.ID, "No change required: duplicate report", taskstore.StatusNoChangeRequired); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != taskstore.StatusNoChangeRequired {
+		t.Fatalf("status = %q, want no_change_required", completed.Status)
+	}
+	if !strings.Contains(completed.Result, "duplicate report") {
+		t.Fatalf("result = %q, want remote no-change reason", completed.Result)
+	}
+}
+
 func TestCreateRemoteTaskRequiresRegisteredAgentAndWorkdir(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
@@ -4496,7 +4548,7 @@ func TestWorkflowStepPromptIncludesDiagramGuidance(t *testing.T) {
 	}
 }
 
-func TestReviewNoDiffBlocksTask(t *testing.T) {
+func TestReviewNoDiffWithoutMarkerBlocksTask(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	if err := orch.registry.Register(noDiffStub{}); err != nil {
 		t.Fatal(err)
@@ -4531,6 +4583,60 @@ func TestReviewNoDiffBlocksTask(t *testing.T) {
 	}
 	if !strings.Contains(updated.Result, "no diff") {
 		t.Fatalf("result = %q, want no diff reason", updated.Result)
+	}
+}
+
+func TestReviewNoDiffWithNoChangeMarkerAwaitsAcceptance(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(noDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_20260425_213611_nochange"
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "investigate bogus report",
+		Goal:       "investigate bogus report",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		Workspace:  filepath.Join(t.TempDir(), "workspaces", taskID),
+		Result:     "No change required: the report is not reproducible with the supplied steps.",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, taskstore.StatusNoChangeRequired) || !strings.Contains(reply, "accept") {
+		t.Fatalf("reply = %q, want no-change acceptance guidance", reply)
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusNoChangeRequired {
+		t.Fatalf("status = %q, want no_change_required", updated.Status)
+	}
+	if !strings.Contains(updated.Result, "not reproducible") {
+		t.Fatalf("result = %q, want preserved worker reason", updated.Result)
+	}
+
+	accepted, err := orch.acceptTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(accepted, "no change required") {
+		t.Fatalf("accept reply = %q, want no-change confirmation", accepted)
+	}
+	done, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != taskstore.StatusDone {
+		t.Fatalf("status = %q, want done", done.Status)
 	}
 }
 

@@ -64,6 +64,7 @@ export type TaskStatus =
   | 'awaiting_approval'
   | 'awaiting_restart'
   | 'awaiting_verification'
+  | 'no_change_required'
   | 'done'
   | 'failed'
   | 'cancelled';

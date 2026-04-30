@@ -612,7 +612,8 @@
       task.status === 'ready_for_review' ||
       task.status === 'awaiting_approval' ||
       task.status === 'awaiting_restart' ||
-      task.status === 'awaiting_verification'
+      task.status === 'awaiting_verification' ||
+      task.status === 'no_change_required'
     ) {
       return 'amber';
     }
@@ -648,6 +649,8 @@
           : 'No action needed while required services restart and pass health checks.';
       case 'awaiting_verification':
         return 'Verify the running result, then accept it or reopen the task with a reason.';
+      case 'no_change_required':
+        return 'Review the worker reason. Accept if the task should close without a patch, or reopen with instructions if the conclusion is wrong.';
       case 'conflict_resolution':
         return 'Conflict recovery may retry automatically. Use Retry now only to intervene immediately.';
       case 'blocked':
@@ -1779,7 +1782,11 @@
             {:else if diffLoadingTaskId === currentTask.id && !currentTaskDiff}
               <p class="empty">Loading task diff...</p>
             {:else if currentTaskDiff && !currentTaskDiff.raw_diff.trim()}
-              <p class="empty">No diff found between this task branch and current main.</p>
+              <p class="empty">
+                {currentTask.status === 'no_change_required'
+                  ? 'No diff was required for this task. Review the result, then accept or reopen it.'
+                  : 'No diff found between this task branch and current main.'}
+              </p>
             {:else if currentTaskDiff}
               <div class="diff-meta">
                 <span>{currentTaskDiff.base_label || 'main'} -> {currentTaskDiff.head_label || shortID(currentTaskDiff.task_id)}</span>

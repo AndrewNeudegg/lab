@@ -56,6 +56,8 @@ describe('task queue attention logic', () => {
     expect(taskNeedsDecisionAttention(task('review', 'ready_for_review'))).toBe(true);
     expect(taskNeedsAttention(task('restart', 'awaiting_restart'))).toBe(true);
     expect(taskNeedsDecisionAttention(task('restart', 'awaiting_restart'))).toBe(true);
+    expect(taskNeedsAttention(task('nochange', 'no_change_required'))).toBe(true);
+    expect(taskNeedsDecisionAttention(task('nochange', 'no_change_required'))).toBe(true);
     expect(taskNeedsAttention(task('running', 'running'))).toBe(false);
     expect(taskIsActive(task('queued', 'queued'))).toBe(true);
     expect(taskIsTerminal(task('done', 'done'))).toBe(true);
@@ -181,6 +183,8 @@ describe('task queue attention logic', () => {
     expect(taskStateTransitions('awaiting_approval')).toContain('conflict resolution');
     expect(taskStateDescription('awaiting_restart')).toContain('Required restarts');
     expect(taskStateTransitions('awaiting_restart')).toContain('awaiting verification');
+    expect(taskStateDescription('no_change_required')).toContain('no patch is required');
+    expect(taskStateTransitions('no_change_required')).toContain('done or queued');
     expect(taskStateDescription('running')).toContain('worker is active');
     expect(taskStateDescription('blocked')).toContain('requeued automatically');
     expect(taskStateTransitions('blocked')).toContain('automatic recovery');
@@ -189,5 +193,6 @@ describe('task queue attention logic', () => {
   test('labels queued review gates without implying operator action', () => {
     expect(taskStatusLabel('ready_for_review')).toBe('queued for review');
     expect(taskStatusLabel('awaiting_approval')).toBe('awaiting approval');
+    expect(taskStatusLabel('no_change_required')).toBe('no change required');
   });
 });

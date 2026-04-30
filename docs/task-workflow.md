@@ -12,8 +12,17 @@
 - `awaiting_approval`: checks and premerge passed and a merge approval exists. The approval remains in the merge queue and can merge only while the task is at the queue head. When approval is triggered, the Orchestrator first tries to reconcile the local task branch with current `main`. If an `awaiting_approval` task has no pending merge approval, the task supervisor requeues review so a fresh approval can be produced. Next transition: `awaiting_approval -> awaiting_restart` when the reviewed diff requires supervised component restarts, `awaiting_approval -> awaiting_verification` when no restart is required, `awaiting_approval -> conflict_resolution` if auto-rebase fails, `awaiting_approval -> blocked` for other merge failures, or `awaiting_approval -> running` when a worker retry starts. Starting that new run marks the old pending approvals stale.
 - `awaiting_restart`: the merge has landed and `homelabd` is restarting required supervised components through `supervisord`. The task stays at the merge queue head and blocks later merges until the restart gate completes, because the running system has not been proven healthy yet. The task cannot be accepted while this gate is pending or running. Each component must restart and pass its configured health URL before the task moves to verification; a failed restart leaves the task in `awaiting_restart` with `restart_status=failed`, `restart_current`, and `restart_last_error` so the operator can retry with `restart <task_id>` or `homelabctl task restart <task_id>`. Failed restart gates are not retried automatically, because repeatedly restarting an unhealthy live component can extend an outage.
 - `awaiting_verification`: local task merge has landed in the main repo, or remote task review acknowledged the remote result. The human still needs to verify the running app or the named remote machine/directory. Next transition: `awaiting_verification -> done` via `accept`, or `awaiting_verification -> queued` via `reopen`.
-- `done`: the human accepted the merged result. Terminal state.
+- `no_change_required`: the worker deliberately made no patch and reported `No change required: <reason>`, for example because a bug report is invalid, duplicated, unreproducible, already fixed, or outside the requested scope. Review records the conclusion without creating a merge approval. Next transition: `no_change_required -> done` via `accept`, or `no_change_required -> queued` via `reopen`.
+- `done`: the human accepted the merged or no-change result. Terminal state.
 - `cancelled`: work was intentionally stopped. Terminal state.
+
+```mermaid
+flowchart LR
+  R[ready_for_review] -->|diff passes checks| A[awaiting_approval]
+  R -->|explicit no-change reason| N[no_change_required]
+  N -->|accept| D[done]
+  N -->|reopen with reason| Q[queued]
+```
 
 ## Planning Gate
 
@@ -27,7 +36,7 @@ Every task record carries a durable reviewed plan before execution starts. The p
 
 `homelabd` writes `task.plan.created` and `task.plan.reviewed` events to the JSONL event log. If an older task has no reviewed plan, or only has the legacy generic or pre-scan default plan, `run` or `delegate` creates and reviews the current repo-aware plan before assigning the worker. The scan is a starting point only; workers must still inspect callers, imports, generated files, UI flows, and task state before editing.
 
-Reviewing a task with no workspace diff moves it to `blocked` instead of leaving it `running`; the next action should be to rerun, delegate with clearer instructions, or delete the task.
+Reviewing a task with no workspace diff moves it to `no_change_required` only when the worker result starts with `No change required:` and explains why. This gives the operator an explicit accept-or-reopen decision without forcing a diff. A no-diff task without that marker still moves to `blocked`; the next action should be to rerun, delegate with clearer instructions, or delete the task.
 
 Task records include run lifecycle timestamps. `started_at` is set when a task enters `running`, and `stopped_at` is set when it leaves `running` for review, approval, verification, blocked, failed, done, or cancelled states. Reopening or rerunning a task starts a new run and clears the previous `stopped_at`.
 
@@ -49,7 +58,7 @@ New local development tasks are represented by one queued task record and one is
 
 Task records may also include `attachments`. Dashboard help reports use this for `browser-context.json` and screenshots; chat/task creation can attach uploaded files. Attachments store name, media type, byte size, optional text preview, and optional data URL content. The `/tasks` selected-task pane shows attachments in `State and context`, and worker prompts include attachment names plus text previews so evidence is not lost outside the UI.
 
-Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `retry <task_id> codex <instruction>` to force a recovery attempt with preserved failure context, `delegate <task_id> to codex` to use an external worker directly, `restart <task_id>` to retry a failed post-merge restart gate, and `accept <task_id>` after verification is available. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, post-merge restart retry, merge queue reorder, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat. Automatic recovery attempts are shown in the selected task state so an operator can follow the rebase queue without babysitting every retry. Long diagnostics such as worker output, activity, the reviewed plan, restart status, and the original prompt are collapsible so they remain available without dominating the decision flow.
+Use `show <task_id>` to inspect the task, `run <task_id>` to start the built-in coder, `retry <task_id> codex <instruction>` to force a recovery attempt with preserved failure context, `delegate <task_id> to codex` to use an external worker directly, `restart <task_id>` to retry a failed post-merge restart gate, and `accept <task_id>` after verification or no-change review is available. In the dashboard, `/tasks` exposes typed buttons for run, review, approval, post-merge restart retry, merge queue reorder, accept, reopen, cancel, retry, and delete; those buttons call HTTP endpoints directly rather than sending task commands through chat. Automatic recovery attempts are shown in the selected task state so an operator can follow the rebase queue without babysitting every retry. Long diagnostics such as worker output, activity, the reviewed plan, restart status, no-change reasons, and the original prompt are collapsible so they remain available without dominating the decision flow.
 
 Older task records may still contain graph metadata from the previous workflow:
 
@@ -61,7 +70,7 @@ Older task records may still contain graph metadata from the previous workflow:
 
 ## Verification Commands
 
-Use `accept <task_id>` after checking that the merged change works. If the task is `awaiting_restart`, acceptance is rejected until the required restart gate has completed and the task has moved to `awaiting_verification`.
+Use `accept <task_id>` after checking that the merged change works, or after agreeing with a `no_change_required` conclusion. If the task is `awaiting_restart`, acceptance is rejected until the required restart gate has completed and the task has moved to `awaiting_verification`.
 
 Use `reopen <task_id> <reason>` when the merged change needs more work, for example:
 

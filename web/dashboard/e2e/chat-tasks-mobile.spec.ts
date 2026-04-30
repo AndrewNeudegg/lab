@@ -288,6 +288,63 @@ const mockAcceptTaskApi = async (page: Page) => {
   });
 };
 
+const mockNoChangeTaskApi = async (page: Page) => {
+  const now = new Date('2026-04-26T15:12:00Z').toISOString();
+  const taskID = 'task_20260426_151200_55555555';
+  let accepted = false;
+  const currentTask = () => ({
+    id: taskID,
+    title: 'Decline duplicate task without patch',
+    goal: 'Investigate a duplicate report and close it without requiring a diff.',
+    status: accepted ? 'done' : 'no_change_required',
+    assigned_to: 'codex',
+    priority: 5,
+    created_at: now,
+    updated_at: now,
+    result: accepted
+      ? 'No change required: duplicate report.\naccepted by human'
+      : 'No change required: duplicate report.'
+  });
+
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { tasks: [currentTask()] } });
+  });
+  await page.route(`**/api/tasks/${taskID}/accept`, async (route) => {
+    accepted = true;
+    await route.fulfill({ json: { reply: 'Accepted no-change result.' } });
+  });
+  await page.route(`**/api/tasks/${taskID}/reopen`, async (route) => {
+    accepted = false;
+    await route.fulfill({ json: { reply: 'Reopened no-change task.' } });
+  });
+  await page.route(/\/api\/settings$/, async (route) => {
+    await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
+  });
+  await page.route(/\/api\/approvals$/, async (route) => {
+    await route.fulfill({ json: { approvals: [] } });
+  });
+  await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { events: [] } });
+  });
+  await page.route(/\/api\/agents$/, async (route) => {
+    await route.fulfill({ json: { agents: [] } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
+    await route.fulfill({ json: { runs: [] } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
+    await route.fulfill({
+      json: {
+        task_id: taskID,
+        raw_diff: '',
+        summary: { files: 0, additions: 0, deletions: 0 },
+        files: [],
+        generated_at: now
+      }
+    });
+  });
+};
+
 const approvalFor = (taskID: string) => ({
   id: 'approval_20260426_150000_11111111',
   task_id: taskID,
@@ -761,6 +818,26 @@ test('accepted task feedback is a non-reflowing toast on mobile', async ({ page 
   expect(toastLayout.bodyWidth, JSON.stringify(toastLayout)).toBeLessThanOrEqual(
     toastLayout.viewport + 2
   );
+});
+
+test('no-change tasks show accept and reopen decisions without requiring a diff', async ({ page }) => {
+  await mockNoChangeTaskApi(page);
+  await page.goto('/tasks?task=task_20260426_151200_55555555');
+
+  await expect(page.getByRole('heading', { name: 'Decline duplicate task without patch' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  await expect(page.locator('.record-header .status')).toHaveText('no change required');
+  const actions = page.getByRole('region', { name: 'Task actions', exact: true });
+  await expect(actions).toContainText('Accept no-change result');
+  await expect(actions).toContainText('Closes this task as done without a merge');
+  await expect(actions.getByRole('button', { name: 'Reopen' })).toBeVisible();
+  await expect(actions.getByRole('button', { name: 'Retry' })).toHaveCount(0);
+  await expect(page.getByText('No diff was required for this task.')).toBeVisible();
+
+  await actions.getByRole('button', { name: 'Accept', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Accept submitted');
+  await expect(page.locator('.record-header .status')).toHaveText('done');
 });
 
 test('chat supports file uploads and sends attachment context', async ({ page }) => {

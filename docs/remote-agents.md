@@ -152,7 +152,7 @@ Remote tasks do not. For a remote task:
 
 1. The remote agent runs the worker in the selected remote directory.
 2. The remote agent reports output and validation back to `homelabd`.
-3. `review <task>` acknowledges the remote result and moves the task to `awaiting_verification`.
+3. `review <task>` acknowledges the remote result and moves the task to `awaiting_verification`. If the remote worker reports `No change required: <reason>`, `homelabd` records `no_change_required` instead so the operator can accept the no-change conclusion or reopen the task with corrected instructions.
 4. Human verification happens against the named remote machine/directory.
 5. `accept <task>` closes it, or `reopen <task> <reason>` queues more remote work.
 

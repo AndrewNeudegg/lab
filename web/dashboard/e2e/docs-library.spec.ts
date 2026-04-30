@@ -60,7 +60,7 @@ test('docs library supports navigation, markdown rendering, table of contents, a
     .poll(() =>
       page.locator('.content .mermaid-diagram svg').evaluate((element) => element.outerHTML)
     )
-    .toContain('#2563eb');
+    .toContain('#60a5fa');
 
   await page.goto('/docs/task-workflow');
   const toc = page.getByRole('navigation', { name: 'On this page' });

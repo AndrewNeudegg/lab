@@ -177,7 +177,19 @@ describe('task queue view model', () => {
     });
 
     expect(result.visibleTaskItems.map((item) => item.id)).toEqual(['task_planned']);
-    expect(result.currentTask?.id).toBe('task_planned');
+    expect(result.currentTask).toBeUndefined();
+  });
+
+  test('leaves the queue overview unselected until a task is explicitly chosen', () => {
+    const result = view('all', '');
+
+    expect(result.visibleTaskItems.map((item) => item.id)).toEqual([
+      'task_running',
+      'task_review',
+      'task_done'
+    ]);
+    expect(result.selectedTaskId).toBe('');
+    expect(result.currentTask).toBeUndefined();
   });
 
   test('includes pending approvals in needs-action queue only while they are actionable', () => {
@@ -237,7 +249,7 @@ describe('task queue view model', () => {
       taskFilter: 'all',
       queueFilter: 'all',
       taskSearch: '/srv/desk/repo',
-      selectedTaskId: ''
+      selectedTaskId: 'task_desk'
     });
 
     expect(result.visibleTaskItems.map((item) => item.id)).toEqual(['task_desk']);
@@ -288,6 +300,7 @@ describe('task queue selection helper', () => {
 
     expect(selectTaskForQueue(tasks, [], 'active', 'all', '', 'task_review')).toBe('task_running');
     expect(selectTaskForQueue(tasks, [], 'attention', 'all', '', 'task_running')).toBe('task_review');
+    expect(selectTaskForQueue(tasks, [], 'all', 'all', '', '')).toBe('');
   });
 
   test('normalises stale selected task ids after a sync and refreshes the visible local task details', () => {
@@ -315,11 +328,27 @@ describe('task queue selection helper', () => {
       taskFilter: 'active',
       queueFilter: 'agent:desk',
       taskSearch: '',
-      selectedTaskId: ''
+      selectedTaskId: 'task_desk'
     });
 
     expect(result.selectedTaskId).toBe('task_desk');
     expect(result.shouldLoadRuns).toBe(true);
+    expect(result.shouldLoadDiff).toBe(false);
+  });
+
+  test('keeps the overview from loading task details without an explicit selection', () => {
+    const result = resolveTaskSyncSelection({
+      tasks: [task('task_done', 'done', '04'), task('task_review', 'ready_for_review', '05')],
+      approvals: [],
+      taskFilter: 'all',
+      queueFilter: 'all',
+      taskSearch: '',
+      selectedTaskId: ''
+    });
+
+    expect(result.selectedTaskId).toBe('');
+    expect(result.selectedTask).toBeUndefined();
+    expect(result.shouldLoadRuns).toBe(false);
     expect(result.shouldLoadDiff).toBe(false);
   });
 

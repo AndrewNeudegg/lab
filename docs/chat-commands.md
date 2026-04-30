@@ -41,7 +41,7 @@ Use reflection when you want one improvement from the recent interaction and a f
 reflect on our recent interaction and suggest one improvement
 ```
 
-The reply includes a `new <goal>` command. In the dashboard this appears as a suggested action button, so you can create the follow-up task directly from the reflection result.
+The reply includes a `new <goal>` command. In the dashboard this appears as a suggested action button, so you can create the follow-up task directly from the reflection result. Suggested task goals are not shortened before creation; the task record keeps the full brief and `homelabd` summarises only the display title.
 
 ## Chat History And Search
 
@@ -88,7 +88,7 @@ Open-ended chat also converts assistant commitments to implementation work into 
 
 Open-ended chat also filters LLM candidate replies that describe the agent's future process instead of answering directly. Meta sentences such as "I'll check that", "First, I'll inspect", or "I need to inspect" are removed when a concrete answer remains; meta-only replies are rejected and regenerated. If the candidate is an implementation commitment, including "I'm going to fix ...", OrchestratorAgent creates the task and returns the task link instead of the promise.
 
-New local development tasks create one queued task record and one isolated worktree. The chat reply stays compact: it links the summarised task title to `/tasks?task=<task_id>` and notes that a worker will start automatically. Opening the link selects the new task in the dashboard without a full page reload. To start or reassign the task explicitly, use:
+New local development tasks create one queued task record and one isolated worktree. The chat reply stays compact: it links the summarised task title to `/tasks?task=<task_id>` and notes that a worker will start automatically. The task goal itself is not clipped for display; keep important constraints in the brief and let title summarisation handle the task-list label. Opening the link selects the new task in the dashboard without a full page reload. To start or reassign the task explicitly, use:
 
 ```text
 run <task_id>

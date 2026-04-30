@@ -208,7 +208,7 @@ Use `chat.history` or `chat.search` before answering questions such as "what did
 
 `task.create`, `task.run`, and `workflow.*` are pseudo-tools handled by the Orchestrator, not registered package tools. `task.list` is a registered read-only tool in `pkg/tools/task`.
 
-- `task.create`: required args: `goal`. Optional args: `target`. Creates a durable local task or remote-target task. `target` may include `mode`, `agent_id`, `machine`, `workdir_id`, `workdir`, and `backend`.
+- `task.create`: required args: `goal`. Optional args: `target`. Creates a durable local task or remote-target task. Pass the complete, unsummarised task brief as `goal`; `homelabd` stores it intact and separately summarises only the display title. `target` may include `mode`, `agent_id`, `machine`, `workdir_id`, `workdir`, and `backend`.
 - `task.run`: required args: `task_id`. Starts `CoderAgent` on an existing task after the planning gate.
 - `task.list`: required args: none. Lists durable task records, newest first.
 - `workflow.create`: required args: `name`. Optional args: `description`, `goal`, `steps`. Creates a durable workflow. Steps may be `llm`, `tool`, `wait`, or `workflow`.

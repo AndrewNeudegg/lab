@@ -114,6 +114,7 @@
   let noticeId = 0;
   let refreshStateSequence = 0;
   let lastAppliedRouteTaskId = '';
+  let pendingRouteTaskId = '';
 
   let tasks: HomelabdTask[] = [];
   let agents: HomelabdRemoteAgent[] = [];
@@ -180,8 +181,12 @@
     if (currentRoutePath() === next) {
       return;
     }
-    lastAppliedRouteTaskId = taskId;
-    void goto(next, { keepFocus: true, noScroll: true, replaceState });
+    pendingRouteTaskId = taskId;
+    void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
+      if (pendingRouteTaskId === taskId) {
+        pendingRouteTaskId = '';
+      }
+    });
   };
 
   const applyTaskOverviewSelection = () => {
@@ -191,6 +196,7 @@
     selectedDiffFilePath = '';
     deleteConfirmTaskId = '';
     lastAppliedRouteTaskId = '';
+    pendingRouteTaskId = '';
     showMobilePanel('queue');
   };
 
@@ -253,7 +259,13 @@
       applyTaskOverviewSelection();
       return;
     }
+    if (pendingRouteTaskId === taskId) {
+      lastAppliedRouteTaskId = taskId;
+      pendingRouteTaskId = '';
+      return;
+    }
     if (taskId === selectedTaskId) {
+      lastAppliedRouteTaskId = taskId;
       return;
     }
     applyRouteTaskSelection(taskId);
@@ -426,7 +438,7 @@
   $: currentSecondaryOperations = secondaryTaskOperations(currentTask, approvals);
   $: if (browser) {
     const routeTaskId = currentTaskRouteId();
-    if (routeTaskId && routeTaskId !== lastAppliedRouteTaskId) {
+    if (routeTaskId && routeTaskId !== lastAppliedRouteTaskId && routeTaskId !== pendingRouteTaskId) {
       lastAppliedRouteTaskId = routeTaskId;
       applyRouteTaskSelection(routeTaskId);
     }
@@ -753,13 +765,6 @@
             );
             tasks = nextTasks;
             taskLoadError = '';
-            const routeTaskId = currentTaskRouteId();
-            if (routeTaskId && nextTasks.some((task) => task.id === routeTaskId)) {
-              taskFilter = 'all';
-              queueFilter = 'all';
-              taskSearch = '';
-              selectedTaskId = routeTaskId;
-            }
           } catch (err) {
             taskLoadError = errorMessage(err, 'Unable to load tasks.');
             refreshErrors.push(taskLoadError);

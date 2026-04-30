@@ -378,6 +378,34 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   );
 });
 
+test('tasks mobile keeps Running selected after background sync', async ({ page }) => {
+  test.setTimeout(30_000);
+  let taskListRequests = 0;
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/tasks') {
+      taskListRequests += 1;
+    }
+  });
+  await mockTaskApi(page);
+  await page.goto('/tasks?task=task_20260426_150000_11111111');
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+
+  await page.locator('.triage button').filter({ hasText: 'Running' }).click();
+  await expect(page.locator('.triage button.active')).toContainText('Running');
+  await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
+
+  const requestsAfterClick = taskListRequests;
+  await expect
+    .poll(() => taskListRequests, { timeout: 12_000 })
+    .toBeGreaterThan(requestsAfterClick);
+  await expect(page.locator('.triage button.active')).toContainText('Running');
+  await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
+});
+
 test('chat supports file uploads and sends attachment context', async ({ page }) => {
   let requestBody: any;
   await page.route('**/api/message', async (route) => {

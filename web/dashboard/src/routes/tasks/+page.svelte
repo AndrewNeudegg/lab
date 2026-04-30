@@ -2088,8 +2088,9 @@
 
   .merge-queue {
     grid-area: merge;
+    position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     overflow: hidden;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 0.7rem;
@@ -2097,16 +2098,16 @@
   }
 
   .merge-queue summary {
-    grid-column: 1;
+    box-sizing: border-box;
+    grid-column: 1 / -1;
     grid-row: 1;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 0.45rem;
     min-width: 0;
-    min-height: 2.25rem;
-    overflow: hidden;
-    padding: 0 0.65rem;
+    min-height: 2.65rem;
+    padding: 0 5.65rem 0 0.65rem;
     list-style: none;
     border: 0;
     border-radius: 0.7rem;
@@ -2130,17 +2131,15 @@
   }
 
   .auto-merge-toggle {
-    position: relative;
+    position: absolute;
+    top: 0.75rem;
+    right: 0.65rem;
     z-index: 1;
-    grid-column: 2;
-    grid-row: 1;
-    align-self: center;
     display: inline-grid;
     grid-template-columns: auto auto;
     align-items: center;
     gap: 0.35rem;
     min-width: 0;
-    margin-right: 0.65rem;
     padding: 0;
     border: 0;
     color: var(--muted, #64748b);

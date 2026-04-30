@@ -105,6 +105,11 @@ type HandleResult struct {
 }
 
 type interactionStatsContextKey struct{}
+type currentChatTurnContextKey struct{}
+
+type currentChatTurn struct {
+	UserEventID string
+}
 
 func withInteractionStats(ctx context.Context, stats *InteractionStats) context.Context {
 	if stats == nil {
@@ -116,6 +121,20 @@ func withInteractionStats(ctx context.Context, stats *InteractionStats) context.
 func interactionStatsFromContext(ctx context.Context) *InteractionStats {
 	stats, _ := ctx.Value(interactionStatsContextKey{}).(*InteractionStats)
 	return stats
+}
+
+func withCurrentChatTurn(ctx context.Context, eventID string) context.Context {
+	return context.WithValue(ctx, currentChatTurnContextKey{}, currentChatTurn{
+		UserEventID: strings.TrimSpace(eventID),
+	})
+}
+
+func currentChatTurnFromContext(ctx context.Context) (currentChatTurn, bool) {
+	turn, ok := ctx.Value(currentChatTurnContextKey{}).(currentChatTurn)
+	if !ok || turn.UserEventID == "" {
+		return currentChatTurn{}, false
+	}
+	return turn, true
 }
 
 func recordInteractionModelTurn(ctx context.Context, usage llm.Usage) {
@@ -317,7 +336,9 @@ func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, 
 	if len(attachments) > 0 {
 		payload["attachments"] = attachments
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "user.message", Actor: from, Payload: eventlog.Payload(payload)})
+	userEventID := id.New("evt")
+	_ = o.events.Append(ctx, eventlog.Event{ID: userEventID, Type: "user.message", Actor: from, Payload: eventlog.Payload(payload)})
+	ctx = withCurrentChatTurn(ctx, userEventID)
 	reply, source, err := o.handleMessageWithAttachments(ctx, message, attachments)
 	if err != nil && isUserFacingCommandError(err) {
 		reply = userFacingCommandErrorReply(err)
@@ -656,7 +677,7 @@ func (o *Orchestrator) distillMemoryLesson(ctx context.Context, text string) (me
 
 	input := "Memory request:\n" + text
 	if fromRecentInteraction {
-		input = "Recent chat history:\n" + o.chatHistoryForMemoryPrompt(time.Now().UTC(), 24)
+		input = "Recent chat history:\n" + o.chatHistoryForMemoryPrompt(ctx, time.Now().UTC(), 24)
 	}
 	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
 		Model:       o.model,
@@ -696,8 +717,8 @@ func (o *Orchestrator) distillMemoryLesson(ctx context.Context, text string) (me
 	return memstore.Lesson{Content: parsed.Lesson, Kind: parsed.Kind, Source: "chat"}, nil
 }
 
-func (o *Orchestrator) chatHistoryForMemoryPrompt(day time.Time, limit int) string {
-	history := o.recentChatHistory(day, limit)
+func (o *Orchestrator) chatHistoryForMemoryPrompt(ctx context.Context, day time.Time, limit int) string {
+	history := o.recentChatHistoryBeforeCurrent(ctx, day, limit)
 	var b strings.Builder
 	for _, msg := range history {
 		content := strings.TrimSpace(msg.Content)
@@ -2591,9 +2612,10 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 	messages := []llm.Message{
 		{Role: "system", Content: o.llmToolPrompt()},
 	}
-	history := o.recentChatHistory(time.Now().UTC(), 24)
+	history := o.recentChatHistoryBeforeCurrent(ctx, time.Now().UTC(), 24)
 	messages = append(messages, history...)
-	if !chatHistoryEndsWith(history, "user", message) {
+	messages = append(messages, llm.Message{Role: "system", Content: currentRequestBoundaryPrompt()})
+	if shouldAppendCurrentRequest(ctx, history, message) {
 		messages = append(messages, llm.Message{Role: "user", Content: message})
 	}
 	toolCallsUsed := 0
@@ -2803,7 +2825,7 @@ func (o *Orchestrator) reflectOnInteraction(ctx context.Context, message string)
 	if o.provider == nil || o.model == "" {
 		return programResult("I do not have an LLM provider configured for reflection. Use `new <goal>` to create a task directly.", nil)
 	}
-	history := o.recentChatHistory(time.Now().UTC(), 24)
+	history := o.recentChatHistoryBeforeCurrent(ctx, time.Now().UTC(), 24)
 	messages := []llm.Message{{
 		Role: "system",
 		Content: strings.Join([]string{
@@ -2811,10 +2833,12 @@ func (o *Orchestrator) reflectOnInteraction(ctx context.Context, message string)
 			"Return exactly one JSON object and no prose.",
 			`Schema: {"reflection":"one concise observation or improvement","task_goal":"one concrete development task goal the user can create with new <goal>"}`,
 			"The task_goal must be actionable, scoped, and phrased as implementation work.",
+			"The chat history after this instruction is the prior transcript before the current reflection request.",
 		}, "\n"),
 	}}
 	messages = append(messages, history...)
-	if !chatHistoryEndsWith(history, "user", message) {
+	messages = append(messages, llm.Message{Role: "system", Content: currentRequestBoundaryPrompt()})
+	if shouldAppendCurrentRequest(ctx, history, message) {
 		messages = append(messages, llm.Message{Role: "user", Content: message})
 	}
 	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
@@ -2875,6 +2899,18 @@ func responseSource(resp llm.CompletionResponse, fallback string) string {
 }
 
 func (o *Orchestrator) recentChatHistory(day time.Time, limit int) []llm.Message {
+	return o.recentChatHistoryExcludingEvent(day, limit, "")
+}
+
+func (o *Orchestrator) recentChatHistoryBeforeCurrent(ctx context.Context, day time.Time, limit int) []llm.Message {
+	excludeEventID := ""
+	if turn, ok := currentChatTurnFromContext(ctx); ok {
+		excludeEventID = turn.UserEventID
+	}
+	return o.recentChatHistoryExcludingEvent(day, limit, excludeEventID)
+}
+
+func (o *Orchestrator) recentChatHistoryExcludingEvent(day time.Time, limit int, excludeEventID string) []llm.Message {
 	if o.events == nil || limit <= 0 {
 		return nil
 	}
@@ -2884,6 +2920,9 @@ func (o *Orchestrator) recentChatHistory(day time.Time, limit int) []llm.Message
 	}
 	history := make([]llm.Message, 0, limit)
 	for _, event := range events {
+		if excludeEventID != "" && event.ID == excludeEventID {
+			continue
+		}
 		msg, ok := chatHistoryMessage(event)
 		if !ok {
 			continue
@@ -2894,6 +2933,14 @@ func (o *Orchestrator) recentChatHistory(day time.Time, limit int) []llm.Message
 		history = history[len(history)-limit:]
 	}
 	return history
+}
+
+func currentRequestBoundaryPrompt() string {
+	return strings.Join([]string{
+		"Prior transcript ends here. The next user message is the current live request, not part of the prior transcript.",
+		"When the user asks about their last message, earlier messages, or the recent interaction, answer from the prior transcript unless they explicitly ask about this current request.",
+		"Use chat.history or chat.search for exact wording or older context; those tools exclude the current live request during this turn.",
+	}, " ")
 }
 
 func chatHistoryMessage(event eventlog.Event) (llm.Message, bool) {
@@ -2935,6 +2982,13 @@ func chatHistoryEndsWith(history []llm.Message, role, content string) bool {
 	return last.Role == role && strings.TrimSpace(last.Content) == strings.TrimSpace(content)
 }
 
+func shouldAppendCurrentRequest(ctx context.Context, history []llm.Message, message string) bool {
+	if _, ok := currentChatTurnFromContext(ctx); ok {
+		return true
+	}
+	return !chatHistoryEndsWith(history, "user", message)
+}
+
 func (o *Orchestrator) llmToolPrompt() string {
 	return strings.Join([]string{
 		"You are OrchestratorAgent for a local homelab development runtime.",
@@ -2946,7 +3000,7 @@ func (o *Orchestrator) llmToolPrompt() string {
 		`{"message":"short user-facing status","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"TODO"}}]}`,
 		`{"message":"final answer","done":true,"tool_calls":[]}`,
 		"Use tools for inspection before answering repo-specific questions.",
-		"Use chat.history or chat.search before answering questions about earlier user messages, assistant replies, or the chat stream.",
+		"Use chat.history or chat.search before answering questions about earlier user messages, assistant replies, or the chat stream; those tools exclude the current live request during a turn.",
 		"Use internet.research for broad, current, multi-source questions before synthesizing advice.",
 		"Use text.correct to fix likely spelling or grammar issues before internet.search when the user query looks typo-prone; preserve exact code symbols and quoted strings.",
 		"Use text.summarize when a long user task or note needs a compact label.",
@@ -2981,12 +3035,12 @@ func (o *Orchestrator) catalogTools() []catalogTool {
 		Schema:      json.RawMessage(`{"type":"object","required":["goal"],"properties":{"goal":{"type":"string"},"target":{"type":"object"}}}`),
 	}, {
 		Name:        "chat.history",
-		Description: "List recent user and assistant chat messages from the event log. Args: {\"date\":\"YYYY-MM-DD\",\"days\":1,\"limit\":40}.",
+		Description: "List recent user and assistant chat messages from the event log, excluding the current live request during an agent turn. Args: {\"date\":\"YYYY-MM-DD\",\"days\":1,\"limit\":40}.",
 		Risk:        tool.RiskReadOnly,
 		Schema:      json.RawMessage(`{"type":"object","properties":{"date":{"type":"string"},"days":{"type":"integer","minimum":1,"maximum":30},"limit":{"type":"integer","minimum":1,"maximum":200}}}`),
 	}, {
 		Name:        "chat.search",
-		Description: "Search recorded user and assistant chat messages. Args: {\"query\":\"...\",\"date\":\"YYYY-MM-DD\",\"days\":7,\"limit\":50}.",
+		Description: "Search recorded user and assistant chat messages, excluding the current live request during an agent turn. Args: {\"query\":\"...\",\"date\":\"YYYY-MM-DD\",\"days\":7,\"limit\":50}.",
 		Risk:        tool.RiskReadOnly,
 		Schema:      json.RawMessage(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"date":{"type":"string"},"days":{"type":"integer","minimum":1,"maximum":30},"limit":{"type":"integer","minimum":1,"maximum":200}}}`),
 	}, {

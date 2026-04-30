@@ -394,7 +394,8 @@ const expectTaskNavAttention = async (page: Page, mobile: boolean) => {
     const mobileNav = await openMobileMenu(page);
     await expect(mobileNav.getByRole('link', { name: taskLinkName })).toBeVisible();
     await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('3');
-    await page.getByRole('button', { name: 'Menu' }).click();
+    await expect(page.locator('.mobile-menu-scrim')).toBeVisible();
+    await page.mouse.click(20, (page.viewportSize()?.height ?? 844) - 24);
     await expect(mobileNav).toBeHidden();
     return;
   }

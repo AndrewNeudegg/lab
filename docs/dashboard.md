@@ -36,12 +36,14 @@ Use the shared responsive navbar on every dashboard page.
 - Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
 - Show compact Tasks attention badges only when action is needed. Red counts failed, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
+- Keep the navbar pinned to the viewport top on pages with internal scroll regions, including `/chat`, so mobile and desktop operators can reach navigation without first scrolling the conversation.
 
 ## URL References
 
 Dashboard state that operators naturally share must have a URL and must use SvelteKit navigation, not full document reloads.
 
 - Task rows and chat-created task links use `/tasks?task=<task_id>` and open the selected task record. Chat task creation replies display the summarised task title as the link text.
+- Plain `/tasks` is the task queue overview and does not auto-select the first task. From the overview, selecting a task pushes `/tasks?task=<task_id>`, so browser Back returns to the overview instead of another task detail.
 - Workflow rows use `/workflows?workflow=<workflow_id>` and open the selected workflow detail.
 - Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
 - Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.
@@ -54,7 +56,7 @@ Back and forward browser controls should restore the selected task, workflow, te
 The `/docs` page imports every Markdown file under `./docs` into the dashboard. It shows a searchable, grouped document catalogue, selected document content, heading anchors, an on-page table of contents, and previous/next document links. Keep document titles specific and include the terms operators and LLM agents are likely to search for.
 
 - Desktop: keep local documentation navigation visible on the left, but compact enough that the selected document and on-page table of contents remain the primary reading surface.
-- Mobile: avoid horizontal document carousels. Show a labelled document jump control, visible search, and a vertical document list so operators can discover other pages without guessing that content is off-screen.
+- Mobile: avoid horizontal document carousels. Start the documentation navigation collapsed below the sticky navbar, then expand it with the arrow control to show the labelled document jump control, search, and vertical document list.
 - Search filters titles, paths, summaries, and full Markdown content. Search results show summaries; the default browse view uses short labels for faster scanning.
 - Mermaid fenced diagrams render in docs and chat. The renderer applies the shared homelabd light or dark diagram palette, keeps the original source as a code fallback when rendering fails, and prevents diagram-level theme overrides from replacing the brand colours.
 
@@ -181,6 +183,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
 - Merge queue: a compact disclosure between search and the task list. It shows local review/approval/restart candidates in durable merge order and provides icon-only up/down controls for priority changes. The `Auto` switch sits in the header because it changes the queue's automation mode immediately; keep the label visible and expose the switch state through text and `role="switch"`, not colour alone. Keep the queue dense: it is an ordering instrument, not another task-detail surface.
 - Task list: appears immediately after search. Rows are the main navigation and must stay fast to scan even when remote queues are present. Approval state belongs on the task row and in the selected task decision panel, not in a separate queue pop-out.
+- Mobile task layout: keep `/tasks` fixed to the viewport below the navbar. The task list and selected-task record own vertical scrolling, so an empty queue cannot leave a blank scrollable page section below the `/api` footer.
 - Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous. Blue active work and amber system-owned gates may use a subtle pulsing ring; red, green, and amber states that need operator intervention must stay static.
 - Right pane: selected task record. It is not a chat transcript and has no task chat composer. Selecting a different task changes the record, summary, result, action buttons, diff, worker trace, and activity timeline.
 - Manual `Sync` refreshes tasks, approvals, events, and remote agents first, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current.
@@ -195,7 +198,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
-- Chat message footers: small, persistent metadata at the bottom of each bubble. The footer shows the exchange number, and assistant replies also show returned orchestration stats such as model turns, tool calls, and token count when available. Keep it secondary but readable; do not hide these counts behind hover-only controls.
+- Chat message footers: small, persistent metadata at the bottom of each bubble. The footer shows the exchange number, and assistant replies also show returned orchestration stats such as model turns, tool calls, token count, and API-measured elapsed response time when available. Keep it secondary but readable; do not hide these counts behind hover-only controls.
 - `/chat` attachments: the composer supports desktop file picking, mobile file picking, and drag-and-drop into the composer. Attachment chips show the file name, media type, and size before send; sent messages keep visible attachment metadata. The API receives attachment data with the chat message so task-creation commands and LLM context can include the uploaded evidence.
 - `/chat` failed sends: keep the user's message in the transcript, tint the bubble neutral grey, and show a small `Message failed to send` status with a resend control on that message. Do not show a detached page-level send error for transient connectivity failures; the recovery action belongs beside the failed message.
 - Help task capture: the navbar `Help` button records the current URL, page title, viewport, visible page text, active element, selected text, and recent click/change actions. It opens a dialog for the operator's extra detail and attempts a screenshot through the browser screen-capture permission flow only when the browser exposes it from a secure context. If screen capture is unavailable, unsupported, or cancelled, the report still submits with `browser-context.json`. `Submit help task` creates a normal local task with `browser-context.json` and any screenshot as task attachments.

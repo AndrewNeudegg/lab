@@ -61,7 +61,7 @@ go run ./cmd/homelabctl agents
 ```
 
 `message`, `chat`, `say`, and chat-command shortcuts print the plain `reply` field by default. Add `-json` when the full response object is needed.
-The JSON response includes `stats` for dashboard chat metadata when homelabd can measure it, currently `model_turns`, `tool_calls`, and token counts.
+The JSON response includes `stats` for dashboard chat metadata when homelabd can measure it, currently `model_turns`, `tool_calls`, token counts, and total response `elapsed_ms`.
 
 ## Task Commands
 

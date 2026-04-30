@@ -769,10 +769,10 @@ func TestApprovalsIncludeClickableActions(t *testing.T) {
 	}
 }
 
-func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
+func TestCreateTaskUsesConciseReply(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 
-	reply, err := orch.Handle(context.Background(), "test", "new add fenced commands")
+	reply, err := orch.Handle(context.Background(), "test", "new add concise task replies")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,22 +799,17 @@ func TestCreateTaskUsesFencedCommandBlock(t *testing.T) {
 	if len(created.Plan.Steps) != 4 {
 		t.Fatalf("plan step count = %d, want 4", len(created.Plan.Steps))
 	}
-	if !strings.Contains(reply, "Plan created and reviewed before execution") {
-		t.Fatalf("reply = %q, want plan creation note", reply)
-	}
 	if !strings.Contains(reply, "Created queued task") || strings.Contains(reply, "Child phases:") {
 		t.Fatalf("reply = %q, want single queued task summary", reply)
 	}
-	wantLink := fmt.Sprintf("Created queued task [%s](/tasks?task=%s) (%s).", created.Title, created.ID, created.ID)
-	if !strings.Contains(reply, wantLink) {
-		t.Fatalf("reply = %q, want task title link %q", reply, wantLink)
+	want := fmt.Sprintf("Created queued task [%s](/tasks?task=%s). Worker will start automatically.", created.Title, created.ID)
+	if reply != want {
+		t.Fatalf("reply = %q, want concise task creation reply %q", reply, want)
 	}
-	want := "Next:\n```\nstatus\nrun " + created.ID + "\ndelegate " + created.ID + " to codex\n```"
-	if !strings.Contains(reply, want) {
-		t.Fatalf("reply = %q, want fenced commands %q", reply, want)
-	}
-	if strings.Contains(reply, "`run ") {
-		t.Fatalf("reply = %q, should not inline command suggestions", reply)
+	for _, noisy := range []string{"Plan created and reviewed", "Workspace:", "Branch:", "Next:"} {
+		if strings.Contains(reply, noisy) {
+			t.Fatalf("reply = %q, should not include noisy creation detail %q", reply, noisy)
+		}
 	}
 	events, err := orch.events.ReadDay(time.Now().UTC())
 	if err != nil {
@@ -3402,6 +3397,9 @@ func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
 	}
 	if result.Stats.InputTokens != 30 || result.Stats.OutputTokens != 12 || result.Stats.TotalTokens != 42 {
 		t.Fatalf("usage stats = %#v, want aggregated token usage", result.Stats)
+	}
+	if result.Stats.ElapsedMilliseconds <= 0 {
+		t.Fatalf("elapsed milliseconds = %d, want measured elapsed time", result.Stats.ElapsedMilliseconds)
 	}
 	if search.query != "orchestrator" {
 		t.Fatalf("repo search query = %q, want orchestrator", search.query)

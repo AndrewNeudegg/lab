@@ -343,7 +343,8 @@ const themePages: ThemePage[] = [
     ],
     async ready(page) {
       await expect(page.getByText('Task queue', { exact: true })).toBeVisible();
-      await expect(page.getByRole('heading', { name: 'Audit dashboard theme modes' })).toBeVisible();
+      await expect(page.locator('.task-row.selected')).toHaveCount(0);
+      await expect(page.getByRole('heading', { name: 'Select a task' })).toBeVisible();
     },
     async prepare(page) {
       await page
@@ -352,6 +353,7 @@ const themePages: ThemePage[] = [
         .click();
       await page.locator('.task-row').first().click();
       await expect(page.locator('.task-row.selected')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Audit dashboard theme modes' })).toBeVisible();
     }
   },
   {

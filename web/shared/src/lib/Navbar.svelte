@@ -44,6 +44,7 @@
   const skipWaitingMessage = 'SKIP_WAITING';
 
   let mobileMenuOpen = false;
+  let mobileMenu: HTMLDetailsElement | undefined;
   let helpDialog: HTMLDialogElement | undefined;
   let helpDetails = '';
   let helpStatus = '';
@@ -62,6 +63,10 @@
   let pwaRefreshing = false;
 
   const isActive = (href: string) => current === href;
+  const closeMobileMenu = () => {
+    mobileMenuOpen = false;
+    mobileMenu?.removeAttribute('open');
+  };
 
   const isStandaloneDisplay = () =>
     window.matchMedia?.('(display-mode: standalone)').matches ||
@@ -189,7 +194,7 @@
     if (helpCapturing || helpSubmitting) {
       return;
     }
-    mobileMenuOpen = false;
+    closeMobileMenu();
     helpDetails = '';
     helpError = '';
     helpStatus = 'Capturing page context.';
@@ -380,7 +385,7 @@
 </script>
 
 <header class="navbar">
-  <a class="brand" href="/chat" onclickcapture={() => (mobileMenuOpen = false)}>
+  <a class="brand" href="/chat" onclickcapture={closeMobileMenu}>
     <span>{subtitle}</span>
     <strong>{title}</strong>
   </a>
@@ -433,13 +438,12 @@
     >
       Help
     </button>
-    <details class="mobile-menu" bind:open={mobileMenuOpen}>
+    <details class="mobile-menu" bind:this={mobileMenu} bind:open={mobileMenuOpen}>
       <!-- svelte-ignore a11y_no_redundant_roles -- Chromium exposes this styled summary consistently with an explicit role. -->
       <summary
         class="menu-button"
         role="button"
         aria-controls="primary-mobile-nav"
-        aria-expanded={mobileMenuOpen}
       >
         <span aria-hidden="true">☰</span>
         Menu
@@ -449,7 +453,7 @@
           <a
             href={link.href}
             aria-current={isActive(link.href) ? 'page' : undefined}
-            onclickcapture={() => (mobileMenuOpen = false)}
+            onclickcapture={closeMobileMenu}
           >
             {link.label}
           </a>

@@ -152,6 +152,8 @@ Final task summaries should include:
 - how to use the change
 - docs updated, or why no docs change was needed
 
+See `docs/agent-tools.md` for the full agent tool catalogue, argument reference, risk model, and current limits.
+
 ## Repository Agent Tools
 
 Agents inspect code with `repo.list`, `repo.read`, `repo.search`, and `repo.current_diff`. `repo.search` is the default code-search tool: it returns repository-relative paths, matched line numbers, and bounded grep-like context. Use `workspace` for task worktrees, `path` to narrow scope, `context_lines` to tune surrounding lines, and `max_results` to keep prompts small.

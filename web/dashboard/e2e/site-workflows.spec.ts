@@ -349,7 +349,18 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   }
 };
 
-const routes = ['/', '/chat', '/tasks', '/workflows', '/terminal', '/docs', '/docs/dashboard', '/healthd', '/supervisord'];
+const routes = [
+  '/',
+  '/chat',
+  '/tasks',
+  '/workflows',
+  '/terminal',
+  '/docs',
+  '/docs/dashboard',
+  '/docs/agent-tools',
+  '/healthd',
+  '/supervisord'
+];
 
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 1000, mobile: false },
@@ -361,7 +372,16 @@ for (const viewport of [
     for (const route of routes) {
       test(`${route} renders without visual artefacts and supports its core workflow`, async ({ page }, testInfo) => {
         await mockDashboardApis(page);
+        const taskSettingsReady =
+          route === '/tasks'
+            ? page.waitForResponse(
+                (response) =>
+                  response.url().endsWith('/api/settings') &&
+                  response.request().method() === 'GET'
+              )
+            : Promise.resolve();
         await page.goto(route);
+        await taskSettingsReady;
         if (route === '/') {
           await expect(page).toHaveURL(/\/chat$/);
         }

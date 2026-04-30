@@ -3708,6 +3708,103 @@ func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestOpenEndedChatStripsMetaSentenceFromDirectReply(t *testing.T) {
+	provider := &staticProvider{content: `{"message":"I'll check that. Use status to see active work.","done":true,"tool_calls":[]}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "how do I see active work?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Use status to see active work." {
+		t.Fatalf("reply = %q, want direct answer without meta sentence", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("request count = %d, want single rewritten response", len(provider.requests))
+	}
+}
+
+func TestOpenEndedChatFiltersRawProviderFallback(t *testing.T) {
+	provider := &staticProvider{content: "I'll check that. Use status to see active work."}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "how do I see active work?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Use status to see active work." {
+		t.Fatalf("reply = %q, want raw fallback filtered before returning", reply)
+	}
+}
+
+func TestOpenEndedChatStripsLeadInMetaSentenceFromDirectReply(t *testing.T) {
+	provider := &staticProvider{content: `{"message":"1. First, I\u2019ll check the current task list. Use status to see active work.","done":true,"tool_calls":[]}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "how do I see active work?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Use status to see active work." {
+		t.Fatalf("reply = %q, want direct answer without lead-in meta sentence", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("request count = %d, want single rewritten response", len(provider.requests))
+	}
+}
+
+func TestOpenEndedChatRejectsMetaOnlyReply(t *testing.T) {
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"I'll inspect the repository and then answer with the relevant command.","done":true,"tool_calls":[]}`,
+		`{"message":"Use status to see active work.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "how do I see active work?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Use status to see active work." {
+		t.Fatalf("reply = %q, want regenerated direct answer", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want rejected candidate plus retry", len(provider.requests))
+	}
+	lastMessages := provider.requests[1].Messages
+	if len(lastMessages) == 0 || !strings.Contains(lastMessages[len(lastMessages)-1].Content, "response filter") {
+		t.Fatalf("last retry prompt = %#v, want anti-meta filter instruction", lastMessages)
+	}
+}
+
+func TestOpenEndedChatRejectsNeedToInspectMetaOnlyReply(t *testing.T) {
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"I need to inspect the repository before I can answer.","done":true,"tool_calls":[]}`,
+		`{"message":"Use status to see active work.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "how do I see active work?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Use status to see active work." {
+		t.Fatalf("reply = %q, want regenerated direct answer", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want rejected candidate plus retry", len(provider.requests))
+	}
+}
+
 func TestOpenEndedChatCreatesTaskForAssistantImplementationCommitment(t *testing.T) {
 	provider := &staticProvider{content: `{"message":"Your dashboard shows no open tasks because everything is currently terminal. I\u2019ll tighten my own briefing logic so I only report tasks that are actually open in the current task list.","done":true,"tool_calls":[]}`}
 	orch := newTestOrchestrator(t, nil)
@@ -3720,6 +3817,9 @@ func TestOpenEndedChatCreatesTaskForAssistantImplementationCommitment(t *testing
 	}
 	if !strings.Contains(reply, "Created queued task [") || !strings.Contains(reply, "/tasks?task=") {
 		t.Fatalf("reply = %q, want normal task creation link", reply)
+	}
+	if strings.Contains(reply, "I'll") || strings.Contains(reply, "I\u2019ll") {
+		t.Fatalf("reply = %q, should not include assistant implementation commitment", reply)
 	}
 
 	tasks, err := orch.tasks.List()
@@ -3736,6 +3836,31 @@ func TestOpenEndedChatCreatesTaskForAssistantImplementationCommitment(t *testing
 		if !strings.Contains(tasks[0].Goal, want) {
 			t.Fatalf("goal = %q, want %q", tasks[0].Goal, want)
 		}
+	}
+}
+
+func TestOpenEndedChatCreatesTaskForGoingToImplementationCommitment(t *testing.T) {
+	provider := &staticProvider{content: `{"message":"I\u2019m going to fix the dashboard task list.","done":true,"tool_calls":[]}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "why is the task list wrong?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created queued task [") || strings.Contains(reply, "going to") {
+		t.Fatalf("reply = %q, want task creation without implementation promise", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want one queued task", len(tasks))
+	}
+	if !strings.Contains(tasks[0].Goal, "Fix the dashboard task list") {
+		t.Fatalf("goal = %q, want implementation commitment converted to task goal", tasks[0].Goal)
 	}
 }
 

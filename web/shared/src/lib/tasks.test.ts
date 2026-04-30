@@ -15,6 +15,7 @@ import {
   taskStartedAt,
   taskStateDescription,
   taskStateTransitions,
+  taskStatusLabel,
   taskSummaryTitle
 } from './tasks';
 import type { HomelabdApproval, HomelabdTask } from './types';
@@ -183,5 +184,10 @@ describe('task queue attention logic', () => {
     expect(taskStateDescription('running')).toContain('worker is active');
     expect(taskStateDescription('blocked')).toContain('requeued automatically');
     expect(taskStateTransitions('blocked')).toContain('automatic recovery');
+  });
+
+  test('labels queued review gates without implying operator action', () => {
+    expect(taskStatusLabel('ready_for_review')).toBe('queued for review');
+    expect(taskStatusLabel('awaiting_approval')).toBe('awaiting approval');
   });
 });

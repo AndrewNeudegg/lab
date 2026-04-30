@@ -209,7 +209,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Queued: the task exists and is waiting in its execution queue. Local tasks have isolated worktrees and wait for the local task supervisor; remote tasks wait for the selected `homelab-agent`.
 - Running: an in-memory local worker or a remote agent is active.
 - Red: failed, blocked, or conflict resolution. Recovery is needed; retryable local failures are requeued automatically, while exhausted, dependency-blocked, or terminal failures need intervention.
-- Amber: ready for review, awaiting approval, awaiting restart, or awaiting verification. Some amber states are system-owned gates and some need a human decision; the decision panel text must say which is true.
+- Amber: queued for review, awaiting approval, awaiting restart, or awaiting verification. The backend `ready_for_review` state is labelled `queued for review` in dashboard status pills so system-owned review gates do not sound like operator work. Some amber states are system-owned gates and some need a human decision; the decision panel text must say which is true.
 - Blue: queued or running. Work is active.
 - Green: done. No action required unless the result is wrong.
 - Gray: unknown or neutral state.
@@ -262,7 +262,8 @@ On compact screens `/tasks` stacks:
 2. Tapping a task opens the selected task record as a child view.
 3. The selected task record starts at the top, shows the decision panel first, and exposes a clear `Back to queue` control.
 4. If sync or an action such as `Accept` moves the selected task out of the current filter, the page returns to the parent queue and keeps the empty queue controls visible.
-5. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.
+5. Accepting a task shows a transient status notification instead of inserting an inline banner above the record, so `Back to queue` stays in its usual position.
+6. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.
 
 The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Do not add a separate `Task` tab for the current selection; it behaves like saved state rather than navigation and is easy to misread. The Tasks page does not render a global command panel on mobile.
 
@@ -278,7 +279,7 @@ The browser renders each session with xterm.js, streams terminal output over `GE
 
 Do not strip ANSI or terminal control sequences in the dashboard. The PTY byte stream is intentionally passed to xterm.js so colours, cursor movement, prompts, tab completion, and full-screen CLI programs behave like a real terminal. Keyboard input should go directly into the xterm viewport, not through a separate command composer.
 
-The Terminal page has persistent, URL-addressable tabs. Use the `+` button beside the session target picker to add a shell, click an inactive tab once to switch to it, click the active tab name to rename it, and close a tab to delete its backend session. Reloading the dashboard, navigating away, using browser back/forward, or locking a phone detaches the browser transport only; it keeps local tab metadata and reattaches to the stored session ids. A transient network or API failure while reattaching keeps the stored session id and retries; only a `404` from `/terminal/sessions/{id}` means the stored backend session is gone and a replacement may be created. The session target picker chooses the target for the next new tab: `homelabd local` opens a PTY on the control plane, while online remote agents appear when their heartbeat metadata includes `terminal_base_url`.
+The Terminal page has persistent, URL-addressable tabs. Use the `+` button beside the session target picker to add a shell, click an inactive tab once to switch to it, click the active tab name to rename it, and close a tab to delete its backend session. Closing the final tab opens one fresh replacement tab and replaces the stale session URL. Reloading the dashboard, navigating away, using browser back/forward, or locking a phone detaches the browser transport only; it keeps local tab metadata and reattaches to the stored session ids. A transient network or API failure while reattaching keeps the stored session id and retries; only a `404` from `/terminal/sessions/{id}` means the stored backend session is gone and a replacement may be created. The session target picker chooses the target for the next new tab: `homelabd local` opens a PTY on the control plane, while online remote agents appear when their heartbeat metadata includes `terminal_base_url`.
 
 This is an operator shell. Run it only where the homelabd HTTP API is already trusted, because anyone who can reach the endpoint can execute commands as the homelabd process user.
 

@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import {
     createHomelabdClient,
     formatAttachmentSize,
@@ -15,6 +15,7 @@
     taskRuntimeMs,
     taskStartedAt,
     taskStateDescription,
+    taskStatusLabel,
     taskSummaryTitle,
     type HomelabdApproval,
     type HomelabdEvent,
@@ -69,6 +70,7 @@
     tone: 'success' | 'error' | 'info';
     title: string;
     detail: string;
+    presentation: 'inline' | 'toast';
   };
   type RefreshSelectedTaskDetailsOptions = {
     force?: boolean;
@@ -79,6 +81,7 @@
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
   const refreshTimeoutMs = 7000;
+  const toastNoticeDurationMs = 5000;
 
   let newTaskDraft = '';
   let creatingTask = false;
@@ -113,6 +116,7 @@
   let deleteConfirmTaskId = '';
   let notice: Notice | undefined;
   let noticeId = 0;
+  let noticeDismissTimer: number | undefined;
   let refreshStateSequence = 0;
   let lastAppliedRouteTaskId = '';
   let pendingRouteTaskId = '';
@@ -310,8 +314,6 @@
     return tail.length > 8 ? tail.slice(0, 8) : tail;
   };
 
-  const statusLabel = (status = '') => status.replaceAll('_', ' ');
-
   const workdirLabel = (workdir?: HomelabdRemoteAgentWorkdir) => {
     if (!workdir) {
       return 'No directory';
@@ -367,12 +369,35 @@
     return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
   };
 
-  const setNotice = (tone: Notice['tone'], title: string, detail: string) => {
-    noticeId += 1;
-    notice = { id: noticeId, tone, title, detail };
+  const clearNoticeTimer = () => {
+    if (noticeDismissTimer !== undefined) {
+      window.clearTimeout(noticeDismissTimer);
+      noticeDismissTimer = undefined;
+    }
+  };
+
+  const setNotice = (
+    tone: Notice['tone'],
+    title: string,
+    detail: string,
+    presentation: Notice['presentation'] = 'inline'
+  ) => {
+    clearNoticeTimer();
+    const nextNoticeId = noticeId + 1;
+    noticeId = nextNoticeId;
+    notice = { id: nextNoticeId, tone, title, detail, presentation };
+    if (presentation === 'toast') {
+      noticeDismissTimer = window.setTimeout(() => {
+        if (notice?.id === nextNoticeId) {
+          notice = undefined;
+          noticeDismissTimer = undefined;
+        }
+      }, toastNoticeDurationMs);
+    }
   };
 
   const clearNotice = () => {
+    clearNoticeTimer();
     notice = undefined;
   };
 
@@ -852,6 +877,8 @@
     };
   });
 
+  onDestroy(clearNoticeTimer);
+
   const createTargetedTask = async () => {
     const goal = newTaskDraft.trim();
     if (!goal || creatingTask) {
@@ -1076,7 +1103,12 @@
             return client.deleteTask(taskId);
         }
       })();
-      setNotice('success', `${taskOperationLabel(operation)} submitted`, response.reply || 'Done.');
+      setNotice(
+        'success',
+        `${taskOperationLabel(operation)} submitted`,
+        operation === 'accept' ? `${shortID(taskId)} accepted. Task is now done.` : response.reply || 'Done.',
+        operation === 'accept' ? 'toast' : 'inline'
+      );
       if (operation === 'reopen') {
         reopenReason = '';
       }
@@ -1152,6 +1184,21 @@
 <div class="tasks-page">
   <Navbar title="Tasks" subtitle="homelabd" current="/tasks" apiBase={apiBase} taskApiBase={apiBase} taskAttention={navTaskAttention} />
 
+  {#if notice?.presentation === 'toast'}
+    <section class={`notice toast-notice ${notice.tone}`} role="status" aria-live="polite" aria-atomic="true">
+      <div>
+        <strong>{notice.title}</strong>
+        <p>{notice.detail}</p>
+      </div>
+      <button type="button" class="toast-dismiss" aria-label="Dismiss notification" on:click={clearNotice}>
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <path d="m5.5 5.5 9 9" />
+          <path d="m14.5 5.5-9 9" />
+        </svg>
+      </button>
+    </section>
+  {/if}
+
   <div class="shell">
     <aside class="task-pane" data-mobile-hidden={mobilePanel !== 'queue'} aria-label="Task queue">
       <header class="task-header">
@@ -1165,7 +1212,7 @@
         </button>
       </header>
 
-      {#if notice}
+      {#if notice?.presentation === 'inline'}
         <section class={`notice queue-notice ${notice.tone}`} aria-live="polite">
           <div>
             <strong>{notice.title}</strong>
@@ -1241,7 +1288,7 @@
                   <span class="merge-queue-position">{item.merge_queue_position}</span>
                   <span class="merge-queue-copy">
                     <strong>{taskSummaryTitle(item, 54)}</strong>
-                    <small>{statusLabel(item.status)}</small>
+                    <small>{taskStatusLabel(item.status)}</small>
                   </span>
                 </button>
                 <div class="merge-queue-controls" aria-label={`Reorder ${taskSummaryTitle(item, 40)}`}>
@@ -1300,7 +1347,7 @@
                 <strong>{taskSummaryTitle(task, 84)}</strong>
                 <small>
                   <span>{shortID(task.id)} / updated {compactTime(task.updated_at)}</span>
-                  <span class={`status ${taskTone(task)}`}>{statusLabel(task.status)}</span>
+                  <span class={`status ${taskTone(task)}`}>{taskStatusLabel(task.status)}</span>
                 </small>
                 <em>
                   {targetLabel(task)}
@@ -1397,7 +1444,7 @@
     </aside>
 
     <main class="workbench" data-mobile-hidden={mobilePanel !== 'detail'} aria-label="Selected task record">
-      {#if notice}
+      {#if notice?.presentation === 'inline'}
         <section class={`notice ${notice.tone}`} aria-live="polite">
           <div>
             <strong>{notice.title}</strong>
@@ -1420,7 +1467,7 @@
               <p>Selected task</p>
               <h2>{taskSummaryTitle(currentTask)}</h2>
             </div>
-            <span class={`status ${taskTone(currentTask)}`}>{statusLabel(currentTask.status)}</span>
+            <span class={`status ${taskTone(currentTask)}`}>{taskStatusLabel(currentTask.status)}</span>
           </header>
 
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
@@ -1547,13 +1594,13 @@
           <details class="detail-section state-context" aria-label="Task context" open>
             <summary>
               <span>State and context</span>
-              <strong>{statusLabel(currentTask.status)}</strong>
+              <strong>{taskStatusLabel(currentTask.status)}</strong>
             </summary>
             <div class="detail-body">
               <section class="state-machine" aria-label="Workflow state">
                 <div>
                   <span>Workflow state</span>
-                  <strong>{statusLabel(currentTask.status)}</strong>
+                  <strong>{taskStatusLabel(currentTask.status)}</strong>
                 </div>
                 <p>{taskStateDescription(currentTask.status)}</p>
                 <small>{taskOperatorGuidance(currentTask)}</small>
@@ -1576,7 +1623,7 @@
                 <section class="state-machine" aria-label="Post-merge restart">
                   <div>
                     <span>Post-merge restart</span>
-                    <strong>{statusLabel(currentTask.restart_status || 'pending')}</strong>
+                    <strong>{taskStatusLabel(currentTask.restart_status || 'pending')}</strong>
                   </div>
                   <p>
                     Required: {currentTask.restart_required.join(', ')}
@@ -2672,6 +2719,79 @@
     overflow-wrap: anywhere;
     font-size: 0.82rem;
     line-height: 1.35;
+  }
+
+  .toast-notice {
+    position: fixed;
+    z-index: 80;
+    top: calc(4.75rem + env(safe-area-inset-top));
+    right: max(1rem, env(safe-area-inset-right));
+    align-items: flex-start;
+    width: min(26rem, calc(100vw - 2rem));
+    margin: 0;
+    box-shadow: 0 1rem 2rem rgb(15 23 42 / 0.18);
+  }
+
+  .toast-notice p {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  .notice .toast-dismiss {
+    display: inline-grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 2rem;
+    min-height: 2rem;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    color: currentColor;
+    background: transparent;
+  }
+
+  .notice .toast-dismiss:hover {
+    border-color: transparent;
+    background: rgb(15 23 42 / 0.08);
+  }
+
+  .notice .toast-dismiss svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.2;
+  }
+
+  :global(html[data-theme='dark'] .notice.success) {
+    border-color: rgb(74 222 128 / 0.55);
+    color: #bbf7d0;
+    background: #163723;
+  }
+
+  :global(html[data-theme='dark'] .notice.info) {
+    border-color: rgb(96 165 250 / 0.55);
+    color: #bfdbfe;
+    background: #172f53;
+  }
+
+  :global(html[data-theme='dark'] .notice:not(.success):not(.info)) {
+    border-color: rgb(248 113 113 / 0.55);
+    color: #fecaca;
+    background: #451a1a;
+  }
+
+  :global(html[data-theme='dark'] .toast-notice) {
+    box-shadow: 0 1rem 2rem rgb(0 0 0 / 0.35);
+  }
+
+  :global(html[data-theme='dark'] .notice .toast-dismiss:hover) {
+    background: rgb(226 232 240 / 0.12);
   }
 
   .queue-groups {
@@ -3822,6 +3942,14 @@
       height: 100%;
       overflow: hidden;
       padding-top: calc(3.75rem + 1px);
+    }
+
+    .toast-notice {
+      top: auto;
+      right: max(0.75rem, env(safe-area-inset-right));
+      bottom: max(0.75rem, env(safe-area-inset-bottom));
+      left: max(0.75rem, env(safe-area-inset-left));
+      width: auto;
     }
 
     .shell {

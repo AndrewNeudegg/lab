@@ -88,6 +88,10 @@ Open-ended chat also converts assistant commitments to implementation work into 
 
 Open-ended chat also filters LLM candidate replies that describe the agent's future process instead of answering directly. Meta sentences such as "I'll check that", "First, I'll inspect", or "I need to inspect" are removed when a concrete answer remains; meta-only replies are rejected and regenerated. If the candidate is an implementation commitment, including "I'm going to fix ...", OrchestratorAgent creates the task and returns the task link instead of the promise.
 
+Tool-capable LLM turns use a strict response contract. The model must return exactly one raw JSON object with `message`, `done`, and `tool_calls`; unknown keys, Markdown fences, trailing prose, missing fields, `done=true` with tool calls, `done=false` without tool calls, missing tool names, and non-object `args` are rejected before any tool runs. OpenAI and Gemini requests also include provider-native structured-output hints where the API supports them, but the Go validator is the authority for OpenAI, Gemini, and self-hosted providers.
+
+Rejected envelopes are sent back to the model with the full JSON Schema and the validation error so it can repair the response. Schema-valid but useless final replies, such as capability statements or placeholder jokes, are also rejected and recorded as `agent.response.rejected` events with the provider, model, stage, and reason. Tool arguments are validated centrally against the registered or pseudo-tool schema before policy checks and execution. Tool results are returned to the model in an explicit untrusted JSON block so web pages, command output, and tool strings cannot masquerade as instructions.
+
 New local development tasks create one queued task record and one isolated worktree. The chat reply stays compact: it links the summarised task title to `/tasks?task=<task_id>` and notes that a worker will start automatically. The task goal itself is not clipped for display; keep important constraints in the brief and let title summarisation handle the task-list label. Opening the link selects the new task in the dashboard without a full page reload. To start or reassign the task explicitly, use:
 
 ```text
@@ -106,6 +110,7 @@ Use review, approval, restart, verification, and reopen commands to move local t
 ```text
 review <task_id>
 approve <approval_id>
+approval edit <approval_id> {"target":"main"}
 restart <task_id>
 accept <task_id>
 reopen <task_id> needs rework
@@ -244,5 +249,9 @@ delegate 793f04ec to codex implement the task again from current main
 Use `retry <task_id>` or `delegate <task_id> to codex ...` when you want to preserve the existing task work and force an immediate worker attempt. The task supervisor also starts automatic recovery for conflict-resolution and retryable premerge-failure states. In both paths, `homelabd` carries the previous failure text into the worker prompt and prepares the isolated task worktree by merging current `main` when the worktree is clean. If that merge conflicts, the worker receives the actual unmerged files to resolve.
 
 `approve <approval_id>` still executes a pending approval. For merge approvals, the Orchestrator first attempts to reconcile the task branch with current `main`; conflicts move the task to `conflict_resolution`, automatic recovery is queued, and no merge is applied. Re-approving an already failed merge approval queues recovery or review instead of reporting the dead approval as granted.
+
+`approval edit <approval_id> <json_args>` replaces the arguments on a pending approval before it is granted. The new args must be one JSON object and must pass the tool schema; successful edits are logged as `approval.edited`.
+
+`llm quality [YYYY-MM-DD]` summarises model turns, schema rejections, semantic rejections, token totals, and tool-argument validator denials from the event log. Use it when comparing OpenAI, Gemini, Ollama, or self-hosted provider behaviour after a poor response.
 
 Remote tasks do not have a control-plane task worktree; use `reopen <task_id> <reason>` to queue follow-up work for the same remote target.

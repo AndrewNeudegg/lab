@@ -170,6 +170,7 @@ See `docs/remote-agents.md` for remote agent setup and polling details.
 go run ./cmd/homelabctl approval list
 go run ./cmd/homelabctl approval approve app_123
 go run ./cmd/homelabctl approval deny app_123
+go run ./cmd/homelabctl approval edit app_123 '{"goal":"corrected args"}'
 ```
 
 Top-level `approve` and `deny` aliases are also available:
@@ -178,6 +179,8 @@ Top-level `approve` and `deny` aliases are also available:
 go run ./cmd/homelabctl approve app_123
 go run ./cmd/homelabctl deny app_123
 ```
+
+`approval edit` only works while the approval is pending. The replacement payload is the tool args object itself, not an approval wrapper; `homelabd` wraps it as `{"args":...}` for the HTTP API, validates it against the tool schema, and records `approval.edited` with old/new argument hashes.
 
 ## Event Commands
 
@@ -305,6 +308,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `GET /approvals`
 - `POST /approvals/{id}/approve`
 - `POST /approvals/{id}/deny`
+- `POST /approvals/{id}/edit`
 - `GET /events?date=YYYY-MM-DD&limit=N`
 - `POST /terminal/sessions`
 - `GET /terminal/sessions/{id}`

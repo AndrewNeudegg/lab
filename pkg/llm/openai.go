@@ -25,6 +25,24 @@ func (p *OpenAICompatible) Name() string {
 	return p.name
 }
 
+func (p *OpenAICompatible) Capabilities() ProviderCapabilities {
+	caps := ProviderCapabilities{
+		SystemMessages: true,
+		MaxTokensField: "max_tokens",
+	}
+	if p.officialOpenAI() {
+		caps.NativeJSONSchema = true
+		caps.ToolCalling = true
+		caps.SimultaneousToolsAndStructuredResponse = true
+		caps.MaxTokensField = "max_completion_tokens"
+		return caps
+	}
+	if strings.EqualFold(p.name, "ollama") {
+		caps.ToolCalling = true
+	}
+	return caps
+}
+
 func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	payload := map[string]any{
 		"model":       req.Model,
@@ -32,10 +50,28 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 		"temperature": req.Temperature,
 	}
 	if req.MaxTokens > 0 {
-		if strings.Contains(p.base, "api.openai.com") {
+		if p.officialOpenAI() {
 			payload["max_completion_tokens"] = req.MaxTokens
 		} else {
 			payload["max_tokens"] = req.MaxTokens
+		}
+	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = openAITools(req.Tools)
+		payload["tool_choice"] = "auto"
+	}
+	if req.ResponseFormat != nil && p.officialOpenAI() {
+		jsonSchema := map[string]any{
+			"name":   req.ResponseFormat.Name,
+			"strict": req.ResponseFormat.Strict,
+			"schema": json.RawMessage(req.ResponseFormat.Schema),
+		}
+		if req.ResponseFormat.Description != "" {
+			jsonSchema["description"] = req.ResponseFormat.Description
+		}
+		payload["response_format"] = map[string]any{
+			"type":        "json_schema",
+			"json_schema": jsonSchema,
 		}
 	}
 	body, err := json.Marshal(payload)
@@ -65,7 +101,18 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 	}
 	var wire struct {
 		Choices []struct {
-			Message Message `json:"message"`
+			Message struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
 			InputTokens      int `json:"input_tokens"`
@@ -95,5 +142,55 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 	if usage.TotalTokens == 0 {
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	}
-	return CompletionResponse{Message: wire.Choices[0].Message, Usage: usage}, nil
+	message := wire.Choices[0].Message
+	return CompletionResponse{
+		Message:   Message{Role: message.Role, Content: message.Content},
+		ToolCalls: openAIToolCalls(message.ToolCalls),
+		Usage:     usage,
+	}, nil
+}
+
+func (p *OpenAICompatible) officialOpenAI() bool {
+	return strings.Contains(p.base, "api.openai.com")
+}
+
+func openAITools(tools []ToolSpec) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		function := map[string]any{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  json.RawMessage(tool.Schema),
+		}
+		out = append(out, map[string]any{
+			"type":     "function",
+			"function": function,
+		})
+	}
+	return out
+}
+
+func openAIToolCalls(calls []struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if call.Type != "" && call.Type != "function" {
+			continue
+		}
+		args := json.RawMessage(strings.TrimSpace(call.Function.Arguments))
+		if len(args) == 0 || !json.Valid(args) {
+			args = json.RawMessage(`{}`)
+		}
+		out = append(out, ToolCall{ID: call.ID, Name: call.Function.Name, Args: args})
+	}
+	return out
 }

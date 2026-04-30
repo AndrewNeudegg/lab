@@ -12,6 +12,51 @@ type ProviderCandidate struct {
 	Provider Provider
 }
 
+type ProviderFailureClass string
+
+const (
+	ProviderFailurePermanent ProviderFailureClass = "permanent"
+	ProviderFailureRetryable ProviderFailureClass = "retryable"
+)
+
+type ProviderFailure struct {
+	Provider string
+	Model    string
+	Class    ProviderFailureClass
+	Err      error
+}
+
+func (f ProviderFailure) Error() string {
+	if f.Model != "" {
+		return fmt.Sprintf("%s/%s %s: %v", f.Provider, f.Model, f.Class, f.Err)
+	}
+	return fmt.Sprintf("%s %s: %v", f.Provider, f.Class, f.Err)
+}
+
+func (f ProviderFailure) Unwrap() error {
+	return f.Err
+}
+
+type AllProvidersFailedError struct {
+	Failures []ProviderFailure
+}
+
+func (e AllProvidersFailedError) Error() string {
+	failures := make([]string, 0, len(e.Failures))
+	for _, failure := range e.Failures {
+		failures = append(failures, failure.Error())
+	}
+	return "all LLM providers failed: " + strings.Join(failures, "; ")
+}
+
+func (e AllProvidersFailedError) Unwrap() []error {
+	out := make([]error, 0, len(e.Failures))
+	for _, failure := range e.Failures {
+		out = append(out, failure)
+	}
+	return out
+}
+
 type FallbackProvider struct {
 	candidates []ProviderCandidate
 }
@@ -52,7 +97,7 @@ func (p *FallbackProvider) Complete(ctx context.Context, req CompletionRequest) 
 	if len(p.candidates) == 0 {
 		return CompletionResponse{}, fmt.Errorf("no LLM providers configured")
 	}
-	var failures []string
+	var failures []ProviderFailure
 	for _, candidate := range p.candidates {
 		candidateReq := req
 		if candidate.Model != "" {
@@ -64,7 +109,11 @@ func (p *FallbackProvider) Complete(ctx context.Context, req CompletionRequest) 
 			resp.Model = candidateReq.Model
 			return resp, nil
 		}
-		failures = append(failures, fmt.Sprintf("%s: %v", candidate.Name, err))
+		class := ProviderFailurePermanent
+		if IsRetryable(err) {
+			class = ProviderFailureRetryable
+		}
+		failures = append(failures, ProviderFailure{Provider: candidate.Name, Model: candidateReq.Model, Class: class, Err: err})
 	}
-	return CompletionResponse{}, fmt.Errorf("all LLM providers failed: %s", strings.Join(failures, "; "))
+	return CompletionResponse{}, AllProvidersFailedError{Failures: failures}
 }

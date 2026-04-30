@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -24,6 +25,31 @@ func TestFallbackProviderUsesNextProviderAfterFailure(t *testing.T) {
 	}
 	if resp.Message.Content != "ok" {
 		t.Fatalf("content = %q, want ok", resp.Message.Content)
+	}
+}
+
+func TestFallbackProviderClassifiesCandidateFailures(t *testing.T) {
+	provider := NewFallbackProvider([]ProviderCandidate{
+		{Name: "openai", Model: "gpt-test", Provider: staticProvider{name: "openai", err: fmt.Errorf("provider returned 400 Bad Request")}},
+		{Name: "gemini", Model: "gemini-test", Provider: staticProvider{name: "gemini", err: Retryable(fmt.Errorf("provider returned 503 Service Unavailable"))}},
+	})
+
+	_, err := provider.Complete(context.Background(), CompletionRequest{Model: "default-model"})
+	if err == nil {
+		t.Fatal("expected all providers failed error")
+	}
+	var allFailed AllProvidersFailedError
+	if !errors.As(err, &allFailed) {
+		t.Fatalf("error type = %T, want AllProvidersFailedError", err)
+	}
+	if len(allFailed.Failures) != 2 {
+		t.Fatalf("failures = %#v, want two", allFailed.Failures)
+	}
+	if allFailed.Failures[0].Class != ProviderFailurePermanent {
+		t.Fatalf("first class = %q, want permanent", allFailed.Failures[0].Class)
+	}
+	if allFailed.Failures[1].Class != ProviderFailureRetryable {
+		t.Fatalf("second class = %q, want retryable", allFailed.Failures[1].Class)
 	}
 }
 

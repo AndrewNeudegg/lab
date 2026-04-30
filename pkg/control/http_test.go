@@ -157,6 +157,41 @@ func TestTaskRunsEndpointListsExternalArtifacts(t *testing.T) {
 	}
 }
 
+func TestApprovalEditEndpointUpdatesPendingArgs(t *testing.T) {
+	server, _, cfg := newHTTPTestServer(t)
+	approvals := approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals"))
+	req := approvalstore.Request{
+		ID:     "approval_http_edit",
+		Tool:   "task.create",
+		Args:   json.RawMessage(`{"goal":"old"}`),
+		Reason: "test approval",
+		Status: approvalstore.StatusPending,
+	}
+	if err := approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	requestJSON(t, mux, http.MethodPost, "/approvals/approval_http_edit/edit", `{"args":{"target":"missing goal"}}`, "", http.StatusBadRequest)
+	requestJSON(t, mux, http.MethodPost, "/approvals/approval_http_edit/edit", `{"args":{"goal":"new"}}`, "", http.StatusOK)
+
+	updated, err := approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var editedArgs map[string]string
+	if err := json.Unmarshal(updated.Args, &editedArgs); err != nil {
+		t.Fatal(err)
+	}
+	if editedArgs["goal"] != "new" {
+		t.Fatalf("args = %s, want edited args", updated.Args)
+	}
+	if !strings.Contains(updated.Reason, "args edited by human") {
+		t.Fatalf("reason = %q, want edit audit suffix", updated.Reason)
+	}
+}
+
 func TestTaskDiffEndpointReturnsStructuredBranchDiff(t *testing.T) {
 	dir := t.TempDir()
 	repo := filepath.Join(dir, "repo")

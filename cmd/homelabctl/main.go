@@ -440,7 +440,7 @@ func (c cli) agent(args []string) error {
 
 func (c cli) approval(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl approval <list|approve|deny>")
+		return fmt.Errorf("usage: homelabctl approval <list|approve|deny|edit>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -454,6 +454,17 @@ func (c cli) approval(args []string) error {
 			return fmt.Errorf("usage: homelabctl approval %s <approval_id>", action)
 		}
 		return c.do(http.MethodPost, path("approvals", args[1], action), nil)
+	case "edit":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: homelabctl approval edit <approval_id> <json_args>")
+		}
+		rawArgs := strings.TrimSpace(strings.Join(args[2:], " "))
+		if !json.Valid([]byte(rawArgs)) {
+			return fmt.Errorf("approval args must be valid JSON")
+		}
+		return c.do(http.MethodPost, path("approvals", args[1], "edit"), struct {
+			Args json.RawMessage `json:"args"`
+		}{Args: json.RawMessage(rawArgs)})
 	default:
 		return fmt.Errorf("unknown approval command %q", args[0])
 	}
@@ -967,6 +978,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] approval list
   homelabctl [-addr http://127.0.0.1:18080] approval approve <approval_id>
   homelabctl [-addr http://127.0.0.1:18080] approval deny <approval_id>
+  homelabctl [-addr http://127.0.0.1:18080] approval edit <approval_id> '<json_args>'
   homelabctl [-addr http://127.0.0.1:18080] events [-limit N] [YYYY-MM-DD]
   homelabctl [-healthd-addr http://127.0.0.1:18081] healthd errors [-limit N] [-source SOURCE] [app]
   homelabctl [-supervisord-addr http://127.0.0.1:18082] supervisor status

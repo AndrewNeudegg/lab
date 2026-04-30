@@ -45,6 +45,93 @@ func TestExtractJSONHandlesBracesInStrings(t *testing.T) {
 	}
 }
 
+func TestParseAgentResponseRejectsTrailingProse(t *testing.T) {
+	_, err := parseAgentResponse(`{"message":"done","done":true,"tool_calls":[]} trailing prose`)
+	if err == nil {
+		t.Fatal("parseAgentResponse accepted trailing prose, want schema error")
+	}
+	if !strings.Contains(err.Error(), "exactly one JSON object") {
+		t.Fatalf("error = %q, want trailing prose hint", err.Error())
+	}
+}
+
+func TestParseAgentResponseRejectsUnknownKeysAndBadToolShape(t *testing.T) {
+	_, err := parseAgentResponse(`{"message":"Searching","done":false,"tool_calls":[{"name":"repo.search","args":"query"}],"extra":true}`)
+	if err == nil {
+		t.Fatal("parseAgentResponse accepted invalid response, want schema error")
+	}
+	for _, want := range []string{
+		`unknown top-level key "extra"`,
+		`tool_calls[0] has unknown key "name"`,
+		`tool_calls[0].tool is required`,
+		`tool_calls[0].args must be a JSON object`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err.Error(), want)
+		}
+	}
+}
+
+func TestParseAgentResponseRejectsInconsistentDoneState(t *testing.T) {
+	_, err := parseAgentResponse(`{"message":"Still working","done":false,"tool_calls":[]}`)
+	if err == nil {
+		t.Fatal("parseAgentResponse accepted done=false without tools")
+	}
+	if !strings.Contains(err.Error(), "done=false requires at least one tool call") {
+		t.Fatalf("error = %q, want done/tool_calls hint", err.Error())
+	}
+	_, err = parseAgentResponse(`{"message":"Done","done":true,"tool_calls":[{"tool":"repo.search","args":{}}]}`)
+	if err == nil {
+		t.Fatal("parseAgentResponse accepted done=true with tools")
+	}
+	if !strings.Contains(err.Error(), "done=true requires tool_calls to be []") {
+		t.Fatalf("error = %q, want done/tool_calls hint", err.Error())
+	}
+}
+
+func TestAgentResponseSchemaPromptGivesStrictHints(t *testing.T) {
+	prompt := agentResponseSchemaPrompt()
+	for _, want := range []string{
+		`"additionalProperties": false`,
+		`"required": ["message", "done", "tool_calls"]`,
+		`Use the key "tool", not "name"`,
+		`args must always be a JSON object`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("schema prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestAgentResponseEvalFixtures(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "valid final", content: `{"message":"Use status to see active work.","done":true,"tool_calls":[]}`},
+		{name: "markdown fenced", content: "```json\n{\"message\":\"done\",\"done\":true,\"tool_calls\":[]}\n```", wantErr: "Markdown code fence"},
+		{name: "raw prose", content: "I can get a list", wantErr: "response must start with a JSON object"},
+		{name: "missing tool key", content: `{"message":"Searching","done":false,"tool_calls":[{"name":"repo.search","args":{"query":"x"}}]}`, wantErr: `tool_calls[0].tool is required`},
+		{name: "args string", content: `{"message":"Searching","done":false,"tool_calls":[{"tool":"repo.search","args":"query"}]}`, wantErr: "args must be a JSON object"},
+		{name: "done mismatch", content: `{"message":"Done","done":true,"tool_calls":[{"tool":"repo.search","args":{"query":"x"}}]}`, wantErr: "done=true requires tool_calls"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseAgentResponse(tc.content)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("parseAgentResponse returned error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestNormalizeTaskSelectorRemovesNaturalFiller(t *testing.T) {
 	got := normalizeTaskSelector("the hi task")
 	if got != "hi" {
@@ -797,6 +884,196 @@ func TestApprovalsIncludeClickableActions(t *testing.T) {
 	}
 	if !strings.Contains(reply, "`deny approval_20260425_205243_caf98d74`") {
 		t.Fatalf("reply = %q, want deny action", reply)
+	}
+	if !strings.Contains(reply, "`approval edit approval_20260425_205243_caf98d74") {
+		t.Fatalf("reply = %q, want approval edit action", reply)
+	}
+}
+
+func TestEditApprovalArgsValidatesAndAudits(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	req := approvalstore.Request{
+		ID:     "approval_edit_args",
+		Tool:   "task.create",
+		Args:   json.RawMessage(`{"goal":"old"}`),
+		Reason: "needs approval",
+		Status: approvalstore.StatusPending,
+	}
+	if err := orch.approvals.Save(req); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.EditApprovalArgs(context.Background(), req.ID, json.RawMessage(`{"target":"missing goal"}`)); err == nil {
+		t.Fatal("EditApprovalArgs accepted args that fail the tool schema")
+	}
+	reply, err := orch.EditApprovalArgs(context.Background(), req.ID, json.RawMessage(`{"goal":"new"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Updated args") {
+		t.Fatalf("reply = %q, want update confirmation", reply)
+	}
+	updated, err := orch.approvals.Load(req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var editedArgs map[string]string
+	if err := json.Unmarshal(updated.Args, &editedArgs); err != nil {
+		t.Fatal(err)
+	}
+	if editedArgs["goal"] != "new" {
+		t.Fatalf("args = %s, want edited args", updated.Args)
+	}
+	if !strings.Contains(updated.Reason, "args edited by human") {
+		t.Fatalf("reason = %q, want edit audit suffix", updated.Reason)
+	}
+	events, err := orch.ReadEvents(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasEventType(events, "approval.edited") {
+		t.Fatalf("events missing approval.edited: %#v", events)
+	}
+}
+
+func TestToolCallingProviderCanSubmitFinalAnswer(t *testing.T) {
+	provider := &toolCallingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "tool-model"
+
+	reply, source, err := orch.handleMessage(context.Background(), "explain current provider routing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Final answer from tool call." {
+		t.Fatalf("reply = %q, want final.submit message", reply)
+	}
+	if source != "tool-calling" {
+		t.Fatalf("source = %q", source)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(provider.requests))
+	}
+	if provider.requests[0].ResponseFormat != nil {
+		t.Fatalf("tool fallback request unexpectedly used response_format: %#v", provider.requests[0].ResponseFormat)
+	}
+	if len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "final.submit" {
+		t.Fatalf("tools = %#v, want final.submit", provider.requests[0].Tools)
+	}
+}
+
+func TestProviderQualitySummaryAggregatesRejectedResponses(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	day := time.Now().UTC()
+	for _, event := range []eventlog.Event{{
+		ID:    "evt_quality_turn",
+		Type:  "agent.message",
+		Actor: "OrchestratorAgent",
+		Payload: eventlog.Payload(map[string]any{
+			"provider": "openai",
+			"model":    "gpt-test",
+			"usage":    llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		}),
+	}, {
+		ID:    "evt_quality_schema",
+		Type:  "agent.response.rejected",
+		Actor: "OrchestratorAgent",
+		Payload: eventlog.Payload(map[string]any{
+			"provider": "openai",
+			"model":    "gpt-test",
+			"stage":    "schema",
+		}),
+	}, {
+		ID:    "evt_quality_semantic",
+		Type:  "agent.response.rejected",
+		Actor: "OrchestratorAgent",
+		Payload: eventlog.Payload(map[string]any{
+			"provider": "openai",
+			"model":    "gpt-test",
+			"stage":    "semantic",
+		}),
+	}, {
+		ID:    "evt_quality_validator",
+		Type:  "tool.call.denied",
+		Actor: "validator",
+		Payload: eventlog.Payload(map[string]any{
+			"tool": "repo.search",
+		}),
+	}} {
+		if err := orch.events.Append(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reply, err := orch.providerQualitySummary(day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"openai/gpt-test",
+		"turns=1",
+		"rejected_schema=1",
+		"rejected_semantic=1",
+		"tokens=10/5/15",
+		"Tool argument validator denials: 1",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("summary = %q, want %q", reply, want)
+		}
+	}
+}
+
+func TestTaskWorkerToolArgsMustUseTaskWorkspace(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	search := &workspaceRepoSearchStub{}
+	if err := orch.registry.Register(search); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_workspace_semantics"
+	workspace := filepath.Join(t.TempDir(), "workspaces", taskID)
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:        taskID,
+		Title:     "semantic validation",
+		Goal:      "semantic validation",
+		Status:    taskstore.StatusRunning,
+		Workspace: workspace,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := orch.executeProposedTool(context.Background(), "CoderAgent", proposedToolCall{
+		Tool: "repo.search",
+		Args: json.RawMessage(`{"workspace":"/tmp/wrong-workspace","query":"x"}`),
+	}, taskID)
+	if result.Allowed {
+		t.Fatalf("result = %#v, want validation denial", result)
+	}
+	if search.ran {
+		t.Fatal("repo.search ran despite wrong workspace")
+	}
+	if !strings.Contains(result.Reason, "task workspace") {
+		t.Fatalf("reason = %q, want task workspace validation", result.Reason)
+	}
+
+	result = orch.executeProposedTool(context.Background(), "CoderAgent", proposedToolCall{
+		Tool: "repo.search",
+		Args: json.RawMessage(`{"workspace":"` + workspace + `","query":"x"}`),
+	}, taskID)
+	if !result.Allowed || result.Error != "" {
+		t.Fatalf("allowed result = %#v", result)
+	}
+	if !search.ran {
+		t.Fatal("repo.search did not run with task workspace")
+	}
+	events, err := orch.ReadEvents(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eventTypeBefore(events, "tool.call.checkpoint", "tool.result") {
+		t.Fatalf("events did not record checkpoint before tool.result: %#v", events)
 	}
 }
 
@@ -3726,8 +4003,11 @@ func TestOpenEndedChatStripsMetaSentenceFromDirectReply(t *testing.T) {
 	}
 }
 
-func TestOpenEndedChatFiltersRawProviderFallback(t *testing.T) {
-	provider := &staticProvider{content: "I'll check that. Use status to see active work."}
+func TestOpenEndedChatRejectsRawProviderFallbackWithSchemaRetry(t *testing.T) {
+	provider := &scriptedProvider{contents: []string{
+		"I'll check that. Use status to see active work.",
+		`{"message":"Use status to see active work.","done":true,"tool_calls":[]}`,
+	}}
 	orch := newTestOrchestrator(t, nil)
 	orch.provider = provider
 	orch.model = "test-model"
@@ -3737,8 +4017,122 @@ func TestOpenEndedChatFiltersRawProviderFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if reply != "Use status to see active work." {
-		t.Fatalf("reply = %q, want raw fallback filtered before returning", reply)
+		t.Fatalf("reply = %q, want strict JSON retry before returning", reply)
 	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want rejected raw response plus schema retry", len(provider.requests))
+	}
+	lastMessages := provider.requests[1].Messages
+	if len(lastMessages) == 0 || !strings.Contains(lastMessages[len(lastMessages)-1].Content, "JSON Schema") ||
+		!strings.Contains(lastMessages[len(lastMessages)-1].Content, "response must start with a JSON object") {
+		t.Fatalf("last retry prompt = %#v, want schema validation instruction", lastMessages)
+	}
+}
+
+func TestOpenEndedChatRequestsAgentResponseFormat(t *testing.T) {
+	provider := &staticProvider{content: `{"message":"Use status to see active work.","done":true,"tool_calls":[]}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	if _, err := orch.Handle(context.Background(), "test", "how do I see active work?"); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(provider.requests))
+	}
+	format := provider.requests[0].ResponseFormat
+	if format == nil || format.Name != "homelabd_agent_response" || !strings.Contains(string(format.Schema), `"tool_calls"`) {
+		t.Fatalf("response format = %#v, want agent response schema", format)
+	}
+}
+
+func TestOpenEndedChatRejectsHollowFinalAnswerWithQualityRetry(t *testing.T) {
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"Here is a joke.","done":true,"tool_calls":[]}`,
+		`{"message":"Use status to see active work.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "how do I see active work?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Use status to see active work." {
+		t.Fatalf("reply = %q, want regenerated answer", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want rejected candidate plus quality retry", len(provider.requests))
+	}
+	lastMessages := provider.requests[1].Messages
+	if len(lastMessages) == 0 || !strings.Contains(lastMessages[len(lastMessages)-1].Content, "answer quality") {
+		t.Fatalf("last retry prompt = %#v, want answer-quality retry", lastMessages)
+	}
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == "agent.response.rejected" {
+			var payload struct {
+				Stage  string `json:"stage"`
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Stage == "semantic" && strings.Contains(payload.Reason, "placeholder joke") {
+				return
+			}
+		}
+	}
+	t.Fatalf("agent.response.rejected semantic event not found: %#v", events)
+}
+
+func TestOpenEndedChatRejectsInvalidToolArgsBeforeExecution(t *testing.T) {
+	search := &repoSearchStub{}
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"Searching","done":false,"tool_calls":[{"tool":"repo.search","args":{}}]}`,
+		`{"message":"Search args were rejected before execution.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+	if err := orch.registry.Register(search); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "where is orchestrator search handled?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Search args were rejected before execution." {
+		t.Fatalf("reply = %q, want final scripted response", reply)
+	}
+	if search.query != "" {
+		t.Fatalf("repo.search executed with query %q, want validation denial before execution", search.query)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("request count = %d, want second turn with validation result", len(provider.requests))
+	}
+	toolResultMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
+	if !strings.Contains(toolResultMessage, "Untrusted tool results") ||
+		!strings.Contains(toolResultMessage, "tool args failed schema validation") ||
+		!strings.Contains(toolResultMessage, "args.query is required") {
+		t.Fatalf("tool result message = %q, want untrusted schema-denial result", toolResultMessage)
+	}
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == "tool.call.denied" && event.Actor == "validator" {
+			return
+		}
+	}
+	t.Fatalf("validator denial event not found: %#v", events)
 }
 
 func TestOpenEndedChatStripsLeadInMetaSentenceFromDirectReply(t *testing.T) {
@@ -5083,6 +5477,10 @@ type recordingProvider struct {
 
 func (p *recordingProvider) Name() string { return "recording" }
 
+func (p *recordingProvider) Capabilities() llm.ProviderCapabilities {
+	return llm.ProviderCapabilities{NativeJSONSchema: true, SystemMessages: true}
+}
+
 func (p *recordingProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
 	p.requests = append(p.requests, req)
 	reply := "reply " + string(rune('0'+len(p.requests)))
@@ -5102,6 +5500,10 @@ type staticProvider struct {
 
 func (p *staticProvider) Name() string { return "static" }
 
+func (p *staticProvider) Capabilities() llm.ProviderCapabilities {
+	return llm.ProviderCapabilities{NativeJSONSchema: true, SystemMessages: true}
+}
+
 func (p *staticProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
 	p.requests = append(p.requests, req)
 	return llm.CompletionResponse{
@@ -5119,6 +5521,10 @@ type scriptedProvider struct {
 }
 
 func (p *scriptedProvider) Name() string { return "scripted" }
+
+func (p *scriptedProvider) Capabilities() llm.ProviderCapabilities {
+	return llm.ProviderCapabilities{NativeJSONSchema: true, SystemMessages: true}
+}
 
 func (p *scriptedProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
 	p.requests = append(p.requests, req)
@@ -5141,12 +5547,34 @@ func (p *scriptedProvider) Complete(_ context.Context, req llm.CompletionRequest
 	}, nil
 }
 
+type toolCallingProvider struct {
+	requests []llm.CompletionRequest
+}
+
+func (p *toolCallingProvider) Name() string { return "tool-calling" }
+
+func (p *toolCallingProvider) Capabilities() llm.ProviderCapabilities {
+	return llm.ProviderCapabilities{ToolCalling: true, SystemMessages: true}
+}
+
+func (p *toolCallingProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.requests = append(p.requests, req)
+	return llm.CompletionResponse{
+		Provider: p.Name(),
+		ToolCalls: []llm.ToolCall{{
+			ID:   "call_final",
+			Name: "final.submit",
+			Args: json.RawMessage(`{"message":"Final answer from tool call."}`),
+		}},
+	}, nil
+}
+
 type workflowTextCorrectStub struct{}
 
 func (workflowTextCorrectStub) Name() string        { return "text.correct" }
 func (workflowTextCorrectStub) Description() string { return "correct text" }
 func (workflowTextCorrectStub) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}}}`)
+	return json.RawMessage(`{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"mode":{"type":"string","enum":["spelling","grammar","search_query","all"]}}}`)
 }
 func (workflowTextCorrectStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (workflowTextCorrectStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
@@ -5365,6 +5793,29 @@ func waitForDelegationReviewEvent(t *testing.T, orch *Orchestrator, taskID strin
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("delegation review event was not written")
+}
+
+func hasEventType(events []eventlog.Event, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func eventTypeBefore(events []eventlog.Event, before, after string) bool {
+	beforeIndex := -1
+	afterIndex := -1
+	for i, event := range events {
+		if event.Type == before && beforeIndex < 0 {
+			beforeIndex = i
+		}
+		if event.Type == after && afterIndex < 0 {
+			afterIndex = i
+		}
+	}
+	return beforeIndex >= 0 && afterIndex >= 0 && beforeIndex < afterIndex
 }
 
 type restartGateCalls struct {
@@ -5590,7 +6041,7 @@ type repoSearchStub struct {
 func (repoSearchStub) Name() string        { return "repo.search" }
 func (repoSearchStub) Description() string { return "" }
 func (repoSearchStub) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object"}`)
+	return json.RawMessage(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}}`)
 }
 func (repoSearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (s *repoSearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
@@ -5604,6 +6055,21 @@ func (s *repoSearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMe
 		"line": 148,
 		"text": "case search",
 	}}})
+}
+
+type workspaceRepoSearchStub struct {
+	ran bool
+}
+
+func (workspaceRepoSearchStub) Name() string        { return "repo.search" }
+func (workspaceRepoSearchStub) Description() string { return "search with workspace" }
+func (workspaceRepoSearchStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["workspace","query"],"properties":{"workspace":{"type":"string"},"query":{"type":"string"}}}`)
+}
+func (workspaceRepoSearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *workspaceRepoSearchStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	s.ran = true
+	return json.RawMessage(`{"matches":[]}`), nil
 }
 
 type shellRunLimitedStub struct{}

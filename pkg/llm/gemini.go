@@ -24,8 +24,21 @@ func (p *Gemini) Name() string {
 	return p.name
 }
 
+func (p *Gemini) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		NativeJSONSchema:  true,
+		SystemInstruction: true,
+		MaxTokensField:    "maxOutputTokens",
+	}
+}
+
 func (p *Gemini) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	body, err := json.Marshal(geminiRequest{Contents: geminiContents(req.Messages)})
+	contents, systemInstruction := geminiContents(req.Messages)
+	body, err := json.Marshal(geminiRequest{
+		Contents:          contents,
+		SystemInstruction: systemInstruction,
+		GenerationConfig:  geminiGenerationConfigFor(req),
+	})
 	if err != nil {
 		return CompletionResponse{}, err
 	}
@@ -67,7 +80,9 @@ func (p *Gemini) Complete(ctx context.Context, req CompletionRequest) (Completio
 }
 
 type geminiRequest struct {
-	Contents []geminiContent `json:"contents"`
+	Contents          []geminiContent         `json:"contents"`
+	SystemInstruction *geminiContent          `json:"systemInstruction,omitempty"`
+	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 
 type geminiContent struct {
@@ -77,6 +92,13 @@ type geminiContent struct {
 
 type geminiPart struct {
 	Text string `json:"text"`
+}
+
+type geminiGenerationConfig struct {
+	Temperature        *float64        `json:"temperature,omitempty"`
+	MaxOutputTokens    int             `json:"maxOutputTokens,omitempty"`
+	ResponseMIMEType   string          `json:"responseMimeType,omitempty"`
+	ResponseJSONSchema json.RawMessage `json:"responseJsonSchema,omitempty"`
 }
 
 type geminiResponse struct {
@@ -90,18 +112,40 @@ type geminiResponse struct {
 	} `json:"usageMetadata"`
 }
 
-func geminiContents(messages []Message) []geminiContent {
+func geminiGenerationConfigFor(req CompletionRequest) *geminiGenerationConfig {
+	cfg := &geminiGenerationConfig{}
+	temp := req.Temperature
+	cfg.Temperature = &temp
+	if req.MaxTokens > 0 {
+		cfg.MaxOutputTokens = req.MaxTokens
+	}
+	if req.ResponseFormat != nil && len(req.ResponseFormat.Schema) > 0 {
+		cfg.ResponseMIMEType = "application/json"
+		cfg.ResponseJSONSchema = req.ResponseFormat.Schema
+	}
+	if cfg.Temperature == nil && cfg.MaxOutputTokens == 0 && cfg.ResponseMIMEType == "" && len(cfg.ResponseJSONSchema) == 0 {
+		return nil
+	}
+	return cfg
+}
+
+func geminiContents(messages []Message) ([]geminiContent, *geminiContent) {
 	contents := make([]geminiContent, 0, len(messages))
+	var systemParts []geminiPart
 	for _, msg := range messages {
+		if msg.Role == "system" {
+			systemParts = append(systemParts, geminiPart{Text: msg.Content})
+			continue
+		}
 		role := "user"
 		if msg.Role == "assistant" {
 			role = "model"
 		}
-		prefix := ""
-		if msg.Role == "system" {
-			prefix = "System instruction:\n"
-		}
-		contents = append(contents, geminiContent{Role: role, Parts: []geminiPart{{Text: prefix + msg.Content}}})
+		contents = append(contents, geminiContent{Role: role, Parts: []geminiPart{{Text: msg.Content}}})
 	}
-	return contents
+	var systemInstruction *geminiContent
+	if len(systemParts) > 0 {
+		systemInstruction = &geminiContent{Parts: systemParts}
+	}
+	return contents, systemInstruction
 }

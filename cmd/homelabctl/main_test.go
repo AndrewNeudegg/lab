@@ -228,10 +228,12 @@ func TestApprovalCommandsUseApprovalEndpoints(t *testing.T) {
 		args       []string
 		wantMethod string
 		wantPath   string
+		wantBody   map[string]any
 	}{
 		{name: "list", args: []string{"approvals"}, wantMethod: http.MethodGet, wantPath: "/approvals"},
 		{name: "approve", args: []string{"approve", "app_123"}, wantMethod: http.MethodPost, wantPath: "/approvals/app_123/approve"},
 		{name: "deny", args: []string{"approval", "deny", "app_123"}, wantMethod: http.MethodPost, wantPath: "/approvals/app_123/deny"},
+		{name: "edit", args: []string{"approval", "edit", "app_123", `{"target":"main"}`}, wantMethod: http.MethodPost, wantPath: "/approvals/app_123/edit", wantBody: map[string]any{"args": map[string]any{"target": "main"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,6 +247,9 @@ func TestApprovalCommandsUseApprovalEndpoints(t *testing.T) {
 			}
 			if observed.Method != tt.wantMethod || observed.Path != tt.wantPath {
 				t.Fatalf("request = %s %s, want %s %s", observed.Method, observed.Path, tt.wantMethod, tt.wantPath)
+			}
+			if tt.wantBody != nil && !reflect.DeepEqual(observed.Body, tt.wantBody) {
+				t.Fatalf("body = %#v, want %#v", observed.Body, tt.wantBody)
 			}
 		})
 	}

@@ -568,6 +568,25 @@ func (s *Server) handleApproval(rw http.ResponseWriter, req *http.Request) {
 		grant = true
 	case "deny":
 		grant = false
+	case "edit":
+		var body struct {
+			Args json.RawMessage `json:"args"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeError(rw, http.StatusBadRequest, "invalid approval edit body")
+			return
+		}
+		if len(body.Args) == 0 {
+			writeError(rw, http.StatusBadRequest, "approval edit requires args")
+			return
+		}
+		reply, err := s.Orchestrator.EditApprovalArgs(req.Context(), parts[0], body.Args)
+		if err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"reply": reply})
+		return
 	default:
 		writeError(rw, http.StatusNotFound, "unknown approval action")
 		return

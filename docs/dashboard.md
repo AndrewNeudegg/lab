@@ -25,6 +25,7 @@ Use the shared responsive navbar on every dashboard page.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
 - Keep top-level destinations flat: `Chat`, `Tasks`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
+- Show compact Tasks attention badges only when action is needed. Red counts failed, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
 
 ## URL References
 
@@ -79,6 +80,7 @@ Agents should write plain Mermaid and let the dashboard apply the brand palette.
 - Atlassian/Jira issue views: work-item detail pages have top-level issue actions and an activity feed containing changes, comments, history, and related updates.
 - Slack threads and incident-command tools: conversations need explicit context boundaries; task or incident timelines prevent important work from being buried in a global chat scroll.
 - Atlassian dashboard and status guidance: centralize task visibility, make bottlenecks obvious, use semantic colour roles, and pair colour with text.
+- Carbon, Material UI, and PatternFly badge guidance: header badges are appropriate when the count matters; dot badges are quieter when the count does not matter; attention badges need accessible text and should not rely on colour alone.
 - GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
 - GitLab merge request reviews: the changes view is the primary review surface, with review status and merge checks kept close to the diff.
 - CodeMirror and Monaco diff APIs: mature web diff viewers support hidden unchanged regions, gutters, syntax-aware deleted text, inline change highlighting, and unified or side-by-side review modes.
@@ -109,6 +111,9 @@ Sources:
 - https://atlassian.design/foundations/color
 - https://atlassian.design/components/lozenge/
 - https://www.atlassian.com/agile/project-management/task-management-dashboard
+- https://v10.carbondesignsystem.com/patterns/status-indicator-pattern/
+- https://mui.com/material-ui/react-badge/
+- https://www.patternfly.org/components/notification-badge/html/
 - https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-comparing-branches-in-pull-requests
 - https://docs.gitlab.com/user/project/merge_requests/reviews/
 - https://codemirror.net/docs/ref/#merge.unifiedMergeView

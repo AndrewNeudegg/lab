@@ -1,12 +1,23 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
+const docsRenderTimeoutMs = 60_000;
+
 const expectNoHorizontalOverflow = async (page: Page) => {
   const overflow = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,
     viewport: window.innerWidth
   }));
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+};
+
+const mockNavbarTaskApis = async (page: Page) => {
+  await page.route(/\/api\/tasks\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { tasks: [] } });
+  });
+  await page.route(/\/api\/approvals\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { approvals: [] } });
+  });
 };
 
 const openMobileMenu = async (page: Page) => {
@@ -24,7 +35,9 @@ const openMobileMenu = async (page: Page) => {
 
 test('docs library supports navigation, markdown rendering, table of contents, and search', async ({
   page
-}) => {
+}, testInfo) => {
+  testInfo.setTimeout(120_000);
+  await mockNavbarTaskApis(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/docs');
 
@@ -33,8 +46,10 @@ test('docs library supports navigation, markdown rendering, table of contents, a
   ).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   const diagram = page.locator('.content .mermaid-diagram').first();
-  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered', { timeout: 15_000 });
-  await expect(diagram.locator('svg')).toBeVisible();
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered', {
+    timeout: docsRenderTimeoutMs
+  });
+  await expect(diagram.locator('svg')).toBeVisible({ timeout: docsRenderTimeoutMs });
   await expect(page.getByText('./docs/dashboard.md')).toBeVisible();
   await expect.poll(async () => page.locator('#docs-list a').count()).toBeGreaterThanOrEqual(6);
   await expect(page.locator('.content .markdown a[href^="https://developer.apple.com"]')).toHaveCount(
@@ -75,6 +90,7 @@ test('docs library supports navigation, markdown rendering, table of contents, a
 });
 
 test('docs library remains usable on mobile', async ({ page }) => {
+  await mockNavbarTaskApis(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/docs/chat-commands');
 
@@ -93,7 +109,9 @@ test('docs library remains usable on mobile', async ({ page }) => {
   await page.getByRole('button', { name: 'Menu' }).click();
   await expect(mobileNav).toBeHidden();
 
-  await page.getByRole('combobox', { name: 'Jump to document' }).selectOption('dashboard');
+  const jump = page.getByRole('combobox', { name: 'Jump to document' });
+  await jump.selectOption('dashboard');
+  await jump.dispatchEvent('change');
   await expect(page).toHaveURL(/\/docs\/dashboard$/);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   await expect(page.locator('#docs-list a[aria-current="page"]')).toContainText('Dashboard');

@@ -1,8 +1,7 @@
 import {
   pendingActionableApprovals,
-  taskHasActionableApproval,
   taskIsActive,
-  taskNeedsQueueAction
+  taskNeedsDashboardAttention
 } from '@homelab/shared';
 import type {
   HomelabdApproval,
@@ -97,24 +96,6 @@ const taskMatchesQueue = (task: HomelabdTask, queueFilter: TaskQueueFilter) => {
   }
   const agentID = queueFilter.slice('agent:'.length);
   return mode === 'remote' && task.target?.agent_id === agentID;
-};
-
-const taskIsGraphParent = (task: HomelabdTask) => task.graph_phase === 'root' && !task.parent_id;
-
-const taskIsBlockedByGraphDependency = (task: HomelabdTask) =>
-  task.status === 'blocked' &&
-  Boolean(task.parent_id) &&
-  Boolean(task.graph_phase) &&
-  Boolean(task.blocked_by?.length);
-
-const taskNeedsDashboardAttention = (task: HomelabdTask, approvals: HomelabdApproval[]) => {
-  if (taskHasActionableApproval(task, approvals)) {
-    return true;
-  }
-  if (taskIsGraphParent(task) || taskIsBlockedByGraphDependency(task)) {
-    return false;
-  }
-  return taskNeedsQueueAction(task, approvals);
 };
 
 const visibleTasksForFilter = (

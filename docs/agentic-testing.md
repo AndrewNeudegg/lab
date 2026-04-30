@@ -42,6 +42,8 @@ nix develop -c bun run --cwd web uat:site
 
 `uat:site` first runs the headless Chromium preflight, then visits every primary dashboard route on desktop and mobile. It mocks `homelabd`, `healthd`, and `supervisord`, exercises one meaningful workflow per page, checks page overflow, escaped text, and clipped controls, and attaches full-page screenshots for review.
 
+Playwright waits up to 90 seconds for the isolated Vite server to answer `/chat`, which gives first-run route compilation time to prebundle browser-only libraries such as Mermaid. Browser specs default to 60 seconds and assertions use a 10-second default expect timeout; docs-route site UAT gets 120 seconds because Mermaid rendering plus full-page screenshots can take longer on slower worker images. Set `PLAYWRIGHT_WEB_SERVER_TIMEOUT_MS` when debugging unusually slow or fast worker images.
+
 To check browser readiness without starting Vite, run:
 
 ```bash

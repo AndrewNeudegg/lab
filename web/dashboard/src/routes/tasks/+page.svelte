@@ -8,6 +8,7 @@
     formatAttachmentSize,
     isImageAttachment,
     Navbar,
+    taskAttentionCounts,
     taskURL,
     taskInputText,
     taskIsActive,
@@ -142,6 +143,7 @@
   let currentDiffFile: ParsedDiffFile | undefined;
   let currentSplitRows: DiffSplitRow[] = [];
   let needsActionTotal = 0;
+  let navTaskAttention = taskAttentionCounts(tasks, approvals);
   let onlineAgentItems: HomelabdRemoteAgent[] = [];
   let selectedAgent: HomelabdRemoteAgent | undefined;
   let selectedWorkdirs: HomelabdRemoteAgentWorkdir[] = [];
@@ -348,6 +350,7 @@
   }
   $: currentDiffFile = currentDiffFiles.find((file) => diffFileKey(file) === selectedDiffFilePath);
   $: currentSplitRows = buildSplitRows(currentDiffFile);
+  $: navTaskAttention = taskAttentionCounts(tasks, approvals);
   $: emptyTaskListMessage = taskListEmptyMessage({
     apiBase,
     refreshing,
@@ -1095,7 +1098,7 @@
 </svelte:head>
 
 <div class="tasks-page">
-  <Navbar title="Tasks" subtitle="homelabd" current="/tasks" apiBase={apiBase} />
+  <Navbar title="Tasks" subtitle="homelabd" current="/tasks" apiBase={apiBase} taskApiBase={apiBase} taskAttention={navTaskAttention} />
 
   <div class="shell">
     <aside class="task-pane" data-mobile-hidden={mobilePanel !== 'queue'} aria-label="Task queue">

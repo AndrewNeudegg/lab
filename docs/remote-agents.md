@@ -66,6 +66,8 @@ Remote agents do not need to run in this repository. Each advertised `workdir` c
 
 Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are configured, `homelab-agent` falls back to the configured `repo.root`, which is useful for local development but too easy to point at the wrong tree on a real machine.
 
+Remote workers may include Mermaid fenced diagrams in reported results or docs when a workflow, state machine, architecture, sequence, or user journey would be clearer visually. Chat and dashboard docs render those diagrams with the homelabd brand theme and strip Mermaid init directives. Do not add Mermaid `init` blocks or hard-code unrelated colours; use the palette in `docs/chat-commands.md` when explicit semantic styling is unavoidable.
+
 ## Remote Testing
 
 Remote agents validate in the selected remote workdir. They must not call the control-plane supervisor to restart production services, and they must not assume `127.0.0.1:5173` points at the operator's dashboard.

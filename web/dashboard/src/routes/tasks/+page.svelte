@@ -38,7 +38,7 @@
     type TaskQueueView,
     type WorkerTraceRun
   } from './view-model';
-  import { createCoalescedAsync, createMutationRevision } from './refresh-state';
+  import { createCoalescedAsync } from './refresh-state';
   import {
     approvalNoticeTitle,
     pendingApprovalForTask,
@@ -86,6 +86,7 @@
   let autoMergeSaving = false;
   let autoMergeEnabled = false;
   let autoMergeIssue = '';
+  let autoMergeVersion = 0;
   let diffLoadingTaskId = '';
   let workerRunsIssue = '';
   let taskFilter: TaskFilter = 'attention';
@@ -115,7 +116,6 @@
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
   const coalesceRefreshState = createCoalescedAsync<void>();
-  const settingsRevision = createMutationRevision();
   let taskQueueView: TaskQueueView = createTaskQueueView({
     tasks,
     approvals,
@@ -537,8 +537,8 @@
       settings: Promise<unknown>;
     },
     baseTasks: HomelabdTask[],
-    settingsRevisionAtStart: number,
-    initialErrors: string[] = []
+    initialErrors: string[],
+    settingsVersion: number
   ) => {
     const refreshErrors = [...initialErrors];
     let nextApprovals = approvals;
@@ -591,13 +591,15 @@
     }
 
     if (settingsResult.status === 'fulfilled') {
-      if (settingsRevision.matches(settingsRevisionAtStart)) {
+      if (settingsVersion === autoMergeVersion) {
         const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
         autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
-        autoMergeIssue = '';
       }
+      autoMergeIssue = '';
     } else {
-      autoMergeIssue = errorMessage(settingsResult.reason, 'Unable to load automation settings.');
+      if (settingsVersion === autoMergeVersion) {
+        autoMergeIssue = errorMessage(settingsResult.reason, 'Unable to load automation settings.');
+      }
     }
 
     const syncSelection = resolveTaskSyncSelection({
@@ -614,7 +616,6 @@
   const refreshState = () => {
     return coalesceRefreshState(async () => {
       const sequence = (refreshStateSequence += 1);
-      const settingsRevisionAtStart = settingsRevision.current();
       refreshing = true;
       const refreshErrors: string[] = [];
       let nextTasks = tasks;
@@ -623,6 +624,7 @@
       const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
       const agentRequest = withRefreshTimeout('Agents', client.listAgents());
       const settingsRequest = withRefreshTimeout('Settings', client.getSettings());
+      const settingsVersion = autoMergeVersion;
       try {
         const taskResult = await Promise.resolve(taskRequest).then(
           (value) => ({ status: 'fulfilled' as const, value }),
@@ -673,8 +675,8 @@
             settings: settingsRequest
           },
           nextTasks,
-          settingsRevisionAtStart,
-          refreshErrors
+          refreshErrors,
+          settingsVersion
         );
         if (syncSelection.shouldLoadRuns) {
           void refreshSelectedTaskDetails(syncSelection.selectedTaskId, {
@@ -801,7 +803,7 @@
       return;
     }
     const previous = autoMergeEnabled;
-    settingsRevision.bump();
+    autoMergeVersion += 1;
     autoMergeEnabled = next;
     autoMergeSaving = true;
     autoMergeIssue = '';

@@ -123,6 +123,12 @@
     });
   };
 
+  $: if (mounted) {
+    content;
+    headingIds;
+    queueMermaidRender();
+  }
+
   const handleMarkdownClick = (event: MouseEvent) => {
     if (
       !navigate ||
@@ -157,6 +163,7 @@
   onMount(() => {
     mounted = true;
     themeMode = currentThemeMode();
+    const initialRenderRetry = window.setTimeout(() => queueMermaidRender(), 250);
     root?.addEventListener('click', handleMarkdownClick);
     const observer = new MutationObserver(() => {
       const nextMode = currentThemeMode();
@@ -171,6 +178,7 @@
     return () => {
       mounted = false;
       renderVersion += 1;
+      window.clearTimeout(initialRenderRetry);
       root?.removeEventListener('click', handleMarkdownClick);
       observer.disconnect();
     };

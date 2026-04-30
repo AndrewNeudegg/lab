@@ -177,20 +177,20 @@ const mockDashboardApis = async (page: Page) => {
       }
     });
   });
-  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+  await page.route(/\/api\/tasks\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
-  await page.route('**/api/settings**', async (route) => {
+  await page.route(/\/api\/settings\/?(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON() as { auto_merge_enabled?: boolean };
       autoMergeEnabled = Boolean(body.auto_merge_enabled);
     }
     await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });
   });
-  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/runs\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
   });
-  await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/diff\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       json: {
         task_id: taskID,
@@ -201,16 +201,16 @@ const mockDashboardApis = async (page: Page) => {
       }
     });
   });
-  await page.route(/\/api\/tasks\/[^/]+\/(?:run|review|merge-queue|accept|restart|reopen|cancel|retry|delete)$/, async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/(?:run|review|merge-queue|accept|restart|reopen|cancel|retry|delete)\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { reply: 'task action accepted' } });
   });
-  await page.route(/\/api\/approvals(?:\/[^/]+\/(?:approve|deny))?$/, async (route) => {
+  await page.route(/\/api\/approvals(?:\/[^/]+\/(?:approve|deny))?\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: route.request().url().includes('/approve') ? { reply: 'approved' } : { approvals: [] } });
   });
   await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
-  await page.route(/\/api\/agents$/, async (route) => {
+  await page.route(/\/api\/agents\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
   });
   await page.route(/\/api\/workflows$/, async (route) => {
@@ -315,13 +315,28 @@ const openMobileMenu = async (page: Page) => {
     await menu.click();
     await expect(nav).toBeVisible();
   }
+  return nav;
+};
+
+const expectTaskNavAttention = async (page: Page, mobile: boolean) => {
+  const taskLinkName = 'Tasks, 3 review items need attention';
+  if (mobile) {
+    await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('3');
+    const mobileNav = await openMobileMenu(page);
+    await expect(mobileNav.getByRole('link', { name: taskLinkName })).toBeVisible();
+    await expect(page.locator('.mobile-nav .attention-badge.warning')).toHaveText('3');
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await expect(mobileNav).toBeHidden();
+    return;
+  }
+  await expect(
+    page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: taskLinkName })
+  ).toBeVisible();
+  await expect(page.locator('.desktop-nav .attention-badge.warning')).toHaveText('3');
 };
 
 const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
-  if (mobile && route !== '/') {
-    await openMobileMenu(page);
-    await page.getByRole('button', { name: 'Menu' }).click();
-  }
+  await expectTaskNavAttention(page, mobile);
   if (route === '/' || route === '/chat') {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();
@@ -397,6 +412,7 @@ const routes = [
   '/healthd',
   '/supervisord'
 ];
+const docsRouteTimeoutMs = 120_000;
 
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 1000, mobile: false },
@@ -407,6 +423,9 @@ for (const viewport of [
 
     for (const route of routes) {
       test(`${route} renders without visual artefacts and supports its core workflow`, async ({ page }, testInfo) => {
+        if (route.startsWith('/docs')) {
+          testInfo.setTimeout(docsRouteTimeoutMs);
+        }
         await mockDashboardApis(page);
         const taskSettingsReady =
           route === '/tasks'

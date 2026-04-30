@@ -7,12 +7,15 @@
   } from './attachments';
   import { createHomelabdClient } from './client';
   import ThemeToggle from './ThemeToggle.svelte';
+  import { taskAttentionCounts, type TaskAttentionCounts } from './tasks';
   import type { HomelabdTaskAttachment } from './types';
 
   export let title = 'homelabd';
   export let subtitle = 'Dashboard';
   export let current = '';
   export let apiBase = '';
+  export let taskApiBase = '';
+  export let taskAttention: TaskAttentionCounts | undefined = undefined;
   export let links: { href: string; label: string }[] = [
     { href: '/chat', label: 'Chat' },
     { href: '/tasks', label: 'Tasks' },
@@ -45,6 +48,8 @@
 
   let mobileMenuOpen = false;
   let mobileMenu: HTMLDetailsElement | undefined;
+  let fetchedTaskAttention: TaskAttentionCounts = { red: 0, amber: 0, total: 0 };
+  let currentTaskAttention: TaskAttentionCounts = { red: 0, amber: 0, total: 0 };
   let helpDialog: HTMLDialogElement | undefined;
   let helpDetails = '';
   let helpStatus = '';
@@ -71,6 +76,41 @@
     'Browser context captured. Screenshot capture is unavailable in this browser, so the report will submit without an image.';
 
   const isActive = (href: string) => current === href;
+  const isTasksLink = (href: string) => href === '/tasks';
+  const badgeCount = (count: number) => (count > 99 ? '99+' : String(count));
+  const attentionParts = (counts: TaskAttentionCounts) => [
+    ...(counts.red ? [`${counts.red} urgent ${counts.red === 1 ? 'item' : 'items'}`] : []),
+    ...(counts.amber ? [`${counts.amber} review ${counts.amber === 1 ? 'item' : 'items'}`] : [])
+  ];
+  const attentionPhrase = (counts: TaskAttentionCounts) =>
+    `${attentionParts(counts).join(', ')} ${counts.total === 1 ? 'needs' : 'need'} attention`;
+  const linkTitle = (link: { href: string; label: string }) =>
+    isTasksLink(link.href) && currentTaskAttention.total
+      ? `${link.label}: ${attentionPhrase(currentTaskAttention)}`
+      : undefined;
+
+  $: currentTaskAttention = taskAttention || fetchedTaskAttention;
+
+  const refreshTaskAttention = async () => {
+    if (taskAttention !== undefined) {
+      return;
+    }
+    const client = createHomelabdClient({ baseUrl: taskApiBase || apiBase || '/api' });
+    const [tasksResult, approvalsResult] = await Promise.allSettled([
+      client.listTasks(),
+      client.listApprovals()
+    ]);
+    if (tasksResult.status !== 'fulfilled') {
+      return;
+    }
+    const tasks = Array.isArray(tasksResult.value.tasks) ? tasksResult.value.tasks : [];
+    const approvals =
+      approvalsResult.status === 'fulfilled' && Array.isArray(approvalsResult.value.approvals)
+        ? approvalsResult.value.approvals
+        : [];
+    fetchedTaskAttention = taskAttentionCounts(tasks, approvals);
+  };
+
   const closeMobileMenu = () => {
     mobileMenuOpen = false;
     mobileMenu?.removeAttribute('open');
@@ -380,6 +420,10 @@
   onMount(() => {
     helpReady = true;
     pwaInstalled = isStandaloneDisplay();
+    void refreshTaskAttention().catch(() => undefined);
+    const interval = window.setInterval(() => {
+      void refreshTaskAttention().catch(() => undefined);
+    }, 15000);
     const clickListener = (event: MouseEvent) => recordAction('click', event.target);
     const inputListener = (event: Event) => recordAction('input', event.target);
     const beforeInstallPromptListener = (event: Event) => {
@@ -445,6 +489,7 @@
       });
     }
     return () => {
+      window.clearInterval(interval);
       window.removeEventListener('click', clickListener, { capture: true });
       window.removeEventListener('change', inputListener, { capture: true });
       window.removeEventListener('resize', scheduleNavUpdate);
@@ -468,8 +513,27 @@
 
   <nav class="desktop-nav" class:compact={compactNav} aria-label="Primary">
     {#each links as link}
-      <a href={link.href} aria-current={isActive(link.href) ? 'page' : undefined}>
-        {link.label}
+      <a
+        href={link.href}
+        aria-current={isActive(link.href) ? 'page' : undefined}
+        aria-label={isTasksLink(link.href) && currentTaskAttention.total > 0
+          ? `${link.label}, ${attentionPhrase(currentTaskAttention)}`
+          : undefined}
+        title={linkTitle(link)}
+        class:has-attention={isTasksLink(link.href) && currentTaskAttention.total > 0}
+      >
+        <span class="nav-label">{link.label}</span>
+        {#if isTasksLink(link.href) && currentTaskAttention.total > 0}
+          <span class="sr-only">, {attentionPhrase(currentTaskAttention)}</span>
+          <span class="attention-badges" aria-hidden="true">
+            {#if currentTaskAttention.red > 0}
+              <span class="attention-badge critical">{badgeCount(currentTaskAttention.red)}</span>
+            {/if}
+            {#if currentTaskAttention.amber > 0}
+              <span class="attention-badge warning">{badgeCount(currentTaskAttention.amber)}</span>
+            {/if}
+          </span>
+        {/if}
       </a>
     {/each}
   </nav>
@@ -537,9 +601,25 @@
           <a
             href={link.href}
             aria-current={isActive(link.href) ? 'page' : undefined}
+            aria-label={isTasksLink(link.href) && currentTaskAttention.total > 0
+              ? `${link.label}, ${attentionPhrase(currentTaskAttention)}`
+              : undefined}
+            title={linkTitle(link)}
+            class:has-attention={isTasksLink(link.href) && currentTaskAttention.total > 0}
             onclickcapture={closeMobileMenu}
           >
-            {link.label}
+            <span class="nav-label">{link.label}</span>
+            {#if isTasksLink(link.href) && currentTaskAttention.total > 0}
+              <span class="sr-only">, {attentionPhrase(currentTaskAttention)}</span>
+              <span class="attention-badges" aria-hidden="true">
+                {#if currentTaskAttention.red > 0}
+                  <span class="attention-badge critical">{badgeCount(currentTaskAttention.red)}</span>
+                {/if}
+                {#if currentTaskAttention.amber > 0}
+                  <span class="attention-badge warning">{badgeCount(currentTaskAttention.amber)}</span>
+                {/if}
+              </span>
+            {/if}
           </a>
         {/each}
         <ThemeToggle compact />
@@ -1006,6 +1086,9 @@
   .desktop-nav a,
   .nav-measure a,
   .mobile-nav a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
     border: 1px solid transparent;
     border-radius: 0.65rem;
     color: var(--text, #334155);
@@ -1013,9 +1096,63 @@
     font-weight: 800;
   }
 
+  .desktop-nav a {
+    gap: 0.42rem;
+  }
+
   .desktop-nav a,
   .nav-measure a {
     padding: 0.45rem 0.75rem;
+  }
+
+  .nav-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sr-only {
+    position: absolute;
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .attention-badges {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.18rem;
+  }
+
+  .attention-badge {
+    box-sizing: border-box;
+    display: inline-grid;
+    place-items: center;
+    min-width: 1.05rem;
+    height: 1.05rem;
+    padding: 0 0.26rem;
+    border: 1px solid rgb(255 255 255 / 0.72);
+    border-radius: 999px;
+    color: #ffffff;
+    font-size: 0.62rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 0 0 1px var(--surface, #ffffff);
+  }
+
+  .attention-badge.critical {
+    background: #dc2626;
+  }
+
+  .attention-badge.warning {
+    background: #ea580c;
   }
 
   .desktop-nav a:hover,
@@ -1138,6 +1275,8 @@
   }
 
   .mobile-nav a {
+    justify-content: space-between;
+    gap: 0.75rem;
     padding: 0.8rem 0.9rem;
   }
 

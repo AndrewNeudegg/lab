@@ -246,7 +246,7 @@
 </svelte:head>
 
 <div class="workflow-shell">
-  <Navbar title="Workflows" subtitle="homelabd" current="/workflows" />
+  <Navbar title="Workflows" subtitle="homelabd" current="/workflows" taskApiBase={apiBase} />
 
   <main class="workflow-page">
     <section class="workflow-list" aria-label="Workflow list">

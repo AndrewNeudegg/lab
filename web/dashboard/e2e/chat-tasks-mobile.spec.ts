@@ -225,14 +225,40 @@ test('created task chat reply links to the task with SPA navigation', async ({ p
     .toBe('same-document');
 
   await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
   await page.locator('.triage button').filter({ hasText: 'All' }).click();
   await page.getByRole('link', { name: /Document mobile task flow/ }).click();
   await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150300_33333333$/);
   await expect(page.getByRole('heading', { name: 'Document mobile task flow' })).toBeVisible();
 
   await page.goBack();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(page.locator('.task-pane')).toBeVisible();
+  await expect(page.locator('.workbench')).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+});
+
+test('tasks overview remains the browser Back target after selecting a task', async ({ page }) => {
+  await mockTaskApi(page);
+
+  await page.goto('/chat');
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page.getByRole('link', { name: /Tasks/ }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(page.locator('.task-pane')).toBeVisible();
+  await expect(page.locator('.workbench')).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+
+  await page.getByRole('link', { name: /Review queue behavior on mobile/ }).click();
   await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150000_11111111$/);
   await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible();
+  await expect(page.locator('.workbench')).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(page.locator('.task-pane')).toBeVisible();
+  await expect(page.locator('.workbench')).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
 });
 
 test('tasks mobile switches between queue and selected task detail', async ({ page }) => {
@@ -253,6 +279,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(reviewRow).toHaveCount(1, { timeout: taskLoadTimeoutMs });
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
   const autoMerge = page.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' });
   await expect(autoMerge).toHaveAttribute('aria-checked', 'false');
   await autoMerge.click();
@@ -313,16 +340,74 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(page.locator('.command-panel, .composer, #message')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
-  await expect(rows).toHaveCount(2);
   await expect(rows.first()).toBeVisible();
+  expect(await rows.count()).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
 
   const overflow = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,
     viewport: window.innerWidth
   }));
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+
+  await page.getByRole('textbox', { name: 'Search tasks' }).fill('no matching mobile tasks');
+  await expect(page.getByText('No tasks match the current filters.')).toBeVisible();
+  const emptyQueueScroll = await page.evaluate(() => {
+    const taskList = document.querySelector('.task-list') as HTMLElement | null;
+    const taskPane = document.querySelector('.task-pane') as HTMLElement | null;
+    const footer = document.querySelector('.task-pane footer') as HTMLElement | null;
+    window.scrollTo(0, document.body.scrollHeight);
+    return {
+      scrollY: window.scrollY,
+      pageScrollHeight: document.scrollingElement?.scrollHeight ?? document.documentElement.scrollHeight,
+      pageClientHeight: document.scrollingElement?.clientHeight ?? document.documentElement.clientHeight,
+      taskListHeight: Math.round(taskList?.getBoundingClientRect().height || 0),
+      taskListOverflowY: taskList ? getComputedStyle(taskList).overflowY : '',
+      taskPaneOverflowY: taskPane ? getComputedStyle(taskPane).overflowY : '',
+      footerBottom: footer?.getBoundingClientRect().bottom ?? 0
+    };
+  });
+  expect(emptyQueueScroll.scrollY, JSON.stringify(emptyQueueScroll)).toBeLessThanOrEqual(1);
+  expect(emptyQueueScroll.taskListHeight, JSON.stringify(emptyQueueScroll)).toBeGreaterThan(0);
+  expect(emptyQueueScroll.taskListOverflowY, JSON.stringify(emptyQueueScroll)).toBe('auto');
+  expect(emptyQueueScroll.taskPaneOverflowY, JSON.stringify(emptyQueueScroll)).toBe('hidden');
+  expect(emptyQueueScroll.pageScrollHeight, JSON.stringify(emptyQueueScroll)).toBeLessThanOrEqual(
+    emptyQueueScroll.pageClientHeight + 1
+  );
+  expect(emptyQueueScroll.footerBottom, JSON.stringify(emptyQueueScroll)).toBeLessThanOrEqual(
+    emptyQueueScroll.pageClientHeight + 1
+  );
+});
+
+test('tasks mobile keeps Running selected after background sync', async ({ page }) => {
+  test.setTimeout(30_000);
+  let taskListRequests = 0;
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/tasks') {
+      taskListRequests += 1;
+    }
+  });
+  await mockTaskApi(page);
+  await page.goto('/tasks?task=task_20260426_150000_11111111');
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+
+  await page.locator('.triage button').filter({ hasText: 'Running' }).click();
+  await expect(page.locator('.triage button.active')).toContainText('Running');
+  await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
+
+  const requestsAfterClick = taskListRequests;
+  await expect
+    .poll(() => taskListRequests, { timeout: 12_000 })
+    .toBeGreaterThan(requestsAfterClick);
+  await expect(page.locator('.triage button.active')).toContainText('Running');
+  await expect(page.getByRole('link', { name: /Run dashboard checks/ })).toBeVisible();
 });
 
 test('tasks status pills describe queued review without implying action', async ({ page }) => {
@@ -575,17 +660,57 @@ test('tasks mobile has no task chat composer and keeps new-task text stable', as
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 });
 
-test('tasks mobile keeps navbar sticky while scrolling', async ({ page }) => {
-  await mockTaskApi(page);
+test('tasks mobile keeps page fixed and lets the task list own vertical scrolling', async ({ page }) => {
+  const now = new Date('2026-04-26T15:00:00Z').toISOString();
+  await mockTaskApi(
+    page,
+    undefined,
+    Array.from({ length: 12 }, (_, index) => ({
+      id: `task_20260426_151${String(index).padStart(2, '0')}_extra${index}`,
+      title: `Completed background task ${index + 1}`,
+      goal: 'Provide enough task rows for mobile queue scrolling.',
+      status: 'done',
+      assigned_to: 'codex',
+      priority: 5,
+      created_at: now,
+      updated_at: now,
+      result: 'complete'
+    }))
+  );
   await page.goto('/tasks');
   await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
+  const allFilter = page.locator('.triage button').filter({ hasText: 'All' });
+  await expect(allFilter).toContainText('16', { timeout: taskLoadTimeoutMs });
+  await allFilter.click();
+  await expect(allFilter).toHaveClass(/active/);
+  await expect(page.locator('.task-row')).toHaveCount(16, { timeout: taskLoadTimeoutMs });
 
-  const beforeScroll = await page.locator('.navbar').boundingBox();
-  expect(beforeScroll?.y ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
-
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(100);
-
-  const afterScroll = await page.locator('.navbar').boundingBox();
-  expect(afterScroll?.y ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+  const scrollMetrics = await page.evaluate(() => {
+    const navbar = document.querySelector('.navbar') as HTMLElement | null;
+    const taskList = document.querySelector('.task-list') as HTMLElement | null;
+    const taskPane = document.querySelector('.task-pane') as HTMLElement | null;
+    if (taskList) {
+      taskList.scrollTop = taskList.scrollHeight;
+    }
+    window.scrollTo(0, document.body.scrollHeight);
+    return {
+      windowScrollY: window.scrollY,
+      navbarTop: navbar?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY,
+      taskListScrollTop: Math.round(taskList?.scrollTop || 0),
+      taskListScrollable: Math.round((taskList?.scrollHeight || 0) - (taskList?.clientHeight || 0)),
+      taskListOverflowY: taskList ? getComputedStyle(taskList).overflowY : '',
+      taskPaneOverflowY: taskPane ? getComputedStyle(taskPane).overflowY : '',
+      bodyWidth: document.body.scrollWidth,
+      viewport: window.innerWidth
+    };
+  });
+  expect(scrollMetrics.windowScrollY, JSON.stringify(scrollMetrics)).toBeLessThanOrEqual(1);
+  expect(scrollMetrics.navbarTop, JSON.stringify(scrollMetrics)).toBeLessThanOrEqual(1);
+  expect(scrollMetrics.taskListScrollable, JSON.stringify(scrollMetrics)).toBeGreaterThan(0);
+  expect(scrollMetrics.taskListScrollTop, JSON.stringify(scrollMetrics)).toBeGreaterThan(0);
+  expect(scrollMetrics.taskListOverflowY, JSON.stringify(scrollMetrics)).toBe('auto');
+  expect(scrollMetrics.taskPaneOverflowY, JSON.stringify(scrollMetrics)).toBe('hidden');
+  expect(scrollMetrics.bodyWidth, JSON.stringify(scrollMetrics)).toBeLessThanOrEqual(
+    scrollMetrics.viewport + 2
+  );
 });

@@ -104,10 +104,12 @@
       candidate.stats === undefined ||
       (candidate.stats !== null &&
         typeof candidate.stats === 'object' &&
-        ['model_turns', 'tool_calls', 'input_tokens', 'output_tokens', 'total_tokens'].every((key) => {
-          const stat = (candidate.stats as Record<string, unknown>)[key];
-          return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
-        }));
+        ['model_turns', 'tool_calls', 'input_tokens', 'output_tokens', 'total_tokens', 'elapsed_ms'].every(
+          (key) => {
+            const stat = (candidate.stats as Record<string, unknown>)[key];
+            return stat === undefined || (typeof stat === 'number' && Number.isFinite(stat) && stat >= 0);
+          }
+        ));
     const validAttachments =
       candidate.attachments === undefined ||
       (Array.isArray(candidate.attachments) &&
@@ -462,9 +464,9 @@
   <meta name="description" content="Global homelabd chat interface" />
 </svelte:head>
 
-<div class="chat-shell">
-  <Navbar title="Chat" subtitle="homelabd" current="/chat" taskApiBase={apiBase} />
+<Navbar title="Chat" subtitle="homelabd" current="/chat" taskApiBase={apiBase} />
 
+<div class="chat-shell">
   <main class="chat-card">
     <section class="messages" bind:this={messagesEl} aria-live="polite">
       {#each messages as message, index (message.id)}
@@ -634,6 +636,7 @@
   :global(body),
   :global(body > div) {
     height: 100%;
+    overflow: hidden;
   }
 
   :global(body) {
@@ -651,9 +654,23 @@
   }
 
   .chat-shell {
+    --chat-navbar-height: 4rem;
+    box-sizing: border-box;
+    position: fixed;
+    inset: 0;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    height: 100dvh;
+    grid-template-rows: minmax(0, 1fr);
+    height: auto;
+    overflow: hidden;
+    padding-top: var(--chat-navbar-height);
+  }
+
+  :global(.navbar) {
+    position: fixed !important;
+    top: 0 !important;
+    right: 0;
+    left: 0;
+    z-index: 20;
   }
 
   .message-actions,
@@ -1014,6 +1031,12 @@
     clip: rect(0 0 0 0);
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+
+  @media (max-width: 760px) {
+    .chat-shell {
+      --chat-navbar-height: 4.25rem;
+    }
   }
 
   @media (max-width: 720px) {

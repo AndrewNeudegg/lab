@@ -86,8 +86,8 @@ func TestMessageEndpointReturnsInteractionStats(t *testing.T) {
 	if got.Reply != "Measured reply." || got.Source != "test-provider" {
 		t.Fatalf("response = %#v, want measured provider reply", got)
 	}
-	if got.Stats.ModelTurns != 1 || got.Stats.ToolCalls != 0 || got.Stats.TotalTokens != 17 {
-		t.Fatalf("stats = %#v, want one model turn, zero tool calls, and token usage", got.Stats)
+	if got.Stats.ModelTurns != 1 || got.Stats.ToolCalls != 0 || got.Stats.TotalTokens != 17 || got.Stats.ElapsedMilliseconds <= 0 {
+		t.Fatalf("stats = %#v, want one model turn, zero tool calls, token usage, and elapsed time", got.Stats)
 	}
 }
 

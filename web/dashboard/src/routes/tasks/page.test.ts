@@ -27,6 +27,15 @@ describe('tasks page composition', () => {
     expect(pageSource).not.toContain('selectedTaskId = taskQueueView.selectedTaskId');
   });
 
+  test('keeps plain tasks routes as an overview history entry', () => {
+    expect(pageSource).toContain('const applyTaskOverviewSelection = () =>');
+    expect(pageSource).toContain('const navigateToTaskOverview = (replaceState = true) =>');
+    expect(pageSource).toContain("void goto('/tasks', { keepFocus: true, noScroll: true, replaceState })");
+    expect(pageSource).toContain('if (!taskId) {');
+    expect(pageSource).toContain('applyTaskOverviewSelection();');
+    expect(pageSource).toContain('on:click={() => navigateToTaskOverview()}');
+  });
+
   test('uses direct task and approval endpoints instead of a chat command composer', () => {
     expect(pageSource).toContain('client.runTask(taskId)');
     expect(pageSource).toContain('client.reviewTask(taskId)');
@@ -74,6 +83,31 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('void refreshSelectedTaskDetails(syncSelection.selectedTaskId');
     expect(pageSource).toContain('if (sequence === refreshStateSequence)');
     expect(pageSource).toContain('lastRefresh = syncTimeLabel();');
+  });
+
+  test('preserves the operator-selected queue filter during background refresh', () => {
+    const refreshSource = pageSource.slice(
+      pageSource.indexOf('const refreshState = () =>'),
+      pageSource.indexOf('onMount(() =>')
+    );
+
+    expect(refreshSource).toContain('resolveTaskSyncSelection');
+    expect(refreshSource).not.toContain("taskFilter = 'all'");
+    expect(refreshSource).not.toContain("queueFilter = 'all'");
+    expect(refreshSource).not.toContain("taskSearch = ''");
+  });
+
+  test('guards route re-application while task navigation is pending', () => {
+    const navigateSource = pageSource.slice(
+      pageSource.indexOf('const navigateToTask ='),
+      pageSource.indexOf('const applyRouteTaskSelection =')
+    );
+
+    expect(pageSource).toContain("let pendingRouteTaskId = ''");
+    expect(navigateSource).toContain('pendingRouteTaskId = taskId');
+    expect(navigateSource).not.toContain('lastAppliedRouteTaskId = taskId;');
+    expect(pageSource).toContain('pendingRouteTaskId === taskId');
+    expect(pageSource).toContain('routeTaskId !== pendingRouteTaskId');
   });
 
   test('renders mobile queue/detail switching without the old collapsing sidebar model', () => {

@@ -80,6 +80,8 @@ delegate <task_id> to codex
 
 Dashboard chat messages can include attachments. Use the `Attach` button on desktop or mobile, or drag files into the composer on desktop. When a chat message creates a task, the attachment metadata and text previews are included in the task context; direct dashboard help reports store the uploaded files and captured browser context on the task record.
 
+Chat replies use the same Markdown renderer as `/docs`, including Mermaid fenced diagrams. Agents should include a Mermaid diagram when it makes task flow, state, dependencies, or machine context easier to understand, and should rely on the dashboard light/dark brand palette rather than inline colours. See `docs/dashboard.md#markdown-diagrams-and-brand-colours`.
+
 ## Task Review And Restart Gates
 
 Use review, approval, restart, verification, and reopen commands to move local tasks through merge safely:

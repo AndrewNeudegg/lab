@@ -16,13 +16,18 @@
     type ChatInteractionStats,
     type ChatRole,
     type ChatTranscriptMessage,
+    type HomelabdMessageRequest,
     type HomelabdTaskAttachment
   } from '@homelab/shared';
   import { formatInteractionStats, messageExchangeNumber } from './interaction-stats';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
-  const client = createHomelabdClient({ baseUrl: apiBase });
   const transcriptStorageKey = 'homelabd.dashboard.chatTranscript.v4';
+  const defaultChatSendTimeoutMs = 20_000;
+  const configuredChatSendTimeoutMs = Number.parseInt(
+    import.meta.env.VITE_HOMELABD_CHAT_SEND_TIMEOUT_MS || '',
+    10
+  );
   const taskRefPattern = /(?:[a-f0-9]{6,12}|task_\d{8}_\d{6}_[a-f0-9]{8})/i;
   const workflowRefPattern = /(?:[a-f0-9]{6,12}|workflow_\d{8}_\d{6}_[a-f0-9]{8})/i;
   const approvalRefPattern = /approval_\d{8}_\d{6}_[a-f0-9]{8}/i;
@@ -31,6 +36,10 @@
     label: string;
     command: string;
     hint: string;
+  };
+
+  type ChatWindow = Window & {
+    __homelabdChatSendTimeoutMs?: number;
   };
 
   const promptActions: PromptAction[] = [
@@ -287,11 +296,47 @@
   const failedDeliveryMessage = (err: unknown) =>
     err instanceof Error ? err.message : 'Unable to reach homelabd.';
 
+  const positiveTimeout = (milliseconds: number) =>
+    Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : undefined;
+
+  const chatSendTimeoutMs = () =>
+    (typeof window !== 'undefined'
+      ? positiveTimeout(Number((window as ChatWindow).__homelabdChatSendTimeoutMs))
+      : undefined) ||
+    positiveTimeout(configuredChatSendTimeoutMs) ||
+    defaultChatSendTimeoutMs;
+
+  const isAbortError = (err: unknown) =>
+    err instanceof DOMException && (err.name === 'AbortError' || err.name === 'TimeoutError');
+
+  const sendMessageRequest = async (request: HomelabdMessageRequest) => {
+    const timeoutMs = chatSendTimeoutMs();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    const timedClient = createHomelabdClient({
+      baseUrl: apiBase,
+      fetcher: (input, init) => fetch(input, { ...init, signal: controller.signal })
+    });
+    try {
+      return await timedClient.sendMessage(request);
+    } catch (err) {
+      if (isAbortError(err)) {
+        const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+        throw new Error(
+          `Message send timed out after ${timeoutSeconds}s. Check the task queue before retrying.`
+        );
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
   const deliverUserMessage = async (message: ChatTranscriptMessage) => {
     loading = true;
     error = '';
     try {
-      const response = await client.sendMessage({
+      const response = await sendMessageRequest({
         from: 'dashboard',
         content: message.content.trim() || 'Attached files',
         attachments: message.attachments || []

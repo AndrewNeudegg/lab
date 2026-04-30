@@ -167,6 +167,71 @@ const mockTaskApi = async (
   });
 };
 
+const mockHealthdApi = async (page: Page) => {
+  const now = new Date('2026-04-30T10:04:00Z').toISOString();
+  const samples = Array.from({ length: 12 }, (_, index) => ({
+    time: new Date(Date.parse(now) - (11 - index) * 5000).toISOString(),
+    good: true,
+    cpu_usage_percent: 50 + index,
+    memory_usage_percent: 26,
+    memory_used_bytes: 4_300_000_000,
+    memory_total_bytes: 16_400_000_000,
+    load1: 2.2,
+    load5: 0.9,
+    load15: 0.8,
+    system_uptime_seconds: 478_800,
+    process_uptime_seconds: 47_220,
+    goroutines: 6
+  }));
+  const snapshot = {
+    status: 'healthy',
+    started_at: now,
+    uptime_seconds: 47_220,
+    window_seconds: 300,
+    current: samples[samples.length - 1],
+    samples,
+    checks: [{
+      name: 'process:supervisord-with-long-name-that-might-overflow',
+      type: 'process',
+      status: 'healthy',
+      message: 'last heartbeat 1s ago',
+      latency_ms: 0,
+      last_checked: now
+    }],
+    processes: [{
+      name: 'supervisord-super-long-process-name-without-breaks',
+      type: 'supervisor',
+      status: 'healthy',
+      message: 'last heartbeat 1s ago',
+      pid: 3_781_227,
+      addr: '127.0.0.1:18082',
+      started_at: now,
+      last_seen: now,
+      ttl_seconds: 30
+    }],
+    slos: [{
+      name: 'availability-super-long-slo-name-without-breaks',
+      target_percent: 99.9,
+      window_seconds: 300,
+      good_events: 60,
+      total_events: 60,
+      sli_percent: 100,
+      error_budget_remaining_percent: 100,
+      burn_rate: 0,
+      status: 'healthy'
+    }],
+    notifications: [{
+      source: 'slo:availability-super-long-source-name-without-breaks',
+      severity: 'page',
+      message: 'availabilitySLOchangedfromhealthytocriticalSLI98333burnrate1667xWithoutSpaces',
+      time: now
+    }]
+  };
+  await page.route(/\/healthd-api\/healthd(?:\/checks\/run)?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: snapshot });
+  });
+};
+
 const mockAcceptTaskApi = async (page: Page) => {
   const now = new Date('2026-04-26T15:10:00Z').toISOString();
   const taskID = 'task_20260426_151000_44444444';
@@ -891,6 +956,84 @@ test('navbar help stays available on desktop and submits without screen capture 
   expect(requestBody.goal).toContain('Desktop help should stay available.');
   expect(requestBody.attachments).toHaveLength(1);
   expect(requestBody.attachments[0].name).toBe('browser-context.json');
+});
+
+test('health mobile help task submission keeps the page responsive and width constrained', async ({
+  page
+}) => {
+  await mockScreenCaptureUnavailable(page);
+  await mockHealthdApi(page);
+  let requestBody: any;
+  await mockTaskApi(page, (body) => {
+    requestBody = body;
+  });
+
+  const expectNarrowLayout = async () => {
+    const metrics = await page.evaluate(() => {
+      const helpButton = document.querySelector('.help-button');
+      const helpRect = helpButton?.getBoundingClientRect();
+      return {
+        innerWidth: window.innerWidth,
+        screenWidth: window.screen.width,
+        clientWidth: document.documentElement.clientWidth,
+        bodyWidth: document.body.scrollWidth,
+        docWidth: document.documentElement.scrollWidth,
+        helpRight: helpRect?.right ?? 0
+      };
+    });
+    expect(metrics.innerWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(
+      metrics.screenWidth + 2
+    );
+    expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(
+      metrics.clientWidth + 2
+    );
+    expect(metrics.docWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(
+      metrics.clientWidth + 2
+    );
+    expect(metrics.helpRight, JSON.stringify(metrics)).toBeLessThanOrEqual(
+      metrics.innerWidth + 1
+    );
+  };
+
+  await page.goto('/healthd');
+  await expect(page.getByRole('heading', { name: 'CPU usage' })).toBeVisible();
+  await expectNarrowLayout();
+
+  await page.locator('.help-button').click();
+  const dialog = page.locator('dialog.help-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Screenshot capture is unavailable');
+  const dialogLayout = await dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      bottom: rect.bottom,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight
+    };
+  });
+  expect(dialogLayout.left, JSON.stringify(dialogLayout)).toBeGreaterThanOrEqual(0);
+  expect(dialogLayout.right, JSON.stringify(dialogLayout)).toBeLessThanOrEqual(
+    dialogLayout.viewportWidth + 1
+  );
+  expect(dialogLayout.bottom, JSON.stringify(dialogLayout)).toBeLessThanOrEqual(
+    dialogLayout.viewportHeight + 1
+  );
+
+  await dialog.getByRole('textbox', { name: 'More detail' }).fill('Health help should submit on mobile.');
+  await dialog.getByRole('button', { name: 'Submit help task' }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(requestBody.goal).toContain('Dashboard help task from /healthd');
+  expect(requestBody.goal).toContain('Health help should submit on mobile.');
+  expect(requestBody.attachments).toHaveLength(1);
+  expect(requestBody.attachments[0].name).toBe('browser-context.json');
+
+  await page.getByRole('button', { name: 'Run checks' }).click();
+  await expect(page.getByRole('heading', { name: 'CPU usage' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'CPU usage' })).toBeVisible();
+  await expectNarrowLayout();
 });
 
 test('tasks mobile has no task chat composer and keeps new-task text stable', async ({ page }) => {

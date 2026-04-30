@@ -379,6 +379,7 @@
     display: grid;
     gap: 1rem;
     width: min(1180px, calc(100% - 2rem));
+    min-width: 0;
     margin: 0 auto;
     padding: 1rem 0 2rem;
   }
@@ -389,6 +390,7 @@
   .split {
     display: grid;
     gap: 1rem;
+    min-width: 0;
   }
 
   .toolbar {
@@ -480,6 +482,8 @@
   .notification,
   .empty,
   .notifications {
+    box-sizing: border-box;
+    min-width: 0;
     border: 1px solid #d9e1ea;
     border-radius: 0.5rem;
     background: #ffffff;
@@ -526,6 +530,17 @@
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
+    min-width: 0;
+  }
+
+  .toolbar > div,
+  .panel-title > *,
+  .section-title > *,
+  .row > div,
+  .process > div,
+  .check > div,
+  .notification > div {
+    min-width: 0;
   }
 
   .panel-title span {
@@ -619,17 +634,38 @@
 
   .check-side {
     display: grid;
+    flex: 0 0 auto;
     justify-items: end;
     gap: 0.35rem;
+    min-width: max-content;
   }
 
   .notification {
     align-items: flex-start;
   }
 
+  time {
+    flex: 0 0 auto;
+    min-width: max-content;
+  }
+
   .notification div {
     min-width: 0;
     flex: 1 1 auto;
+  }
+
+  .toolbar span,
+  .metric span,
+  .slo h3,
+  .slo p,
+  .process h3,
+  .process p,
+  .process small,
+  .check h3,
+  .check p,
+  .notification h3,
+  .notification p {
+    overflow-wrap: anywhere;
   }
 
   .error {

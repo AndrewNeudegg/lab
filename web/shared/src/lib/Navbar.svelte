@@ -44,6 +44,7 @@
 
   const actionStorageKey = 'homelabd.dashboard.recentActions.v1';
   const helpClientBase = () => apiBase || '/api';
+  const helpTaskSubmitTimeoutMs = 15000;
   const skipWaitingMessage = 'SKIP_WAITING';
 
   let mobileMenuOpen = false;
@@ -357,8 +358,13 @@
     }
     helpSubmitting = true;
     helpError = '';
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), helpTaskSubmitTimeoutMs);
     try {
-      const client = createHomelabdClient({ baseUrl: helpClientBase() });
+      const client = createHomelabdClient({
+        baseUrl: helpClientBase(),
+        fetcher: (input, init) => fetch(input, { ...init, signal: controller.signal })
+      });
       const response = await client.createTask({
         goal: helpTaskGoal(),
         attachments: helpAttachments
@@ -369,8 +375,14 @@
         helpDialog.close();
       }
     } catch (err) {
-      helpError = err instanceof Error ? err.message : 'Unable to submit help task.';
+      helpError =
+        err instanceof DOMException && err.name === 'AbortError'
+          ? 'Timed out submitting the help task. Check the task queue before retrying.'
+          : err instanceof Error
+            ? err.message
+            : 'Unable to submit help task.';
     } finally {
+      window.clearTimeout(timeout);
       helpSubmitting = false;
     }
   };
@@ -1067,8 +1079,9 @@
   }
 
   .nav-measure {
-    position: absolute;
-    inset: auto auto 100% 0;
+    position: fixed;
+    top: 0;
+    left: 0;
     width: max-content;
     visibility: hidden;
     pointer-events: none;
@@ -1318,6 +1331,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+    flex-wrap: wrap;
   }
 
   .help-dialog header p,
@@ -1353,6 +1367,10 @@
     font-size: 0.84rem;
     font-weight: 800;
     cursor: pointer;
+  }
+
+  .help-dialog footer button {
+    flex: 1 1 8rem;
   }
 
   .help-dialog footer .primary {
@@ -1464,6 +1482,19 @@
   @media (max-width: 760px) {
     .navbar {
       min-height: 3.75rem;
+    }
+
+    .help-dialog {
+      width: auto;
+      max-width: none;
+    }
+
+    .help-dialog[open] {
+      top: auto;
+      right: max(0.75rem, env(safe-area-inset-right));
+      bottom: max(0.75rem, env(safe-area-inset-bottom));
+      left: max(0.75rem, env(safe-area-inset-left));
+      transform: none;
     }
   }
 </style>

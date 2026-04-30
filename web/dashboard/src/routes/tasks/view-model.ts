@@ -63,6 +63,15 @@ export interface TaskSyncSelection {
   shouldLoadDiff: boolean;
 }
 
+export interface TaskRouteSelectionInput {
+  tasks: HomelabdTask[];
+  approvals: HomelabdApproval[];
+  taskFilter: TaskFilter;
+  queueFilter: TaskQueueFilter;
+  taskSearch: string;
+  routeTaskId: string;
+}
+
 const normalizeSearch = (value: string) => value.trim().toLowerCase();
 
 const taskMatchesSearch = (task: HomelabdTask, search: string) => {
@@ -261,6 +270,22 @@ export const resolveTaskSyncSelection = ({
     shouldLoadRuns: Boolean(selectedTask),
     shouldLoadDiff: Boolean(selectedTask && selectedTask.target?.mode !== 'remote')
   };
+};
+
+export const routeTaskNeedsAllQueueFallback = ({
+  tasks,
+  approvals,
+  taskFilter,
+  queueFilter,
+  taskSearch,
+  routeTaskId
+}: TaskRouteSelectionInput) => {
+  if (!routeTaskId) {
+    return false;
+  }
+  return !visibleTasksForFilter(tasks, approvals, taskFilter, queueFilter, taskSearch).some(
+    (task) => task.id === routeTaskId
+  );
 };
 
 export const createTaskQueueView = ({

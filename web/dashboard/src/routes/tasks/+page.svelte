@@ -15,6 +15,7 @@
     taskRuntimeMs,
     taskStartedAt,
     taskStateDescription,
+    taskStatusLabel,
     taskSummaryTitle,
     type HomelabdApproval,
     type HomelabdEvent,
@@ -284,8 +285,6 @@
     const tail = parts[parts.length - 1] || id;
     return tail.length > 8 ? tail.slice(0, 8) : tail;
   };
-
-  const statusLabel = (status = '') => status.replaceAll('_', ' ');
 
   const workdirLabel = (workdir?: HomelabdRemoteAgentWorkdir) => {
     if (!workdir) {
@@ -1216,7 +1215,7 @@
                   <span class="merge-queue-position">{item.merge_queue_position}</span>
                   <span class="merge-queue-copy">
                     <strong>{taskSummaryTitle(item, 54)}</strong>
-                    <small>{statusLabel(item.status)}</small>
+                    <small>{taskStatusLabel(item.status)}</small>
                   </span>
                 </button>
                 <div class="merge-queue-controls" aria-label={`Reorder ${taskSummaryTitle(item, 40)}`}>
@@ -1275,7 +1274,7 @@
                 <strong>{taskSummaryTitle(task, 84)}</strong>
                 <small>
                   <span>{shortID(task.id)} / updated {compactTime(task.updated_at)}</span>
-                  <span class={`status ${taskTone(task)}`}>{statusLabel(task.status)}</span>
+                  <span class={`status ${taskTone(task)}`}>{taskStatusLabel(task.status)}</span>
                 </small>
                 <em>
                   {targetLabel(task)}
@@ -1395,7 +1394,7 @@
               <p>Selected task</p>
               <h2>{taskSummaryTitle(currentTask)}</h2>
             </div>
-            <span class={`status ${taskTone(currentTask)}`}>{statusLabel(currentTask.status)}</span>
+            <span class={`status ${taskTone(currentTask)}`}>{taskStatusLabel(currentTask.status)}</span>
           </header>
 
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
@@ -1522,13 +1521,13 @@
           <details class="detail-section state-context" aria-label="Task context" open>
             <summary>
               <span>State and context</span>
-              <strong>{statusLabel(currentTask.status)}</strong>
+              <strong>{taskStatusLabel(currentTask.status)}</strong>
             </summary>
             <div class="detail-body">
               <section class="state-machine" aria-label="Workflow state">
                 <div>
                   <span>Workflow state</span>
-                  <strong>{statusLabel(currentTask.status)}</strong>
+                  <strong>{taskStatusLabel(currentTask.status)}</strong>
                 </div>
                 <p>{taskStateDescription(currentTask.status)}</p>
                 <small>{taskOperatorGuidance(currentTask)}</small>
@@ -1551,7 +1550,7 @@
                 <section class="state-machine" aria-label="Post-merge restart">
                   <div>
                     <span>Post-merge restart</span>
-                    <strong>{statusLabel(currentTask.restart_status || 'pending')}</strong>
+                    <strong>{taskStatusLabel(currentTask.restart_status || 'pending')}</strong>
                   </div>
                   <p>
                     Required: {currentTask.restart_required.join(', ')}

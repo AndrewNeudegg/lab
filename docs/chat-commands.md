@@ -6,9 +6,32 @@ From a terminal, use `homelabctl shell` for interactive chat-command operation, 
 
 ## Markdown And Mermaid Diagrams
 
-Dashboard chat renders Markdown replies with Mermaid fenced diagram support. Agents should use Mermaid when a compact workflow, state machine, dependency graph, architecture, or handoff diagram would help a human or another machine understand the answer faster.
+Dashboard chat and docs render fenced `mermaid` and `mmd` Markdown blocks as diagrams. Agents should use Mermaid when a compact workflow, state machine, dependency graph, architecture, or handoff diagram would help a human or another machine understand the answer faster.
 
-The dashboard applies the homelabd brand diagram palette automatically. Light diagrams use `#f8fafc` background, `#ffffff` surface, `#2563eb` primary, `#0f766e` secondary, and `#172033` text. Dark diagrams use `#0f172a` background, `#111827` surface, `#60a5fa` primary, `#2dd4bf` secondary, and `#e2e8f0` text. Do not include Mermaid init directives that override the theme. Invalid diagrams fall back to their source block so the syntax can be corrected. See [Diagramming And Brand Colours](/docs/diagramming-and-brand-colours).
+```mermaid
+flowchart LR
+  Human[Human] --> Chat[Chat]
+  Chat --> Task[Task record]
+  Task --> Worker[Worker]
+  Worker --> Review[Review]
+```
+
+The dashboard applies the homelabd brand diagram palette automatically, strips Mermaid theme/config init directives before rendering, and locks theme overrides. Do not include Mermaid init directives or hard-code unrelated colours. If explicit semantic styling is unavoidable outside the dashboard renderer, stay within this palette:
+
+| Token | Light | Dark |
+| --- | --- | --- |
+| Background | `#f8fafc` | `#0f172a` |
+| Surface | `#ffffff` | `#111827` |
+| Primary | `#2563eb` | `#60a5fa` |
+| Secondary | `#0f766e` | `#2dd4bf` |
+| Success | `#16a34a` | `#4ade80` |
+| Warning | `#d97706` | `#fbbf24` |
+| Danger | `#dc2626` | `#f87171` |
+| Text | `#172033` | `#e2e8f0` |
+| Muted | `#64748b` | `#94a3b8` |
+| Border | `#cbd5e1` | `#334155` |
+
+Invalid diagrams fall back to their source block so the syntax can be corrected. See [Diagramming And Brand Colours](/docs/diagramming-and-brand-colours).
 
 ## Reflection
 

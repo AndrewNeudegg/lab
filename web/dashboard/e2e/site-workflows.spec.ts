@@ -302,13 +302,33 @@ const expectNoVisualArtifacts = async (page: Page) => {
         return rect.width > 0 && rect.height > 0 && (element.scrollWidth > element.clientWidth + 2 || element.scrollHeight > element.clientHeight + 2);
       })
       .map((element) => (element.textContent || element.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 80));
+    const navbar = document.querySelector('.navbar');
+    const navbarRect = navbar?.getBoundingClientRect();
+    const navbarBottom = navbarRect && navbarRect.height > 0 ? navbarRect.bottom : null;
+    const navbarOverlaps =
+      navbarBottom === null || window.scrollY > 2
+        ? []
+        : Array.from(document.querySelectorAll('main, .shell, .docs-shell, .workflow-page, .terminal-panel'))
+            .filter((element) => {
+              if (isHidden(element)) {
+                return false;
+              }
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 && rect.top < navbarBottom - 1;
+            })
+            .map((element) => ({
+              label: `${element.tagName.toLowerCase()}${element.className ? `.${String(element.className).replace(/\s+/g, '.')}` : ''}`,
+              top: Math.round(element.getBoundingClientRect().top),
+              navbarBottom: Math.round(navbarBottom)
+            }));
     return {
       bodyWidth: document.body.scrollWidth,
       docWidth: document.documentElement.scrollWidth,
       viewport: window.innerWidth,
       contentHeight: Math.max(...contentRoots, 0),
       escaped,
-      clippedButtons
+      clippedButtons,
+      navbarOverlaps
     };
   });
   expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
@@ -316,6 +336,7 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.contentHeight, JSON.stringify(metrics)).toBeGreaterThan(40);
   expect(metrics.escaped, JSON.stringify(metrics)).toEqual([]);
   expect(metrics.clippedButtons, JSON.stringify(metrics)).toEqual([]);
+  expect(metrics.navbarOverlaps, JSON.stringify(metrics)).toEqual([]);
 };
 
 const openMobileMenu = async (page: Page) => {
@@ -525,6 +546,49 @@ for (const viewport of [
         await expectNoVisualArtifacts(page);
         await testInfo.attach(`${viewport.name}-${route.replaceAll('/', '-') || 'root'}.png`, {
           body: await page.screenshot({ fullPage: !route.startsWith('/docs') }),
+          contentType: 'image/png'
+        });
+      });
+    }
+
+    if (viewport.mobile) {
+      test('mobile SPA navigation to /healthd keeps Health content below the navbar', async ({ page }, testInfo) => {
+        await mockDashboardApis(page);
+        await page.goto('/chat');
+
+        const chatNav = await openMobileMenu(page);
+        await chatNav.getByRole('link', { name: /Tasks/ }).click();
+        await expect(page).toHaveURL(/\/tasks$/);
+        await expect(page.locator('.task-row')).toHaveCount(3, { timeout: 15_000 });
+
+        const tasksNav = await openMobileMenu(page);
+        await tasksNav.getByRole('link', { name: 'Health' }).click();
+        await expect(page).toHaveURL(/\/healthd$/);
+        await expect(page.locator('.toolbar .status')).toHaveText('healthy');
+
+        await page.getByRole('button', { name: 'Run checks' }).click();
+        await expect(page.getByRole('heading', { name: 'CPU usage' })).toBeVisible();
+
+        const metrics = await page.evaluate(() => {
+          const navbar = document.querySelector('.navbar');
+          const toolbar = document.querySelector('.toolbar');
+          const status = document.querySelector('.toolbar .status');
+          const navbarRect = navbar?.getBoundingClientRect();
+          return {
+            navbarPosition: navbar ? getComputedStyle(navbar).position : '',
+            navbarBottom: navbarRect?.bottom ?? 0,
+            toolbarTop: toolbar?.getBoundingClientRect().top ?? 0,
+            statusTop: status?.getBoundingClientRect().top ?? 0,
+            bodyWidth: document.body.scrollWidth,
+            viewport: window.innerWidth
+          };
+        });
+        expect(metrics.navbarPosition, JSON.stringify(metrics)).toBe('sticky');
+        expect(metrics.toolbarTop, JSON.stringify(metrics)).toBeGreaterThanOrEqual(metrics.navbarBottom - 1);
+        expect(metrics.statusTop, JSON.stringify(metrics)).toBeGreaterThanOrEqual(metrics.navbarBottom - 1);
+        expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
+        await testInfo.attach('mobile-chat-tasks-healthd-navbar.png', {
+          body: await page.screenshot({ fullPage: true }),
           contentType: 'image/png'
         });
       });

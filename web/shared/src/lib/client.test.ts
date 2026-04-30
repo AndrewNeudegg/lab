@@ -90,6 +90,29 @@ describe('homelabd client', () => {
     expect(attempts).toBe(1);
   });
 
+  test('clears chat history through the typed chat endpoint', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        return jsonResponse({ reply: 'cleared', removed_events: 2 });
+      }
+    });
+
+    const response = await client.clearChat({ conversation_id: 'chat_123' });
+
+    expect(response.reply).toBe('cleared');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('http://homelabd/chat/clear');
+    expect(requests[0].init?.method).toBe('POST');
+    expect(requests[0].body).toEqual({ conversation_id: 'chat_123' });
+  });
+
   test('creates a remote-targeted task with explicit target metadata', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({

@@ -92,6 +92,48 @@ func TestMessageEndpointReturnsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestChatClearEndpointRemovesConversationEventsAndHTTPTranscript(t *testing.T) {
+	server, _, cfg := newHTTPTestServer(t)
+	server.ChatLogDir = filepath.Join(cfg.DataDir, "chat")
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"help","conversation_id":"chat_alpha"}`, "", http.StatusOK)
+	requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"status","conversation_id":"chat_beta"}`, "", http.StatusOK)
+
+	response := requestJSON(t, mux, http.MethodPost, "/chat/clear", `{"conversation_id":"chat_alpha"}`, "", http.StatusOK)
+	var cleared struct {
+		RemovedEvents     int `json:"removed_events"`
+		RemovedLogEntries int `json:"removed_log_entries"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&cleared); err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RemovedEvents != 2 || cleared.RemovedLogEntries != 2 {
+		t.Fatalf("clear response = %#v, want two event and two transcript removals", cleared)
+	}
+
+	events := requestJSON(t, mux, http.MethodGet, "/events", "", "", http.StatusOK)
+	if strings.Contains(events.Body.String(), "chat_alpha") || strings.Contains(events.Body.String(), "help") {
+		t.Fatalf("events still contain cleared conversation: %s", events.Body.String())
+	}
+	if !strings.Contains(events.Body.String(), "chat_beta") {
+		t.Fatalf("events did not keep other conversation: %s", events.Body.String())
+	}
+
+	logBytes, err := os.ReadFile(filepath.Join(server.ChatLogDir, time.Now().UTC().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if strings.Contains(logText, "chat_alpha") || strings.Contains(logText, "help") {
+		t.Fatalf("chat log still contains cleared conversation: %s", logText)
+	}
+	if !strings.Contains(logText, "chat_beta") {
+		t.Fatalf("chat log did not keep other conversation: %s", logText)
+	}
+}
+
 func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
 	server, _, _ := newHTTPTestServer(t)
 	mux := http.NewServeMux()

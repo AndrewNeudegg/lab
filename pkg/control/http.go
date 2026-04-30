@@ -1,10 +1,13 @@
 package control
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,6 +68,7 @@ func (s *Server) register(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
+	mux.HandleFunc("/chat/clear", s.withCORS(s.handleChatClear))
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
 	mux.HandleFunc("/settings", s.withCORS(s.handleSettings))
@@ -154,10 +158,11 @@ func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var in struct {
-		From        string                 `json:"from"`
-		Content     string                 `json:"content"`
-		Message     string                 `json:"message"`
-		Attachments []taskstore.Attachment `json:"attachments,omitempty"`
+		From           string                 `json:"from"`
+		Content        string                 `json:"content"`
+		Message        string                 `json:"message"`
+		ConversationID string                 `json:"conversation_id"`
+		Attachments    []taskstore.Attachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 		writeError(rw, http.StatusBadRequest, err.Error())
@@ -171,14 +176,20 @@ func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 	if from == "" {
 		from = "webhook"
 	}
-	_ = s.appendChat("http", "in", from, "homelabd", content, true)
-	result, err := s.Orchestrator.HandleDetailedWithAttachments(req.Context(), from, content, in.Attachments)
+	conversationID := strings.TrimSpace(in.ConversationID)
+	_ = s.appendChat("http", "in", from, "homelabd", content, true, conversationID)
+	result, err := s.Orchestrator.HandleDetailedRequest(req.Context(), agent.HandleRequest{
+		From:           from,
+		Message:        content,
+		ConversationID: conversationID,
+		Attachments:    in.Attachments,
+	})
 	if err != nil {
-		_ = s.appendChat("http", "out", "homelabd", from, "error: "+err.Error(), true)
+		_ = s.appendChat("http", "out", "homelabd", from, "error: "+err.Error(), true, conversationID)
 		writeError(rw, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = s.appendChat("http", "out", "homelabd", from, result.Reply, true)
+	_ = s.appendChat("http", "out", "homelabd", from, result.Reply, true, conversationID)
 	response := map[string]any{"id": id.New("msg"), "reply": result.Reply, "source": result.Source}
 	if result.Stats.HasValues() {
 		response["stats"] = result.Stats
@@ -186,7 +197,44 @@ func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 	writeJSON(rw, http.StatusOK, response)
 }
 
-func (s *Server) appendChat(adapter, direction, from, to, content string, addressed bool) error {
+func (s *Server) handleChatClear(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var in agent.ClearChatRequest
+	if req.Body != nil {
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			if !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+	}
+	result, err := s.Orchestrator.ClearChat(req.Context(), in)
+	if err != nil {
+		writeError(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	removedLogs, err := s.clearChatLog(result.ConversationID, result.All)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	reply := "Cleared chat history."
+	if !result.All && result.ConversationID != "" {
+		reply = "Cleared chat conversation."
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{
+		"reply":               reply,
+		"conversation_id":     result.ConversationID,
+		"all":                 result.All,
+		"removed_events":      result.RemovedEvents,
+		"removed_log_entries": removedLogs,
+	})
+}
+
+func (s *Server) appendChat(adapter, direction, from, to, content string, addressed bool, conversationID string) error {
 	if s.ChatLogDir == "" {
 		return nil
 	}
@@ -204,6 +252,9 @@ func (s *Server) appendChat(adapter, direction, from, to, content string, addres
 		"content":   content,
 		"addressed": addressed,
 	}
+	if strings.TrimSpace(conversationID) != "" {
+		record["conversation_id"] = strings.TrimSpace(conversationID)
+	}
 	b, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -216,6 +267,90 @@ func (s *Server) appendChat(adapter, direction, from, to, content string, addres
 	defer f.Close()
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+func (s *Server) clearChatLog(conversationID string, all bool) (int, error) {
+	if s.ChatLogDir == "" {
+		return 0, nil
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if !all && conversationID == "" {
+		return 0, nil
+	}
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	entries, err := os.ReadDir(s.ChatLogDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+			continue
+		}
+		path := filepath.Join(s.ChatLogDir, entry.Name())
+		count, err := clearChatLogFile(path, conversationID, all)
+		removed += count
+		if err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
+}
+
+func clearChatLogFile(path, conversationID string, all bool) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+	var kept bytes.Buffer
+	removed := 0
+	for {
+		line, err := reader.ReadBytes('\n')
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 {
+			var record struct {
+				ConversationID string `json:"conversation_id"`
+			}
+			if decodeErr := json.Unmarshal(trimmed, &record); decodeErr != nil {
+				return removed, decodeErr
+			}
+			if all || strings.TrimSpace(record.ConversationID) == conversationID {
+				removed++
+			} else {
+				kept.Write(trimmed)
+				kept.WriteByte('\n')
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		return removed, err
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	if kept.Len() == 0 {
+		return removed, os.Remove(path)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, kept.Bytes(), 0o644); err != nil {
+		return removed, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return removed, err
+	}
+	return removed, nil
 }
 
 func (s *Server) handleTasks(rw http.ResponseWriter, req *http.Request) {

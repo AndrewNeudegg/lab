@@ -260,6 +260,16 @@ const mockDashboardApis = async (page: Page) => {
       }
     });
   });
+  await page.route(/\/api\/chat\/clear$/, async (route) => {
+    await route.fulfill({
+      json: {
+        reply: 'Cleared chat conversation.',
+        conversation_id: 'chat_test',
+        removed_events: 4,
+        removed_log_entries: 4
+      }
+    });
+  });
   await page.route(/\/api\/tasks\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
@@ -582,6 +592,19 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await expect(page.locator('.message .mermaid-diagram svg').last()).toBeVisible();
     if (route === '/chat') {
       await expectChatNavbarPinned(page);
+      const clearRequest = page.waitForRequest((request) =>
+        request.url().endsWith('/api/chat/clear') && request.method() === 'POST'
+      );
+      page.once('dialog', async (dialog) => {
+        expect(dialog.message()).toContain('Clear this chat?');
+        await dialog.accept();
+      });
+      await page.getByRole('button', { name: 'Clear', exact: true }).click();
+      const request = await clearRequest;
+      const body = request.postDataJSON() as { conversation_id?: string };
+      expect(body.conversation_id).toMatch(/^chat_/);
+      await expect(page.locator('.message')).toHaveCount(0);
+      await expect(page.getByRole('status').getByRole('heading', { name: 'New chat' })).toBeVisible();
     }
   } else if (route === '/tasks') {
     await page.waitForLoadState('networkidle');

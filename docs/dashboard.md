@@ -2,7 +2,7 @@
 
 The dashboard has these primary operator surfaces:
 
-- `/chat`: global conversation, broad direction, planning, and general commands.
+- `/chat`: resumable conversations, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
 - `/knowledge`: Knowledge Space source collections, source processing, and source-grounded reports.
 - `/workflows`: durable LLM/tool workflow creation, cost estimates, run status, and latest outputs.
@@ -51,6 +51,7 @@ Dashboard state that operators naturally share must have a URL and must use Svel
 - Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
 - Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.
 - Chat messages expose hash links such as `/chat#message-assistant-2`.
+- Chat sessions are selected in the `/chat` history pane. A message hash applies to the currently selected chat session.
 
 Back and forward browser controls should restore the selected task, workflow, terminal tab, documentation page, or chat message anchor without losing local dashboard state.
 
@@ -94,6 +95,7 @@ Agents should write plain Mermaid and let the dashboard apply the brand palette.
 - Nielsen Norman usability heuristics: always expose system status, speak the operator's language, and keep clear exits for wrong actions.
 - Atlassian/Jira issue views: work-item detail pages have top-level issue actions and an activity feed containing changes, comments, history, and related updates.
 - Slack threads and incident-command tools: conversations need explicit context boundaries; task or incident timelines prevent important work from being buried in a global chat scroll.
+- ChatGPT, Perplexity Threads, and Microsoft Copilot history patterns: keep recent conversations visible in a left or menu-accessible history, make `New chat` easy to reach, support continuing prior chats, and keep destructive deletion behind explicit per-chat or all-history actions.
 - Atlassian dashboard and status guidance: centralize task visibility, make bottlenecks obvious, use semantic colour roles, and pair colour with text.
 - Carbon, Material UI, and PatternFly badge guidance: header badges are appropriate when the count matters; dot badges are quieter when the count does not matter; attention badges need accessible text and should not rely on colour alone.
 - GitHub pull request diffs: review should compare topic-branch changes against the base branch, offer unified and split views, show additions in green and deletions in red, and use three-dot comparison to focus on what the task branch introduces.
@@ -125,6 +127,10 @@ Sources:
 - https://developer.atlassian.com/cloud/jira/platform/issue-view/
 - https://support.atlassian.com/jira-software-cloud/docs/what-are-the-different-types-of-activity-on-an-issue/
 - https://slack.com/help/articles/115000769927-Use-threads-to-organize-discussions
+- https://help.openai.com/en/articles/6825453-data-deletion-request
+- https://www.perplexity.ai/help-center/en/articles/10354769-what-is-a-thread
+- https://support.microsoft.com/en-us/topic/conversation-history-in-microsoft-copilot-9a07325a-0366-4c2d-82cb-dab61be8287c
+- https://www.scribbr.com/ai-tools/how-to-use-chatgpt/
 - https://www.atlassian.com/incident-management/postmortem/timelines
 - https://docs.aws.amazon.com/incident-manager/latest/userguide/tracking.html
 - https://docs.firehydrant.com/docs/incident-timeline
@@ -165,9 +171,11 @@ For `/chat`, every visible component must answer one of these questions:
 
 1. What did I tell homelabd?
 2. What did homelabd say back?
-3. Which generated command can I safely click?
-4. Where do I go to inspect task state?
-5. How much orchestration work did this reply take?
+3. Which chat context am I continuing?
+4. How do I start fresh or clear the current context?
+5. Which generated command can I safely click?
+6. Where do I go to inspect task state?
+7. How much orchestration work did this reply take?
 
 For `/workflows`, every visible component must answer one of these questions:
 
@@ -200,7 +208,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Attachments: selected task records show attached evidence inside `State and context`. Image attachments get a thumbnail and download link; text/context attachments show an inline preview. Keep this visible near state because bug-report attachments explain why the task exists.
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
-- `/chat` page: single global transcript and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs.
+- `/chat` page: chat-session history, selected transcript, and composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs. `New chat` creates or selects an empty local session and sends future dashboard messages with that session's `conversation_id`, so orchestration history and chat search stay scoped to the selected conversation. `Clear` removes the selected browser session and asks homelabd to delete matching server event-log and HTTP transcript entries; `Clear all` clears every local session and all server chat transcript context.
 - Chat message footers: small, persistent metadata at the bottom of each bubble. The footer shows the exchange number, and assistant replies also show returned orchestration stats such as model turns, tool calls, token count, and API-measured elapsed response time when available. Keep it secondary but readable; do not hide these counts behind hover-only controls.
 - `/chat` attachments: the composer supports desktop file picking, mobile file picking, and drag-and-drop into the composer. Attachment chips show the file name, media type, and size before send; sent messages keep visible attachment metadata. The API receives attachment data with the chat message so task-creation commands and LLM context can include the uploaded evidence.
 - `/chat` failed sends: keep the user's message in the transcript, tint the bubble neutral grey, and show a small `Message failed to send` status with a resend control on that message. Do not show a detached page-level send error for transient connectivity failures; the recovery action belongs beside the failed message.
@@ -271,7 +279,7 @@ On compact screens `/tasks` stacks:
 
 The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Do not add a separate `Task` tab for the current selection; it behaves like saved state rather than navigation and is easy to misread. The Tasks page does not render a global command panel on mobile.
 
-On compact screens `/chat` remains a single-column conversation because there is no task-detail pane on that page.
+On compact screens `/chat` keeps chat-session history above the selected conversation. The history pane is short and scrollable so the transcript and composer remain the primary working area.
 
 On compact screens `/terminal` keeps the xterm viewport as the primary scroll area and places large control-key buttons below it. Include controls for keys commonly missing or awkward on Android keyboards, including `Ctrl-C`, `Ctrl-D`, `Ctrl-Z`, `Tab`, `Esc`, and arrow keys.
 

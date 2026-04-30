@@ -122,7 +122,9 @@ const run = async () => {
         commandPanelCount: document.querySelectorAll('.command-panel').length,
         composerCount: document.querySelectorAll('.composer, #message').length,
         taskActionText: document.querySelector('[aria-label="Task actions"]')?.innerText || '',
-        syncText: document.querySelector('.task-header button')?.innerText || '',
+        syncButtonCount: document.querySelectorAll('.task-header button').length,
+        syncStatusText: document.querySelector('.sync-status')?.innerText || '',
+        syncStatusTone: document.querySelector('.sync-status')?.dataset.syncStatus || '',
         createSummary: document.querySelector('.target-create summary')?.innerText || '',
         mobilePanelNavCount: document.querySelectorAll('[aria-label="Task panels"]').length,
         approvalPopoutCount: document.querySelectorAll('[aria-label="Pending approvals"], .approval-list').length
@@ -134,7 +136,13 @@ const run = async () => {
     assert(initial.filters.some((text) => text.includes('All')), 'All filter missing', initial);
     assert(initial.commandPanelCount === 0, 'old chat command panel still rendered', initial);
     assert(initial.composerCount === 0, 'chat composer still rendered on tasks page', initial);
-    assert(initial.syncText.includes('Sync'), 'manual Sync button missing', initial);
+    assert(initial.syncButtonCount === 0, 'manual Sync button still rendered', initial);
+    assert(initial.syncStatusText.length > 0, 'automatic sync status indicator missing', initial);
+    assert(
+      ['connected', 'temporary-error', 'sustained-error'].includes(initial.syncStatusTone),
+      'automatic sync status tone missing',
+      initial
+    );
     assert(initial.createSummary.includes('New task'), 'new task details control missing', initial);
     assert(initial.mobilePanelNavCount === 0, 'ambiguous mobile Queue/Task tabs still rendered', initial);
     assert(initial.approvalPopoutCount === 0, 'pending approvals queue popout still rendered', initial);
@@ -170,7 +178,7 @@ const run = async () => {
     assert(!afterAll.selected, 'All queue auto-selected a task before task click', afterAll);
     assert(afterAll.emptyRecord.includes('Select a task'), 'overview did not show the empty task record', afterAll);
 
-    const manualSync = await evalJS(
+    const automaticSync = await evalJS(
       cdp,
       `(() => {
         const countResources = () => {
@@ -190,25 +198,25 @@ const run = async () => {
           return counts;
         };
         return new Promise((resolve) => {
-          const button = document.querySelector('.task-header button');
           const before = countResources();
           const syncedBefore = document.querySelector('.task-header span')?.innerText || '';
-          button?.click();
           const started = Date.now();
           const sample = () => {
             const after = countResources();
             const completed =
-              Boolean(button) &&
-              !button.disabled &&
               after.tasks > before.tasks &&
               after.approvals > before.approvals &&
               after.events > before.events &&
               after.agents > before.agents;
-            if (completed || Date.now() - started > 8000) {
+            if (completed || Date.now() - started > 11500) {
+              const status = document.querySelector('.sync-status');
               resolve({
                 completed,
                 before,
                 after,
+                syncButtonCount: document.querySelectorAll('.task-header button').length,
+                syncStatusText: status?.innerText || '',
+                syncStatusTone: status?.dataset.syncStatus || '',
                 syncedBefore,
                 syncedAfter: document.querySelector('.task-header span')?.innerText || '',
                 path: location.pathname + location.search,
@@ -223,14 +231,17 @@ const run = async () => {
         });
       })()`
     );
-    assert(manualSync.completed === true, 'manual Sync did not reload all task pane data sources', manualSync);
-    assert(manualSync.rows > 0, 'manual Sync left the task queue empty', manualSync);
-    assert(manualSync.path === '/tasks', 'manual Sync changed the overview URL before task selection', manualSync);
-    assert(!manualSync.selected, 'manual Sync auto-selected a visible task before task click', manualSync);
+    assert(automaticSync.completed === true, 'automatic sync did not reload all task pane data sources', automaticSync);
+    assert(automaticSync.syncButtonCount === 0, 'automatic sync still exposed a manual button', automaticSync);
+    assert(automaticSync.syncStatusText.includes('Connected'), 'automatic sync did not show connected status text', automaticSync);
+    assert(automaticSync.syncStatusTone === 'connected', 'automatic sync did not show connected tone', automaticSync);
+    assert(automaticSync.rows > 0, 'automatic sync left the task queue empty', automaticSync);
+    assert(automaticSync.path === '/tasks', 'automatic sync changed the overview URL before task selection', automaticSync);
+    assert(!automaticSync.selected, 'automatic sync auto-selected a visible task before task click', automaticSync);
     assert(
-      /synced\s+\d{1,2}:\d{2}:\d{2}/i.test(manualSync.syncedAfter),
-      'manual Sync freshness timestamp did not include seconds',
-      manualSync
+      /updated\s+\d{1,2}:\d{2}:\d{2}/i.test(automaticSync.syncedAfter),
+      'automatic sync freshness timestamp did not include seconds',
+      automaticSync
     );
 
     const afterRunning = await evalJS(
@@ -649,13 +660,13 @@ const run = async () => {
           const firstRow = document.querySelector('.task-row');
           const navbar = document.querySelector('.navbar');
           const taskHeading = document.querySelector('.task-header h1');
-          const syncButton = document.querySelector('.task-header button');
+          const syncStatus = document.querySelector('.sync-status');
           resolve({
           rows: document.querySelectorAll('.task-row').length,
           queueDisplay: getComputedStyle(document.querySelector('.task-pane')).display,
           detailDisplay: getComputedStyle(document.querySelector('.workbench')).display,
           taskHeadingTop: taskHeading?.getBoundingClientRect().top ?? null,
-          syncTop: syncButton?.getBoundingClientRect().top ?? null,
+          syncTop: syncStatus?.getBoundingClientRect().top ?? null,
           firstRowTop: firstRow?.getBoundingClientRect().top ?? null,
           navbarBottom: navbar?.getBoundingClientRect().bottom ?? null,
           bodyWidth: document.body.scrollWidth,
@@ -684,7 +695,7 @@ const run = async () => {
       mobileQueue.syncTop === null ||
         mobileQueue.navbarBottom === null ||
         mobileQueue.syncTop >= mobileQueue.navbarBottom,
-      'mobile Sync button is overlapped by the navbar',
+      'mobile sync status is overlapped by the navbar',
       mobileQueue
     );
     assert(mobileQueue.bodyWidth <= mobileQueue.viewport + 2, 'mobile Queue tab has horizontal overflow', mobileQueue);
@@ -834,7 +845,7 @@ const run = async () => {
           dashboardURL,
           initial,
           afterAll,
-          manualSync,
+          automaticSync,
           afterRunning,
           runningAfterAutoSync,
           historyBack,

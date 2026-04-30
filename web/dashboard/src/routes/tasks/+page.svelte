@@ -59,6 +59,7 @@
   import {
     collectionFromResponse,
     errorMessage,
+    taskSyncIndicatorState,
     taskListEmptyMessage,
     withRefreshTimeout as withTimeout
   } from './sync-model';
@@ -109,6 +110,8 @@
   let diffMode: DiffMode = 'split';
   let mobilePanel: MobilePanel = 'queue';
   let lastRefresh = '';
+  let syncFailureCount = 0;
+  let syncIssue = '';
   let selectedAgentId = '';
   let selectedWorkdirId = '';
   let retryBackend = 'codex';
@@ -162,6 +165,12 @@
   let currentPrimaryAction: PrimaryTaskAction = primaryTaskAction(undefined, []);
   let currentSecondaryOperations: TaskOperation[] = [];
   let currentPendingApproval: HomelabdApproval | undefined;
+  let syncIndicator = taskSyncIndicatorState({
+    refreshing,
+    lastRefresh,
+    failureCount: syncFailureCount,
+    issue: syncIssue
+  });
 
   const showMobilePanel = (panel: MobilePanel) => {
     mobilePanel = panel;
@@ -497,6 +506,12 @@
   $: currentPendingApproval = pendingApprovalForTask(currentTask, approvals);
   $: currentPrimaryAction = primaryTaskAction(currentTask, approvals);
   $: currentSecondaryOperations = secondaryTaskOperations(currentTask, approvals);
+  $: syncIndicator = taskSyncIndicatorState({
+    refreshing,
+    lastRefresh,
+    failureCount: syncFailureCount,
+    issue: syncIssue
+  });
   $: if (browser) {
     const routeTaskId = currentTaskRouteId();
     if (
@@ -831,12 +846,19 @@
             );
             tasks = nextTasks;
             taskLoadError = '';
+            syncFailureCount = 0;
+            syncIssue = '';
+            lastRefresh = syncTimeLabel();
           } catch (err) {
             taskLoadError = errorMessage(err, 'Unable to load tasks.');
+            syncFailureCount += 1;
+            syncIssue = taskLoadError;
             refreshErrors.push(taskLoadError);
           }
         } else {
           taskLoadError = errorMessage(taskResult.reason, 'Unable to load tasks.');
+          syncFailureCount += 1;
+          syncIssue = taskLoadError;
           refreshErrors.push(taskLoadError);
         }
 
@@ -849,7 +871,6 @@
           selectedTaskId
         });
         applySyncedTaskSelection(syncSelection);
-        lastRefresh = syncTimeLabel();
         void applySecondaryRefresh(
           sequence,
           {
@@ -1216,11 +1237,22 @@
         <div>
           <p>Task queue</p>
           <h1>{needsActionTotal} need attention</h1>
-          <span>Synced {lastRefresh || 'never'}</span>
+          <span>{syncIndicator.detail}</span>
         </div>
-        <button type="button" disabled={refreshing} on:click={() => void refreshState()}>
-          {refreshing ? 'Syncing' : 'Sync'}
-        </button>
+        <div
+          class={`sync-status ${syncIndicator.tone}`}
+          class:refreshing
+          data-sync-status={syncIndicator.tone}
+          aria-label={`${syncIndicator.label}. ${syncIndicator.detail}`}
+          title={syncIndicator.title}
+        >
+          <span
+            class={`dot ${syncIndicator.dotTone}`}
+            class:pulse={refreshing}
+            aria-hidden="true"
+          ></span>
+          <strong>{syncIndicator.label}</strong>
+        </div>
       </header>
 
       {#if notice?.presentation === 'inline'}
@@ -2076,6 +2108,10 @@
     gap: 0.75rem;
   }
 
+  .task-header > div:first-child {
+    min-width: 0;
+  }
+
   .task-header p,
   .task-header h1,
   .task-header span,
@@ -2113,7 +2149,6 @@
     line-height: 1.15;
   }
 
-  .task-header button,
   .triage button,
   .queue-groups button,
   .secondary-actions button,
@@ -2134,7 +2169,6 @@
     font-weight: 800;
   }
 
-  .task-header button:hover:not(:disabled),
   .triage button:hover,
   .queue-groups button:hover,
   .secondary-actions button:hover:not(:disabled),
@@ -2147,6 +2181,45 @@
   .target-create summary:hover {
     border-color: var(--accent, #2563eb);
     background: var(--surface-hover, #eef5ff);
+  }
+
+  .sync-status {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.45rem;
+    max-width: 10.5rem;
+    min-height: 1.75rem;
+    color: var(--muted, #64748b);
+    font-size: 0.72rem;
+    line-height: 1;
+    text-align: right;
+    text-transform: uppercase;
+  }
+
+  .sync-status strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-strong, #111827);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sync-status.temporary-error strong {
+    color: #92400e;
+  }
+
+  .sync-status.sustained-error strong {
+    color: #991b1b;
+  }
+
+  .sync-status .dot {
+    width: 0.64rem;
+    height: 0.64rem;
+    margin-top: 0;
+    box-shadow: 0 0 0 2px var(--pulse-ring);
   }
 
   .triage {

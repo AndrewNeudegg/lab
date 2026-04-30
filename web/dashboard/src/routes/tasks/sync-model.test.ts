@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   collectionFromResponse,
+  taskSyncIndicatorState,
   taskListEmptyMessage,
   withRefreshTimeout,
   type RefreshTimers
@@ -90,5 +91,47 @@ describe('task sync model', () => {
     manualTimers.fireTimeout();
 
     await expect(wrapped).rejects.toThrow('Tasks timed out after 7s.');
+  });
+
+  test('summarises automatic sync connectivity without relying on colour alone', () => {
+    expect(
+      taskSyncIndicatorState({
+        refreshing: false,
+        lastRefresh: '09:12:05',
+        failureCount: 0,
+        issue: ''
+      })
+    ).toMatchObject({
+      tone: 'connected',
+      dotTone: 'green',
+      label: 'Connected',
+      detail: 'Updated 09:12:05'
+    });
+
+    expect(
+      taskSyncIndicatorState({
+        refreshing: true,
+        lastRefresh: '09:12:05',
+        failureCount: 1,
+        issue: 'Tasks timed out after 7s.'
+      })
+    ).toMatchObject({
+      tone: 'temporary-error',
+      dotTone: 'amber',
+      label: 'Reconnecting'
+    });
+
+    expect(
+      taskSyncIndicatorState({
+        refreshing: false,
+        lastRefresh: '09:12:05',
+        failureCount: 3,
+        issue: 'Tasks timed out after 7s.'
+      })
+    ).toMatchObject({
+      tone: 'sustained-error',
+      dotTone: 'red',
+      label: 'Connection error'
+    });
   });
 });

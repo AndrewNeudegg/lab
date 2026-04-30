@@ -179,7 +179,7 @@ If a component does not answer one of those questions, it should not be in the p
 ## Component Placement
 
 - `/tasks` left pane: task queue. It is the navigation model, because the operator supervises work by task rather than by chat transcript.
-- Top-left header: system identity, sync freshness, and manual sync. This answers whether the view is current. The `Synced` timestamp includes seconds so a manual reload is visible even when repeated within the same minute.
+- Top-left header: system identity, sync freshness, and automatic connection status. This answers whether the view is current without asking the operator to babysit refresh. The status indicator uses text plus a coloured dot: green means connected, amber means temporarily disconnected or still connecting, and red means repeated task API failures. The dot pulses during automatic refresh and the freshness timestamp includes seconds so updates remain visible within the same minute.
 - Triage buttons: `Attention`, `Running`, and `All`. The page opens on `Attention` because this page is primarily an operator console; `All` remains one tap away for audit and search. The buttons double as counts and filters so the operator can shift attention without extra controls.
 - Search field: below triage because search is secondary; first the operator needs to see urgent work, then find specific work.
 - Merge queue: a compact disclosure between search and the task list. It shows local review/approval/restart candidates in durable merge order and provides icon-only up/down controls for priority changes. The `Auto` switch sits in the header because it changes the queue's automation mode immediately; keep the label visible and expose the switch state through text and `role="switch"`, not colour alone. Keep the queue dense: it is an ordering instrument, not another task-detail surface.
@@ -187,7 +187,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Mobile task layout: keep `/tasks` fixed to the viewport below the navbar. The task list and selected-task record own vertical scrolling, so an empty queue cannot leave a blank scrollable page section below the `/api` footer.
 - Task rows: coloured dot plus text status. Colour gives scan speed; text keeps it accessible and unambiguous. Blue active work and amber system-owned gates may use a subtle pulsing ring; red, green, and amber states that need operator intervention must stay static.
 - Right pane: selected task record. It is not a chat transcript and has no task chat composer. Selecting a different task changes the record, summary, result, action buttons, diff, worker trace, and activity timeline.
-- Manual `Sync` refreshes tasks, approvals, events, and remote agents first, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current.
+- Automatic sync refreshes tasks, approvals, events, and remote agents on the page interval, then refreshes selected-task worker runs and the local diff without blocking the queue from becoming current. Do not expose a manual refresh button on `/tasks`; the header status should show connectivity and retry state instead.
 - Task sync failures are shown inside the task pane. The queue must never make a failed `/api/tasks` request look like a real empty result.
 - Selected task title: use the stored compact task title generated at creation time, so long prompts do not dominate the queue or the top of the record. The original input remains available in the detail disclosures.
 - Task summary: ID, status, owner, started time, runtime, and update time. Keep this as a compact metadata strip, not separate cards; it identifies the selected object without taking attention away from the decision.
@@ -223,7 +223,7 @@ Dashboard API reads are retry-tolerant for commute-grade connections. The shared
 
 Chat send failures are recoverable from the transcript. A failed user bubble keeps the original content and attachments visible, shows `Message failed to send`, and exposes a resend button so the operator can retry once connectivity returns.
 
-The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the next manual or scheduled sync waits for the same result instead of starting another batch. Keep existing task data visible during a failed refresh so operators can continue reading the last known state. Do not promote secondary read timeouts, such as events or worker-run history, into page-level errors unless the operator has a concrete action to take; retry them on the next sync and keep any stale task data visible.
+The `/tasks` page coalesces refreshes: if a slow sync is still in flight, the next scheduled sync waits for the same result instead of starting another batch. Keep existing task data visible during a failed refresh so operators can continue reading the last known state. A first or second failed task-list refresh shows amber reconnecting status; the third consecutive failed task-list refresh escalates to red connection error. Do not promote secondary read timeouts, such as events or worker-run history, into page-level errors unless the operator has a concrete action to take; retry them on the next sync and keep any stale task data visible.
 
 ## Task Supervisor
 

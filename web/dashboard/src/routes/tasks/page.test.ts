@@ -71,18 +71,26 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('max-height: min(13.5rem, 32vh);');
   });
 
-  test('keeps manual sync responsive while selected details refresh separately', () => {
+  test('keeps automatic sync status responsive while selected details refresh separately', () => {
     expect(pageSource).toContain("let taskFilter: TaskFilter = 'attention'");
     expect(pageSource).toContain('let refreshStateSequence = 0');
+    expect(pageSource).toContain('let syncFailureCount = 0');
+    expect(pageSource).toContain('let syncIssue =');
+    expect(pageSource).toContain('taskSyncIndicatorState');
+    expect(pageSource).toContain('data-sync-status={syncIndicator.tone}');
+    expect(pageSource).toContain('class:pulse={refreshing}');
     expect(pageSource).toContain('function withRefreshTimeout');
     expect(pageSource).toContain('withRefreshTimeout as withTimeout');
     expect(pageSource).toContain("const taskRequest = withRefreshTimeout('Tasks', client.listTasks())");
     expect(pageSource).toContain("collectionFromResponse<HomelabdTask>('Tasks', 'tasks'");
     expect(pageSource).toContain('let taskLoadError =');
+    expect(pageSource).toContain('syncFailureCount += 1');
+    expect(pageSource).toContain('syncFailureCount = 0');
     expect(pageSource).toContain('void applySecondaryRefresh');
     expect(pageSource).toContain('void refreshSelectedTaskDetails(syncSelection.selectedTaskId');
     expect(pageSource).toContain('if (sequence === refreshStateSequence)');
     expect(pageSource).toContain('lastRefresh = syncTimeLabel();');
+    expect(pageSource).not.toContain('on:click={() => void refreshState()}');
   });
 
   test('preserves the operator-selected queue filter during background refresh', () => {

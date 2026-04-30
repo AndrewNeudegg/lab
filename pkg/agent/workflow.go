@@ -217,6 +217,7 @@ func (o *Orchestrator) runWorkflowStep(ctx context.Context, item workflowstore.W
 				Content: strings.Join([]string{
 					"You are executing one durable homelabd workflow step.",
 					"Return concise plain text for this step output. Do not invent tool results.",
+					agentDiagramGuidance,
 				}, "\n"),
 			}, {
 				Role:    "user",

@@ -240,6 +240,7 @@ test('terminal mobile accepts direct typing and control keys without horizontal 
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowDown');
   await expect.poll(() => state.sent.join('')).toContain('\u001b[D');
+  await expect.poll(() => state.sent.join('')).toContain('\u001b[B');
   const physicalSent = state.sent;
   expect(physicalSent).toContain('\u001b[D');
   expect(physicalSent).toContain('\u001b[C');

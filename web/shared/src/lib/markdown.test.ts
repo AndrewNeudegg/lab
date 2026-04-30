@@ -18,6 +18,16 @@ describe('renderMarkdown', () => {
     );
   });
 
+  test('renders mmd fences and strips Mermaid init directives from render source', () => {
+    expect(
+      renderMarkdown(
+        '```mmd\n%%{init: {"theme": "forest"}}%%\nflowchart LR\n  Chat --> Docs\n```'
+      )
+    ).toBe(
+      '<figure class="mermaid-diagram" data-mermaid-source="flowchart LR\n  Chat --&gt; Docs" data-mermaid-status="pending"><div class="mermaid-output" role="img" aria-label="Mermaid diagram" hidden></div><pre><code class="language-mmd">%%{init: {&quot;theme&quot;: &quot;forest&quot;}}%%\nflowchart LR\n  Chat --&gt; Docs</code></pre></figure>'
+    );
+  });
+
   test('renders common inline markdown', () => {
     expect(renderMarkdown('Use **bold**, _emphasis_, and `code`.')).toBe(
       '<p>Use <strong>bold</strong>, <em>emphasis</em>, and <code>code</code>.</p>'

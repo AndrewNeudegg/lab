@@ -44,6 +44,7 @@ Dashboard state that operators naturally share must have a URL and must use Svel
 
 - Task rows and chat-created task links use `/tasks?task=<task_id>` and open the selected task record. Chat task creation replies display the summarised task title as the link text.
 - Plain `/tasks` is the task queue overview and does not auto-select the first task. From the overview, selecting a task pushes `/tasks?task=<task_id>`, so browser Back returns to the overview instead of another task detail.
+- Returning from a task record preserves the active task triage and execution-queue filters. Direct task links fall back to `All` only when the task is hidden by the current queue context.
 - Workflow rows use `/workflows?workflow=<workflow_id>` and open the selected workflow detail.
 - Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
 - Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.
@@ -261,8 +262,9 @@ On compact screens `/tasks` stacks:
 1. `Queue` is the parent view. It shows filters, search, task rows, execution queues, and new-task creation.
 2. Tapping a task opens the selected task record as a child view.
 3. The selected task record starts at the top, shows the decision panel first, and exposes a clear `Back to queue` control.
-4. Accepting a task shows a transient status notification instead of inserting an inline banner above the record, so `Back to queue` stays in its usual position.
-5. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.
+4. If sync or an action such as `Accept` moves the selected task out of the current filter, the page returns to the parent queue and keeps the empty queue controls visible.
+5. Accepting a task shows a transient status notification instead of inserting an inline banner above the record, so `Back to queue` stays in its usual position.
+6. Long diagnostic sections start collapsed so a phone user can inspect state, actions, and diff before expanding worker output or history.
 
 The split view is not forced into a narrow screen because that makes task names, task details, and command output harder to read. Do not add a separate `Task` tab for the current selection; it behaves like saved state rather than navigation and is easy to misread. The Tasks page does not render a global command panel on mobile.
 

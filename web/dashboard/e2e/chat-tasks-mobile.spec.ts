@@ -451,6 +451,75 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   );
 });
 
+test('tasks mobile returns to the queue when Accept empties the current filter', async ({ page }) => {
+  test.setTimeout(45_000);
+  const now = new Date('2026-04-26T15:00:00Z').toISOString();
+  const taskID = 'task_20260426_151500_accept1';
+  let accepted = false;
+  const task = () => ({
+    id: taskID,
+    title: 'Verify empty attention queue',
+    goal: 'Accepting this task should leave Attention empty without hiding the queue.',
+    status: accepted ? 'done' : 'awaiting_verification',
+    assigned_to: 'codex',
+    priority: 5,
+    created_at: now,
+    updated_at: now,
+    result: accepted ? 'accepted by human' : 'ready for verification'
+  });
+
+  await page.route(/\/api\/tasks\/task_20260426_151500_accept1\/accept$/, async (route) => {
+    accepted = true;
+    await route.fulfill({ json: { reply: 'accepted empty attention task' } });
+  });
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { tasks: [task()] } });
+  });
+  await page.route(/\/api\/settings$/, async (route) => {
+    await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
+  });
+  await page.route(/\/api\/approvals$/, async (route) => {
+    await route.fulfill({ json: { approvals: [] } });
+  });
+  await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { events: [] } });
+  });
+  await page.route(/\/api\/agents$/, async (route) => {
+    await route.fulfill({ json: { agents: [] } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
+    await route.fulfill({ json: { runs: [] } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
+    await route.fulfill({
+      json: {
+        task_id: taskID,
+        raw_diff: '',
+        summary: { files: 0, additions: 0, deletions: 0 },
+        files: [],
+        generated_at: now
+      }
+    });
+  });
+
+  await page.goto('/tasks');
+  await expect(page.getByRole('heading', { name: '1 need attention' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  await page.getByRole('link', { name: /Verify empty attention queue/ }).click();
+  await expect(page.locator('.task-pane')).not.toBeVisible();
+  await expect(page.locator('.workbench')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Accept', exact: true }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(page.getByRole('heading', { name: '0 need attention' })).toBeVisible();
+  await expect(page.locator('.task-pane')).toBeVisible();
+  await expect(page.locator('.workbench')).not.toBeVisible();
+  await expect(page.locator('.task-row')).toHaveCount(0);
+  await expect(page.getByText('No tasks match the current filters.')).toBeVisible();
+  await expect(page.locator('.empty-record')).not.toBeVisible();
+});
+
 test('tasks mobile keeps Running selected after background sync', async ({ page }) => {
   test.setTimeout(30_000);
   let taskListRequests = 0;
@@ -507,6 +576,55 @@ test('tasks sync status replaces manual refresh and pulses during automatic upda
     .toBeGreaterThan(requestsAfterFirstUpdate);
   await expect(page.locator('.sync-status.refreshing .dot.pulse')).toBeVisible();
   await expect(page.locator('.sync-status')).toHaveAttribute('data-sync-status', 'connected');
+});
+
+test('tasks mobile preserves triage filters when returning from task detail', async ({ page }) => {
+  await mockTaskApi(page);
+  await page.goto('/tasks');
+
+  const queue = page.locator('.task-pane');
+  const detail = page.locator('.workbench');
+  const activeFilter = page.locator('.triage button.active');
+  const reviewRow = page.getByRole('link', { name: /Review queue behavior on mobile/ });
+  const runningRow = page.getByRole('link', { name: /Run dashboard checks/ });
+
+  await expect(reviewRow).toBeVisible({ timeout: taskLoadTimeoutMs });
+  await expect(activeFilter).toContainText('Attention');
+  await reviewRow.click();
+  await expect(detail).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Review queue behavior on mobile' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
+  await expect(activeFilter).toContainText('Attention');
+  await expect(reviewRow).toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+
+  await page.locator('.triage button').filter({ hasText: 'Running' }).click();
+  await expect(activeFilter).toContainText('Running');
+  await expect(runningRow).toBeVisible();
+  await runningRow.click();
+  await expect(page).toHaveURL(/\/tasks\?task=task_20260426_150200_22222222$/);
+  await expect(detail).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Run dashboard checks' })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
+  await expect(activeFilter).toContainText('Running');
+  await expect(runningRow).toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
+
+  await runningRow.click();
+  await expect(page.getByRole('heading', { name: 'Run dashboard checks' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to queue' }).click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(queue).toBeVisible();
+  await expect(detail).not.toBeVisible();
+  await expect(activeFilter).toContainText('Running');
+  await expect(runningRow).toBeVisible();
+  await expect(page.locator('.task-row.selected')).toHaveCount(0);
 });
 
 test('tasks status pills describe queued review without implying action', async ({ page }) => {

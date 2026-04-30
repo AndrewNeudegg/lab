@@ -22,10 +22,10 @@ function worktreePort(cwd: string) {
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: 60_000,
+  timeout: uatTestTimeout,
   workers: 1,
   expect: {
-    timeout: 15_000
+    timeout: uatExpectTimeout
   },
   webServer: {
     command: `bun run dev -- --host 127.0.0.1 --port ${port} --strictPort`,

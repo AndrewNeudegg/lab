@@ -49,6 +49,14 @@
   let helpDialogOpen = false;
   let helpReady = false;
   let helpAttachments: HomelabdTaskAttachment[] = [];
+  let navbarElement: HTMLElement | undefined;
+  let brandElement: HTMLAnchorElement | undefined;
+  let navMeasureElement: HTMLElement | undefined;
+  let rightElement: HTMLDivElement | undefined;
+  let compactNav = false;
+  let expandedRightWidth = 0;
+  const screenCaptureUnavailableMessage =
+    'Browser context captured. Screenshot capture is unavailable in this browser, so the report will submit without an image.';
 
   const isActive = (href: string) => current === href;
   const isTasksLink = (href: string) => href === '/tasks';
@@ -167,13 +175,43 @@
     stream?.getTracks().forEach((track) => track.stop());
   };
 
-  const captureScreenshotAttachment = async () => {
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      throw new Error('Screen capture is not available in this browser.');
+  const screenCaptureSupported = () =>
+    window.isSecureContext && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+
+  const screenCaptureUnavailable = (err: unknown) =>
+    err instanceof Error && /screen capture is not available/i.test(err.message);
+
+  const updateCompactNav = () => {
+    if (!navbarElement || !brandElement || !navMeasureElement || !rightElement) {
+      return;
     }
+    const style = getComputedStyle(navbarElement);
+    const available =
+      navbarElement.clientWidth -
+      (Number.parseFloat(style.paddingLeft) || 0) -
+      (Number.parseFloat(style.paddingRight) || 0);
+    const gap = Number.parseFloat(style.columnGap || style.gap) || 0;
+    if (!compactNav) {
+      expandedRightWidth = rightElement.scrollWidth;
+    }
+    const required =
+      brandElement.scrollWidth +
+      navMeasureElement.scrollWidth +
+      (expandedRightWidth || rightElement.scrollWidth) +
+      gap * 2;
+    const nextCompact = required > available;
+    if (compactNav !== nextCompact) {
+      compactNav = nextCompact;
+    }
+  };
+
+  const captureScreenshotAttachment = async () => {
     let stream: MediaStream | undefined;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      stream = await navigator.mediaDevices?.getDisplayMedia({ video: true, audio: false });
+      if (!stream) {
+        return undefined;
+      }
       const video = document.createElement('video');
       video.muted = true;
       video.srcObject = stream;
@@ -236,13 +274,27 @@
       ];
     }
     void showHelpDialog();
+    if (!screenCaptureSupported()) {
+      helpStatus = screenCaptureUnavailableMessage;
+      helpCapturing = false;
+      return;
+    }
     try {
       helpStatus = 'Choose this tab or screen to attach a screenshot.';
       const screenshot = await captureScreenshotAttachment();
-      helpAttachments = [...helpAttachments, screenshot];
-      helpStatus = 'Screenshot and browser context captured.';
+      if (screenshot) {
+        helpAttachments = [...helpAttachments, screenshot];
+        helpStatus = 'Screenshot and browser context captured.';
+      } else {
+        helpStatus = screenCaptureUnavailableMessage;
+      }
     } catch (err) {
-      helpStatus = err instanceof Error ? err.message : 'Screenshot capture was skipped.';
+      helpStatus =
+        screenCaptureUnavailable(err)
+          ? screenCaptureUnavailableMessage
+          : err instanceof DOMException && err.name === 'NotAllowedError'
+          ? 'Browser context captured. Screenshot capture was cancelled.'
+          : 'Browser context captured. Screenshot capture was skipped.';
     } finally {
       helpCapturing = false;
       void showHelpDialog();
@@ -308,23 +360,47 @@
     }, 15000);
     const clickListener = (event: MouseEvent) => recordAction('click', event.target);
     const inputListener = (event: Event) => recordAction('input', event.target);
+    let animationFrame = 0;
+    const scheduleNavUpdate = () => {
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame);
+      }
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = 0;
+        updateCompactNav();
+      });
+    };
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleNavUpdate);
     window.addEventListener('click', clickListener, { capture: true });
     window.addEventListener('change', inputListener, { capture: true });
+    window.addEventListener('resize', scheduleNavUpdate);
+    for (const element of [navbarElement, brandElement, navMeasureElement, rightElement]) {
+      if (element) {
+        resizeObserver?.observe(element);
+      }
+    }
+    void tick().then(scheduleNavUpdate);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener('click', clickListener, { capture: true });
       window.removeEventListener('change', inputListener, { capture: true });
+      window.removeEventListener('resize', scheduleNavUpdate);
+      resizeObserver?.disconnect();
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame);
+      }
     };
   });
 </script>
 
-<header class="navbar">
-  <a class="brand" href="/chat" onclickcapture={closeMobileMenu}>
+<header class="navbar" bind:this={navbarElement}>
+  <a class="brand" href="/chat" bind:this={brandElement} onclickcapture={closeMobileMenu}>
     <span>{subtitle}</span>
     <strong>{title}</strong>
   </a>
 
-  <nav class="desktop-nav" aria-label="Primary">
+  <nav class="desktop-nav" class:compact={compactNav} aria-label="Primary">
     {#each links as link}
       <a
         href={link.href}
@@ -351,7 +427,15 @@
     {/each}
   </nav>
 
-  <div class="right">
+  <nav class="nav-measure" bind:this={navMeasureElement} aria-hidden="true">
+    {#each links as link}
+      <a href={link.href} tabindex="-1">
+        {link.label}
+      </a>
+    {/each}
+  </nav>
+
+  <div class="right" class:compact={compactNav} bind:this={rightElement}>
     {#if apiBase}
       <span class="api">{apiBase}</span>
     {/if}
@@ -368,7 +452,7 @@
     >
       Help
     </button>
-    <details class="mobile-menu" bind:this={mobileMenu} bind:open={mobileMenuOpen}>
+    <details class="mobile-menu" class:compact={compactNav} bind:this={mobileMenu} bind:open={mobileMenuOpen}>
       <!-- svelte-ignore a11y_no_redundant_roles -- Chromium exposes this styled summary consistently with an explicit role. -->
       <summary
         class="menu-button"
@@ -804,6 +888,7 @@
 
   .brand,
   .desktop-nav a,
+  .nav-measure a,
   .mobile-nav a {
     color: inherit;
     text-decoration: none;
@@ -836,13 +921,36 @@
   }
 
   .desktop-nav,
+  .nav-measure,
   .right {
     display: flex;
     align-items: center;
     gap: 0.5rem;
   }
 
+  .desktop-nav.compact {
+    display: none;
+  }
+
+  .nav-measure {
+    position: absolute;
+    inset: auto auto 100% 0;
+    width: max-content;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .right.compact {
+    justify-content: flex-end;
+  }
+
+  .right.compact .api,
+  .right.compact .desktop-theme {
+    display: none;
+  }
+
   .desktop-nav a,
+  .nav-measure a,
   .mobile-nav a {
     display: inline-flex;
     align-items: center;
@@ -856,6 +964,10 @@
 
   .desktop-nav a {
     gap: 0.42rem;
+  }
+
+  .desktop-nav a,
+  .nav-measure a {
     padding: 0.45rem 0.75rem;
   }
 
@@ -940,6 +1052,10 @@
     display: none;
   }
 
+  .mobile-menu.compact {
+    display: block;
+  }
+
   .mobile-menu summary {
     list-style: none;
   }
@@ -950,7 +1066,6 @@
 
   .help-button,
   .menu-button {
-    display: none;
     min-height: 2.4rem;
     padding: 0 0.75rem;
     border: 1px solid var(--border, #cbd5e1);
@@ -964,7 +1079,24 @@
   }
 
   .help-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-width: 3.2rem;
+  }
+
+  .menu-button {
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobile-menu.compact .menu-button {
+    display: inline-flex;
+  }
+
+  .mobile-menu.compact[open] .mobile-nav {
+    display: grid;
   }
 
   .menu-button span {
@@ -993,6 +1125,8 @@
 
   .help-dialog {
     width: min(92vw, 31rem);
+    max-height: min(92vh, calc(100dvh - 1rem));
+    margin: 0;
     padding: 0;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 0.85rem;
@@ -1016,6 +1150,8 @@
   .help-dialog-body {
     display: grid;
     gap: 0.85rem;
+    max-height: min(92vh, calc(100dvh - 1rem));
+    overflow-y: auto;
     padding: 1rem;
   }
 
@@ -1127,11 +1263,10 @@
     font-size: 0.76rem;
   }
 
-  @media (max-width: 760px) {
+  @media (max-width: 1120px) {
     .navbar {
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 0.75rem;
-      min-height: 3.75rem;
     }
 
     .desktop-nav {
@@ -1154,11 +1289,8 @@
       display: block;
     }
 
-    .help-button,
     .menu-button {
       display: inline-flex;
-      align-items: center;
-      justify-content: center;
     }
 
     .mobile-nav {
@@ -1167,6 +1299,12 @@
 
     .mobile-menu[open] .mobile-nav {
       display: grid;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .navbar {
+      min-height: 3.75rem;
     }
   }
 </style>

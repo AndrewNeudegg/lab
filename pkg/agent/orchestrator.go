@@ -363,6 +363,9 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 	if goal, ok := taskCreationGoal(message); ok {
 		return programResult(o.createTaskWithAttachments(ctx, goal, attachments))
 	}
+	if isToolIntrospectionRequest(message) {
+		return programResult(o.formatAvailableTools(), nil)
+	}
 	if isActiveTaskStatusRequest(message) || isInFlightQuery(message) {
 		return programResult(o.listInFlight())
 	}
@@ -1048,6 +1051,51 @@ func isActiveTaskStatusRequest(message string) bool {
 		return true
 	}
 	return false
+}
+
+func isToolIntrospectionRequest(message string) bool {
+	normalized := normalizeIntentText(message)
+	switch normalized {
+	case "tools", "tool list", "tools list", "tool catalogue", "tools catalogue", "tool catalog", "tools catalog",
+		"available tools", "list tools", "list all tools", "list the tools", "list available tools",
+		"show tools", "show all tools", "show me tools", "show available tools", "show me available tools",
+		"describe tools", "describe the tools", "describe available tools", "what tools are available", "which tools are available",
+		"what tools do you have", "what tools can you use", "what tools can you call",
+		"what tools can homelabd use", "what tools can the agent use", "tell me about tools", "tell me about your tools", "tell me about available tools":
+		return true
+	}
+	if !containsToolWord(normalized) {
+		return false
+	}
+	if strings.Contains(normalized, "available") && toolIntrospectionLead(normalized) {
+		return true
+	}
+	return strings.Contains(normalized, "do you have") ||
+		strings.Contains(normalized, "can you use") ||
+		strings.Contains(normalized, "can you call") ||
+		strings.Contains(normalized, "are registered")
+}
+
+func containsToolWord(normalized string) bool {
+	for _, field := range strings.Fields(normalized) {
+		if field == "tool" || field == "tools" {
+			return true
+		}
+	}
+	return false
+}
+
+func toolIntrospectionLead(normalized string) bool {
+	fields := strings.Fields(normalized)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "list", "show", "describe", "tell", "what", "whats", "which":
+		return true
+	default:
+		return false
+	}
 }
 
 func statusQuestionLead(normalized string) bool {
@@ -2501,6 +2549,7 @@ func help() string {
 		"  start <task_id|title>      run a task by id, short id, or title",
 		"  read <repo_path>           inspect repo file",
 		"  search <text>              search repo text",
+		"  tools                      list available tools and key parameters",
 		"  web <query>                search the public web",
 		"  search web for <query>     search the public web",
 		"  research <query>           fan out web research and fetch sources",
@@ -2917,13 +2966,14 @@ func (o *Orchestrator) llmToolPrompt() string {
 	}, "\n")
 }
 
-func (o *Orchestrator) toolCatalog() string {
-	type catalogTool struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		Risk        tool.RiskLevel  `json:"risk"`
-		Schema      json.RawMessage `json:"schema"`
-	}
+type catalogTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Risk        tool.RiskLevel  `json:"risk"`
+	Schema      json.RawMessage `json:"schema"`
+}
+
+func (o *Orchestrator) catalogTools() []catalogTool {
 	catalog := []catalogTool{{
 		Name:        "task.create",
 		Description: "Create a development task with an isolated local worktree or explicit remote target. Args: {\"goal\":\"...\",\"target\":{...}}.",
@@ -2970,11 +3020,104 @@ func (o *Orchestrator) toolCatalog() string {
 		Risk:        tool.RiskLow,
 		Schema:      json.RawMessage(`{"type":"object","required":["workflow_id"],"properties":{"workflow_id":{"type":"string"}}}`),
 	}}
-	for _, t := range o.registry.List() {
-		catalog = append(catalog, catalogTool{Name: t.Name(), Description: t.Description(), Risk: t.Risk(), Schema: t.Schema()})
+	if o.registry != nil {
+		for _, t := range o.registry.List() {
+			catalog = append(catalog, catalogTool{Name: t.Name(), Description: t.Description(), Risk: t.Risk(), Schema: t.Schema()})
+		}
 	}
 	sort.Slice(catalog, func(i, j int) bool { return catalog[i].Name < catalog[j].Name })
-	return mustJSON(catalog)
+	return catalog
+}
+
+func (o *Orchestrator) toolCatalog() string {
+	return mustJSON(o.catalogTools())
+}
+
+func (o *Orchestrator) formatAvailableTools() string {
+	catalog := o.catalogTools()
+	if len(catalog) == 0 {
+		return "No tools are registered."
+	}
+	var b strings.Builder
+	b.WriteString("Available tools:")
+	for _, item := range catalog {
+		fmt.Fprintf(&b, "\n- `%s`: %s Parameters: %s.", item.Name, shortToolDescription(item.Description), toolParameterSummary(item.Schema))
+	}
+	return b.String()
+}
+
+func shortToolDescription(description string) string {
+	description = strings.TrimSpace(description)
+	if idx := strings.Index(description, " Args:"); idx >= 0 {
+		description = strings.TrimSpace(description[:idx])
+	}
+	if description == "" {
+		return "No description."
+	}
+	const maxDescriptionLength = 180
+	if len(description) > maxDescriptionLength {
+		description = strings.TrimSpace(description[:maxDescriptionLength-3]) + "..."
+	}
+	if strings.HasSuffix(description, ".") {
+		return description
+	}
+	return description + "."
+}
+
+func toolParameterSummary(schema json.RawMessage) string {
+	type objectSchema struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	var parsed objectSchema
+	if len(schema) == 0 || json.Unmarshal(schema, &parsed) != nil {
+		return "none"
+	}
+	required := make(map[string]bool, len(parsed.Required))
+	names := make(map[string]bool, len(parsed.Required)+len(parsed.Properties))
+	for _, name := range parsed.Required {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		required[name] = true
+		names[name] = true
+	}
+	for name := range parsed.Properties {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names[name] = true
+		}
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	var requiredNames, optionalNames []string
+	for name := range names {
+		if required[name] {
+			requiredNames = append(requiredNames, name)
+			continue
+		}
+		optionalNames = append(optionalNames, name)
+	}
+	sort.Strings(requiredNames)
+	sort.Strings(optionalNames)
+	var parts []string
+	if len(requiredNames) > 0 {
+		parts = append(parts, "required "+formatParameterNames(requiredNames))
+	}
+	if len(optionalNames) > 0 {
+		parts = append(parts, "optional "+formatParameterNames(optionalNames))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatParameterNames(names []string) string {
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		quoted = append(quoted, "`"+name+"`")
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func parseAgentResponse(content string) (agentResponse, error) {

@@ -23,7 +23,7 @@
     {
       id: 'operator-workflows',
       label: 'Operator workflows',
-      slugs: ['chat-commands', 'task-workflow', 'workflows']
+      slugs: ['chat-commands', 'task-workflow', 'workflows', 'diagramming-and-brand-colours']
     },
     {
       id: 'agents-runtime',

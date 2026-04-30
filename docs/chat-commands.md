@@ -31,6 +31,8 @@ The dashboard applies the homelabd brand diagram palette automatically, strips M
 | Muted | `#64748b` | `#94a3b8` |
 | Border | `#cbd5e1` | `#334155` |
 
+Invalid diagrams fall back to their source block so the syntax can be corrected. See [Diagramming And Brand Colours](/docs/diagramming-and-brand-colours).
+
 ## Reflection
 
 Use reflection when you want one improvement from the recent interaction and a follow-up task you can action:

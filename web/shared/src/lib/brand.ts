@@ -3,7 +3,6 @@ export type BrandDiagramMode = 'light' | 'dark';
 export type BrandDiagramPalette = {
   background: string;
   surface: string;
-  surfaceAccent: string;
   primary: string;
   secondary: string;
   success: string;
@@ -18,7 +17,6 @@ export const brandDiagramPalettes: Record<BrandDiagramMode, BrandDiagramPalette>
   light: {
     background: '#f8fafc',
     surface: '#ffffff',
-    surfaceAccent: '#e0f2fe',
     primary: '#2563eb',
     secondary: '#0f766e',
     success: '#16a34a',
@@ -31,7 +29,6 @@ export const brandDiagramPalettes: Record<BrandDiagramMode, BrandDiagramPalette>
   dark: {
     background: '#0f172a',
     surface: '#111827',
-    surfaceAccent: '#164e63',
     primary: '#60a5fa',
     secondary: '#2dd4bf',
     success: '#4ade80',
@@ -52,17 +49,20 @@ export const mermaidBrandThemeVariables = (mode: BrandDiagramMode) => {
   return {
     background: palette.background,
     mainBkg: palette.surface,
-    secondBkg: palette.surfaceAccent,
+    secondBkg: palette.background,
     tertiaryColor: palette.background,
     primaryColor: palette.surface,
     primaryTextColor: palette.text,
     primaryBorderColor: palette.primary,
-    secondaryColor: palette.surfaceAccent,
+    secondaryColor: palette.background,
     secondaryTextColor: palette.text,
     secondaryBorderColor: palette.secondary,
+    tertiaryBkg: palette.background,
     tertiaryTextColor: palette.text,
     tertiaryBorderColor: palette.border,
     lineColor: palette.primary,
+    titleColor: palette.text,
+    nodeTextColor: palette.text,
     textColor: palette.text,
     border1: palette.primary,
     border2: palette.secondary,
@@ -80,11 +80,17 @@ export const mermaidBrandThemeVariables = (mode: BrandDiagramMode) => {
     labelBoxBorderColor: palette.border,
     labelTextColor: palette.text,
     loopTextColor: palette.text,
-    activationBkgColor: palette.surfaceAccent,
+    activationBkgColor: palette.background,
     activationBorderColor: palette.secondary,
-    noteBkgColor: mode === 'dark' ? '#422006' : '#fffbeb',
+    noteBkgColor: palette.background,
     noteTextColor: palette.text,
     noteBorderColor: palette.warning,
+    c0: palette.primary,
+    c1: palette.secondary,
+    c2: palette.success,
+    c3: palette.warning,
+    c4: palette.danger,
+    c5: palette.muted,
     fontFamily: diagramFont
   };
 };

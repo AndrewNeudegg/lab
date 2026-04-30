@@ -322,7 +322,12 @@ test('chat marks failed sends inline and retries the original message', async ({
   expect(sentBodies.map((body) => body.content)).toEqual([text, text]);
 });
 
-test('chat renders Mermaid diagrams in assistant replies', async ({ page }) => {
+test('chat renders Mermaid diagrams with the brand palette in light and dark modes', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('homelabd.dashboard.theme', 'light');
+  });
   await page.route('**/api/message', async (route) => {
     await route.fulfill({
       json: {
@@ -341,7 +346,17 @@ test('chat renders Mermaid diagrams in assistant replies', async ({ page }) => {
   const message = page.locator('.message').filter({ hasText: 'diagram-regression' });
   const diagram = message.locator('.mermaid-diagram');
   await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
-  await expect(diagram.locator('svg')).toBeVisible();
+  const svg = diagram.locator('svg');
+  await expect(svg).toBeVisible();
+  await expect.poll(() => svg.evaluate((element) => element.outerHTML)).toContain('#2563eb');
+
+  await page.getByRole('button', { name: 'Menu' }).click();
+  const darkToggle = page.getByRole('button', { name: /Switch to dark mode/ });
+  await expect(darkToggle).toHaveAttribute('data-theme-toggle-ready', 'true');
+  await darkToggle.click();
+  await expect(diagram).toHaveAttribute('data-mermaid-status', 'rendered');
+  await expect.poll(() => svg.evaluate((element) => element.outerHTML)).toContain('#60a5fa');
+
   const metrics = await diagram.evaluate((element) => ({
     scrollWidth: element.scrollWidth,
     clientWidth: element.clientWidth,

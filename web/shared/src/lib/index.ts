@@ -4,6 +4,7 @@ export * from './attachments';
 export * from './brand';
 export * from './chatDraft';
 export * from './markdown';
+export * from './mermaid';
 export * from './tasks';
 export * from './theme';
 export { default as Counter } from './Counter.svelte';

@@ -830,10 +830,6 @@
 
   const toggleAutoMerge = () => setAutoMerge(!autoMergeEnabled);
 
-  const handleAutoMergeChange = (event: Event) => {
-    void setAutoMerge((event.currentTarget as HTMLInputElement).checked);
-  };
-
   const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
     if (mergeQueueLoading) {
       return;
@@ -1052,26 +1048,24 @@
       <details class="merge-queue" aria-label="Merge queue" open>
         <summary>
           <span>Merge queue</span>
-          <strong>{mergeQueueItems.length}</strong>
-          <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
-        </summary>
-        <label
-          class:active={autoMergeEnabled}
-          class:busy={autoMergeSaving}
-          class="auto-merge-toggle"
-          title="Automatically merge reviewed queue-head tasks"
-        >
-          <input
-            type="checkbox"
+          <button
+            type="button"
+            class:active={autoMergeEnabled}
+            class:busy={autoMergeSaving}
+            class="auto-merge-toggle"
+            title="Automatically merge reviewed queue-head tasks"
             role="switch"
-            checked={autoMergeEnabled}
             aria-checked={autoMergeEnabled}
             aria-label="Auto merge reviewed queue-head tasks"
             disabled={autoMergeSaving}
-            on:click={handleAutoMergeChange}
-          />
-          <span>Auto</span>
-        </label>
+            on:click|stopPropagation={toggleAutoMerge}
+          >
+            <span>Auto</span>
+            <i aria-hidden="true"></i>
+          </button>
+          <strong>{mergeQueueItems.length}</strong>
+          <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
+        </summary>
         {#if autoMergeIssue}
           <p class="merge-queue-note">{autoMergeIssue}</p>
         {/if}
@@ -2096,7 +2090,7 @@
 
   .merge-queue summary {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     align-items: center;
     gap: 0.45rem;
     min-height: 2.25rem;
@@ -2124,24 +2118,16 @@
   }
 
   .auto-merge-toggle {
-    display: inline-flex;
+    display: inline-grid;
+    grid-template-columns: auto auto;
     align-items: center;
     gap: 0.35rem;
     min-width: 0;
-    margin: 0 0.65rem 0.55rem;
     padding: 0;
     border: 0;
     color: var(--muted, #64748b);
     background: transparent;
     cursor: pointer;
-  }
-
-  .auto-merge-toggle input {
-    width: 1.05rem;
-    height: 1.05rem;
-    margin: 0;
-    accent-color: #16a34a;
-    cursor: inherit;
   }
 
   .auto-merge-toggle span {
@@ -2152,11 +2138,51 @@
     text-transform: uppercase;
   }
 
+  .auto-merge-toggle i {
+    display: block;
+    position: relative;
+    width: 2rem;
+    height: 1.12rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #e2e8f0;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      box-shadow 140ms ease;
+  }
+
+  .auto-merge-toggle i::after {
+    content: '';
+    position: absolute;
+    top: 0.12rem;
+    left: 0.12rem;
+    width: 0.78rem;
+    height: 0.78rem;
+    border-radius: 999px;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.22);
+    transition: transform 140ms ease;
+  }
+
   .auto-merge-toggle.active {
     color: #14532d;
   }
 
-  .auto-merge-toggle:has(input:disabled) {
+  .auto-merge-toggle.active i {
+    border-color: #16a34a;
+    background: #22c55e;
+  }
+
+  .auto-merge-toggle.active i::after {
+    transform: translateX(0.86rem);
+  }
+
+  .auto-merge-toggle:focus-visible i {
+    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.18);
+  }
+
+  .auto-merge-toggle:disabled {
     pointer-events: none;
   }
 

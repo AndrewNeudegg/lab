@@ -72,7 +72,7 @@ Remote workers may include Mermaid fenced diagrams in reported results or docs w
 
 Remote agents validate in the selected remote workdir. They must not call the control-plane supervisor to restart production services, and they must not assume `127.0.0.1:5173` points at the operator's dashboard.
 
-When a remote result needs to explain execution flow, state, dependencies, or machine context, include a Mermaid fenced diagram. The control-plane dashboard renders Mermaid in chat and docs and applies the shared light/dark brand palette documented in `docs/dashboard.md#markdown-diagrams-and-brand-colours`.
+When remote handoffs describe multi-machine flows, state transitions, or verification paths, include a concise Mermaid diagram if it improves understanding. Diagrams must use the homelabd brand palette from `docs/diagramming-and-brand-colours.md`; the dashboard applies those colours automatically to Mermaid fences.
 
 For dashboard task-page changes in a remote checkout, run:
 

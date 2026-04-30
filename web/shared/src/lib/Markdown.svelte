@@ -1,19 +1,12 @@
 <script lang="ts" context="module">
-  type Mermaid = typeof import('mermaid').default;
-
   let markdownInstance = 0;
-  let mermaidPromise: Promise<Mermaid> | undefined;
-
-  const loadMermaid = () => {
-    mermaidPromise ??= import('mermaid').then((module) => module.default);
-    return mermaidPromise;
-  };
 </script>
 
 <script lang="ts">
   import { afterUpdate, onMount, tick } from 'svelte';
-  import { mermaidBrandThemeVariables, type BrandDiagramMode } from './brand';
+  import type { BrandDiagramMode } from './brand';
   import { renderMarkdown } from './markdown';
+  import { mermaidConfigForTheme } from './mermaid';
 
   export let content = '';
   export let headingIds = false;
@@ -22,8 +15,6 @@
   let mounted = false;
   let renderVersion = 0;
   let renderQueued = false;
-  let renderInFlight = false;
-  let renderRequested = false;
   let themeMode: BrandDiagramMode = 'light';
   const instanceID = ++markdownInstance;
 
@@ -36,7 +27,6 @@
     if (!root) {
       return;
     }
-    renderVersion += 1;
     for (const diagram of root.querySelectorAll<HTMLElement>('.mermaid-diagram')) {
       delete diagram.dataset.mermaidRendered;
       diagram.dataset.mermaidStatus = 'pending';
@@ -56,137 +46,69 @@
     if (!mounted || !root) {
       return;
     }
-    if (renderInFlight) {
-      renderRequested = true;
+    await tick();
+    const diagrams = Array.from(
+      root.querySelectorAll<HTMLElement>('.mermaid-diagram[data-mermaid-source]')
+    );
+    if (diagrams.length === 0) {
       return;
     }
-    renderInFlight = true;
 
-    type PendingDiagram = {
-      diagram: HTMLElement;
-      source: string;
-      fingerprint: string;
-      output: HTMLElement;
-      fallback: HTMLElement | null;
-    };
-    let pending: PendingDiagram[] = [];
-    try {
-      await tick();
-      const diagrams = Array.from(
-        root.querySelectorAll<HTMLElement>('.mermaid-diagram[data-mermaid-source]')
-      );
-      if (diagrams.length === 0) {
-        return;
-      }
+    const version = ++renderVersion;
+    const mode = currentThemeMode();
+    if (themeMode !== mode) {
+      themeMode = mode;
+    }
+    const { default: mermaid } = await import('mermaid');
+    mermaid.initialize(mermaidConfigForTheme(mode));
 
-      const mode = currentThemeMode();
-      const version = ++renderVersion;
-      if (themeMode !== mode) {
-        themeMode = mode;
-      }
-      pending = diagrams.flatMap((diagram) => {
+    await Promise.all(
+      diagrams.map(async (diagram, index) => {
         const source = diagram.dataset.mermaidSource || '';
         const fingerprint = `${mode}:${source}`;
-        const output = diagram.querySelector<HTMLElement>('.mermaid-output');
-        if (!source.trim() || !output || diagram.dataset.mermaidRendered === fingerprint) {
-          return [];
+        if (!source.trim() || diagram.dataset.mermaidRendered === fingerprint) {
+          return;
         }
-        return [
-          {
-            diagram,
-            source,
-            fingerprint,
-            output,
-            fallback: diagram.querySelector<HTMLElement>('pre')
-          }
-        ];
-      });
-      if (pending.length === 0) {
-        return;
-      }
-      for (const { diagram } of pending) {
-        diagram.dataset.mermaidStatus = 'loading';
-      }
-
-      const mermaid = await loadMermaid();
-      if (version !== renderVersion || !mounted) {
-        return;
-      }
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        secure: ['securityLevel', 'theme', 'themeVariables', 'themeCSS', 'darkMode', 'fontFamily'],
-        theme: 'base',
-        darkMode: mode === 'dark',
-        fontFamily:
-          'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-        themeVariables: mermaidBrandThemeVariables(mode)
-      });
-
-      await Promise.all(
-        pending.map(async ({ diagram, source, fingerprint, output, fallback }, index) => {
-          if (version !== renderVersion || !mounted) {
+        const output = diagram.querySelector<HTMLElement>('.mermaid-output');
+        const fallback = diagram.querySelector<HTMLElement>('pre');
+        if (!output) {
+          return;
+        }
+        diagram.dataset.mermaidStatus = 'rendering';
+        try {
+          const { svg, bindFunctions } = await mermaid.render(
+            `markdown-mermaid-${instanceID}-${version}-${index}`,
+            source
+          );
+          if (version !== renderVersion) {
             return;
           }
-          diagram.dataset.mermaidStatus = 'rendering';
-          try {
-            const { svg, bindFunctions } = await mermaid.render(
-              `markdown-mermaid-${instanceID}-${version}-${index}`,
-              source
-            );
-            if (version !== renderVersion || !mounted) {
-              return;
-            }
-            output.innerHTML = svg;
-            bindFunctions?.(output);
-            output.hidden = false;
-            if (fallback) {
-              fallback.hidden = true;
-            }
-            diagram.dataset.mermaidRendered = fingerprint;
-            diagram.dataset.mermaidStatus = 'rendered';
-          } catch (error) {
-            if (version !== renderVersion || !mounted) {
-              return;
-            }
-            output.replaceChildren();
-            output.hidden = true;
-            if (fallback) {
-              fallback.hidden = false;
-            }
-            diagram.dataset.mermaidStatus = 'error';
-            diagram.dataset.mermaidError = error instanceof Error ? error.message : String(error);
+          output.innerHTML = svg;
+          bindFunctions?.(output);
+          output.hidden = false;
+          if (fallback) {
+            fallback.hidden = true;
           }
-        })
-      );
-    } catch (error) {
-      for (const { diagram, output, fallback } of pending) {
-        output.replaceChildren();
-        output.hidden = true;
-        if (fallback) {
-          fallback.hidden = false;
+          diagram.dataset.mermaidRendered = fingerprint;
+          diagram.dataset.mermaidStatus = 'rendered';
+        } catch (error) {
+          if (version !== renderVersion) {
+            return;
+          }
+          output.replaceChildren();
+          output.hidden = true;
+          if (fallback) {
+            fallback.hidden = false;
+          }
+          diagram.dataset.mermaidStatus = 'error';
+          diagram.dataset.mermaidError = error instanceof Error ? error.message : String(error);
         }
-        diagram.dataset.mermaidStatus = 'error';
-        diagram.dataset.mermaidError = error instanceof Error ? error.message : String(error);
-      }
-    } finally {
-      renderInFlight = false;
-      if (renderRequested && mounted) {
-        renderRequested = false;
-        queueMermaidRender();
-      }
-    }
+      })
+    );
   };
 
   const queueMermaidRender = () => {
-    if (!mounted) {
-      return;
-    }
-    if (renderInFlight) {
-      renderRequested = true;
-      return;
-    }
-    if (renderQueued) {
+    if (!mounted || renderQueued) {
       return;
     }
     renderQueued = true;
@@ -361,7 +283,7 @@
 
   .markdown :global(.mermaid-diagram[data-mermaid-status='error']) {
     border-color: #d97706;
-    background: #fffbeb;
+    background: #f8fafc;
   }
 
   .markdown :global(a) {
@@ -408,6 +330,6 @@
 
   :global(html[data-theme='dark'] .markdown .mermaid-diagram[data-mermaid-status='error']) {
     border-color: #fbbf24;
-    background: #422006;
+    background: #0f172a;
   }
 </style>

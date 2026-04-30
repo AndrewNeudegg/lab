@@ -2,8 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.PLAYWRIGHT_PORT || worktreePort(process.cwd()));
 const baseURL = `http://127.0.0.1:${port}`;
+const webServerTimeout = Number(process.env.PLAYWRIGHT_WEB_SERVER_TIMEOUT || 90_000);
 const testTimeout = Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 60_000);
-const webServerTimeout = Number(process.env.PLAYWRIGHT_WEB_SERVER_TIMEOUT || 120_000);
 const expectTimeout = Number(process.env.PLAYWRIGHT_EXPECT_TIMEOUT || 15_000);
 const executablePath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||

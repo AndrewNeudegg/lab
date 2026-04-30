@@ -453,6 +453,11 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
       .click();
     await expect(page.getByText('workflow started')).toBeVisible();
   } else if (route.startsWith('/docs')) {
+    if (mobile) {
+      const docsNavigationToggle = page.getByRole('button', { name: 'Expand docs navigation' });
+      await expect(docsNavigationToggle).toBeVisible();
+      await docsNavigationToggle.click();
+    }
     await page.getByRole('searchbox', { name: 'Search documentation' }).fill('remote');
     await expect(page.locator('#docs-list')).toBeVisible();
     await expect(

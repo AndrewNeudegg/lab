@@ -242,6 +242,36 @@ func TestPlainWorkRequestIntent(t *testing.T) {
 	}
 }
 
+func TestToolIntrospectionListsAvailableToolsWithoutLLM(t *testing.T) {
+	provider := &recordingProvider{}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	result, err := orch.HandleDetailed(context.Background(), "test", "what tools are available?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != "program" {
+		t.Fatalf("source = %q, want program", result.Source)
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("provider request count = %d, want 0", len(provider.requests))
+	}
+	for _, want := range []string{
+		"Available tools:",
+		"`task.create`: Create a development task",
+		"Parameters: required `goal`; optional `target`.",
+		"`workflow.run`: Run a durable workflow",
+		"Parameters: required `workflow_id`.",
+		"`agent.list`: No description. Parameters: none.",
+	} {
+		if !strings.Contains(result.Reply, want) {
+			t.Fatalf("reply missing %q:\n%s", want, result.Reply)
+		}
+	}
+}
+
 func TestMergeQueueReviewWaitsForHead(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	now := time.Now().UTC()

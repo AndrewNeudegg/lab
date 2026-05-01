@@ -803,17 +803,18 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
       .click();
     await expect(page.getByText('workflow started')).toBeVisible();
   } else if (route === '/knowledge') {
-    await page.getByPlaceholder('Search Knowledge Space').fill('Research');
+    await page.getByPlaceholder('Search spaces').fill('Research');
     await page.getByRole('link', { name: /Research synthesis/ }).click();
     await page.getByRole('tab', { name: 'Sources' }).click();
+    await page.locator('details.add-source > summary').click();
     await page.getByLabel('Source title').fill('Review notes');
     await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
-    await page.getByRole('button', { name: 'Add source' }).click();
+    await page.locator('.source-form button[type="submit"]').click();
     await expect(page.getByText('Source processed')).toBeVisible();
     await page.getByRole('tab', { name: 'Research' }).click();
-    await page.getByLabel('Question').fill('How should evidence be reviewed?');
+    await page.getByRole('textbox', { name: 'Question' }).fill('How should evidence be reviewed?');
     await page.getByLabel('Mode', { exact: true }).selectOption('brief');
-    await page.getByRole('button', { name: 'Run' }).click();
+    await page.getByRole('button', { name: 'Create brief' }).click();
     await expect(page.getByText('Research report created')).toBeVisible();
     await expect(page.locator('[aria-label="Report evidence"]')).toContainText('[S1]');
   } else if (route.startsWith('/docs')) {
@@ -883,7 +884,7 @@ test.describe('knowledge empty state', () => {
     });
 
     await page.goto('/knowledge');
-    await expect(page.getByText('No Knowledge Space matches this view.')).toBeVisible();
+    await expect(page.getByText('No Knowledge Spaces yet.')).toBeVisible();
     await expect(page.getByText('No Knowledge Space selected')).toBeVisible();
     await expect(page.getByText(/response\.spaces is null|Symbol\.iterator/)).toHaveCount(0);
     expect(pageErrors).toEqual([]);

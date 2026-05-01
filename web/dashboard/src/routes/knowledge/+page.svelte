@@ -16,9 +16,11 @@
     knowledgeSpacesFromResponse,
     latestReport,
     panelLabel,
+    panelItemCount,
     selectKnowledgeSpace,
     spaceSourceCount,
     spaceWordCount,
+    sourceSelectionSummary,
     type KnowledgePanel
   } from './view-model';
 
@@ -40,6 +42,10 @@
   let notice = '';
   let lastRefresh = '';
   let selectedSourceIds: string[] = [];
+  let ready = false;
+  let detailEl: HTMLElement | undefined;
+  let createSpaceOpen = false;
+  let addSourceOpen = false;
 
   let titleDraft = '';
   let objectiveDraft = '';
@@ -55,6 +61,11 @@
   let visibleSpaces: HomelabdKnowledgeSpace[] = [];
   let selectedSpace: HomelabdKnowledgeSpace | undefined;
   let latestSelectedReport: HomelabdKnowledgeReport | undefined;
+  let totalSourceCount = 0;
+  let selectedSourceCount = 0;
+  let selectedSourceSummary = '';
+  let totalReportCount = 0;
+  let totalSpaceSourceCount = 0;
 
   $: visibleSpaces = filterKnowledgeSpaces(spaces, search);
   $: selectedSpaceId = selectKnowledgeSpace(
@@ -65,10 +76,16 @@
   );
   $: selectedSpace = spaces.find((space) => space.id === selectedSpaceId);
   $: latestSelectedReport = activeReport || latestReport(selectedSpace);
+  $: totalSourceCount = selectedSpace?.sources?.length || 0;
+  $: selectedSourceCount = selectedSourceIds.length;
+  $: selectedSourceSummary = sourceSelectionSummary(selectedSourceCount, totalSourceCount);
+  $: totalReportCount = spaces.reduce((total, space) => total + (space.reports?.length || 0), 0);
+  $: totalSpaceSourceCount = spaces.reduce((total, space) => total + spaceSourceCount(space), 0);
   $: if (selectedSpace && selectedSpace.id !== lastSelectedSpaceId) {
     lastSelectedSpaceId = selectedSpace.id;
     activeReport = undefined;
     selectedSourceIds = (selectedSpace.sources || []).map((source) => source.id);
+    addSourceOpen = !(selectedSpace.sources?.length);
   }
 
   const currentRouteSpaceId = () => (browser ? $page.url.searchParams.get('space') || '' : '');
@@ -99,6 +116,9 @@
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const plural = (count: number, singular: string, pluralLabel = `${singular}s`) =>
+    `${count} ${count === 1 ? singular : pluralLabel}`;
+
   const navigateToSpace = (spaceId: string, replaceState = false) => {
     if (!browser || !spaceId) {
       return;
@@ -109,6 +129,23 @@
     }
     lastAppliedRouteSpaceId = spaceId;
     void goto(next, { keepFocus: true, noScroll: true, replaceState });
+  };
+
+  const isCompactKnowledgeViewport = () =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
+
+  const revealDetailIfCompact = () => {
+    if (!isCompactKnowledgeViewport()) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (!detailEl) {
+        return;
+      }
+      const navbarBottom = document.querySelector('.navbar')?.getBoundingClientRect().bottom || 0;
+      const detailTop = detailEl.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo({ top: Math.max(0, detailTop - navbarBottom - 8) });
+    });
   };
 
   const applyRouteSpaceSelection = (spaceId: string) => {
@@ -122,6 +159,7 @@
   const selectSpace = (spaceId: string) => {
     selectedSpaceId = spaceId;
     navigateToSpace(spaceId);
+    revealDetailIfCompact();
   };
 
   const handleSpaceRowClick = (event: MouseEvent, spaceId: string) => {
@@ -180,11 +218,15 @@
       if (!spaces.some((space) => space.id === selectedSpaceId)) {
         selectedSpaceId = spaces[0]?.id || '';
       }
+      if (!spaces.length) {
+        createSpaceOpen = true;
+      }
       lastRefresh = syncTimeLabel();
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to load Knowledge Space data.';
     } finally {
       loading = false;
+      ready = true;
     }
   };
 
@@ -234,6 +276,7 @@
       sourceURIDraft = '';
       sourceContentDraft = '';
       selectedSourceIds = (response.space.sources || []).map((source) => source.id);
+      addSourceOpen = false;
       notice = response.reply || 'Source processed.';
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to add source.';
@@ -274,6 +317,26 @@
 
   const selectAllSources = () => {
     selectedSourceIds = (selectedSpace?.sources || []).map((source) => source.id);
+  };
+
+  const clearSourceSelection = () => {
+    selectedSourceIds = [];
+  };
+
+  const clearSearch = () => {
+    search = '';
+  };
+
+  const useSuggestedQuestion = (question: string) => {
+    questionDraft = question;
+    activePanel = 'research';
+    revealDetailIfCompact();
+  };
+
+  const selectReport = (report: HomelabdKnowledgeReport) => {
+    activeReport = report;
+    activePanel = 'research';
+    revealDetailIfCompact();
   };
 
   const handleTabKeydown = (event: KeyboardEvent, panel: KnowledgePanel) => {
@@ -319,39 +382,59 @@
 <div class="knowledge-shell">
   <Navbar title="Knowledge Space" subtitle="homelabd" current="/knowledge" taskApiBase={apiBase} />
 
-  <main class="knowledge-page">
+  <main class="knowledge-page" data-ready={ready ? 'true' : 'false'}>
     <section class="space-list" aria-label="Knowledge Space list">
       <header class="space-header">
         <div>
           <h1>Knowledge Space</h1>
-          <span>{lastRefresh ? `Synced ${lastRefresh}` : apiBase}</span>
+          <span>{lastRefresh ? `Synced ${lastRefresh}` : loading ? 'Loading spaces' : 'Not synced'}</span>
         </div>
-        <button type="button" disabled={loading} on:click={() => void refreshSpaces()}>
-          {loading ? 'Syncing' : 'Sync'}
+        <button
+          type="button"
+          class="sync-button"
+          disabled={loading}
+          aria-label={loading ? 'Syncing Knowledge Spaces' : 'Sync Knowledge Spaces'}
+          title="Sync Knowledge Spaces"
+          on:click={() => void refreshSpaces()}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M20 12a8 8 0 0 1-13.7 5.7M4 12A8 8 0 0 1 17.7 6.3M7 18H4v-3M17 6h3v3" />
+          </svg>
+          <span>{loading ? 'Syncing' : 'Sync'}</span>
         </button>
       </header>
 
       <div class="space-metrics" aria-label="Knowledge Space totals">
-        <div>
-          <strong>{spaces.length}</strong>
-          <span>Spaces</span>
-        </div>
-        <div>
-          <strong>{spaces.reduce((total, space) => total + spaceSourceCount(space), 0)}</strong>
-          <span>Sources</span>
-        </div>
+        <span><strong>{spaces.length}</strong> {spaces.length === 1 ? 'space' : 'spaces'}</span>
+        <span><strong>{totalSpaceSourceCount}</strong> {totalSpaceSourceCount === 1 ? 'source' : 'sources'}</span>
+        <span><strong>{totalReportCount}</strong> {totalReportCount === 1 ? 'report' : 'reports'}</span>
       </div>
 
       <label class="hidden" for="knowledge-search">Search Knowledge Space</label>
-      <input
-        id="knowledge-search"
-        class="search"
-        type="search"
-        bind:value={search}
-        placeholder="Search Knowledge Space"
-      />
+      <span class="search-control">
+        <input
+          id="knowledge-search"
+          class="search"
+          type="search"
+          bind:value={search}
+          placeholder="Search spaces"
+        />
+        {#if search}
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Clear search input"
+            title="Clear search"
+            on:click={clearSearch}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        {/if}
+      </span>
 
-      <details class="create-space">
+      <details class="create-space" bind:open={createSpaceOpen}>
         <summary>New space</summary>
         <form on:submit|preventDefault={() => void createSpace()}>
           <label for="space-title">Title</label>
@@ -386,6 +469,7 @@
               href={knowledgeSpaceURL(space.id)}
               class="space-row"
               class:selected={selectedSpace?.id === space.id}
+              aria-current={selectedSpace?.id === space.id ? 'page' : undefined}
               on:click={(event) => handleSpaceRowClick(event, space.id)}
             >
               <span class="dot"></span>
@@ -393,16 +477,23 @@
                 <strong>{space.title}</strong>
                 <small>{compactKnowledgeID(space.id)} · {spaceSourceCount(space)} sources</small>
               </span>
-              <em>{spaceWordCount(space)}</em>
+              <em>{plural(spaceWordCount(space), 'word')}</em>
             </a>
           {/each}
+        {:else if loading}
+          <p class="empty">Loading Knowledge Spaces...</p>
         {:else}
-          <p class="empty">No Knowledge Space matches this view.</p>
+          <div class="empty">
+            <p>{search ? 'No Knowledge Space matches this search.' : 'No Knowledge Spaces yet.'}</p>
+            {#if search}
+              <button type="button" class="text-action" on:click={clearSearch}>Clear search</button>
+            {/if}
+          </div>
         {/if}
       </div>
     </section>
 
-    <section class="space-detail" aria-label="Knowledge Space detail">
+    <section class="space-detail" aria-label="Knowledge Space detail" bind:this={detailEl}>
       {#if selectedSpace}
         <header class="detail-header">
           <div>
@@ -411,19 +502,37 @@
             <p>{selectedSpace.objective || selectedSpace.description || 'No objective recorded.'}</p>
           </div>
           <div class="detail-actions" aria-label="Knowledge Space actions">
-            <span>{spaceSourceCount(selectedSpace)} sources</span>
-            <span>{spaceWordCount(selectedSpace)} words</span>
+            <span>{plural(spaceSourceCount(selectedSpace), 'source')}</span>
+            <span>{plural(spaceWordCount(selectedSpace), 'word')}</span>
           </div>
         </header>
 
         <div class="insight-bar" aria-label="Knowledge Space insight">
-          <div>
+          <div class="insight-card">
             <span>Key terms</span>
-            <strong>{(selectedSpace.insight?.key_terms || []).slice(0, 5).join(', ') || 'None'}</strong>
+            {#if selectedSpace.insight?.key_terms?.length}
+              <div class="chips">
+                {#each selectedSpace.insight.key_terms.slice(0, 6) as term}
+                  <span>{term}</span>
+                {/each}
+              </div>
+            {:else}
+              <strong>None yet</strong>
+            {/if}
           </div>
-          <div>
-            <span>Latest</span>
-            <strong>{latestSelectedReport ? compactTime(latestSelectedReport.created_at) : 'No report'}</strong>
+          <div class="insight-card">
+            <span>Suggested questions</span>
+            {#if selectedSpace.insight?.suggested_questions?.length}
+              <div class="question-chips" aria-label="Research suggestions">
+                {#each selectedSpace.insight.suggested_questions.slice(0, 3) as question}
+                  <button type="button" on:click={() => useSuggestedQuestion(question)}>
+                    {question}
+                  </button>
+                {/each}
+              </div>
+            {:else}
+              <strong>No suggestions yet</strong>
+            {/if}
           </div>
         </div>
 
@@ -440,7 +549,8 @@
               on:click={() => (activePanel = panel)}
               on:keydown={(event) => handleTabKeydown(event, panel)}
             >
-              {panelLabel(panel)}
+              <span>{panelLabel(panel)}</span>
+              <small>{panelItemCount(panel, selectedSpace)}</small>
             </button>
           {/each}
         </div>
@@ -448,66 +558,77 @@
         {#if activePanel === 'sources'}
           <div
             id="knowledge-panel-sources"
-            class="panel"
+            class="panel sources-panel"
             role="tabpanel"
             aria-labelledby="knowledge-tab-sources"
           >
-            <form class="source-form" on:submit|preventDefault={() => void addSource()}>
-              <div class="form-grid">
-                <label for="source-title">Source title</label>
-                <input id="source-title" bind:value={sourceTitleDraft} autocomplete="off" />
-
-                <label for="source-kind">Source type</label>
-                <select id="source-kind" bind:value={sourceKindDraft}>
-                  <option value="text">Text</option>
-                  <option value="url">URL</option>
-                  <option value="file">File</option>
-                  <option value="note">Note</option>
-                </select>
-
-                <label for="source-uri">Reference</label>
-                <input id="source-uri" bind:value={sourceURIDraft} autocomplete="off" />
+            <section class="source-list-section" aria-label="Processed sources">
+              <header class="panel-title">
+                <div>
+                  <h3>Processed sources</h3>
+                  <p>{spaceSourceCount(selectedSpace)} source{spaceSourceCount(selectedSpace) === 1 ? '' : 's'} available for research.</p>
+                </div>
+              </header>
+              <div class="source-list">
+                {#if selectedSpace.sources?.length}
+                  {#each selectedSpace.sources as source (source.id)}
+                    <article class="source-card">
+                      <header>
+                        <div>
+                          <span>{source.kind}</span>
+                          <h3>{source.title}</h3>
+                        </div>
+                        <strong>{source.word_count} words</strong>
+                      </header>
+                      <p>{source.summary}</p>
+                      {#if source.key_terms?.length}
+                        <div class="chips" aria-label={`${source.title} key terms`}>
+                          {#each source.key_terms.slice(0, 6) as term}
+                            <span>{term}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                    </article>
+                  {/each}
+                {:else}
+                  <p class="empty">No sources have been processed. Add source text before running research.</p>
+                {/if}
               </div>
+            </section>
 
-              <label for="source-content">Source text</label>
-              <textarea id="source-content" bind:value={sourceContentDraft} rows="8"></textarea>
+            <details class="add-source" bind:open={addSourceOpen}>
+              <summary>Add source</summary>
+              <form class="source-form" on:submit|preventDefault={() => void addSource()}>
+                <div class="form-grid">
+                  <label for="source-title">Source title</label>
+                  <input id="source-title" bind:value={sourceTitleDraft} autocomplete="off" />
 
-              <div class="form-footer">
-                <span>{sourceContentDraft.trim().split(/\s+/).filter(Boolean).length} words</span>
-                <button
-                  type="submit"
-                  disabled={addingSource || !sourceTitleDraft.trim() || !sourceContentDraft.trim()}
-                >
-                  {addingSource ? 'Processing' : 'Add source'}
-                </button>
-              </div>
-            </form>
+                  <label for="source-kind">Source type</label>
+                  <select id="source-kind" bind:value={sourceKindDraft}>
+                    <option value="text">Text</option>
+                    <option value="url">URL</option>
+                    <option value="file">File</option>
+                    <option value="note">Note</option>
+                  </select>
 
-            <div class="source-list" aria-label="Processed sources">
-              {#if selectedSpace.sources?.length}
-                {#each selectedSpace.sources as source (source.id)}
-                  <article class="source-card">
-                    <header>
-                      <div>
-                        <span>{source.kind}</span>
-                        <h3>{source.title}</h3>
-                      </div>
-                      <strong>{source.word_count} words</strong>
-                    </header>
-                    <p>{source.summary}</p>
-                    {#if source.key_terms?.length}
-                      <div class="chips" aria-label={`${source.title} key terms`}>
-                        {#each source.key_terms.slice(0, 6) as term}
-                          <span>{term}</span>
-                        {/each}
-                      </div>
-                    {/if}
-                  </article>
-                {/each}
-              {:else}
-                <p class="empty">No sources have been processed.</p>
-              {/if}
-            </div>
+                  <label for="source-uri">Reference</label>
+                  <input id="source-uri" bind:value={sourceURIDraft} autocomplete="off" />
+                </div>
+
+                <label for="source-content">Source text</label>
+                <textarea id="source-content" bind:value={sourceContentDraft} rows="8"></textarea>
+
+                <div class="form-footer">
+                  <span>{sourceContentDraft.trim().split(/\s+/).filter(Boolean).length} words</span>
+                  <button
+                    type="submit"
+                    disabled={addingSource || !sourceTitleDraft.trim() || !sourceContentDraft.trim()}
+                  >
+                    {addingSource ? 'Processing' : 'Process source'}
+                  </button>
+                </div>
+              </form>
+            </details>
           </div>
         {:else if activePanel === 'research'}
           <div
@@ -517,6 +638,13 @@
             aria-labelledby="knowledge-tab-research"
           >
             <form class="research-form" on:submit|preventDefault={() => void runResearch()}>
+              <div class="panel-title">
+                <div>
+                  <h3>Research draft</h3>
+                  <p>{selectedSourceSummary}</p>
+                </div>
+              </div>
+
               <label for="research-question">Question</label>
               <textarea id="research-question" bind:value={questionDraft} rows="3"></textarea>
 
@@ -527,12 +655,17 @@
                   <option value="brief">Brief</option>
                   <option value="study">Study</option>
                 </select>
-                <button type="button" on:click={selectAllSources}>All sources</button>
+                <button type="button" disabled={!selectedSpace.sources?.length} on:click={selectAllSources}>
+                  Select all
+                </button>
+                <button type="button" disabled={!selectedSourceIds.length} on:click={clearSourceSelection}>
+                  Clear
+                </button>
                 <button
                   type="submit"
-                  disabled={researching || !questionDraft.trim() || !selectedSpace.sources?.length}
+                  disabled={researching || !questionDraft.trim() || !selectedSourceIds.length}
                 >
-                  {researching ? 'Researching' : 'Run'}
+                  {researching ? 'Researching' : researchModeDraft === 'brief' ? 'Create brief' : 'Run research'}
                 </button>
               </div>
 
@@ -594,7 +727,7 @@
             <div class="reports-list" aria-label="Knowledge Space reports">
               {#if selectedSpace.reports?.length}
                 {#each selectedSpace.reports as report (report.id)}
-                  <article class="report-row">
+                  <button type="button" class="report-row" on:click={() => selectReport(report)}>
                     <header>
                       <div>
                         <span>{report.mode}</span>
@@ -603,7 +736,7 @@
                       <strong>{compactTime(report.created_at)}</strong>
                     </header>
                     <p>{report.key_findings?.[0] || report.answer}</p>
-                  </article>
+                  </button>
                 {/each}
               {:else}
                 <p class="empty">No reports are stored.</p>
@@ -635,6 +768,18 @@
     font-family:
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
+  }
+
+  :global(:root) {
+    --knowledge-muted: #475569;
+    --knowledge-primary-bg: #172554;
+    --knowledge-primary-text: #ffffff;
+  }
+
+  :global(html[data-theme='dark']) {
+    --knowledge-muted: #b7c6da;
+    --knowledge-primary-bg: #172554;
+    --knowledge-primary-text: #ffffff;
   }
 
   button,
@@ -721,11 +866,12 @@
 
   .space-header span,
   .detail-header p,
+  .panel-title p,
   .source-card p,
   .report-row p,
   .empty,
   .empty-detail p {
-    color: var(--muted, #64748b);
+    color: var(--knowledge-muted, #475569);
   }
 
   .space-header button,
@@ -745,6 +891,31 @@
     padding: 0.45rem 0.75rem;
   }
 
+  .sync-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    color: var(--knowledge-primary-text, #ffffff) !important;
+    border-color: var(--knowledge-primary-bg, #172554) !important;
+    background: var(--knowledge-primary-bg, #172554) !important;
+  }
+
+  .sync-button span {
+    color: var(--knowledge-primary-text, #ffffff);
+  }
+
+  .sync-button svg,
+  .icon-button svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
   button:disabled {
     cursor: not-allowed;
     opacity: 0.55;
@@ -757,16 +928,19 @@
   }
 
   .space-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
   }
 
   .insight-bar {
-    grid-template-columns: minmax(0, 1fr) minmax(8rem, 12rem);
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.9fr);
     margin: 1rem 0;
   }
 
-  .space-metrics div,
-  .insight-bar div {
+  .insight-card {
     min-width: 0;
     padding: 0.8rem;
     border: 1px solid var(--border-soft, #dbe3ef);
@@ -789,11 +963,23 @@
   .report-card header span,
   .report-row header span,
   .form-footer span {
-    color: var(--muted, #64748b);
+    color: var(--knowledge-muted, #475569);
     font-size: 0.78rem;
     font-weight: 800;
     letter-spacing: 0;
     text-transform: uppercase;
+  }
+
+  .space-metrics span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-transform: none;
+  }
+
+  .search-control {
+    position: relative;
+    display: block;
   }
 
   .search,
@@ -815,6 +1001,22 @@
     padding: 0.5rem 0.65rem;
   }
 
+  .search-control .search {
+    padding-right: 2.8rem;
+  }
+
+  .icon-button {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    min-height: 2rem;
+    padding: 0;
+  }
+
   textarea {
     padding: 0.65rem;
     resize: vertical;
@@ -834,13 +1036,15 @@
     white-space: nowrap;
   }
 
-  .create-space {
+  .create-space,
+  .add-source {
     border: 1px solid var(--border-soft, #dbe3ef);
     background: var(--panel, #ffffff);
     border-radius: 8px;
   }
 
-  .create-space summary {
+  .create-space summary,
+  .add-source summary {
     padding: 0.75rem;
     color: var(--text-strong, #0f172a);
     font-weight: 800;
@@ -853,7 +1057,8 @@
     gap: 0.7rem;
   }
 
-  .create-space form {
+  .create-space form,
+  .add-source form {
     padding: 0 0.75rem 0.75rem;
   }
 
@@ -873,6 +1078,16 @@
   .notice.success {
     color: var(--success, #16a34a);
     border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
+  }
+
+  .text-action {
+    width: fit-content;
+    min-height: 2.35rem;
+    padding: 0.4rem 0.75rem;
+    color: var(--knowledge-primary-bg, #172554);
+    border: 1px solid var(--knowledge-primary-bg, #172554);
+    background: var(--panel, #ffffff);
+    font-weight: 800;
   }
 
   .rows,
@@ -901,6 +1116,7 @@
   .space-row:hover,
   .space-row.selected {
     border-color: var(--primary, #2563eb);
+    box-shadow: 0 0 0 1px var(--primary, #2563eb);
   }
 
   .space-row strong,
@@ -916,7 +1132,7 @@
 
   .space-row small,
   .space-row em {
-    color: var(--muted, #64748b);
+    color: var(--knowledge-muted, #475569);
     font-style: normal;
   }
 
@@ -948,7 +1164,7 @@
     border: 1px solid var(--border, #cbd5e1);
     border-radius: 999px;
     background: var(--panel, #ffffff);
-    color: var(--muted, #64748b);
+    color: var(--knowledge-muted, #475569);
     font-weight: 800;
   }
 
@@ -960,18 +1176,63 @@
   }
 
   .tabs button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
     flex: 0 0 auto;
     padding: 0.45rem 0.9rem;
   }
 
+  .tabs button small {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.35rem;
+    min-height: 1.35rem;
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    color: var(--knowledge-muted, #475569);
+    background: var(--bg, #eef2f7);
+    font-size: 0.75rem;
+    font-weight: 850;
+  }
+
   .tabs button.active {
-    border-color: var(--primary, #2563eb);
-    background: var(--primary, #2563eb);
-    color: white;
+    border-color: var(--knowledge-primary-bg, #172554);
+    background: var(--knowledge-primary-bg, #172554);
+    color: var(--knowledge-primary-text, #ffffff);
+  }
+
+  .tabs button.active small {
+    color: var(--knowledge-primary-bg, #172554);
+    background: var(--knowledge-primary-text, #ffffff);
   }
 
   .panel {
     margin-top: 0.8rem;
+  }
+
+  .panel-title {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .panel-title h3 {
+    color: var(--text-strong, #0f172a);
+    font-size: 1rem;
+  }
+
+  .sources-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 25rem);
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .source-list-section {
+    min-width: 0;
   }
 
   .form-grid {
@@ -1000,6 +1261,18 @@
     background: var(--panel, #ffffff);
   }
 
+  .report-row {
+    width: 100%;
+    color: inherit;
+    text-align: left;
+  }
+
+  .report-row:hover,
+  .report-row:focus-visible {
+    border-color: var(--primary, #2563eb);
+    box-shadow: 0 0 0 1px var(--primary, #2563eb);
+  }
+
   .source-card h3,
   .report-card h3,
   .report-row h3 {
@@ -1017,12 +1290,14 @@
     overflow-wrap: anywhere;
   }
 
-  .source-list {
+  .source-list,
+  .source-list-section {
     margin-top: 1rem;
   }
 
   .chips,
-  .gaps {
+  .gaps,
+  .question-chips {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
@@ -1035,10 +1310,23 @@
     padding: 0.3rem 0.5rem;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 999px;
-    color: var(--muted, #64748b);
+    color: var(--knowledge-muted, #475569);
     background: var(--bg, #eef2f7);
     font-size: 0.82rem;
     font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+
+  .question-chips button {
+    max-width: 100%;
+    min-height: 2.25rem;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    color: var(--text, #172033);
+    background: var(--bg, #eef2f7);
+    font-weight: 750;
+    text-align: left;
     overflow-wrap: anywhere;
   }
 
@@ -1109,6 +1397,8 @@
 
   .empty,
   .empty-detail {
+    display: grid;
+    gap: 0.65rem;
     padding: 1rem;
     border: 1px dashed var(--border, #cbd5e1);
     border-radius: 8px;
@@ -1123,12 +1413,13 @@
   }
 
   :global([data-theme='dark']) .tabs button.active {
-    color: #0f172a;
+    color: var(--knowledge-primary-text, #ffffff);
   }
 
   @media (max-width: 1080px) {
     .knowledge-page,
-    .research-panel {
+    .research-panel,
+    .sources-panel {
       grid-template-columns: 1fr;
     }
 
@@ -1178,6 +1469,18 @@
 
     .detail-actions {
       justify-content: flex-start;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      overflow-x: visible;
+    }
+
+    .tabs button {
+      justify-content: center;
+      min-width: 0;
+      padding: 0.45rem 0.35rem;
     }
 
     .research-controls select {

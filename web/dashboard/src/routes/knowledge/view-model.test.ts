@@ -5,9 +5,11 @@ import {
   filterKnowledgeSpaces,
   knowledgeSpacesFromResponse,
   latestReport,
+  panelItemCount,
   selectKnowledgeSpace,
   spaceSourceCount,
-  spaceWordCount
+  spaceWordCount,
+  sourceSelectionSummary
 } from './view-model';
 
 const space = (
@@ -82,5 +84,22 @@ describe('knowledge view model', () => {
     expect(spaceSourceCount(item)).toBe(2);
     expect(spaceWordCount(item)).toBe(42);
     expect(latestReport(item)?.id).toBe('r2');
+  });
+
+  test('summarises panel counts and selected research sources', () => {
+    const item = space('kspace_20260430_abcd1234', 'Research', '2026-04-29T09:00:00Z', {
+      insight: { source_count: 2, word_count: 42 },
+      reports: [
+        { id: 'r1', question: 'old', mode: 'brief', answer: 'old', created_at: '2026-04-28T09:00:00Z' }
+      ]
+    });
+
+    expect(panelItemCount('sources', item)).toBe(2);
+    expect(panelItemCount('research', item)).toBe(1);
+    expect(panelItemCount('reports', item)).toBe(1);
+    expect(sourceSelectionSummary(0, 0)).toBe('No sources available');
+    expect(sourceSelectionSummary(0, 2)).toBe('No sources selected');
+    expect(sourceSelectionSummary(1, 2)).toBe('1/2 sources selected');
+    expect(sourceSelectionSummary(2, 2)).toBe('All 2 sources selected');
   });
 });

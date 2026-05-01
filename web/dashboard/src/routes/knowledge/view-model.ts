@@ -86,3 +86,27 @@ export const panelLabel = (panel: KnowledgePanel) => {
       return 'Sources';
   }
 };
+
+export const panelItemCount = (panel: KnowledgePanel, space?: HomelabdKnowledgeSpace) => {
+  switch (panel) {
+    case 'research':
+      return space?.reports?.length || 0;
+    case 'reports':
+      return space?.reports?.length || 0;
+    default:
+      return spaceSourceCount(space);
+  }
+};
+
+export const sourceSelectionSummary = (selectedCount: number, totalCount: number) => {
+  if (totalCount <= 0) {
+    return 'No sources available';
+  }
+  if (selectedCount <= 0) {
+    return 'No sources selected';
+  }
+  if (selectedCount === totalCount) {
+    return `All ${totalCount} ${totalCount === 1 ? 'source' : 'sources'} selected`;
+  }
+  return `${selectedCount}/${totalCount} sources selected`;
+};

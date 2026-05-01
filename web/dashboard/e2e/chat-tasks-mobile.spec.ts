@@ -377,6 +377,76 @@ test('chat mobile keeps typed draft text through layout changes', async ({ page 
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
 });
 
+test('chat mobile history exposes multiple sessions without shrinking the transcript', async ({
+  page
+}) => {
+  const baseTime = Date.parse('2026-05-01T06:20:00Z');
+  const sessions = Array.from({ length: 8 }, (_, index) => ({
+    id: `chat_mobile_${index}`,
+    title: `Mobile chat ${index + 1}`,
+    messages: [
+      {
+        id: 'user-1',
+        role: 'user',
+        content: `Seed request ${index + 1}`,
+        time: '06:20'
+      },
+      {
+        id: 'assistant-2',
+        role: 'assistant',
+        content: `Seed response ${index + 1}`,
+        source: 'program',
+        time: '06:21'
+      }
+    ],
+    created_at: new Date(baseTime - index * 60_000).toISOString(),
+    updated_at: new Date(baseTime - index * 60_000).toISOString()
+  }));
+
+  await page.setViewportSize({ width: 480, height: 897 });
+  await page.goto('/chat');
+  await page.evaluate((seededSessions) => {
+    localStorage.setItem('homelabd.dashboard.chatSessions.v1', JSON.stringify(seededSessions));
+    localStorage.setItem('homelabd.dashboard.activeChatSession.v1', seededSessions[0].id);
+    localStorage.removeItem('homelabd.dashboard.chatTranscript.v4');
+  }, sessions);
+  await page.reload();
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Mobile chat 1/ })).toBeVisible();
+
+  const metrics = await page.evaluate(() => {
+    const sessionList = document.querySelector('.session-list');
+    const sidebar = document.querySelector('.session-sidebar');
+    const chatCard = document.querySelector('.chat-card');
+    const messages = document.querySelector('.messages');
+    if (!sessionList || !sidebar || !chatCard || !messages) {
+      throw new Error('Chat layout elements were not rendered.');
+    }
+    const listRect = sessionList.getBoundingClientRect();
+    const visibleSessions = [...document.querySelectorAll('.session-item')].filter((item) => {
+      const rect = item.getBoundingClientRect();
+      return rect.bottom > listRect.top && rect.top < listRect.bottom;
+    }).length;
+    return {
+      bodyWidth: document.body.scrollWidth,
+      viewport: window.innerWidth,
+      visibleSessions,
+      sidebarHeight: sidebar.getBoundingClientRect().height,
+      chatHeight: chatCard.getBoundingClientRect().height,
+      messagesHeight: messages.getBoundingClientRect().height
+    };
+  });
+
+  expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
+  expect(metrics.visibleSessions, JSON.stringify(metrics)).toBeGreaterThanOrEqual(4);
+  expect(metrics.chatHeight, JSON.stringify(metrics)).toBeGreaterThan(metrics.sidebarHeight * 3);
+  expect(metrics.messagesHeight, JSON.stringify(metrics)).toBeGreaterThanOrEqual(300);
+
+  await page.getByRole('button', { name: /Mobile chat 4/ }).click();
+  await expect(page.getByRole('heading', { name: 'Mobile chat 4' })).toBeVisible();
+  await expect(page.getByText('Seed request 4')).toBeVisible();
+});
+
 test('created task chat reply links to the task with SPA navigation', async ({ page }) => {
   await mockTaskApi(page);
   await page.route('**/api/message', async (route) => {

@@ -1729,6 +1729,63 @@ func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
 	}
 }
 
+func TestCreateTaskSummarizesTitleFromCreationSugar(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	summarizer := &taskTitleSummaryStub{summary: "Fix task title summaries"}
+	if err := orch.registry.Register(summarizer); err != nil {
+		t.Fatal(err)
+	}
+	goal := "new fix task titles by summarising the requested work"
+
+	if _, err := orch.CreateTask(context.Background(), goal); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Goal != goal {
+		t.Fatalf("goal = %q, want original input preserved", tasks[0].Goal)
+	}
+	if tasks[0].Title != "Fix task title summaries" {
+		t.Fatalf("title = %q, want summarized title", tasks[0].Title)
+	}
+	if summarizer.text != "fix task titles by summarising the requested work" {
+		t.Fatalf("summarizer text = %q, want creation sugar removed", summarizer.text)
+	}
+	if summarizer.purpose != "task_title" || summarizer.maxCharacters != taskTitleMaxCharacters {
+		t.Fatalf("summarizer request purpose=%q max=%d", summarizer.purpose, summarizer.maxCharacters)
+	}
+}
+
+func TestCreateTaskFallbackTitleIgnoresCreationSugar(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	goal := "new\nWork this task to completion if possible. Inspect the task workspace before editing. Task goal: fix task titles by summarising the requested work"
+
+	if _, err := orch.CreateTask(context.Background(), goal); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Goal != goal {
+		t.Fatalf("goal = %q, want original input preserved", tasks[0].Goal)
+	}
+	if tasks[0].Title == "new" {
+		t.Fatalf("title = %q, want requested-work fallback title", tasks[0].Title)
+	}
+	if !strings.Contains(tasks[0].Title, "fix task titles") {
+		t.Fatalf("title = %q, want requested-work fallback title", tasks[0].Title)
+	}
+}
+
 func TestCreateTaskUnwrapsJSONSummaryTitle(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	summarizer := &taskTitleSummaryStub{summary: `{"summary":"Implement schema-aware chat buttons"}`}

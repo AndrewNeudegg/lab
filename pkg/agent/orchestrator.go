@@ -4428,7 +4428,8 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 }
 
 func (o *Orchestrator) summarizeTaskTitle(ctx context.Context, taskID, goal string) string {
-	fallback := fallbackTaskTitle(goal, taskTitleMaxCharacters)
+	summaryInput := taskTitleSummaryInput(goal)
+	fallback := fallbackTaskTitle(summaryInput, taskTitleMaxCharacters)
 	if o.registry == nil {
 		return fallback
 	}
@@ -4436,7 +4437,7 @@ func (o *Orchestrator) summarizeTaskTitle(ctx context.Context, taskID, goal stri
 		return fallback
 	}
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "text.summarize", map[string]any{
-		"text":           goal,
+		"text":           summaryInput,
 		"purpose":        "task_title",
 		"max_characters": taskTitleMaxCharacters,
 	}, taskID)
@@ -4458,12 +4459,48 @@ func (o *Orchestrator) summarizeTaskTitle(ctx context.Context, taskID, goal stri
 	return title
 }
 
+func taskTitleSummaryInput(goal string) string {
+	goal = strings.TrimSpace(goal)
+	if parsed, ok := rawTaskCreationGoal(goal); ok {
+		parsed = strings.TrimSpace(parsed)
+		if parsed != "" {
+			return parsed
+		}
+	}
+	return goal
+}
+
 func fallbackTaskTitle(goal string, maxCharacters int) string {
-	title := firstLine(goal)
+	title := fallbackTaskTitleText(goal)
 	if title == "" {
 		title = "untitled task"
 	}
 	return cleanTaskTitle(title, maxCharacters)
+}
+
+func fallbackTaskTitleText(goal string) string {
+	title := strings.Join(strings.Fields(strings.TrimSpace(goal)), " ")
+	for _, prefix := range []string{
+		"Work this task to completion if possible.",
+		"Inspect the task workspace before editing.",
+		"Make a minimal patch that satisfies the task goal.",
+	} {
+		title = strings.TrimSpace(strings.TrimPrefix(title, prefix))
+	}
+	lower := strings.ToLower(title)
+	for _, marker := range []string{"task goal:", "goal:"} {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			title = strings.TrimSpace(title[idx+len(marker):])
+			break
+		}
+	}
+	if sentenceEnd := strings.IndexAny(title, ".!?"); sentenceEnd >= 24 {
+		title = title[:sentenceEnd]
+	}
+	if title != "" {
+		return title
+	}
+	return firstLine(goal)
 }
 
 func cleanTaskTitle(value string, maxCharacters int) string {

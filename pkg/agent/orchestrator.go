@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
@@ -1517,6 +1518,10 @@ func (o *Orchestrator) RunTask(ctx context.Context, taskID string) (string, erro
 
 func (o *Orchestrator) ReviewTask(ctx context.Context, taskID string) (string, error) {
 	return o.reviewTask(ctx, taskID)
+}
+
+func (o *Orchestrator) ReviewUITask(ctx context.Context, taskID string) (string, error) {
+	return o.reviewTaskWithOptions(ctx, taskID, reviewTaskOptions{forceUIUX: true})
 }
 
 func (o *Orchestrator) MoveTaskInMergeQueue(ctx context.Context, taskID, direction string) (string, error) {
@@ -4466,6 +4471,12 @@ func taskIDs(tasks []taskstore.Task) []string {
 
 func (o *Orchestrator) ensureTaskPlan(ctx context.Context, t *taskstore.Task) bool {
 	if taskPlanReviewed(t.Plan) {
+		if taskPlanNeedsUIUXBrief(*t, taskPlanContext{}) && !taskPlanHasUIUXBrief(t.Plan) {
+			brief := defaultUIUXBrief(*t, taskPlanContext{})
+			t.Plan.UIUXBrief = &brief
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.ui_ux_brief.created", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(brief)})
+			return true
+		}
 		return false
 	}
 	now := time.Now().UTC()
@@ -4499,7 +4510,7 @@ func legacyDefaultTaskPlan(plan *taskstore.TaskPlan) bool {
 
 func defaultTaskPlan(t taskstore.Task, now time.Time, planContext taskPlanContext) taskstore.TaskPlan {
 	reviewedAt := now
-	return taskstore.TaskPlan{
+	plan := taskstore.TaskPlan{
 		Status:     "reviewed",
 		Summary:    taskPlanSummary(t, planContext),
 		Steps:      taskPlanSteps(t, planContext),
@@ -4508,6 +4519,11 @@ func defaultTaskPlan(t taskstore.Task, now time.Time, planContext taskPlanContex
 		CreatedAt:  now,
 		ReviewedAt: &reviewedAt,
 	}
+	if taskPlanNeedsUIUXBrief(t, planContext) {
+		brief := defaultUIUXBrief(t, planContext)
+		plan.UIUXBrief = &brief
+	}
+	return plan
 }
 
 type taskPlanContext struct {
@@ -4821,6 +4837,145 @@ func taskPlanValidationCommands(planContext taskPlanContext) []string {
 		return commands[:4]
 	}
 	return commands
+}
+
+func taskPlanNeedsUIUXBrief(t taskstore.Task, planContext taskPlanContext) bool {
+	text := strings.ToLower(strings.Join([]string{t.Title, t.Goal, t.GraphPhase}, " "))
+	for _, marker := range []string{
+		"user interface", "user experience", "dashboard", "browser", "svelte", "mobile", "desktop", "layout", "visual", "accessibility",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	for _, token := range strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		switch token {
+		case "ui", "ux", "a11y":
+			return true
+		}
+	}
+	for _, path := range append(append([]string{}, planContext.Files...), planContext.Tests...) {
+		if uiUXPlanPath(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func uiUXPlanPath(path string) bool {
+	path = filepath.ToSlash(strings.ToLower(path))
+	if strings.HasSuffix(path, ".test.ts") || strings.HasSuffix(path, ".spec.ts") {
+		return false
+	}
+	return strings.HasPrefix(path, "web/dashboard/src/") ||
+		strings.HasPrefix(path, "web/shared/src/") ||
+		strings.HasPrefix(path, "web/dashboard/static/")
+}
+
+func taskPlanHasUIUXBrief(plan *taskstore.TaskPlan) bool {
+	if plan == nil || plan.UIUXBrief == nil {
+		return false
+	}
+	brief := plan.UIUXBrief
+	return strings.TrimSpace(brief.OperatorGoal) != "" &&
+		strings.TrimSpace(brief.PrimaryWorkflow) != "" &&
+		len(nonEmptyStrings(brief.Surfaces)) > 0 &&
+		strings.TrimSpace(brief.ExistingPattern) != "" &&
+		strings.TrimSpace(brief.DesktopLayout) != "" &&
+		strings.TrimSpace(brief.MobileLayout) != "" &&
+		len(nonEmptyStrings(brief.States)) > 0 &&
+		len(nonEmptyStrings(brief.Accessibility)) > 0 &&
+		len(nonEmptyStrings(brief.Validation)) > 0
+}
+
+func defaultUIUXBrief(t taskstore.Task, planContext taskPlanContext) taskstore.UIUXBrief {
+	surfaces := uiUXBriefSurfaces(t, planContext)
+	if len(surfaces) == 0 {
+		surfaces = []string{"dashboard surface named by the task"}
+	}
+	return taskstore.UIUXBrief{
+		OperatorGoal:    firstNonEmptyString(firstLine(t.Goal), friendlyTaskTitle(t)),
+		PrimaryWorkflow: "Complete the task's main operator workflow without extra iteration or hidden state.",
+		Surfaces:        surfaces,
+		ExistingPattern: "Reuse the dashboard's existing responsive navbar, list-detail layouts, semantic colour roles, spacing, typography, task-plan disclosure, and documented UI pattern catalogue.",
+		DesktopLayout:   "Keep the primary workflow visible, dense, and scan-friendly on desktop; preserve existing navigation, status, and action hierarchy.",
+		MobileLayout:    "Use one clear mobile workflow at a time, keep controls reachable below the pinned navbar, and prevent horizontal overflow or clipped controls.",
+		States: []string{
+			"loading",
+			"empty",
+			"error",
+			"disabled",
+			"long content",
+			"success",
+			"stale or reconnecting data",
+		},
+		Accessibility: []string{
+			"semantic roles and accessible names",
+			"keyboard focus order and visible focus",
+			"colour contrast and non-colour state labels",
+			"touch target size",
+			"desktop and mobile axe checks",
+		},
+		Validation: []string{
+			"desktop and mobile browser UAT",
+			"desktop and mobile accessibility checks",
+			"desktop and mobile visual baseline or screenshot review",
+			"interaction-specific regression assertions",
+		},
+	}
+}
+
+func uiUXBriefSurfaces(t taskstore.Task, planContext taskPlanContext) []string {
+	seen := map[string]bool{}
+	var surfaces []string
+	add := func(surface string) {
+		surface = strings.TrimSpace(surface)
+		if surface == "" || seen[surface] {
+			return
+		}
+		seen[surface] = true
+		surfaces = append(surfaces, surface)
+	}
+	text := strings.ToLower(t.Title + " " + t.Goal)
+	for _, route := range []string{"assistant", "chat", "tasks", "knowledge", "workflows", "docs", "terminal", "supervisord", "healthd"} {
+		if strings.Contains(text, route) {
+			add("/" + route)
+		}
+	}
+	for _, path := range planContext.Files {
+		path = filepath.ToSlash(path)
+		if strings.Contains(path, "src/routes/") {
+			route := strings.TrimPrefix(path, "web/dashboard/src/routes/")
+			route = strings.TrimSuffix(route, "/+page.svelte")
+			route = strings.TrimSuffix(route, "/+page.ts")
+			route = strings.Trim(route, "/")
+			if route == "" {
+				add("/chat")
+			} else {
+				add("/" + route)
+			}
+		} else if strings.Contains(path, "web/shared/src/lib/Navbar") {
+			add("shared navigation")
+		} else if strings.Contains(path, "web/shared/src/lib/") || strings.Contains(path, "web/dashboard/src/lib/") {
+			add("shared dashboard component")
+		}
+	}
+	if len(surfaces) > 4 {
+		return surfaces[:4]
+	}
+	return surfaces
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func goTestPackageForPath(path string) string {
@@ -6719,7 +6874,7 @@ func defaultDelegationInstruction(t taskstore.Task) string {
 		agentDiagramGuidance,
 		"If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"Run relevant formatting and tests when available.",
-		"For UI changes, run browser UAT from this task workspace with an isolated dev server, for example `nix develop -c bun run --cwd web uat:tasks` for task-page changes or `nix develop -c bun run --cwd web uat:site` for site-wide changes. If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure; do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
+		"For UI changes, follow docs/ui-ux-agent-work.md and docs/ui-pattern-catalogue.md before editing, use the reviewed UI/UX brief in the task plan, then run browser UAT from this task workspace with an isolated dev server. Use bun.uat.ui or `nix develop -c bun run --cwd web uat:ui` for focused UI quality checks, bun.uat.tasks or `nix develop -c bun run --cwd web uat:tasks` for task-page changes, and bun.uat.site or `nix develop -c bun run --cwd web uat:site` for site-wide changes. UI validation must cover desktop and mobile accessibility checks plus desktop and mobile screenshot or visual-baseline review. If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure; do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
 		"For remote tasks, run validation on the remote worker in the selected remote workdir and report the exact commands, ports, and URLs used.",
 		"Final summary must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
 		"Reviewed task plan: " + formatTaskPlanForPrompt(t.Plan),
@@ -6795,6 +6950,20 @@ func formatTaskPlanForPrompt(plan *taskstore.TaskPlan) string {
 	}
 	if strings.TrimSpace(plan.Review) != "" {
 		fmt.Fprintf(&b, "Review: %s.", strings.TrimSpace(plan.Review))
+	}
+	if taskPlanHasUIUXBrief(plan) {
+		brief := plan.UIUXBrief
+		fmt.Fprintf(&b, " UI/UX brief: operator_goal=%s; primary_workflow=%s; surfaces=%s; existing_pattern=%s; desktop_layout=%s; mobile_layout=%s; states=%s; accessibility=%s; validation=%s.",
+			strings.TrimSpace(brief.OperatorGoal),
+			strings.TrimSpace(brief.PrimaryWorkflow),
+			strings.Join(nonEmptyStrings(brief.Surfaces), ", "),
+			strings.TrimSpace(brief.ExistingPattern),
+			strings.TrimSpace(brief.DesktopLayout),
+			strings.TrimSpace(brief.MobileLayout),
+			strings.Join(nonEmptyStrings(brief.States), ", "),
+			strings.Join(nonEmptyStrings(brief.Accessibility), ", "),
+			strings.Join(nonEmptyStrings(brief.Validation), ", "),
+		)
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -7223,7 +7392,15 @@ func (o *Orchestrator) describeTaskDiff(ctx context.Context, selector string) (s
 	return b.String(), nil
 }
 
+type reviewTaskOptions struct {
+	forceUIUX bool
+}
+
 func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string, error) {
+	return o.reviewTaskWithOptions(ctx, selector, reviewTaskOptions{})
+}
+
+func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector string, opts reviewTaskOptions) (string, error) {
 	taskID, err := o.resolveTaskID(selector)
 	if err != nil {
 		return "", err
@@ -7336,7 +7513,51 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		_, _ = o.processMergeQueueHead(ctx, "merge queue head produced no diff")
 		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes and did not report `No change required:`.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
 	}
+	diffNeedsUIUX := diffRequiresUIUXReview(diffOut)
+	uiUXRequired := opts.forceUIUX || diffNeedsUIUX
+	if uiUXRequired && !taskPlanHasUIUXBrief(t.Plan) {
+		if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
+			return "", currentErr
+		} else if !ok {
+			return reply, nil
+		} else {
+			t = latest
+		}
+		if !taskPlanHasUIUXBrief(t.Plan) {
+			brief := defaultUIUXBrief(t, taskPlanContext{Files: diffFileList(diffOut)})
+			if t.Plan == nil {
+				now := time.Now().UTC()
+				reviewedAt := now
+				t.Plan = &taskstore.TaskPlan{
+					Status:     "reviewed",
+					Summary:    "UI/UX review gate created a required brief for browser-visible work.",
+					Steps:      []taskstore.TaskPlanStep{{Title: "Apply UI/UX workflow", Detail: "Use the required UI/UX brief, existing patterns, desktop and mobile checks, accessibility checks, and visual review before returning to review."}},
+					Review:     repoAwareTaskPlanReview,
+					CreatedAt:  now,
+					ReviewedAt: &reviewedAt,
+				}
+			}
+			t.Plan.UIUXBrief = &brief
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&t)
+			reason := "browser-visible changes require a reviewed UI/UX brief before approval"
+			t.Result = "ReviewerAgent checks failed: UI/UX brief missing for browser-visible diff. ReviewerAgent added the required brief to the task plan; rerun the worker so implementation and handoff explicitly follow it."
+			if opts.forceUIUX && !diffNeedsUIUX {
+				reason = "explicit UI/UX review requires a reviewed UI/UX brief before approval"
+				t.Result = "ReviewerAgent checks failed: UI/UX brief missing for explicit UI/UX review. ReviewerAgent added the required brief to the task plan; rerun the worker so implementation and handoff explicitly follow it."
+			}
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.ui_ux_brief.required", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"brief": brief, "files": diffFileList(diffOut), "forced": opts.forceUIUX})})
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed UI/UX brief gate")
+			return fmt.Sprintf("ReviewerAgent:\nUI/UX checks: fail\nReason: %s. I added the required brief to the task plan.\nNo approval created.\nNext: `delegate %s to codex follow the UI/UX brief and rerun desktop/mobile accessibility and visual checks`, `diff %s`, or `delete %s`.", reason, shortID, shortID, shortID), nil
+		}
+	}
 	browserUAT := browserUATForDiff(diffOut)
+	if opts.forceUIUX && browserUAT == "" {
+		browserUAT = "ui"
+	}
 	testOut, testErr := o.runProjectChecks(ctx, taskID, t.Workspace, "ReviewerAgent", browserUAT)
 	status := "pass"
 	if testErr != nil {
@@ -7397,6 +7618,15 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 	t.Status = taskstore.StatusAwaitingApproval
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = "ReviewerAgent test status: " + status
+	uiUXLine := ""
+	if uiUXRequired {
+		uiUXLine = "UI/UX checks: reviewed brief present; desktop and mobile accessibility plus visual checks enforced by " + uiUXUATLabel(browserUAT) + "."
+		t.Result += "\n" + uiUXLine
+	}
+	replyUIUXLine := ""
+	if uiUXLine != "" {
+		replyUIUXLine = uiUXLine + "\n"
+	}
 	t.RestartRequired = restartRequired
 	t.RestartCompleted = nil
 	t.RestartCurrent = ""
@@ -7422,11 +7652,24 @@ func (o *Orchestrator) reviewTask(ctx context.Context, selector string) (string,
 		if mergeErr != nil {
 			return "", mergeErr
 		}
-		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nAuto merge is on. %s", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, mergeReply), nil
+		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\n%sDiff summary:\n%s\n%s\nAuto merge is on. %s", status, strings.TrimSpace(testOut), replyUIUXLine, summarizeDiffForChat(diffOut), restartLine, mergeReply), nil
 	} else if err != nil {
 		o.log().Error("runtime settings read failed before auto merge", "task_id", taskID, "error", err)
 	}
-	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\n%s", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, afterMergeLine), nil
+	return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\n%sDiff summary:\n%s\n%s\nMerge approval requested: %s\nApprove merge with `approve %s`.\n%s", status, strings.TrimSpace(testOut), replyUIUXLine, summarizeDiffForChat(diffOut), restartLine, approvalID, approvalID, afterMergeLine), nil
+}
+
+func uiUXUATLabel(browserUAT string) string {
+	switch browserUAT {
+	case "site":
+		return "bun.uat.site"
+	case "tasks":
+		return "bun.uat.tasks"
+	case "ui":
+		return "bun.uat.ui"
+	default:
+		return "the reviewer UI/UX gate"
+	}
 }
 
 func reviewNotReadyReply(t taskstore.Task) string {
@@ -7578,6 +7821,11 @@ func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, 
 			output = "bun.uat.tasks:\n" + strings.TrimSpace(out)
 			outputs = append(outputs, output)
 			firstErr = recordProjectCheckFailure("bun.uat.tasks", output, err, firstErr, &failedOutputs)
+		case "ui":
+			out, err = o.runCheckTool(ctx, actor, "bun.uat.ui", webDir, taskID)
+			output = "bun.uat.ui:\n" + strings.TrimSpace(out)
+			outputs = append(outputs, output)
+			firstErr = recordProjectCheckFailure("bun.uat.ui", output, err, firstErr, &failedOutputs)
 		}
 	}
 	if len(outputs) == 0 {
@@ -7621,7 +7869,30 @@ func browserUATForDiff(diff string) string {
 	if diffRequiresTaskPageUAT(diff) {
 		return "tasks"
 	}
+	if diffRequiresUIUXReview(diff) {
+		return "ui"
+	}
 	return ""
+}
+
+func diffRequiresUIUXReview(diff string) bool {
+	for _, path := range diffFileList(diff) {
+		lower := strings.ToLower(filepath.ToSlash(path))
+		if strings.HasSuffix(lower, ".test.ts") || strings.HasSuffix(lower, ".spec.ts") {
+			continue
+		}
+		if strings.HasPrefix(lower, "web/dashboard/src/routes/") ||
+			strings.HasPrefix(lower, "web/dashboard/src/lib/") ||
+			strings.HasPrefix(lower, "web/shared/src/") ||
+			strings.HasPrefix(lower, "web/dashboard/static/") {
+			return true
+		}
+		switch lower {
+		case "web/dashboard/src/app.html", "web/dashboard/src/service-worker.ts":
+			return true
+		}
+	}
+	return false
 }
 
 func diffRequiresTaskPageUAT(diff string) bool {
@@ -8031,10 +8302,10 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- " + agentDiagramGuidance,
 		"- If behavior, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
 		"- After editing Go code, run go.fmt, go.test, and repo.current_diff.",
-		"- After editing web code, run bun.check, bun.build, bun.test, and a targeted isolated browser UAT when UI changed; use bun.uat.site for broad dashboard shell, navigation, theme, or multi-page changes.",
+		"- After editing web code, run bun.check, bun.build, bun.test, and targeted isolated browser UAT. For UI changes, follow docs/ui-ux-agent-work.md, run bun.uat.ui, and use bun.uat.tasks for task-page changes or bun.uat.site for broad dashboard shell, navigation, theme, or multi-page changes.",
 		"- If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure.",
-		"- Browser UAT must run from the task workspace with an isolated dev server. Do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
-		"- Final done=true message must include: changed files, validation run, how to use the change, and docs updated or why no docs change was needed.",
+		"- Browser UAT must run from the task workspace with an isolated dev server and must cover desktop and mobile when UI is visible. Do not stop or restart production dashboard, homelabd, healthd, or supervisord.",
+		"- Final done=true message must include: changed files, validation run, how to use the change, docs updated or why no docs change was needed, and for UI changes desktop/mobile accessibility and visual checks.",
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available CoderAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
@@ -8042,7 +8313,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
-			"go.fmt": true, "go.test": true, "go.build": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true, "bun.uat.site": true,
+			"go.fmt": true, "go.test": true, "go.build": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.ui": true, "bun.uat.tasks": true, "bun.uat.site": true,
 			"shell.run_limited": true,
 		}),
 	}, "\n")
@@ -8065,6 +8336,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Prioritise semantic HTML, accessible names, keyboard operation, visible focus, target size and spacing, colour contrast, predictable states, clear errors, responsive layouts, and content that matches user language.",
 		"- Check loading, empty, error, disabled, selected, hover/focus, long-content, and mobile states when relevant.",
 		"- Ensure text does not overlap, truncate badly, or depend on colour alone; UI changes must be usable at narrow and desktop viewports.",
+		"- Use the reviewed UI/UX brief in the task plan and reuse patterns from docs/ui-pattern-catalogue.md before designing new controls.",
 		"- If no UI, code, docs, configuration, or workflow change is required, make no edits and start the final done=true message with `No change required:` followed by the reason.",
 		"- " + agentDiagramGuidance,
 		"Rules:",
@@ -8076,14 +8348,15 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
 		"- Add automated regression coverage for fixed UX bugs. Prefer testable view/state logic plus browser-level tests where interaction matters.",
-		"- For changed UI, perform browser-level UAT against the page served from the isolated task workspace. Exercise the reported interaction, visible data, state changes, selected items, and mobile viewport behaviour when relevant.",
+		"- For changed UI, perform browser-level UAT against the page served from the isolated task workspace. Exercise the reported interaction, visible data, state changes, selected items, and both desktop and mobile viewport behaviour.",
+		"- Run bun.uat.ui for focused desktop and mobile accessibility plus visual-baseline checks.",
 		"- If the dashboard task page changed, run bun.uat.tasks or `nix develop -c bun run --cwd web uat:tasks`; it starts a per-worktree Playwright/Vite server and mocks homelabd APIs.",
 		"- For site-wide dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, run bun.uat.site or `nix develop -c bun run --cwd web uat:site`; review desktop and mobile screenshots for visual artefacts, not just pass/fail output.",
 		"- If Chromium launch fails, run `nix develop -c bun run --cwd web browser:preflight` and report the browser infrastructure failure.",
 		"- Do not stop or restart production dashboard, homelabd, healthd, or supervisord for UAT. Report restart impact for explicit operator verification after merge.",
 		"- If browser UAT is not possible, say exactly why and what automated coverage ran instead.",
 		"- If behaviour, commands, UI, configuration, tools, or workflow changed, update relevant docs/help text in the same patch.",
-		"- Final done=true message must include: source URLs consulted, changed files, automated tests, browser/UAT command and interaction verified, how to use the change, and docs updated or why no docs change was needed.",
+		"- Final done=true message must include: source URLs consulted, changed files, automated tests, browser/UAT command and interaction verified, desktop and mobile accessibility and visual checks, how to use the change, and docs updated or why no docs change was needed.",
 		"- Do not call git.merge_approved, repo.apply_patch_to_main, service.*, shell.run_approved, or memory.commit_write.",
 		"Available UXAgent tools:",
 		o.filteredToolCatalog(map[string]bool{
@@ -8091,7 +8364,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 			"internet.search": true, "internet.fetch": true, "internet.research": true,
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
-			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.tasks": true, "bun.uat.site": true,
+			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.ui": true, "bun.uat.tasks": true, "bun.uat.site": true,
 			"shell.run_limited": true,
 		}),
 	}, "\n")

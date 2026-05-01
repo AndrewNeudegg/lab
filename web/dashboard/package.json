@@ -12,13 +12,15 @@
     "playwright:install": "playwright install chromium",
     "uat:chat-markdown": "bun scripts/chat-markdown-uat.mjs",
     "uat:docs": "bun run playwright:install && bun run browser:preflight && playwright test e2e/docs-library.spec.ts",
-    "uat:tasks": "bun run playwright:install && bun run browser:preflight && playwright test e2e/chat-tasks-mobile.spec.ts",
+    "uat:ui": "bun run playwright:install && bun run browser:preflight && playwright test e2e/ui-quality.spec.ts",
+    "uat:tasks": "bun run playwright:install && bun run browser:preflight && playwright test e2e/chat-tasks-mobile.spec.ts e2e/ui-quality.spec.ts",
     "uat:site": "bun run playwright:install && bun run browser:preflight && playwright test e2e",
     "uat:tasks:live": "bun scripts/tasks-page-uat.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "e2e": "bun run uat:site"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.3",
     "@playwright/test": "^1.59.1",
     "@sveltejs/adapter-auto": "^3.3.1",
     "@sveltejs/kit": "^2.5.0",

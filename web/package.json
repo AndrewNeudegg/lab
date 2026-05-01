@@ -12,6 +12,7 @@
     "check": "bun run --cwd shared check && bun run --cwd dashboard check",
     "test": "bun test $(find shared/src dashboard/src dashboard/scripts -name '*.test.ts' -print)",
     "browser:preflight": "bun run --cwd dashboard browser:preflight",
+    "uat:ui": "bun run --cwd dashboard uat:ui",
     "uat:docs": "bun run --cwd dashboard uat:docs",
     "uat:tasks": "bun run --cwd dashboard uat:tasks",
     "uat:site": "bun run --cwd dashboard uat:site",

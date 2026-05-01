@@ -148,6 +148,7 @@ export interface HomelabdTaskPlan {
   steps: HomelabdTaskPlanStep[];
   risks?: string[];
   review?: string;
+  ui_ux_brief?: HomelabdUIUXBrief;
   created_at: string;
   reviewed_at?: string;
 }
@@ -155,6 +156,18 @@ export interface HomelabdTaskPlan {
 export interface HomelabdTaskPlanStep {
   title: string;
   detail?: string;
+}
+
+export interface HomelabdUIUXBrief {
+  operator_goal: string;
+  primary_workflow: string;
+  surfaces: string[];
+  existing_pattern: string;
+  desktop_layout: string;
+  mobile_layout: string;
+  states: string[];
+  accessibility: string[];
+  validation: string[];
 }
 
 export interface HomelabdTasksResponse {

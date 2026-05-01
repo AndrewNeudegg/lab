@@ -163,7 +163,7 @@ func lowRiskBunCommand(command []string) bool {
 		return false
 	}
 	switch command[4] {
-	case "check", "build", "test", "browser:preflight", "uat:tasks", "uat:site", "uat:docs", "e2e":
+	case "check", "build", "test", "browser:preflight", "uat:ui", "uat:tasks", "uat:site", "uat:docs", "e2e":
 		return true
 	default:
 		return false

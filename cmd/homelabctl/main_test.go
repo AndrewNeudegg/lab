@@ -668,7 +668,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"tasks": []map[string]any{{"id": "task_1", "status": "queued"}}})
 		case "/tasks/task_1":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"id": "task_1", "status": "queued"})
-		case "/tasks/task_1/run", "/tasks/task_1/review", "/tasks/task_1/accept", "/tasks/task_1/restart", "/tasks/task_1/reopen", "/tasks/task_1/cancel", "/tasks/task_1/delete":
+		case "/tasks/task_1/run", "/tasks/task_1/review", "/tasks/task_1/review-ui", "/tasks/task_1/accept", "/tasks/task_1/restart", "/tasks/task_1/reopen", "/tasks/task_1/cancel", "/tasks/task_1/delete":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "ok"})
 		case "/tasks/task_1/runs":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"runs": []any{}})
@@ -704,6 +704,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		{"diff", "task_1"},
 		{"run", "task_1"},
 		{"review", "task_1"},
+		{"task", "review-ui", "task_1"},
 		{"accept", "task_1"},
 		{"task", "restart", "task_1"},
 		{"reopen", "task_1", "needs", "work"},
@@ -730,6 +731,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 		"GET /tasks/task_1/diff",
 		"POST /tasks/task_1/run",
 		"POST /tasks/task_1/review",
+		"POST /tasks/task_1/review-ui",
 		"POST /tasks/task_1/accept",
 		"POST /tasks/task_1/restart",
 		"POST /tasks/task_1/reopen",

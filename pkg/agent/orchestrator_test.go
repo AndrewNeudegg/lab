@@ -2033,6 +2033,36 @@ func TestDelegationCreatesReviewedPlanBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestDefaultTaskPlanIncludesUIUXBriefForDashboardWork(t *testing.T) {
+	now := time.Now().UTC()
+	plan := defaultTaskPlan(taskstore.Task{
+		ID:    "task_20260501_120000_uiuxplan",
+		Title: "Improve dashboard task UI",
+		Goal:  "Improve the dashboard task page UI/UX review workflow",
+	}, now, taskPlanContext{Files: []string{"web/dashboard/src/routes/tasks/+page.svelte"}})
+	if !taskPlanHasUIUXBrief(&plan) {
+		t.Fatalf("plan UI/UX brief = %#v, want complete brief", plan.UIUXBrief)
+	}
+	if !containsString(plan.UIUXBrief.Surfaces, "/tasks") {
+		t.Fatalf("surfaces = %#v, want /tasks", plan.UIUXBrief.Surfaces)
+	}
+	if !containsString(plan.UIUXBrief.Validation, "desktop and mobile accessibility checks") {
+		t.Fatalf("validation = %#v, want desktop/mobile accessibility checks", plan.UIUXBrief.Validation)
+	}
+}
+
+func TestDefaultTaskPlanDoesNotTreatBuildAsUI(t *testing.T) {
+	now := time.Now().UTC()
+	plan := defaultTaskPlan(taskstore.Task{
+		ID:    "task_20260501_121000_buildonly",
+		Title: "Build backend command",
+		Goal:  "Build backend command handling",
+	}, now, taskPlanContext{Files: []string{"cmd/homelabctl/main.go"}})
+	if plan.UIUXBrief != nil {
+		t.Fatalf("plan UI/UX brief = %#v, want none for non-UI build wording", plan.UIUXBrief)
+	}
+}
+
 func TestDelegationRefreshesLegacyGenericPlanBeforeExecution(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	now := time.Now().UTC()
@@ -2274,6 +2304,130 @@ func TestReviewRerunsBlockedReviewCheckFailure(t *testing.T) {
 	}
 	if len(approvals) != 1 || approvals[0].TaskID != task.ID {
 		t.Fatalf("approvals = %#v, want one approval for rechecked task", approvals)
+	}
+}
+
+func TestReviewBlocksBrowserVisibleDiffWithoutUIUXBrief(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(uiDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reviewedAt := now
+	task := taskstore.Task{
+		ID:         "task_20260501_121500_uiuxmiss",
+		Title:      "touch task page UI",
+		Goal:       "touch task page UI",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Workspace:  filepath.Join(t.TempDir(), "workspace"),
+		Plan: &taskstore.TaskPlan{
+			Status:     "reviewed",
+			Summary:    "Reviewed plan without UI/UX brief.",
+			Steps:      []taskstore.TaskPlanStep{{Title: "Change UI"}},
+			Review:     repoAwareTaskPlanReview,
+			CreatedAt:  now,
+			ReviewedAt: &reviewedAt,
+		},
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.reviewTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "UI/UX checks: fail") || !strings.Contains(reply, "No approval created") {
+		t.Fatalf("reply = %q, want UI/UX brief failure", reply)
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", updated.Status)
+	}
+	if !taskPlanHasUIUXBrief(updated.Plan) {
+		t.Fatalf("updated plan = %#v, want injected UI/UX brief for retry", updated.Plan)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 0 {
+		t.Fatalf("approvals = %#v, want none", approvals)
+	}
+}
+
+func TestReviewUIForcesFocusedUATForNonBrowserDiff(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	if err := orch.registry.Register(currentDiffStub{}); err != nil {
+		t.Fatal(err)
+	}
+	var checks []*recordCheckToolStub
+	for _, name := range []string{"bun.check", "bun.build", "bun.test", "bun.uat.ui"} {
+		stub := &recordCheckToolStub{name: name}
+		checks = append(checks, stub)
+		if err := orch.registry.Register(stub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	writeTestRepoFile(t, workspace, "web/package.json", "{}")
+	now := time.Now().UTC()
+	reviewedAt := now
+	task := taskstore.Task{
+		ID:         "task_20260501_122000_forceuix",
+		Title:      "review visible workflow",
+		Goal:       "run explicit UI review",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Workspace:  workspace,
+	}
+	brief := defaultUIUXBrief(task, taskPlanContext{})
+	task.Plan = &taskstore.TaskPlan{
+		Status:     "reviewed",
+		Summary:    "Explicit UI review plan.",
+		Steps:      []taskstore.TaskPlanStep{{Title: "Review UI"}},
+		Review:     repoAwareTaskPlanReview,
+		CreatedAt:  now,
+		ReviewedAt: &reviewedAt,
+		UIUXBrief:  &brief,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.ReviewUITask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "UI/UX checks: reviewed brief present") || !strings.Contains(reply, "bun.uat.ui") {
+		t.Fatalf("reply = %q, want explicit UI/UX pass through bun.uat.ui", reply)
+	}
+	for _, check := range checks {
+		if check.calls != 1 {
+			t.Fatalf("%s calls = %d, want 1", check.name, check.calls)
+		}
+	}
+	updated, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(updated.Result, "bun.uat.ui") {
+		t.Fatalf("result = %q, want forced UI gate label", updated.Result)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 || approvals[0].TaskID != task.ID {
+		t.Fatalf("approvals = %#v, want one approval after explicit UI review", approvals)
 	}
 }
 
@@ -4744,7 +4898,7 @@ func TestUXCommandRunsUXAgentWithResearchPrompt(t *testing.T) {
 		t.Fatalf("provider request count = %d, want 1", len(provider.requests))
 	}
 	system := provider.requests[0].Messages[0].Content
-	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md"} {
+	for _, want := range []string{"You are UXAgent", "WCAG 2.2", "WAI-ARIA APG", "browser-level UAT", "bun.uat.ui", "bun.uat.tasks", "bun.uat.site", "Do not stop or restart production", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("UX prompt missing %q:\n%s", want, system)
 		}
@@ -4763,6 +4917,7 @@ func TestDefaultDelegationInstructionRequiresIsolatedBrowserUAT(t *testing.T) {
 	})
 	for _, want := range []string{
 		"isolated dev server",
+		"bun.uat.ui",
 		"nix develop -c bun run --cwd web uat:tasks",
 		"nix develop -c bun run --cwd web uat:site",
 		"nix develop -c bun run --cwd web browser:preflight",
@@ -6512,6 +6667,36 @@ func (currentDiffStub) Run(context.Context, json.RawMessage) (json.RawMessage, e
 	return json.Marshal(map[string]any{
 		"diff": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n",
 	})
+}
+
+type uiDiffStub struct{}
+
+func (uiDiffStub) Name() string        { return "repo.current_diff" }
+func (uiDiffStub) Description() string { return "" }
+func (uiDiffStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (uiDiffStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (uiDiffStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]any{
+		"diff": "diff --git a/web/dashboard/src/routes/tasks/+page.svelte b/web/dashboard/src/routes/tasks/+page.svelte\n--- a/web/dashboard/src/routes/tasks/+page.svelte\n+++ b/web/dashboard/src/routes/tasks/+page.svelte\n@@ -1 +1 @@\n-<p>old</p>\n+<p>new</p>\n",
+	})
+}
+
+type recordCheckToolStub struct {
+	name  string
+	calls int
+}
+
+func (s *recordCheckToolStub) Name() string        { return s.name }
+func (s *recordCheckToolStub) Description() string { return "" }
+func (s *recordCheckToolStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (s *recordCheckToolStub) Risk() tool.RiskLevel { return tool.RiskLow }
+func (s *recordCheckToolStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	s.calls++
+	return json.Marshal(map[string]any{"output": s.name + " passed"})
 }
 
 type goTestFailStub struct{}

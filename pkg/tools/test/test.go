@@ -19,6 +19,7 @@ const (
 	minBunScriptTimeout = 3 * time.Minute
 	minBunBuildTime     = 6 * time.Minute
 	minBunUATTasksTime  = 5 * time.Minute
+	minBunUATUITime     = 5 * time.Minute
 	minBunUATSiteTime   = 10 * time.Minute
 )
 
@@ -36,6 +37,7 @@ func Register(reg *tool.Registry, base Base) error {
 		BunCheckTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
 		BunBuildTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
 		BunTestTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
+		BunUATUITool{timeout: base.Timeout, repoRoot: base.RepoRoot},
 		BunUATTasksTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
 		BunUATSiteTool{timeout: base.Timeout, repoRoot: base.RepoRoot},
 	} {
@@ -208,6 +210,29 @@ func (t BunUATTasksTool) Run(ctx context.Context, input json.RawMessage) (json.R
 	timeout := t.timeout
 	timeout = atLeastTimeout(timeout, minBunUATTasksTime)
 	return runBrowserUATScript(ctx, timeout, t.repoRoot, req.Dir, "uat:tasks")
+}
+
+type BunUATUITool struct {
+	timeout  time.Duration
+	repoRoot string
+}
+
+func (BunUATUITool) Name() string { return "bun.uat.ui" }
+func (BunUATUITool) Description() string {
+	return "Run the isolated dashboard UI quality Playwright UAT in a workspace."
+}
+func (BunUATUITool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["dir"],"properties":{"dir":{"type":"string"}}}`)
+}
+func (BunUATUITool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (t BunUATUITool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Dir string `json:"dir"`
+	}
+	_ = json.Unmarshal(input, &req)
+	timeout := t.timeout
+	timeout = atLeastTimeout(timeout, minBunUATUITime)
+	return runBrowserUATScript(ctx, timeout, t.repoRoot, req.Dir, "uat:ui")
 }
 
 type BunUATSiteTool struct {

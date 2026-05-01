@@ -27,7 +27,7 @@ Before editing UI code, write or preserve a compact brief in the task notes, imp
 - accessibility risks, including focus order, focus visibility, keyboard access, colour contrast, target size, and reduced reliance on colour alone
 - validation command and browser interaction that will prove the change
 
-If the task has a design source, inspect it first. Use local documentation, existing dashboard pages, screenshots from prior UAT, component stories or equivalent fixtures, and Figma links that exist for the task. The agent must explain which source it used.
+If the task has a design source, inspect it first. Use `docs/ui-pattern-catalogue.md`, local documentation, existing dashboard pages, screenshots from prior UAT, component stories or equivalent fixtures, and Figma links that exist for the task. The agent must explain which source it used.
 
 ## Implementation Standards
 
@@ -65,6 +65,12 @@ Use screenshot baselines for stable shell, navigation, and component states on b
 ## Browser UAT
 
 UI work is not done from compile or unit checks alone. Use the isolated browser commands documented in `docs/agentic-testing.md`.
+
+For the focused UI quality gate:
+
+```bash
+nix develop -c bun run --cwd web uat:ui
+```
 
 For task-page changes:
 
@@ -115,6 +121,7 @@ UI tasks must satisfy these quality gates:
 ## Related Links
 
 - `AGENTS.md` for Definition of Done and mandatory UI handoff requirements
+- `docs/ui-pattern-catalogue.md` for reusable dashboard UI patterns
 - `docs/dashboard.md` for dashboard surface, navigation, layout, and brand guidance
 - `docs/agentic-testing.md` for isolated browser UAT commands
 - Playwright visual comparisons: https://playwright.dev/docs/test-snapshots

@@ -32,7 +32,15 @@ For dashboard task-page changes, run the isolated UAT:
 nix develop -c bun run --cwd web uat:tasks
 ```
 
-`uat:tasks` runs Playwright against a local Vite server and mocked `homelabd` APIs. It verifies the mobile task queue, selected task detail, draft preservation, button state, visible data, and horizontal overflow without touching production services.
+`uat:tasks` runs Playwright against a local Vite server and mocked `homelabd` APIs. It verifies the mobile task queue, selected task detail, draft preservation, button state, visible data, horizontal overflow, and the desktop/mobile UI quality gate without touching production services.
+
+For focused UI/UX review, run:
+
+```bash
+nix develop -c bun run --cwd web uat:ui
+```
+
+`uat:ui` verifies the reviewed UI/UX brief surface on desktop and mobile, runs axe accessibility checks on both viewports, and compares stable visual baselines on both viewports.
 
 For broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, run the site-wide UAT:
 
@@ -62,13 +70,13 @@ Do not use `uat:tasks:live` as an agent completion gate unless the operator expl
 
 ## homelabd Review Gate
 
-Local review runs Go tests, web type checks, web build, web unit tests, and isolated browser UAT when the diff touches browser-tested UI paths. Bun-backed review tools enter the repo's Nix dev shell when a `flake.nix` is present, matching worker commands such as `nix develop -c bun run --cwd web uat:site` and preserving Playwright browser libraries. Task-page-only diffs run `bun.uat.tasks`; shared UI, shell, route, Playwright, or browser tooling diffs run `bun.uat.site`. Failures block the task and do not restart a worker automatically. `homelabd` caps concurrent worker starts with `limits.max_concurrent_tasks`, default `2`, and external worker process groups are terminated when their parent run exits so isolated Vite or Playwright children do not keep consuming CPU after validation.
+Local review runs Go tests, web type checks, web build, web unit tests, and isolated browser UAT when the diff touches browser-tested UI paths. Bun-backed review tools enter the repo's Nix dev shell when a `flake.nix` is present, matching worker commands such as `nix develop -c bun run --cwd web uat:site` and preserving Playwright browser libraries. Browser-visible diffs must have a reviewed UI/UX brief and run the UI quality gate. Task-page-only diffs run `bun.uat.tasks`, which includes `uat:ui`; shared UI, shell, route, Playwright, or browser tooling diffs run `bun.uat.site`; isolated browser-visible surfaces outside those groups run `bun.uat.ui`. Failures block the task and do not restart a worker automatically. `homelabd` caps concurrent worker starts with `limits.max_concurrent_tasks`, default `2`, and external worker process groups are terminated when their parent run exits so isolated Vite or Playwright children do not keep consuming CPU after validation.
 
 Remote review only acknowledges the remote result and moves the task to verification. The remote agent's final summary must state the exact validation commands, ports, URLs, and browser environment used on that remote machine.
 
 ## Browser Reliability
 
-`uat:tasks`, `uat:docs`, `uat:site`, and `e2e` install the Playwright-managed Chromium build and run `browser:preflight` before running tests. Browser launch prefers `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then `CHROME_BIN`, then a `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable` executable found on `PATH`. This lets NixOS workers use the browser wrapper that already carries runtime libraries when Playwright's downloaded headless shell cannot load system libraries. Set `HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME=0` to force Playwright's managed browser.
+`uat:ui`, `uat:tasks`, `uat:docs`, `uat:site`, and `e2e` install the Playwright-managed Chromium build and run `browser:preflight` before running tests. Browser launch prefers `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then `CHROME_BIN`, then a `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable` executable found on `PATH`. This lets NixOS workers use the browser wrapper that already carries runtime libraries when Playwright's downloaded headless shell cannot load system libraries. Set `HOMELAB_PLAYWRIGHT_USE_SYSTEM_CHROME=0` to force Playwright's managed browser.
 
 The Playwright config uses larger default budgets for cold Vite dependency optimisation and lazy route bundles: `PLAYWRIGHT_WEB_SERVER_TIMEOUT`, `PLAYWRIGHT_TEST_TIMEOUT`, and `PLAYWRIGHT_EXPECT_TIMEOUT` can override the defaults when a worker is unusually slow. Legacy `*_MS` names are still accepted. Keep overrides in milliseconds and prefer fixing deterministic test hangs over increasing these values.
 
@@ -88,6 +96,7 @@ For UI/UX work, pair these browser checks with the pre-implementation brief, sta
 
 - `AGENTS.md` for Definition of Done rules
 - `docs/ui-ux-agent-work.md` for the UI/UX agent workflow and handoff checklist
+- `docs/ui-pattern-catalogue.md` for reusable dashboard UI patterns
 - `docs/task-workflow.md` for review, approval, and verification states
 - `docs/remote-agents.md` for remote worker semantics
 - `docs/homelabctl.md` for operator commands

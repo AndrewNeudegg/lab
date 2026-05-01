@@ -52,9 +52,11 @@ func TestUXAgentCanResearchPatchAndRunBrowserUATCommand(t *testing.T) {
 	}{
 		{name: "internet.research", risk: RiskReadOnly, input: `{"query":"WCAG 2.2 target size"}`},
 		{name: "repo.write_patch", risk: RiskMedium, input: `{"workspace":"/tmp/workspaces/task_123","patch":"diff"}`},
+		{name: "bun.uat.ui", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123/web"}`},
 		{name: "bun.uat.tasks", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123/web"}`},
 		{name: "bun.uat.site", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123/web"}`},
 		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","browser:preflight"]}`},
+		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:ui"]}`},
 		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:tasks"]}`},
 		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:site"]}`},
 	} {

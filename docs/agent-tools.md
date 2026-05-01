@@ -161,6 +161,7 @@ bun run --cwd web build
 bun run --cwd web test
 bun run --cwd web browser:preflight
 bun run --cwd web uat:docs
+bun run --cwd web uat:ui
 bun run --cwd web uat:tasks
 bun run --cwd web uat:site
 bun run --cwd web e2e
@@ -179,6 +180,7 @@ These tools are convenience wrappers around common project checks. They set writ
 - `bun.check`: required args: `dir`. Runs `bun install` then `bun run check`, or falls back through Nix.
 - `bun.build`: required args: `dir`. Runs `bun install` then `bun run build`, or falls back through Nix.
 - `bun.test`: required args: `dir`. Runs `bun install` then `bun run test`, or falls back through Nix.
+- `bun.uat.ui`: required args: `dir`. Runs isolated dashboard UI quality Playwright UAT with desktop and mobile axe plus visual baselines. Minimum timeout is five minutes.
 - `bun.uat.tasks`: required args: `dir`. Runs isolated dashboard task-page Playwright UAT. Minimum timeout is five minutes.
 - `bun.uat.site`: required args: `dir`. Runs isolated site-wide Playwright UAT. Minimum timeout is ten minutes.
 

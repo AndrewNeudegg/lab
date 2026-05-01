@@ -29,7 +29,7 @@ func TestLimitedToolReadOnlyCommandDoesNotRequireApproval(t *testing.T) {
 
 func TestLimitedToolAllowsIsolatedDashboardUATCommand(t *testing.T) {
 	policy := tool.NewPolicy(nil)
-	for _, script := range []string{"browser:preflight", "uat:tasks", "uat:site"} {
+	for _, script := range []string{"browser:preflight", "uat:ui", "uat:tasks", "uat:site"} {
 		input := json.RawMessage(`{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","` + script + `"]}`)
 
 		decision := policy.Decide("UXAgent", LimitedTool{}, input)

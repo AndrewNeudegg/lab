@@ -80,6 +80,7 @@ go run ./cmd/homelabctl task runs task_123
 go run ./cmd/homelabctl task diff task_123
 go run ./cmd/homelabctl task run task_123
 go run ./cmd/homelabctl task review task_123
+go run ./cmd/homelabctl task review-ui task_123
 go run ./cmd/homelabctl task queue task_123 up
 go run ./cmd/homelabctl task accept task_123
 go run ./cmd/homelabctl task restart task_123
@@ -94,6 +95,8 @@ go run ./cmd/homelabctl settings auto-merge on
 `task retry` preserves the previous task result as retry context and forces an immediate worker attempt. The task supervisor also queues automatic recovery for `conflict_resolution` tasks and retryable blocked tasks. Worker starts are capped by `limits.max_concurrent_tasks`, so recovery waits instead of launching too many browser-UAT or build-heavy tasks at once. In both paths, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
 
 `task review` normally runs after a local worker has moved the task to `ready_for_review`; the task supervisor starts that review automatically. It can also recheck a blocked task whose result starts with `ReviewerAgent checks failed:` after a test-infrastructure fix. It owns the task while checks run; concurrent run, retry, or delegation attempts are rejected, and a stale review result is ignored if the task state changes before checks finish. If the worker made no edits and its result starts with `No change required:`, review moves the task to `no_change_required`; use `task accept` to close it or `task reopen <reason>` to reject that conclusion and queue new work.
+
+`task review-ui` runs the same merge-review gate under an explicit UI/UX command name. Browser-visible diffs must have a reviewed UI/UX brief, desktop and mobile browser UAT, desktop and mobile accessibility checks, and desktop and mobile screenshot or visual-baseline review before approval.
 
 `task queue <task_id> <up|down>` reorders a local task inside the merge queue. Queue order is durable and conflict-aware: only the head task can review, approve, merge, and complete required restart gates. Use this command when operator priority changes; approving a non-head merge approval leaves it pending instead of bypassing earlier queued work.
 
@@ -136,9 +139,9 @@ go run ./cmd/homelabctl test task_123
 
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
 
-Agent UI validation must not restart production services. For dashboard task-page changes, workers and reviewers should use `nix develop -c bun run --cwd web uat:tasks`; for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use `nix develop -c bun run --cwd web uat:site`. Both start an isolated Playwright/Vite server from the task worktree and mock production APIs. See `docs/agentic-testing.md`.
+Agent UI validation must not restart production services. For focused desktop/mobile accessibility and visual checks, workers and reviewers use `nix develop -c bun run --cwd web uat:ui`; for dashboard task-page changes, use `nix develop -c bun run --cwd web uat:tasks`; for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use `nix develop -c bun run --cwd web uat:site`. These commands start an isolated Playwright/Vite server from the task worktree and mock production APIs. See `docs/agentic-testing.md`.
 
-When `homelabd` review invokes `bun.check`, `bun.build`, `bun.test`, `bun.uat.tasks`, or `bun.uat.site`, the tool enters the repo's Nix dev shell whenever `flake.nix` is available. This keeps automated review aligned with the documented worker commands and avoids browser-library drift in supervised processes.
+When `homelabd` review invokes `bun.check`, `bun.build`, `bun.test`, `bun.uat.ui`, `bun.uat.tasks`, or `bun.uat.site`, the tool enters the repo's Nix dev shell whenever `flake.nix` is available. This keeps automated review aligned with the documented worker commands and avoids browser-library drift in supervised processes.
 
 ## Knowledge Space Commands
 

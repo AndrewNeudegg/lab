@@ -1998,6 +1998,33 @@
                   </ul>
                 </div>
               {/if}
+              {#if currentTask.plan.ui_ux_brief}
+                <div class="ui-ux-brief">
+                  <strong>UI/UX brief</strong>
+                  <dl>
+                    <div>
+                      <dt>Goal</dt>
+                      <dd>{currentTask.plan.ui_ux_brief.operator_goal}</dd>
+                    </div>
+                    <div>
+                      <dt>Workflow</dt>
+                      <dd>{currentTask.plan.ui_ux_brief.primary_workflow}</dd>
+                    </div>
+                    <div>
+                      <dt>Desktop</dt>
+                      <dd>{currentTask.plan.ui_ux_brief.desktop_layout}</dd>
+                    </div>
+                    <div>
+                      <dt>Mobile</dt>
+                      <dd>{currentTask.plan.ui_ux_brief.mobile_layout}</dd>
+                    </div>
+                    <div>
+                      <dt>Validation</dt>
+                      <dd>{currentTask.plan.ui_ux_brief.validation.join('; ')}</dd>
+                    </div>
+                  </dl>
+                </div>
+              {/if}
               {#if currentTask.plan.review}
                 <p class="plan-review">{currentTask.plan.review}</p>
               {/if}
@@ -3731,6 +3758,7 @@
   .activity[open] > .empty,
   .task-plan[open] ol,
   .task-plan[open] .plan-risks,
+  .task-plan[open] .ui-ux-brief,
   .task-plan[open] .plan-review,
   .task-input[open] > p {
     border-top: 1px solid var(--border-soft, #e2e8f0);
@@ -3922,6 +3950,7 @@
   }
 
   .plan-risks,
+  .ui-ux-brief,
   .plan-review {
     border-top: 1px solid var(--border-soft, #e2e8f0);
     padding: 0.85rem;
@@ -3939,6 +3968,33 @@
     color: var(--text, #475569);
     font-size: 0.86rem;
     line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .ui-ux-brief dl {
+    display: grid;
+    gap: 0.55rem;
+    margin: 0.55rem 0 0;
+  }
+
+  .ui-ux-brief dl > div {
+    display: grid;
+    grid-template-columns: 6rem minmax(0, 1fr);
+    gap: 0.65rem;
+  }
+
+  .ui-ux-brief dt {
+    color: var(--muted, #64748b);
+    font-size: 0.74rem;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .ui-ux-brief dd {
+    margin: 0;
+    color: var(--text, #475569);
+    font-size: 0.84rem;
+    line-height: 1.4;
     overflow-wrap: anywhere;
   }
 

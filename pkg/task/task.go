@@ -89,6 +89,7 @@ type TaskPlan struct {
 	Steps      []TaskPlanStep `json:"steps"`
 	Risks      []string       `json:"risks,omitempty"`
 	Review     string         `json:"review,omitempty"`
+	UIUXBrief  *UIUXBrief     `json:"ui_ux_brief,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 	ReviewedAt *time.Time     `json:"reviewed_at,omitempty"`
 }
@@ -96,4 +97,16 @@ type TaskPlan struct {
 type TaskPlanStep struct {
 	Title  string `json:"title"`
 	Detail string `json:"detail,omitempty"`
+}
+
+type UIUXBrief struct {
+	OperatorGoal    string   `json:"operator_goal"`
+	PrimaryWorkflow string   `json:"primary_workflow"`
+	Surfaces        []string `json:"surfaces"`
+	ExistingPattern string   `json:"existing_pattern"`
+	DesktopLayout   string   `json:"desktop_layout"`
+	MobileLayout    string   `json:"mobile_layout"`
+	States          []string `json:"states"`
+	Accessibility   []string `json:"accessibility"`
+	Validation      []string `json:"validation"`
 }

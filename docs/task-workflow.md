@@ -131,6 +131,14 @@ nix develop -c bun run --cwd web uat:site
 
 Both commands use mocked APIs and a per-worktree port, so concurrent local or remote agents do not share a dashboard process. The review gate runs task-page UAT for task-page-only diffs and site-wide UAT for shared UI, shell, route, Playwright, or browser tooling diffs. See `docs/agentic-testing.md` for the full SDLC and browser reliability notes.
 
+For focused UI/UX review, use:
+
+```bash
+nix develop -c bun run --cwd web uat:ui
+```
+
+Browser-visible diffs must also pass the ReviewerAgent UI/UX gate: reviewed UI/UX brief, desktop and mobile UAT, desktop and mobile accessibility checks, and desktop and mobile screenshot or visual-baseline review.
+
 ## Diff Review
 
 Use `diff <task_id>` or `homelabctl task diff <task_id>` when an operator asks what a task branch changes relative to current `main`. The HTTP endpoint is `GET /tasks/{task_id}/diff`; it returns the raw patch, file stats, branch labels, refs, and per-file summaries.
@@ -160,7 +168,7 @@ Recovery decisions are written to the JSONL event log as `task.recovery.*` event
 
 When a task changes user-facing behavior, commands, UI, configuration, tools, or workflow, the worker must update relevant docs or help text in the same patch.
 
-When a task changes UI/UX, the worker must follow `docs/ui-ux-agent-work.md`: define the design brief before editing, reuse existing dashboard patterns, cover relevant interaction states, run isolated browser UAT, inspect screenshots or visual baselines, and report the exact interaction and viewport coverage in the handoff.
+When a task changes UI/UX, the worker must follow `docs/ui-ux-agent-work.md`: define the design brief before editing, reuse existing dashboard patterns from `docs/ui-pattern-catalogue.md`, cover relevant interaction states, run isolated browser UAT, inspect screenshots or visual baselines, and report the exact interaction and viewport coverage in the handoff.
 
 Agents should include Mermaid fenced diagrams when a compact state machine, dependency graph, architecture map, or handoff diagram would improve human or machine understanding. Use the homelabd brand diagram palette documented in `AGENTS.md` and avoid diagram-level Mermaid init directives that override the shared theme.
 

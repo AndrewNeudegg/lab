@@ -17,7 +17,7 @@ Healthd is also deliberately separate: its API is served by the `healthd` Go ser
 
 Agent browser testing is deliberately separate from the supervised dashboard. Use `nix develop -c bun run --cwd web uat:tasks` for task-page UAT and `nix develop -c bun run --cwd web uat:site` for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes. Both start an isolated Playwright/Vite server from the task worktree and use mocked APIs. Do not restart the production dashboard or `homelabd` stack for agent validation. See `docs/agentic-testing.md`.
 
-For dashboard UI/UX changes, agents must start from the brief, reuse, state coverage, accessibility, and screenshot-review workflow in `docs/ui-ux-agent-work.md`.
+For dashboard UI/UX changes, agents must start from the brief, reuse, state coverage, accessibility, and screenshot-review workflow in `docs/ui-ux-agent-work.md`, using `docs/ui-pattern-catalogue.md` as the dashboard pattern source.
 
 ## Progressive Web App
 

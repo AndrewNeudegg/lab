@@ -74,6 +74,12 @@ Remote agents validate in the selected remote workdir. They must not call the co
 
 When remote handoffs describe multi-machine flows, state transitions, or verification paths, include a concise Mermaid diagram if it improves understanding. Diagrams must use the homelabd brand palette from `docs/diagramming-and-brand-colours.md`; the dashboard applies those colours automatically to Mermaid fences.
 
+For focused UI/UX review in a remote checkout, run:
+
+```sh
+nix develop -c bun run --cwd web uat:ui
+```
+
 For dashboard task-page changes in a remote checkout, run:
 
 ```sh
@@ -86,7 +92,7 @@ For broad dashboard shell, navigation, theme, terminal, docs, workflow, health, 
 nix develop -c bun run --cwd web uat:site
 ```
 
-Both commands start a Playwright-managed Vite server on that remote machine, choose a per-worktree port unless `PLAYWRIGHT_PORT` is set, and mock `homelabd` APIs. `uat:site` also mocks `healthd` and `supervisord`, covers every primary page on desktop and mobile, and attaches screenshots. The remote completion summary should include the command, the generated local URL when relevant, and whether Chromium came from `CHROME_BIN` or a Playwright browser install. If `browser:preflight` fails because the remote sandbox cannot launch Chromium, report that infrastructure failure instead of touching production services.
+These commands start a Playwright-managed Vite server on that remote machine, choose a per-worktree port unless `PLAYWRIGHT_PORT` is set, and mock `homelabd` APIs. `uat:ui` runs desktop and mobile accessibility plus visual-baseline checks, and `uat:site` also mocks `healthd` and `supervisord`, covers every primary page on desktop and mobile, and attaches screenshots. The remote completion summary should include the command, the generated local URL when relevant, and whether Chromium came from `CHROME_BIN` or a Playwright browser install. If `browser:preflight` fails because the remote sandbox cannot launch Chromium, report that infrastructure failure instead of touching production services.
 
 Use `uat:tasks:live` only when the operator explicitly asks the remote machine to verify a running dashboard URL.
 

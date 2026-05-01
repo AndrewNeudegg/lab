@@ -166,7 +166,7 @@ func (c cli) dispatch(args []string) error {
 		return c.task(withAction("runs", args[1:]))
 	case "diff":
 		return c.task(withAction("diff", args[1:]))
-	case "run", "review", "queue", "merge-queue", "accept", "verify", "restart", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
+	case "run", "review", "review-ui", "queue", "merge-queue", "accept", "verify", "restart", "reopen", "cancel", "stop", "retry", "delete", "remove", "rm":
 		return c.task(withAction(cmd, args[1:]))
 	case "status", "agents", "refresh", "rebase", "sync",
 		"delegate", "escalate", "codex", "claude", "gemini", "ux", "test", "patch",
@@ -458,7 +458,7 @@ func (c cli) knowledgeResearch(args []string) error {
 
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|queue|accept|restart|reopen|cancel|retry|delete>")
+		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|review-ui|queue|accept|restart|reopen|cancel|retry|delete>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -499,7 +499,7 @@ func (c cli) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task diff <task_id>")
 		}
 		return c.printTaskDiff(path("tasks", args[1], "diff"))
-	case "run", "review":
+	case "run", "review", "review-ui":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: homelabctl task %s <task_id>", action)
 		}
@@ -1172,6 +1172,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] task diff <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task run <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task review <task_id>
+  homelabctl [-addr http://127.0.0.1:18080] task review-ui <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task queue <task_id> <up|down>
   homelabctl [-addr http://127.0.0.1:18080] task accept <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task restart <task_id>

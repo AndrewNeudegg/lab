@@ -452,6 +452,8 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 			reply, err = s.Orchestrator.AssignTaskTarget(req.Context(), taskID, in.Target)
 		case "review":
 			reply, err = s.Orchestrator.ReviewTask(req.Context(), taskID)
+		case "review-ui":
+			reply, err = s.Orchestrator.ReviewUITask(req.Context(), taskID)
 		case "merge-queue":
 			var in struct {
 				Direction string `json:"direction"`

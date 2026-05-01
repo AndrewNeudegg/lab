@@ -95,6 +95,8 @@ create a task to fix running task recovery after homelabd restarts
 
 `homelabd` treats `new`, `task:`, `create a task to ...`, and similar creation phrases as task creation even when the goal text mentions words like `running`, `active tasks`, or `in progress`.
 
+Task display titles are summarised from the requested work, not the command sugar. If a task goal reaches the API with a leading creation phrase such as `new`, `task:`, or `create a task to`, title generation ignores that lead-in before calling `text.summarize`; the task context still carries the full goal supplied by the caller.
+
 Large homelabd feature requests, such as a new mode or product surface like Knowledge Space or Assistant, pause before implementation. OrchestratorAgent creates a concise design brief with objectives, scope, UX direction, API changes, and test strategy, then stores it as a pending `task.create` approval. No task or worktree exists until you confirm it:
 
 ```text

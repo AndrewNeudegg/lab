@@ -614,9 +614,14 @@
   <aside class="session-sidebar" aria-label="Chat history">
     <div class="session-sidebar-header">
       <strong>Chats</strong>
-      <button type="button" class="new-chat-button" disabled={loading || clearing} on:click={startNewChat}>
-        New chat
-      </button>
+      <div class="session-sidebar-actions">
+        <button type="button" class="new-chat-button" disabled={loading || clearing} on:click={startNewChat}>
+          New chat
+        </button>
+        <button type="button" class="clear-all-button" disabled={loading || clearing} on:click={clearAllChats}>
+          Clear all
+        </button>
+      </div>
     </div>
     <nav class="session-list" aria-label="Previous chats">
       {#each sessions as session (session.id)}
@@ -638,9 +643,6 @@
         </button>
       {/each}
     </nav>
-    <button type="button" class="clear-all-button" disabled={loading || clearing} on:click={clearAllChats}>
-      Clear all
-    </button>
   </aside>
 
   <main class="chat-card">
@@ -650,7 +652,6 @@
         <h1>{currentSessionTitle}</h1>
       </div>
       <div class="chat-toolbar-actions">
-        <button type="button" disabled={loading || clearing} on:click={startNewChat}>New chat</button>
         <button
           type="button"
           class="clear-current-button"
@@ -862,16 +863,19 @@
 
   .chat-shell {
     --chat-navbar-height: 4rem;
+    --chat-shell-max: 112rem;
     box-sizing: border-box;
     position: fixed;
     inset: 0;
     display: grid;
-    grid-template-columns: minmax(14rem, 17rem) minmax(0, 58rem);
+    grid-template-columns: clamp(16rem, 20vw, 22rem) minmax(0, 1fr);
     gap: 0.75rem;
-    justify-content: center;
     height: auto;
     overflow: hidden;
-    padding: calc(var(--chat-navbar-height) + 0.75rem) 0.75rem 0.75rem;
+    padding:
+      calc(var(--chat-navbar-height) + 0.75rem)
+      max(0.75rem, calc((100vw - var(--chat-shell-max)) / 2))
+      0.75rem;
     background: #eef2f7;
   }
 
@@ -893,7 +897,7 @@
 
   .session-sidebar {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     border: 1px solid #dbe3ef;
@@ -918,6 +922,13 @@
   .session-sidebar-header strong {
     color: #0f172a;
     font-size: 0.9rem;
+  }
+
+  .session-sidebar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.4rem;
   }
 
   .session-list {
@@ -993,7 +1004,6 @@
   }
 
   .clear-all-button {
-    margin: 0.75rem;
     border-color: #fecaca;
     color: #991b1b;
     background: #fff7f7;
@@ -1482,12 +1492,42 @@
     }
 
     .session-sidebar {
-      grid-template-rows: auto minmax(0, 1fr) auto;
-      max-height: 12rem;
+      max-height: 10rem;
+    }
+
+    .session-sidebar-header {
+      padding: 0.5rem 0.55rem;
+    }
+
+    .session-sidebar-actions {
+      gap: 0.35rem;
+    }
+
+    .new-chat-button,
+    .clear-all-button {
+      min-height: 1.85rem;
+      padding-inline: 0.5rem;
+      font-size: 0.72rem;
     }
 
     .session-list {
-      max-height: 5.8rem;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.35rem;
+      max-height: 6.7rem;
+      padding: 0.45rem;
+    }
+
+    .session-item {
+      min-height: 3rem;
+      padding: 0.42rem 0.5rem;
+    }
+
+    .session-title {
+      font-size: 0.78rem;
+    }
+
+    .session-meta {
+      font-size: 0.64rem;
     }
   }
 

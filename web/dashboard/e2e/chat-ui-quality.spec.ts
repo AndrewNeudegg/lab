@@ -67,6 +67,7 @@ const seedChat = async (page: Page) => {
     localStorage.removeItem('homelabd.dashboard.chatDraft.v1');
   }, seededSessions);
   await page.reload();
+  await expect(page.locator('.chat-card')).toHaveAttribute('data-ready', 'true');
 };
 
 const expectNoAxeViolations = async (page: Page) => {
@@ -161,6 +162,35 @@ for (const viewport of [
         fullPage: true,
         animations: 'disabled'
       });
+    });
+
+    test('keeps session switching separate from composing on mobile', async ({ page }) => {
+      test.skip(!viewport.mobile, 'Mobile-only focus behaviour.');
+      await mockShellApis(page);
+      await seedChat(page);
+
+      const textbox = page.getByRole('textbox', { name: 'Message' });
+      await expect(textbox).toBeVisible();
+      await expect(textbox).not.toBeFocused();
+
+      await page.getByRole('button', { name: 'Previous incident follow-up' }).click();
+      await expect(page.getByRole('heading', { name: 'Previous incident follow-up' })).toBeVisible();
+      await expect(textbox).not.toBeFocused();
+
+      await page.getByRole('button', { name: 'Tighten chat page controls' }).click();
+      await expect(page.getByRole('heading', { name: 'Tighten chat page controls' })).toBeVisible();
+      await expect(textbox).not.toBeFocused();
+    });
+
+    test('uses prompt chips for the right interaction job', async ({ page }) => {
+      await mockShellApis(page);
+      await seedChat(page);
+
+      const textbox = page.getByRole('textbox', { name: 'Message' });
+      await page.getByRole('button', { name: 'Start work' }).click();
+      await expect(textbox).toHaveValue('create a task to ');
+      await expect(textbox).toBeFocused();
+      await expect(page.locator('.message.user')).toHaveCount(1);
     });
   });
 }

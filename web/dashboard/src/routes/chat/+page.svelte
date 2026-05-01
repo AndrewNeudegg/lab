@@ -43,6 +43,7 @@
     label: string;
     command: string;
     hint: string;
+    mode: 'send' | 'draft';
   };
 
   type ChatWindow = Window & {
@@ -53,21 +54,25 @@
     {
       label: 'Brief me',
       command: 'brief me on what needs my attention',
-      hint: 'Queue summary'
+      hint: 'Queue summary',
+      mode: 'send'
     },
     {
       label: 'Start work',
       command: 'create a task to ',
-      hint: 'Describe outcome'
+      hint: 'Describe outcome',
+      mode: 'draft'
     },
     {
       label: 'Reflect',
       command: 'reflect on our recent interaction and suggest one improvement',
-      hint: 'Improve process'
+      hint: 'Improve process',
+      mode: 'send'
     }
   ];
 
   let draft = '';
+  let hydrated = false;
   let loading = false;
   let clearing = false;
   let error = '';
@@ -75,6 +80,7 @@
   let inputEl: HTMLTextAreaElement | undefined;
   let fileInputEl: HTMLInputElement | undefined;
   let messagesEl: HTMLElement | undefined;
+  let promptActionsEl: HTMLElement | undefined;
   let currentSendAbortController: AbortController | undefined;
   let currentSendCancelled = false;
   let sessions: ChatSession[] = [];
@@ -152,8 +158,25 @@
     persistSessions();
   };
 
-  const focusInput = () => {
-    requestAnimationFrame(() => inputEl?.focus());
+  const isCompactChatViewport = () =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
+
+  const focusInput = ({ force = false }: { force?: boolean } = {}) => {
+    if (!force && isCompactChatViewport()) {
+      return;
+    }
+    requestAnimationFrame(() => inputEl?.focus({ preventScroll: true }));
+  };
+
+  const focusInputAtEnd = ({ force = false }: { force?: boolean } = {}) => {
+    if (!force && isCompactChatViewport()) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      inputEl?.focus({ preventScroll: true });
+      const position = inputEl?.value.length || 0;
+      inputEl?.setSelectionRange(position, position);
+    });
   };
 
   const scrollMessages = () => {
@@ -465,9 +488,15 @@
     if (!scrollToMessageHash()) {
       scrollMessages();
     }
+    const promptElement = promptActionsEl || document.querySelector<HTMLElement>('.prompt-actions');
     window.addEventListener('hashchange', scrollToMessageHash);
+    promptElement?.addEventListener('click', handlePromptActionsClick);
+    hydrated = true;
     focusInput();
-    return () => window.removeEventListener('hashchange', scrollToMessageHash);
+    return () => {
+      window.removeEventListener('hashchange', scrollToMessageHash);
+      promptElement?.removeEventListener('click', handlePromptActionsClick);
+    };
   });
 
   const sendMessage = async (content = draft) => {
@@ -495,6 +524,31 @@
 
   const sendCommand = (command: string) => {
     void sendMessage(command);
+  };
+
+  const handlePromptAction = (action: PromptAction) => {
+    if (action.mode === 'draft') {
+      draft = action.command;
+      persistChatDraft(draft);
+      focusInputAtEnd({ force: true });
+      return;
+    }
+    void sendMessage(action.command);
+  };
+
+  const handlePromptActionsClick = (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : undefined;
+    const button = target?.closest('button[data-prompt-index]') as HTMLButtonElement | null;
+    if (!button || button.disabled || !promptActionsEl?.contains(button)) {
+      return;
+    }
+    event.preventDefault();
+    const index = Number.parseInt(button.dataset.promptIndex || '', 10);
+    const action = promptActions[index];
+    if (!action) {
+      return;
+    }
+    handlePromptAction(action);
   };
 
   const handleComposerKeydown = (event: KeyboardEvent) => {
@@ -621,7 +675,7 @@
           aria-label="New chat"
           title="New chat"
           disabled={loading || clearing}
-          on:click={startNewChat}
+          onclick={startNewChat}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M12 5v14M5 12h14" />
@@ -633,7 +687,7 @@
           aria-label="Clear all chats"
           title="Clear all chats"
           disabled={loading || clearing}
-          on:click={clearAllChats}
+          onclick={clearAllChats}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M4 7h16M9 7V5h6v2M9 11v6M15 11v6M6 7l1 13h10l1-13" />
@@ -649,7 +703,7 @@
           class:active={session.id === activeSessionID}
           aria-current={session.id === activeSessionID ? 'page' : undefined}
           disabled={loading || clearing}
-          on:click={() => activateSession(session.id)}
+          onclick={() => activateSession(session.id)}
         >
           <span class="session-title">{session.title || chatSessionTitle(session.messages)}</span>
           <span class="session-meta">
@@ -663,7 +717,7 @@
     </nav>
   </aside>
 
-  <main class="chat-card">
+  <main class="chat-card" data-ready={hydrated ? 'true' : 'false'}>
     <header class="chat-toolbar">
       <div class="chat-title-group">
         <h1>{currentSessionTitle}</h1>
@@ -676,7 +730,7 @@
           aria-label={clearing ? 'Clearing chat' : 'Clear current chat'}
           title={clearing ? 'Clearing chat' : 'Clear current chat'}
           disabled={!hasCurrentMessages || loading || clearing}
-          on:click={clearCurrentChat}
+          onclick={clearCurrentChat}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M4 7h16M9 7V5h6v2M9 11v6M15 11v6M6 7l1 13h10l1-13" />
@@ -730,7 +784,7 @@
           {#if message.role === 'assistant' && message.actions?.length}
             <div class="message-actions">
               {#each message.actions as action}
-                <button type="button" disabled={loading || clearing} on:click={() => sendCommand(action)}>
+                <button type="button" disabled={loading || clearing} onclick={() => sendCommand(action)}>
                   {action}
                 </button>
               {/each}
@@ -745,7 +799,7 @@
                 disabled={loading || clearing}
                 aria-label="Resend failed message"
                 title={message.delivery_error || 'Resend failed message'}
-                on:click={() => resendFailedMessage(message)}
+                onclick={() => resendFailedMessage(message)}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path
@@ -776,13 +830,14 @@
       <p class="error" role="alert">{error}</p>
     {/if}
 
-    <section class="prompt-actions" aria-label="Prompt shortcuts">
-      {#each promptActions as action}
+    <section class="prompt-actions" aria-label="Prompt shortcuts" bind:this={promptActionsEl}>
+      {#each promptActions as action, index}
         <button
           type="button"
           class="prompt-action-chip"
+          data-prompt-index={index}
+          title={action.mode === 'draft' ? 'Start a draft message' : 'Send this command'}
           disabled={loading || clearing}
-          on:click={() => sendCommand(action.command)}
         >
           <strong>{action.label}</strong>
           <span>{action.hint}</span>
@@ -793,11 +848,14 @@
     <form
       class="composer"
       class:dragging={draggingFiles}
-      on:submit|preventDefault={() => void sendMessage()}
-      on:dragenter={handleDragEnter}
-      on:dragover={handleDragOver}
-      on:dragleave={handleDragLeave}
-      on:drop={handleDrop}
+      onsubmit={(event) => {
+        event.preventDefault();
+        void sendMessage();
+      }}
+      ondragenter={handleDragEnter}
+      ondragover={handleDragOver}
+      ondragleave={handleDragLeave}
+      ondrop={handleDrop}
     >
       <label class="hidden" for="message">Message</label>
       <div class="composer-row">
@@ -810,8 +868,8 @@
           multiple
           aria-label="Selected files"
           disabled={loading || clearing}
-          on:input={handleFileInput}
-          on:change={handleFileInput}
+          oninput={handleFileInput}
+          onchange={handleFileInput}
         />
         <button
           type="button"
@@ -819,7 +877,7 @@
           aria-label="Attach"
           title="Attach files"
           disabled={loading || clearing}
-          on:click={triggerFileInput}
+          onclick={triggerFileInput}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="m21 8.5-9.6 9.6a5 5 0 0 1-7.1-7.1l9.9-9.9a3.4 3.4 0 0 1 4.8 4.8l-9.9 9.9a1.8 1.8 0 0 1-2.5-2.5l8.7-8.7" />
@@ -834,8 +892,8 @@
             placeholder="Message homelabd"
             disabled={loading || clearing}
             rows="1"
-            on:input={handleDraftInput}
-            on:keydown={handleComposerKeydown}
+            oninput={handleDraftInput}
+            onkeydown={handleComposerKeydown}
           ></textarea>
         </div>
         <div class="composer-buttons">
@@ -845,7 +903,7 @@
               class="icon-button cancel-send-button"
               aria-label="Cancel current message send"
               title="Cancel current message send"
-              on:click={cancelCurrentSend}
+              onclick={cancelCurrentSend}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M6 6l12 12M18 6 6 18" />
@@ -879,7 +937,7 @@
                   aria-label={`Remove ${attachment.name}`}
                   title={`Remove ${attachment.name}`}
                   disabled={loading || clearing}
-                  on:click={() => removePendingAttachment(attachment.id)}
+                  onclick={() => removePendingAttachment(attachment.id)}
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path d="M6 6l12 12M18 6 6 18" />

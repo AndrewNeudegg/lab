@@ -25,6 +25,7 @@ export interface ChatTranscriptMessage {
   time: string;
   source?: string;
   actions?: string[];
+  buttons?: string[];
   stats?: ChatInteractionStats;
   attachments?: HomelabdTaskAttachment[];
   delivery_status?: ChatDeliveryStatus;
@@ -53,6 +54,7 @@ export interface HomelabdMessageResponse {
   id?: string;
   reply: string;
   source?: string;
+  buttons?: string[];
   stats?: ChatInteractionStats;
 }
 

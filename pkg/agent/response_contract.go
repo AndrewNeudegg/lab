@@ -52,6 +52,17 @@ const agentResponseJSONSchema = `{
           }
         }
       }
+    },
+    "buttons": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Optional. Use only with done=true to show clickable reply choices in dashboard chat. Each button is sent back as the next user message when clicked.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "Single-line button text. Keep labels concise and action-oriented."
+      }
     }
   },
   "allOf": [
@@ -61,7 +72,10 @@ const agentResponseJSONSchema = `{
     },
     {
       "if": {"properties": {"done": {"const": false}}},
-      "then": {"properties": {"tool_calls": {"minItems": 1}}}
+      "then": {
+        "properties": {"tool_calls": {"minItems": 1}},
+        "not": {"required": ["buttons"]}
+      }
     }
   ]
 }`
@@ -94,6 +108,17 @@ const agentResponseProviderJSONSchema = `{
             "description": "A JSON object matching the selected tool schema. Use {} only for tools with no required arguments."
           }
         }
+      }
+    },
+    "buttons": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Optional final-answer reply choices. Only include when done is true. Each string is clickable dashboard button text and will be sent as the next user message.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "Single-line button label, 1-80 characters."
       }
     }
   }
@@ -152,6 +177,16 @@ func finalSubmitToolSpec() llm.ToolSpec {
       "type": "string",
       "minLength": 1,
       "description": "The final concrete answer or task summary. Do not submit placeholders, jokes, or promises to do work later."
+    },
+    "buttons": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Optional final-answer reply choices. Each string is clickable dashboard button text and will be sent as the next user message.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      }
     }
   }
 }`),
@@ -162,6 +197,7 @@ func finalSubmitToolPrompt() string {
 	return strings.Join([]string{
 		"Provider tool-call fallback:",
 		"- When your answer is final and no more homelabd tools are needed, call final.submit with {\"message\":\"...\"}.",
+		"- If the final answer should offer clickable dashboard reply choices, include final.submit buttons as up to 8 concise single-line strings.",
 		"- For non-final work that needs homelabd tools, return the normal JSON envelope with done=false and tool_calls.",
 		"- Do not call final.submit for a placeholder, joke, capability statement, or promise to act later.",
 	}, "\n")
@@ -187,12 +223,13 @@ func agentResponseSchemaPrompt() string {
 		agentResponseJSONSchema,
 		"Important validation rules:",
 		"- Include all three top-level keys exactly: message, done, tool_calls.",
-		"- Unknown keys are rejected.",
+		"- Unknown keys are rejected. The only optional top-level key is buttons.",
 		"- done=true requires tool_calls=[].",
-		"- done=false requires at least one tool call.",
+		"- done=false requires at least one tool call and must omit buttons.",
 		"- Every tool call must use {\"tool\":\"name\",\"args\":{...}}. The key \"name\" is invalid.",
 		"- Use the key \"tool\", not \"name\".",
 		"- args must always be a JSON object, never a string, array, null, or omitted.",
+		"- buttons is optional and only valid for done=true final answers. Use up to 8 concise, single-line strings of 1-80 characters; dashboard chat sends the clicked string as the next user message.",
 	}, "\n")
 }
 
@@ -215,12 +252,14 @@ func parseAgentResponse(content string) (agentResponse, error) {
 		return agentResponse{}, err
 	}
 	var response agentResponse
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return agentResponse{}, err
-	}
+	_ = json.Unmarshal(raw, &response)
 	if err := validateAgentResponseRaw(raw, response); err != nil {
 		return agentResponse{}, err
 	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return agentResponse{}, err
+	}
+	response.Buttons, _ = validateAgentButtonLabels(response.Buttons, "buttons")
 	return response, nil
 }
 
@@ -268,7 +307,8 @@ func parseFinalSubmitToolCall(calls []llm.ToolCall) (agentResponse, error) {
 		return agentResponse{}, agentResponseValidationError{Issues: issues}
 	}
 	var args struct {
-		Message string `json:"message"`
+		Message string   `json:"message"`
+		Buttons []string `json:"buttons,omitempty"`
 	}
 	if err := json.Unmarshal(finalCall.Args, &args); err != nil {
 		return agentResponse{}, agentResponseValidationError{Issues: []string{"final.submit args are not valid JSON: " + err.Error()}}
@@ -277,7 +317,11 @@ func parseFinalSubmitToolCall(calls []llm.ToolCall) (agentResponse, error) {
 	if message == "" {
 		return agentResponse{}, agentResponseValidationError{Issues: []string{"final.submit.message must be non-empty"}}
 	}
-	return agentResponse{Message: message, Done: true, ToolCalls: []proposedToolCall{}}, nil
+	buttons, labelIssues := validateAgentButtonLabels(args.Buttons, "final.submit buttons")
+	if len(labelIssues) > 0 {
+		return agentResponse{}, agentResponseValidationError{Issues: labelIssues}
+	}
+	return agentResponse{Message: message, Done: true, ToolCalls: []proposedToolCall{}, Buttons: buttons}, nil
 }
 
 func strictAgentResponseJSON(content string) ([]byte, error) {
@@ -313,7 +357,7 @@ func validateAgentResponseRaw(raw []byte, response agentResponse) error {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return agentResponseValidationError{Issues: []string{"response is not a JSON object"}}
 	}
-	allowedTop := map[string]bool{"message": true, "done": true, "tool_calls": true}
+	allowedTop := map[string]bool{"message": true, "done": true, "tool_calls": true, "buttons": true}
 	for key := range top {
 		if !allowedTop[key] {
 			issues = append(issues, fmt.Sprintf("unknown top-level key %q", key))
@@ -353,6 +397,9 @@ func validateAgentResponseRaw(raw []byte, response agentResponse) error {
 				issues = append(issues, validateAgentToolCallRaw(i, rawCall)...)
 			}
 		}
+	}
+	if rawButtons, ok := top["buttons"]; ok {
+		issues = append(issues, validateAgentButtonsRaw(rawButtons, response.Done)...)
 	}
 	if len(issues) > 0 {
 		return agentResponseValidationError{Issues: issues}
@@ -399,6 +446,68 @@ func validateAgentToolCallRaw(index int, raw json.RawMessage) []string {
 		}
 	}
 	return issues
+}
+
+func validateAgentButtonsRaw(raw json.RawMessage, done bool) []string {
+	if !done {
+		return []string{"done=false must omit buttons"}
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if !bytes.HasPrefix(trimmed, []byte("[")) {
+		return []string{"buttons must be an array"}
+	}
+	var rawButtons []json.RawMessage
+	if err := json.Unmarshal(raw, &rawButtons); err != nil {
+		return []string{"buttons must be a valid string array"}
+	}
+	labels := make([]string, 0, len(rawButtons))
+	var issues []string
+	for i, rawButton := range rawButtons {
+		var label string
+		if err := json.Unmarshal(rawButton, &label); err != nil {
+			issues = append(issues, fmt.Sprintf("buttons[%d] must be a string", i))
+			continue
+		}
+		labels = append(labels, label)
+	}
+	_, labelIssues := validateAgentButtonLabels(labels, "buttons")
+	issues = append(issues, labelIssues...)
+	return compactIssueList(issues)
+}
+
+func validateAgentButtonLabels(labels []string, path string) ([]string, []string) {
+	if len(labels) == 0 {
+		return nil, nil
+	}
+	var issues []string
+	if len(labels) > 8 {
+		issues = append(issues, fmt.Sprintf("%s must contain at most 8 item(s)", path))
+	}
+	seen := make(map[string]bool, len(labels))
+	normalised := make([]string, 0, len(labels))
+	for i, label := range labels {
+		clean := strings.TrimSpace(label)
+		itemPath := fmt.Sprintf("%s[%d]", path, i)
+		if clean == "" {
+			issues = append(issues, itemPath+" must be a non-empty string")
+			continue
+		}
+		if strings.ContainsAny(clean, "\r\n\t") {
+			issues = append(issues, itemPath+" must be a single-line string")
+		}
+		if len([]rune(clean)) > 80 {
+			issues = append(issues, itemPath+" must contain at most 80 character(s)")
+		}
+		if seen[clean] {
+			issues = append(issues, itemPath+" duplicates another button")
+		}
+		seen[clean] = true
+		normalised = append(normalised, clean)
+	}
+	if len(issues) > 0 {
+		return nil, compactIssueList(issues)
+	}
+	return normalised, nil
 }
 
 func compactIssueList(values []string) []string {

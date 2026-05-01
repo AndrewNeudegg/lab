@@ -89,6 +89,73 @@ func TestParseAgentResponseRejectsInconsistentDoneState(t *testing.T) {
 	}
 }
 
+func TestParseAgentResponseAcceptsFinalButtons(t *testing.T) {
+	response, err := parseAgentResponse(`{"message":"Choose a path.","done":true,"tool_calls":[],"buttons":["Yes","No","Tell me more"]}`)
+	if err != nil {
+		t.Fatalf("parseAgentResponse returned error: %v", err)
+	}
+	if got, want := strings.Join(response.Buttons, "|"), "Yes|No|Tell me more"; got != want {
+		t.Fatalf("buttons = %q, want %q", got, want)
+	}
+}
+
+func TestParseAgentResponseRejectsMalformedButtons(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "not array",
+			content: `{"message":"Choose.","done":true,"tool_calls":[],"buttons":{"label":"Yes"}}`,
+			want:    "buttons must be an array",
+		},
+		{
+			name:    "non string",
+			content: `{"message":"Choose.","done":true,"tool_calls":[],"buttons":["Yes",2]}`,
+			want:    "buttons[1] must be a string",
+		},
+		{
+			name:    "blank",
+			content: `{"message":"Choose.","done":true,"tool_calls":[],"buttons":["Yes","   "]}`,
+			want:    "buttons[1] must be a non-empty string",
+		},
+		{
+			name:    "non final",
+			content: `{"message":"Checking.","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"x"}}],"buttons":["Cancel"]}`,
+			want:    "done=false must omit buttons",
+		},
+		{
+			name:    "non final empty buttons",
+			content: `{"message":"Checking.","done":false,"tool_calls":[{"tool":"repo.search","args":{"query":"x"}}],"buttons":[]}`,
+			want:    "done=false must omit buttons",
+		},
+		{
+			name:    "too many",
+			content: `{"message":"Choose.","done":true,"tool_calls":[],"buttons":["One","Two","Three","Four","Five","Six","Seven","Eight","Nine"]}`,
+			want:    "buttons must contain at most 8 item(s)",
+		},
+		{
+			name:    "multi line",
+			content: `{"message":"Choose.","done":true,"tool_calls":[],"buttons":["Yes\nplease"]}`,
+			want:    "buttons[0] must be a single-line string",
+		},
+		{
+			name:    "duplicate",
+			content: `{"message":"Choose.","done":true,"tool_calls":[],"buttons":["Yes","Yes"]}`,
+			want:    "buttons[1] duplicates another button",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseAgentResponse(tc.content)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestAgentResponseSchemaPromptGivesStrictHints(t *testing.T) {
 	prompt := agentResponseSchemaPrompt()
 	for _, want := range []string{
@@ -96,6 +163,7 @@ func TestAgentResponseSchemaPromptGivesStrictHints(t *testing.T) {
 		`"required": ["message", "done", "tool_calls"]`,
 		`Use the key "tool", not "name"`,
 		`args must always be a JSON object`,
+		`buttons is optional`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("schema prompt missing %q:\n%s", want, prompt)
@@ -1009,15 +1077,18 @@ func TestToolCallingProviderCanSubmitFinalAnswer(t *testing.T) {
 	orch.provider = provider
 	orch.model = "tool-model"
 
-	reply, source, err := orch.handleMessage(context.Background(), "explain current provider routing")
+	result, err := orch.HandleDetailed(context.Background(), "test", "explain current provider routing")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply != "Final answer from tool call." {
-		t.Fatalf("reply = %q, want final.submit message", reply)
+	if result.Reply != "Final answer from tool call." {
+		t.Fatalf("reply = %q, want final.submit message", result.Reply)
 	}
-	if source != "tool-calling" {
-		t.Fatalf("source = %q", source)
+	if result.Source != "tool-calling" {
+		t.Fatalf("source = %q", result.Source)
+	}
+	if got, want := strings.Join(result.Buttons, "|"), "Continue"; got != want {
+		t.Fatalf("buttons = %q, want %q", got, want)
 	}
 	if len(provider.requests) != 1 {
 		t.Fatalf("requests = %d, want 1", len(provider.requests))
@@ -4562,6 +4633,52 @@ func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestOpenEndedChatReturnsStructuredButtons(t *testing.T) {
+	provider := &staticProvider{content: `{"message":"Do you want me to create the task?","done":true,"tool_calls":[],"buttons":["Yes, create it","No, leave it"]}`}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	result, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "Should we turn that into work?",
+		ConversationID: "chat_buttons",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reply != "Do you want me to create the task?" {
+		t.Fatalf("reply = %q, want button prompt", result.Reply)
+	}
+	if got, want := strings.Join(result.Buttons, "|"), "Yes, create it|No, leave it"; got != want {
+		t.Fatalf("buttons = %q, want %q", got, want)
+	}
+
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, event := range events {
+		if event.Type != "chat.reply" {
+			continue
+		}
+		var payload struct {
+			Buttons []string `json:"buttons"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(payload.Buttons, "|") == "Yes, create it|No, leave it" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("chat.reply event did not include buttons: %#v", events)
+	}
+}
+
 func TestOpenEndedChatDoesNotReturnToolProgressAsFinalReply(t *testing.T) {
 	progress := `{"message":"Reading the rest of pkg/knowledge/knowledge.go to understand the research modes.","done":false,"tool_calls":[{"tool":"chat.history","args":{"limit":1}}]}`
 	provider := &scriptedProvider{contents: []string{progress, progress, progress, progress}}
@@ -6181,7 +6298,7 @@ func (p *toolCallingProvider) Complete(_ context.Context, req llm.CompletionRequ
 		ToolCalls: []llm.ToolCall{{
 			ID:   "call_final",
 			Name: "final.submit",
-			Args: json.RawMessage(`{"message":"Final answer from tool call."}`),
+			Args: json.RawMessage(`{"message":"Final answer from tool call.","buttons":["Continue"]}`),
 		}},
 	}, nil
 }

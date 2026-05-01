@@ -77,15 +77,19 @@ func TestMessageEndpointReturnsInteractionStats(t *testing.T) {
 
 	response := requestJSON(t, mux, http.MethodPost, "/message", `{"from":"dashboard","content":"what did that take?"}`, "", http.StatusOK)
 	var got struct {
-		Reply  string                 `json:"reply"`
-		Source string                 `json:"source"`
-		Stats  agent.InteractionStats `json:"stats"`
+		Reply   string                 `json:"reply"`
+		Source  string                 `json:"source"`
+		Buttons []string               `json:"buttons"`
+		Stats   agent.InteractionStats `json:"stats"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Reply != "Measured reply." || got.Source != "test-provider" {
 		t.Fatalf("response = %#v, want measured provider reply", got)
+	}
+	if strings.Join(got.Buttons, "|") != "Yes|No" {
+		t.Fatalf("buttons = %#v, want yes/no choices", got.Buttons)
 	}
 	if got.Stats.ModelTurns != 1 || got.Stats.ToolCalls != 0 || got.Stats.TotalTokens != 17 || got.Stats.ElapsedMilliseconds <= 0 {
 		t.Fatalf("stats = %#v, want one model turn, zero tool calls, token usage, and elapsed time", got.Stats)
@@ -842,7 +846,7 @@ func (messageStatsProvider) Complete(_ context.Context, req llm.CompletionReques
 	return llm.CompletionResponse{
 		Message: llm.Message{
 			Role:    "assistant",
-			Content: `{"message":"Measured reply.","done":true,"tool_calls":[]}`,
+			Content: `{"message":"Measured reply.","done":true,"tool_calls":[],"buttons":["Yes","No"]}`,
 		},
 		Usage: llm.Usage{
 			InputTokens:  11,

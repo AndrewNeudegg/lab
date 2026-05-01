@@ -893,10 +893,18 @@ func (c cli) message(message string) error {
 		return c.printResponse(out)
 	}
 	var reply struct {
-		Reply string `json:"reply"`
+		Reply   string   `json:"reply"`
+		Buttons []string `json:"buttons"`
 	}
 	if err := json.Unmarshal(out, &reply); err == nil && strings.TrimSpace(reply.Reply) != "" {
 		fmt.Fprintln(c.out, reply.Reply)
+		for i, button := range reply.Buttons {
+			label := strings.TrimSpace(button)
+			if label == "" {
+				continue
+			}
+			fmt.Fprintf(c.out, "%d. %s\n", i+1, label)
+		}
 		return nil
 	}
 	return c.printResponse(out)

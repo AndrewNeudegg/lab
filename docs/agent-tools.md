@@ -25,6 +25,8 @@ Orchestrator-style agents respond with one JSON object:
 
 Each `args` object must match the tool's schema. Empty args are treated as `{}`. The Orchestrator validates the JSON shape, required fields, primitive types, enum values, and numeric bounds before policy checks or handlers run. Task workers also get semantic validation: workspace-scoped `repo.*` calls must use the task worktree, and `dir`-scoped Git, Go, Bun, and limited shell calls must stay inside it. Results are JSON and are stored in the event log as `tool.result`; denied calls are stored as `tool.call.denied`.
 
+Final `done=true` responses may include `"buttons": ["Yes", "No"]`. Buttons are optional reply choices, limited to eight single-line labels of 1-80 characters. They must be omitted on `done=false` tool-work responses, and dashboard chat sends the clicked label as the next user message.
+
 Registered tools expose a name, description, JSON schema, risk level, and `Run` implementation through `pkg/tool.Tool`. Pseudo-tools such as `task.create` and `workflow.run` use the same call shape, but the Orchestrator handles them directly instead of looking them up in the registry.
 
 ## Tool Execution Flow

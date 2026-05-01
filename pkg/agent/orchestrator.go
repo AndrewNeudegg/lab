@@ -70,6 +70,7 @@ type agentResponse struct {
 	Message   string             `json:"message"`
 	Done      bool               `json:"done"`
 	ToolCalls []proposedToolCall `json:"tool_calls"`
+	Buttons   []string           `json:"buttons,omitempty"`
 }
 
 type proposedToolCall struct {
@@ -102,9 +103,10 @@ func (s InteractionStats) HasValues() bool {
 }
 
 type HandleResult struct {
-	Reply  string
-	Source string
-	Stats  InteractionStats
+	Reply   string
+	Source  string
+	Stats   InteractionStats
+	Buttons []string
 }
 
 type HandleRequest struct {
@@ -127,6 +129,7 @@ type ClearChatResult struct {
 
 type interactionStatsContextKey struct{}
 type currentChatTurnContextKey struct{}
+type currentChatButtonsContextKey struct{}
 
 type currentChatTurn struct {
 	UserEventID    string
@@ -138,6 +141,29 @@ func withInteractionStats(ctx context.Context, stats *InteractionStats) context.
 		return ctx
 	}
 	return context.WithValue(ctx, interactionStatsContextKey{}, stats)
+}
+
+func withCurrentChatButtons(ctx context.Context, buttons *[]string) context.Context {
+	if buttons == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, currentChatButtonsContextKey{}, buttons)
+}
+
+func setCurrentChatButtons(ctx context.Context, buttons []string) {
+	target, _ := ctx.Value(currentChatButtonsContextKey{}).(*[]string)
+	if target == nil {
+		return
+	}
+	*target = append((*target)[:0], buttons...)
+}
+
+func currentChatButtonsFromContext(ctx context.Context) []string {
+	target, _ := ctx.Value(currentChatButtonsContextKey{}).(*[]string)
+	if target == nil || len(*target) == 0 {
+		return nil
+	}
+	return append([]string(nil), (*target)...)
 }
 
 func interactionStatsFromContext(ctx context.Context) *InteractionStats {
@@ -353,6 +379,7 @@ func (o *Orchestrator) HandleDetailedWithAttachments(ctx context.Context, from, 
 func (o *Orchestrator) HandleDetailedRequest(ctx context.Context, req HandleRequest) (HandleResult, error) {
 	started := time.Now()
 	stats := &InteractionStats{}
+	var buttons []string
 	message := strings.TrimSpace(req.Message)
 	attachments := prepareTaskAttachments(req.Attachments)
 	conversationID := strings.TrimSpace(req.ConversationID)
@@ -364,6 +391,7 @@ func (o *Orchestrator) HandleDetailedRequest(ctx context.Context, req HandleRequ
 		return HandleResult{Reply: "empty message", Source: "program", Stats: *stats}, nil
 	}
 	ctx = withInteractionStats(ctx, stats)
+	ctx = withCurrentChatButtons(ctx, &buttons)
 	payload := map[string]any{"message": message}
 	if conversationID != "" {
 		payload["conversation_id"] = conversationID
@@ -389,7 +417,7 @@ func (o *Orchestrator) HandleDetailedRequest(ctx context.Context, req HandleRequ
 		o.appendChatReply(ctx, req.From, reply)
 	}
 	stats.ElapsedMilliseconds = elapsedMillisecondsSince(started)
-	return HandleResult{Reply: reply, Source: normalizeSource(source), Stats: *stats}, err
+	return HandleResult{Reply: reply, Source: normalizeSource(source), Stats: *stats, Buttons: buttons}, err
 }
 
 func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, string, error) {
@@ -669,6 +697,9 @@ func (o *Orchestrator) appendChatReply(ctx context.Context, to, message string) 
 		return
 	}
 	payload := map[string]any{"message": message, "to": to}
+	if buttons := currentChatButtonsFromContext(ctx); len(buttons) > 0 {
+		payload["buttons"] = buttons
+	}
 	if turn, ok := currentChatTurnFromContext(ctx); ok && strings.TrimSpace(turn.ConversationID) != "" {
 		payload["conversation_id"] = strings.TrimSpace(turn.ConversationID)
 	}
@@ -2796,6 +2827,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			if lastMessage == "" {
 				lastMessage = "Done."
 			}
+			setCurrentChatButtons(ctx, parsed.Buttons)
 			return lastMessage, source, nil
 		}
 		messages = append(messages, llm.Message{Role: "assistant", Content: mustJSON(parsed)})

@@ -139,6 +139,8 @@ go run ./cmd/homelabctl test task_123
 
 `ux <task_id> [instruction]` runs the built-in `UXAgent` in the task worktree. Use it for UI, interaction, accessibility, responsive layout, and visual-state work that should be backed by current UX research and browser-level verification.
 
+Plain `homelabctl message` output prints the reply and any suggested chat buttons as numbered choices. Type the desired label back into chat to follow that branch. Use `-json` when a script needs the raw `/message` response, including the optional `buttons` array.
+
 Agent UI validation must not restart production services. For focused desktop/mobile accessibility and visual checks, workers and reviewers use `nix develop -c bun run --cwd web uat:ui`; for dashboard task-page changes, use `nix develop -c bun run --cwd web uat:tasks`; for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use `nix develop -c bun run --cwd web uat:site`. These commands start an isolated Playwright/Vite server from the task worktree and mock production APIs. See `docs/agentic-testing.md`.
 
 When `homelabd` review invokes `bun.check`, `bun.build`, `bun.test`, `bun.uat.ui`, `bun.uat.tasks`, or `bun.uat.site`, the tool enters the repo's Nix dev shell whenever `flake.nix` is available. This keeps automated review aligned with the documented worker commands and avoids browser-library drift in supervised processes.
@@ -305,7 +307,7 @@ go run ./cmd/homelabctl terminal close term_123
 `homelabctl` covers the current `homelabd` HTTP operator API:
 
 - `GET /healthz`
-- `POST /message`, returning `reply`, `source`, and optional interaction `stats`
+- `POST /message`, returning `reply`, `source`, optional `buttons`, and optional interaction `stats`
 - `POST /chat/clear`
 - `GET /tasks`
 - `POST /tasks`, including optional remote `target`

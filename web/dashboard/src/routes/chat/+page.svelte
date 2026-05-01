@@ -357,7 +357,8 @@
     content: string,
     source?: string,
     attachments: HomelabdTaskAttachment[] = [],
-    stats?: ChatInteractionStats
+    stats?: ChatInteractionStats,
+    buttons: string[] = []
   ) => {
     messageId += 1;
     const message: ChatTranscriptMessage = {
@@ -367,6 +368,7 @@
       source,
       attachments: attachments.length ? attachments : undefined,
       actions: role === 'assistant' ? extractCommands(content) : undefined,
+      buttons: role === 'assistant' && buttons.length ? buttons : undefined,
       stats,
       time: timeLabel()
     };
@@ -457,7 +459,8 @@
         response.reply || 'No reply returned.',
         response.source || 'program',
         [],
-        response.stats
+        response.stats,
+        response.buttons || []
       );
     } catch (err) {
       updateMessage(message.id, {
@@ -524,6 +527,10 @@
 
   const sendCommand = (command: string) => {
     void sendMessage(command);
+  };
+
+  const sendButtonReply = (text: string) => {
+    void sendMessage(text);
   };
 
   const handlePromptAction = (action: PromptAction) => {
@@ -781,9 +788,19 @@
               {/each}
             </div>
           {/if}
-          {#if message.role === 'assistant' && message.actions?.length}
+          {#if message.role === 'assistant' && (message.buttons?.length || message.actions?.length)}
             <div class="message-actions">
-              {#each message.actions as action}
+              {#each message.buttons || [] as button}
+                <button
+                  type="button"
+                  class="chat-reply-button"
+                  disabled={loading || clearing}
+                  onclick={() => sendButtonReply(button)}
+                >
+                  {button}
+                </button>
+              {/each}
+              {#each message.actions || [] as action}
                 <button type="button" disabled={loading || clearing} onclick={() => sendCommand(action)}>
                   {action}
                 </button>

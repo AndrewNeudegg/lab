@@ -91,4 +91,24 @@ describe('chat sessions', () => {
 
     expect(stored.messages[0].attachments?.[0].data_url).toBeUndefined();
   });
+
+  test('restores assistant reply buttons from stored history', () => {
+    const state = restoreChatState({
+      storedSessions: JSON.stringify([
+        {
+          id: 'buttons',
+          title: 'Buttons',
+          messages: [{ ...message('assistant', 'Choose one'), buttons: ['Yes', 'No'] }],
+          created_at: '2026-04-30T12:00:00.000Z',
+          updated_at: '2026-04-30T12:00:00.000Z'
+        }
+      ]),
+      storedActiveID: 'buttons',
+      legacyTranscript: null,
+      createID: () => 'unused',
+      now: '2026-04-30T12:00:00.000Z'
+    });
+
+    expect(state.sessions[0].messages[0].buttons).toEqual(['Yes', 'No']);
+  });
 });

@@ -206,6 +206,9 @@ func (s *Server) handleMessage(rw http.ResponseWriter, req *http.Request) {
 	}
 	_ = s.appendChat("http", "out", "homelabd", from, result.Reply, true, conversationID)
 	response := map[string]any{"id": id.New("msg"), "reply": result.Reply, "source": result.Source}
+	if len(result.Buttons) > 0 {
+		response["buttons"] = result.Buttons
+	}
 	if result.Stats.HasValues() {
 		response["stats"] = result.Stats
 	}

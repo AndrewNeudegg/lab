@@ -427,7 +427,7 @@ func TestMessagePrintsPlainReplyAndSendsConfiguredSender(t *testing.T) {
 	var observed observedRequest
 	stdout, stderr, code := runAgainstServer(t, []string{"-from", "operator", "message", "status"}, "", func(rw http.ResponseWriter, req *http.Request) {
 		observed = observeRequest(t, req)
-		writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "all clear", "source": "program"})
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "all clear", "source": "program", "buttons": []string{"Yes", "No"}})
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
@@ -438,7 +438,7 @@ func TestMessagePrintsPlainReplyAndSendsConfiguredSender(t *testing.T) {
 	if observed.Body["from"] != "operator" || observed.Body["content"] != "status" {
 		t.Fatalf("body = %#v", observed.Body)
 	}
-	if stdout != "all clear\n" {
+	if stdout != "all clear\n1. Yes\n2. No\n" {
 		t.Fatalf("stdout = %q, want plain reply", stdout)
 	}
 }

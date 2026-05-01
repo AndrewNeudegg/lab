@@ -46,6 +46,10 @@ export const isTranscriptMessage = (value: unknown): value is ChatTranscriptMess
     candidate.actions === undefined ||
     (Array.isArray(candidate.actions) &&
       candidate.actions.every((action) => typeof action === 'string'));
+  const validButtons =
+    candidate.buttons === undefined ||
+    (Array.isArray(candidate.buttons) &&
+      candidate.buttons.every((button) => typeof button === 'string' && button.trim().length > 0));
   const validStats =
     candidate.stats === undefined ||
     (candidate.stats !== null &&
@@ -75,6 +79,7 @@ export const isTranscriptMessage = (value: unknown): value is ChatTranscriptMess
     typeof candidate.content === 'string' &&
     typeof candidate.time === 'string' &&
     validActions &&
+    validButtons &&
     validStats &&
     validAttachments &&
     validDeliveryStatus &&

@@ -151,22 +151,12 @@ func parseSummaryContent(content string) string {
 	if content == "" {
 		return ""
 	}
-	var parsed struct {
-		Summary string `json:"summary"`
-		Title   string `json:"title"`
-	}
-	if err := json.Unmarshal([]byte(content), &parsed); err == nil {
-		if strings.TrimSpace(parsed.Summary) != "" {
-			return parsed.Summary
-		}
-		return parsed.Title
+	if summary := parseSummaryJSON(content, 0); summary != "" {
+		return summary
 	}
 	if object := extractFirstJSONObject(content); object != "" {
-		if err := json.Unmarshal([]byte(object), &parsed); err == nil {
-			if strings.TrimSpace(parsed.Summary) != "" {
-				return parsed.Summary
-			}
-			return parsed.Title
+		if summary := parseSummaryJSON(object, 0); summary != "" {
+			return summary
 		}
 	}
 	content = strings.TrimPrefix(content, "```json")
@@ -177,6 +167,66 @@ func parseSummaryContent(content string) string {
 		content = content[:idx]
 	}
 	return content
+}
+
+func parseSummaryJSON(content string, depth int) string {
+	if depth > 3 {
+		return ""
+	}
+	var parsed struct {
+		Summary json.RawMessage `json:"summary"`
+		Title   json.RawMessage `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err == nil {
+		if summary := parseSummaryJSONValue(parsed.Summary, depth); summary != "" {
+			return summary
+		}
+		return parseSummaryJSONValue(parsed.Title, depth)
+	}
+	var value string
+	if err := json.Unmarshal([]byte(content), &value); err != nil {
+		return ""
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if summary := parseSummaryJSON(value, depth+1); summary != "" {
+		return summary
+	}
+	if object := extractFirstJSONObject(value); object != "" {
+		if summary := parseSummaryJSON(object, depth+1); summary != "" {
+			return summary
+		}
+	}
+	return value
+}
+
+func parseSummaryJSONValue(raw json.RawMessage, depth int) string {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return ""
+	}
+	if summary := parseSummaryJSON(value, depth+1); summary != "" {
+		return summary
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if summary := parseSummaryJSON(text, depth+1); summary != "" {
+		return summary
+	}
+	if object := extractFirstJSONObject(text); object != "" {
+		if summary := parseSummaryJSON(object, depth+1); summary != "" {
+			return summary
+		}
+	}
+	return text
 }
 
 func extractFirstJSONObject(s string) string {

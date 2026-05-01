@@ -4301,8 +4301,10 @@ func fallbackTaskTitle(goal string, maxCharacters int) string {
 
 func cleanTaskTitle(value string, maxCharacters int) string {
 	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	value = unwrapTaskTitleJSON(value)
 	value = strings.Trim(value, " \t\r\n\"'`")
 	for {
+		value = unwrapTaskTitleJSON(value)
 		lower := strings.ToLower(value)
 		switch {
 		case strings.HasPrefix(lower, "summary:"):
@@ -4313,6 +4315,59 @@ func cleanTaskTitle(value string, maxCharacters int) string {
 			return clipTaskTitle(value, maxCharacters)
 		}
 	}
+}
+
+func unwrapTaskTitleJSON(value string) string {
+	value = strings.TrimSpace(value)
+	for depth := 0; depth < 4 && value != ""; depth++ {
+		var parsed struct {
+			Summary json.RawMessage `json:"summary"`
+			Title   json.RawMessage `json:"title"`
+		}
+		if err := json.Unmarshal([]byte(value), &parsed); err == nil {
+			if next := taskTitleJSONValue(parsed.Summary); next != "" {
+				value = next
+				continue
+			}
+			if next := taskTitleJSONValue(parsed.Title); next != "" {
+				value = next
+				continue
+			}
+			return value
+		}
+		var text string
+		if err := json.Unmarshal([]byte(value), &text); err != nil {
+			return value
+		}
+		text = strings.TrimSpace(text)
+		if text == "" || text == value {
+			return value
+		}
+		value = text
+	}
+	return value
+}
+
+func taskTitleJSONValue(raw json.RawMessage) string {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	var nested struct {
+		Summary string `json:"summary"`
+		Title   string `json:"title"`
+	}
+	if err := json.Unmarshal(raw, &nested); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(nested.Summary) != "" {
+		return strings.TrimSpace(nested.Summary)
+	}
+	return strings.TrimSpace(nested.Title)
 }
 
 func clipTaskTitle(value string, maxCharacters int) string {

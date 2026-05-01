@@ -58,3 +58,16 @@ export const activityCountForCapability = (
   }
   return activities.filter((activity) => activity.capability_ids.includes(capability.id)).length;
 };
+
+export const primaryCapabilityForActivity = (
+  activity: AssistantActivity | undefined,
+  capabilities: AssistantCapability[]
+) => {
+  const ids = new Set(activity?.capability_ids || []);
+  return capabilities.find((capability) => ids.has(capability.id));
+};
+
+export const activityForCapability = (
+  capability: AssistantCapability | undefined,
+  activities: AssistantActivity[]
+) => activities.find((activity) => Boolean(capability && activity.capability_ids.includes(capability.id)));

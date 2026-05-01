@@ -2,10 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import type { AssistantActivity, AssistantCapability, AssistantUXPattern } from '@homelab/shared';
 import {
   activityCountForCapability,
+  activityForCapability,
   assistantAreaLabel,
   assistantAutonomyLabel,
   assistantAutonomyTone,
   patternsForCapability,
+  primaryCapabilityForActivity,
   selectAssistantCapability
 } from './assistant-model';
 
@@ -79,5 +81,16 @@ describe('assistant model', () => {
     expect(
       activityCountForCapability(selected, [activity('decision', ['research']), activity('brief', ['brief'])])
     ).toBe(1);
+  });
+
+  test('maps operator activities to their supporting capability', () => {
+    const capabilities = [capability('brief'), capability('research')];
+    const researchActivity = activity('decision', ['research']);
+
+    expect(primaryCapabilityForActivity(researchActivity, capabilities)?.id).toBe('research');
+    expect(primaryCapabilityForActivity(activity('missing', ['missing']), capabilities)).toBeUndefined();
+    expect(activityForCapability(capabilities[1], [activity('briefing', ['brief']), researchActivity])?.id).toBe(
+      'decision'
+    );
   });
 });

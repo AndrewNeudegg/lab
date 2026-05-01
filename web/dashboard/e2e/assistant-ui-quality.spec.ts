@@ -1,0 +1,282 @@
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+const now = '2026-04-28T12:00:00.000Z';
+
+const assistantCatalogue = {
+  name: 'Assistant',
+  summary:
+    'A life-improving operating layer for briefs, planning, research, workflows, memory, and safe action.',
+  updated_at: now,
+  principles: [{ name: 'Plan before action', summary: 'Preview state-changing work before execution.' }],
+  activities: [
+    {
+      id: 'prepare-decision',
+      name: 'Research a decision',
+      area: 'research',
+      cadence: 'On demand',
+      description: 'Investigate options and compare trade-offs.',
+      outcome: 'A sourced decision brief with risks and next action.',
+      capability_ids: ['research-prepare']
+    },
+    {
+      id: 'start-day',
+      name: 'Start my day',
+      area: 'focus',
+      cadence: 'Daily',
+      description: 'Summarise priorities and blockers.',
+      outcome: 'A short morning brief with focus blocks.',
+      capability_ids: ['brief-prioritise']
+    }
+  ],
+  capabilities: [
+    {
+      id: 'brief-prioritise',
+      name: 'Brief and prioritise',
+      area: 'focus',
+      summary: 'Produce daily and situation-specific briefs from task state and health signals.',
+      promise: 'Tell me what matters now.',
+      cadence: 'Daily',
+      autonomy: 'observe',
+      inputs: ['Tasks', 'Health'],
+      outputs: ['Priority list', 'Blockers'],
+      surfaces: [{ label: 'Inspect Tasks', href: '/tasks', surface: 'tasks' }],
+      ux_pattern_ids: ['mission-control'],
+      safeguards: ['Show source counts'],
+      workflow_template: {
+        name: 'Assistant daily brief',
+        goal: 'Create a concise daily brief with priorities and risks.',
+        steps: [{ name: 'Write brief', kind: 'llm', prompt: 'Summarise the day.' }]
+      }
+    },
+    {
+      id: 'research-prepare',
+      name: 'Research and prepare',
+      area: 'research',
+      summary:
+        'Run sourced research for decisions, meetings, purchases, travel, and investigations without hiding evidence.',
+      promise: 'Give me a brief that is current, cited, comparable, and ready to act on.',
+      cadence: 'On demand',
+      autonomy: 'plan',
+      inputs: ['Question', 'Web sources', 'Docs'],
+      outputs: ['Sourced brief', 'Comparison', 'Recommendation'],
+      surfaces: [{ label: 'Open Chat', href: '/chat', surface: 'chat' }],
+      ux_pattern_ids: ['source-tray', 'confidence-signals'],
+      safeguards: ['Show sources and recency', 'Separate facts from inference'],
+      workflow_template: {
+        name: 'Assistant research brief',
+        goal: 'Research the question, compare options, cite sources, and recommend next action.',
+        steps: [
+          { name: 'Search current sources', kind: 'tool', tool: 'internet.search' },
+          { name: 'Synthesize decision brief', kind: 'llm', prompt: 'Compare options.' }
+        ]
+      }
+    }
+  ],
+  ux_patterns: [
+    {
+      id: 'mission-control',
+      name: 'Mission control',
+      summary: 'Show active outcomes and decisions in one scan-friendly surface.',
+      applies_to: 'Briefs',
+      implementation: 'Use count badges, status text, and source links.'
+    },
+    {
+      id: 'source-tray',
+      name: 'Source tray',
+      summary: 'Keep citations and retrieved material close to the answer.',
+      applies_to: 'Research',
+      implementation: 'Separate sourced facts from model inference.'
+    },
+    {
+      id: 'confidence-signals',
+      name: 'Confidence signals',
+      summary: 'Show uncertainty and missing data.',
+      applies_to: 'Research',
+      implementation: 'Use open questions and escalation prompts.'
+    }
+  ],
+  research_sources: [],
+  filters: {
+    areas: [
+      { value: 'all', label: 'All areas', count: 2 },
+      { value: 'focus', label: 'Daily focus', count: 1 },
+      { value: 'research', label: 'Research', count: 1 }
+    ]
+  }
+};
+
+const freezeTime = async (page: Page) => {
+  await page.addInitScript((fixedNow) => {
+    const RealDate = Date;
+    class FixedDate extends RealDate {
+      constructor(...args: ConstructorParameters<typeof Date>) {
+        if (args.length === 0) {
+          super(fixedNow);
+          return;
+        }
+        super(...args);
+      }
+      static now() {
+        return new RealDate(fixedNow).getTime();
+      }
+    }
+    globalThis.Date = FixedDate as DateConstructor;
+  }, now);
+};
+
+const mockShellApis = async (page: Page) => {
+  await freezeTime(page);
+  await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { tasks: [] } });
+  });
+  await page.route(/\/api\/approvals$/, async (route) => {
+    await route.fulfill({ json: { approvals: [] } });
+  });
+};
+
+const mockAssistantApis = async (page: Page) => {
+  await mockShellApis(page);
+  await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const area = url.searchParams.get('area') || 'all';
+    const query = (url.searchParams.get('q') || '').toLowerCase();
+    const capabilities = assistantCatalogue.capabilities.filter((capability) => {
+      if (area !== 'all' && capability.area !== area) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return [capability.name, capability.summary, capability.promise, capability.area]
+        .join(' ')
+        .toLowerCase()
+        .includes(query);
+    });
+    const capabilityIDs = new Set(capabilities.map((capability) => capability.id));
+    await route.fulfill({
+      json: {
+        ...assistantCatalogue,
+        capabilities,
+        activities: assistantCatalogue.activities.filter((activity) => {
+          if (area !== 'all' && activity.area !== area) {
+            return false;
+          }
+          return !query || activity.capability_ids.some((id) => capabilityIDs.has(id));
+        })
+      }
+    });
+  });
+};
+
+const expectAssistantReady = async (page: Page) => {
+  await expect(page.locator('.assistant-page')).toHaveAttribute('data-ready', 'true');
+};
+
+const expectNoAxeViolations = async (page: Page) => {
+  const results = await new AxeBuilder({ page }).include('main').analyze();
+  expect(
+    results.violations.map((violation) => ({
+      id: violation.id,
+      impact: violation.impact,
+      help: violation.help,
+      targets: violation.nodes.map((node) => node.target)
+    }))
+  ).toEqual([]);
+};
+
+const expectNoVisualArtifacts = async (page: Page) => {
+  const metrics = await page.evaluate(() => {
+    const isHidden = (element: Element) => {
+      let current: Element | null = element;
+      while (current && current !== document.body) {
+        const style = getComputedStyle(current);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
+    };
+    const escaped = Array.from(document.querySelectorAll('h1,h2,h3,p,a,button,label,span,strong,small'))
+      .filter((element) => {
+        if (isHidden(element) || element.closest('.nav-measure')) {
+          return false;
+        }
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && (rect.left < -2 || rect.right > window.innerWidth + 2);
+      })
+      .map((element) => (element.textContent || element.getAttribute('aria-label') || '').trim());
+    const clippedControls = Array.from(document.querySelectorAll('button,a,select,input'))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && element.scrollWidth > element.clientWidth + 2;
+      })
+      .map((element) => (element.textContent || element.getAttribute('aria-label') || '').trim());
+    return {
+      bodyWidth: document.body.scrollWidth,
+      docWidth: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+      escaped,
+      clippedControls
+    };
+  });
+  expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
+  expect(metrics.docWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
+  expect(metrics.escaped, JSON.stringify(metrics)).toEqual([]);
+  expect(metrics.clippedControls, JSON.stringify(metrics)).toEqual([]);
+};
+
+for (const viewport of [
+  { name: 'desktop', width: 1440, height: 1000, mobile: false },
+  { name: 'mobile', width: 390, height: 844, mobile: true }
+]) {
+  test.describe(`Assistant UI quality on ${viewport.name}`, () => {
+    test.use({
+      viewport: { width: viewport.width, height: viewport.height },
+      isMobile: viewport.mobile,
+      hasTouch: viewport.mobile
+    });
+
+    test('selects useful outcomes and keeps the detail usable', async ({ page }) => {
+      await mockAssistantApis(page);
+      await page.goto('/assistant');
+      await expectAssistantReady(page);
+
+      await expect(page.getByRole('heading', { name: 'Useful outcomes' })).toBeVisible();
+      await expect(page.getByText('2 capabilities')).toBeVisible();
+      await page.getByRole('button', { name: /Research a decision/ }).click();
+      await expect(page.getByRole('heading', { name: 'Research and prepare' })).toBeInViewport();
+      await expect(page.locator('.detail-header .status')).toHaveText('Plan and propose');
+      await expect(page.getByRole('navigation', { name: 'Related assistant surfaces' })).toContainText(
+        'Open Chat'
+      );
+      await expect(page.getByRole('button', { name: /Research and prepare/ })).toHaveAttribute(
+        'aria-pressed',
+        'true'
+      );
+
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      await expect(page).toHaveScreenshot(`assistant-ui-quality-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled'
+      });
+    });
+
+    test('keeps filtered empty states recoverable', async ({ page }) => {
+      await mockAssistantApis(page);
+      await page.goto('/assistant');
+      await expectAssistantReady(page);
+
+      const search = page.getByRole('searchbox', { name: 'Search' });
+      await search.fill('missing');
+      await expect(page.getByText('No capabilities match this view.')).toBeVisible();
+      await page.getByRole('button', { name: 'Clear filters' }).first().click();
+      await expectAssistantReady(page);
+      await expect(search).toHaveValue('');
+      await expect(page.getByRole('button', { name: /Research and prepare/ })).toBeVisible();
+    });
+  });
+}

@@ -3,6 +3,7 @@
   import {
     createHomelabdClient,
     Navbar,
+    type AssistantActivity,
     type AssistantCapability,
     type AssistantCatalogue,
     type AssistantUXPattern
@@ -12,7 +13,9 @@
     assistantAreaLabel,
     assistantAutonomyLabel,
     assistantAutonomyTone,
+    activityForCapability,
     patternsForCapability,
+    primaryCapabilityForActivity,
     selectAssistantCapability
   } from './assistant-model';
 
@@ -23,17 +26,22 @@
   let catalogue: AssistantCatalogue | undefined;
   let selectedCapabilityId = '';
   let selectedCapability: AssistantCapability | undefined;
+  let selectedActivity: AssistantActivity | undefined;
   let selectedPatterns: AssistantUXPattern[] = [];
   let search = '';
   let area = 'all';
+  let hasActiveFilters = false;
   let loading = true;
   let error = '';
   let lastSynced = '';
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let mounted = false;
+  let detailEl: HTMLElement | undefined;
 
   $: selectedCapability = selectAssistantCapability(catalogue?.capabilities || [], selectedCapabilityId);
+  $: selectedActivity = activityForCapability(selectedCapability, catalogue?.activities || []);
   $: selectedPatterns = patternsForCapability(selectedCapability, catalogue?.ux_patterns || []);
+  $: hasActiveFilters = Boolean(search.trim() || area !== 'all');
 
   const syncTimeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -81,8 +89,48 @@
     scheduleRefresh();
   };
 
-  const selectCapability = (capabilityId: string) => {
+  const revealDetailIfCompact = () => {
+    if (typeof window === 'undefined' || !window.matchMedia('(max-width: 760px)').matches) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (!detailEl) {
+        return;
+      }
+      const navbarBottom = document.querySelector('.navbar')?.getBoundingClientRect().bottom || 0;
+      const detailTop = detailEl.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo({ top: Math.max(0, detailTop - navbarBottom - 8) });
+    });
+  };
+
+  const selectCapability = (capabilityId: string, revealDetail = true) => {
     selectedCapabilityId = capabilityId;
+    if (revealDetail) {
+      revealDetailIfCompact();
+    }
+  };
+
+  const selectActivity = (activity: AssistantActivity) => {
+    const capability = primaryCapabilityForActivity(activity, catalogue?.capabilities || []);
+    if (capability) {
+      selectCapability(capability.id);
+    }
+  };
+
+  const activityTone = (activity: AssistantActivity) =>
+    assistantAutonomyTone(
+      primaryCapabilityForActivity(activity, catalogue?.capabilities || [])?.autonomy
+    );
+
+  const resetFilters = () => {
+    search = '';
+    area = 'all';
+    scheduleRefresh();
+  };
+
+  const clearSearch = () => {
+    search = '';
+    scheduleRefresh();
   };
 
   const stepDetail = (step: { prompt?: string; tool?: string; workflow_id?: string; condition?: string }) =>
@@ -107,76 +155,109 @@
 <div class="assistant-shell">
   <Navbar title="Assistant" subtitle="homelabd" current="/assistant" taskApiBase={apiBase} />
 
-  <main class="assistant-page">
+  <main class="assistant-page" data-ready={!loading && catalogue ? 'true' : 'false'}>
     <section class="assistant-sidebar" aria-label="Assistant controls">
       <header class="assistant-header">
         <div>
           <h1>Assistant</h1>
-          <span>{lastSynced ? `Synced ${lastSynced}` : apiBase}</span>
+          <span>{lastSynced ? `Synced ${lastSynced}` : loading ? 'Loading catalogue' : 'Not synced'}</span>
         </div>
-        <button type="button" disabled={loading} on:click={() => void refreshAssistant()}>
-          {loading ? 'Syncing' : 'Sync'}
+        <button
+          type="button"
+          class="sync-button"
+          disabled={loading}
+          aria-label={loading ? 'Syncing assistant catalogue' : 'Sync assistant catalogue'}
+          title="Sync assistant catalogue"
+          on:click={() => void refreshAssistant()}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M20 12a8 8 0 0 1-13.7 5.7M4 12A8 8 0 0 1 17.7 6.3M7 18H4v-3M17 6h3v3" />
+          </svg>
+          <span>{loading ? 'Syncing' : 'Sync'}</span>
         </button>
       </header>
 
       {#if catalogue}
         <p class="assistant-summary">{catalogue.summary}</p>
 
-        <div class="metrics" aria-label="Assistant totals">
-          <div>
-            <strong>{catalogue.capabilities.length}</strong>
-            <span>Capabilities</span>
-          </div>
-          <div>
-            <strong>{catalogue.activities.length}</strong>
-            <span>Activities</span>
-          </div>
-          <div>
-            <strong>{catalogue.ux_patterns.length}</strong>
-            <span>UX patterns</span>
-          </div>
+        <div class="catalogue-strip" aria-label="Assistant totals">
+          <span><strong>{catalogue.capabilities.length}</strong> capabilities</span>
+          <span><strong>{catalogue.activities.length}</strong> activities</span>
+          <span><strong>{catalogue.ux_patterns.length}</strong> UX patterns</span>
         </div>
 
-        <label class="field" for="assistant-area">
-          <span>Area</span>
-          <select id="assistant-area" bind:value={area} on:change={changeArea}>
-            {#each catalogue.filters.areas as option}
-              <option value={option.value}>{option.label} ({option.count})</option>
-            {/each}
-          </select>
-        </label>
+        <div class="filter-panel" aria-label="Assistant filters">
+          <label class="field area-field" for="assistant-area">
+            <span>Area</span>
+            <select id="assistant-area" bind:value={area} on:change={changeArea}>
+              {#each catalogue.filters.areas as option}
+                <option value={option.value}>{option.label} ({option.count})</option>
+              {/each}
+            </select>
+          </label>
 
-        <label class="field" for="assistant-search">
-          <span>Search</span>
-          <input
-            id="assistant-search"
-            type="search"
-            value={search}
-            placeholder="Search capabilities"
-            on:input={changeSearch}
-          />
-        </label>
+          <label class="field search-field" for="assistant-search">
+            <span>Search</span>
+            <span class="search-control">
+              <input
+                id="assistant-search"
+                type="search"
+                value={search}
+                placeholder="Search"
+                on:input={changeSearch}
+              />
+              {#if search}
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label="Clear search"
+                  title="Clear search"
+                  on:click={clearSearch}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M6 6l12 12M18 6 6 18" />
+                  </svg>
+                </button>
+              {/if}
+            </span>
+          </label>
+        </div>
 
         <section class="activities" aria-label="Assistant activities">
-          <h2>Activities</h2>
+          <div class="subsection-title">
+            <h2>Useful outcomes</h2>
+            <span>Choose what you want improved.</span>
+          </div>
           {#if catalogue.activities.length}
             <div class="activity-list">
               {#each catalogue.activities as activity}
-                <article class="activity">
-                  <div>
+                <button
+                  type="button"
+                  class="activity"
+                  class:selected={selectedActivity?.id === activity.id}
+                  aria-pressed={selectedActivity?.id === activity.id}
+                  on:click={() => selectActivity(activity)}
+                >
+                  <span class={`tone ${activityTone(activity)}`}></span>
+                  <span class="activity-copy">
                     <strong>{activity.name}</strong>
-                    <span>{assistantAreaLabel(activity.area)} · {activity.cadence}</span>
-                  </div>
-                  <p>{activity.outcome}</p>
-                </article>
+                    <small>{assistantAreaLabel(activity.area)} · {activity.cadence}</small>
+                    <span>{activity.outcome}</span>
+                  </span>
+                </button>
               {/each}
             </div>
           {:else}
-            <p class="empty">No activities match this filter.</p>
+            <div class="empty">
+              <p>No activities match this filter.</p>
+              {#if hasActiveFilters}
+                <button type="button" class="text-action" on:click={resetFilters}>Clear filters</button>
+              {/if}
+            </div>
           {/if}
         </section>
       {:else if error}
-        <p class="notice error" role="alert">{error}</p>
+        <p class="notice error" role="alert">{error} Use Sync to retry.</p>
       {:else}
         <p class="empty">Loading Assistant capabilities...</p>
       {/if}
@@ -192,7 +273,13 @@
           <p>Operating model</p>
           <h2>Capabilities</h2>
         </div>
-        <span>{catalogue?.updated_at ? new Date(catalogue.updated_at).toLocaleDateString() : ''}</span>
+        <span>
+          {catalogue?.capabilities.length
+            ? `${catalogue.capabilities.length} visible`
+            : catalogue?.updated_at
+              ? new Date(catalogue.updated_at).toLocaleDateString()
+              : ''}
+        </span>
       </header>
 
       {#if catalogue?.capabilities.length}
@@ -202,6 +289,7 @@
               type="button"
               class="capability-row"
               class:selected={selectedCapability?.id === capability.id}
+              aria-pressed={selectedCapability?.id === capability.id}
               on:click={() => selectCapability(capability.id)}
             >
               <span class={`tone ${assistantAutonomyTone(capability.autonomy)}`}></span>
@@ -214,12 +302,19 @@
             </button>
           {/each}
         </div>
+      {:else if loading}
+        <p class="empty">Loading visible capabilities...</p>
       {:else}
-        <p class="empty">No capabilities match this view.</p>
+        <div class="empty">
+          <p>No capabilities match this view.</p>
+          {#if hasActiveFilters}
+            <button type="button" class="text-action" on:click={resetFilters}>Clear filters</button>
+          {/if}
+        </div>
       {/if}
     </section>
 
-    <section class="capability-detail" aria-label="Assistant capability detail">
+    <section class="capability-detail" aria-label="Assistant capability detail" bind:this={detailEl}>
       {#if selectedCapability}
         <header class="detail-header">
           <div>
@@ -227,9 +322,18 @@
             <h2>{selectedCapability.name}</h2>
             <span>{selectedCapability.promise}</span>
           </div>
-          <span class={`status ${assistantAutonomyTone(selectedCapability.autonomy)}`}>
-            {assistantAutonomyLabel(selectedCapability.autonomy)}
-          </span>
+          <div class="detail-actions">
+            <span class={`status ${assistantAutonomyTone(selectedCapability.autonomy)}`}>
+              {assistantAutonomyLabel(selectedCapability.autonomy)}
+            </span>
+            {#if selectedCapability.surfaces.length}
+              <nav class="surface-links" aria-label="Related assistant surfaces">
+                {#each selectedCapability.surfaces as surface}
+                  <a href={surface.href}>{surface.label}</a>
+                {/each}
+              </nav>
+            {/if}
+          </div>
         </header>
 
         <div class="detail-metrics" aria-label="Selected capability metrics">
@@ -252,7 +356,7 @@
           <div class="io-grid">
             <div>
               <h4>Uses</h4>
-              <ul>
+              <ul class="token-list">
                 {#each selectedCapability.inputs as input}
                   <li>{input}</li>
                 {/each}
@@ -260,7 +364,7 @@
             </div>
             <div>
               <h4>Creates</h4>
-              <ul>
+              <ul class="token-list">
                 {#each selectedCapability.outputs as output}
                   <li>{output}</li>
                 {/each}
@@ -271,7 +375,7 @@
 
         <section class="detail-section" aria-label="Assistant safeguards">
           <h3>Safeguards</h3>
-          <ul class="checks">
+          <ul class="checks token-list">
             {#each selectedCapability.safeguards as safeguard}
               <li>{safeguard}</li>
             {/each}
@@ -303,16 +407,18 @@
             {/each}
           </ol>
         </section>
-
-        <nav class="surface-links" aria-label="Related assistant surfaces">
-          {#each selectedCapability.surfaces as surface}
-            <a href={surface.href}>{surface.label}</a>
-          {/each}
-        </nav>
+      {:else if loading}
+        <div class="empty-detail">
+          <h2>Loading Assistant</h2>
+          <p>Fetching capabilities, safeguards, workflow templates, and related surfaces.</p>
+        </div>
       {:else}
         <div class="empty-detail">
           <h2>No capability selected</h2>
           <p>Adjust the filters or clear search to inspect Assistant behaviour.</p>
+          {#if hasActiveFilters}
+            <button type="button" class="text-action" on:click={resetFilters}>Clear filters</button>
+          {/if}
         </div>
       {/if}
     </section>
@@ -333,6 +439,18 @@
     font-family:
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
+  }
+
+  :global(:root) {
+    --assistant-muted: #475569;
+    --assistant-primary-bg: #172554;
+    --assistant-primary-text: #ffffff;
+  }
+
+  :global(html[data-theme='dark']) {
+    --assistant-muted: #b7c6da;
+    --assistant-primary-bg: #172554;
+    --assistant-primary-text: #ffffff;
   }
 
   button,
@@ -423,8 +541,9 @@
   .assistant-summary,
   .section-title p,
   .section-title span,
-  .activity span,
-  .activity p,
+  .subsection-title span,
+  .activity small,
+  .activity-copy > span,
   .capability-copy small,
   .capability-copy > span,
   .capability-row em,
@@ -436,11 +555,12 @@
   .steps span,
   .empty,
   .empty-detail p {
-    color: var(--muted, #64748b);
+    color: var(--assistant-muted, #475569);
     font-size: 0.86rem;
   }
 
   .assistant-summary,
+  .activity-copy > span,
   .detail-header span,
   .detail-section p,
   .pattern p,
@@ -463,21 +583,44 @@
     opacity: 0.65;
   }
 
-  .assistant-header button {
+  .sync-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
     padding: 0 0.9rem;
-    color: #ffffff;
-    border-color: var(--accent, #2563eb);
-    background: var(--accent, #2563eb);
+    color: var(--assistant-primary-text, #ffffff);
+    border-color: var(--assistant-primary-bg, #1d4ed8);
+    background: var(--assistant-primary-bg, #1d4ed8);
   }
 
-  .metrics,
+  .sync-button svg,
+  .icon-button svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .sync-button span {
+    color: var(--assistant-primary-text, #ffffff);
+  }
+
+  .catalogue-strip,
   .detail-metrics {
     display: grid;
     gap: 0.65rem;
   }
 
-  .metrics {
+  .catalogue-strip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.5rem;
+    background: var(--surface, #ffffff);
   }
 
   .detail-metrics {
@@ -485,7 +628,6 @@
     margin-bottom: 0.85rem;
   }
 
-  .metrics div,
   .detail-metrics div,
   .activity,
   .detail-section,
@@ -495,22 +637,26 @@
     background: var(--surface, #ffffff);
   }
 
-  .metrics div,
   .detail-metrics div {
     padding: 0.7rem;
   }
 
-  .metrics strong,
+  .catalogue-strip strong,
   .detail-metrics strong {
-    display: block;
     color: var(--text-strong, #0f172a);
     font-size: 1.08rem;
   }
 
-  .metrics span,
+  .catalogue-strip span,
   .detail-metrics span {
-    color: var(--muted, #64748b);
-    font-size: 0.75rem;
+    color: var(--assistant-muted, #475569);
+    font-size: 0.76rem;
+  }
+
+  .catalogue-strip span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .field {
@@ -519,6 +665,17 @@
     color: var(--text-strong, #0f172a);
     font-size: 0.82rem;
     font-weight: 800;
+  }
+
+  .filter-panel {
+    display: grid;
+    grid-template-columns: minmax(8rem, 0.8fr) minmax(0, 1.2fr);
+    gap: 0.65rem;
+  }
+
+  .search-control {
+    position: relative;
+    display: block;
   }
 
   input,
@@ -533,9 +690,30 @@
     padding: 0 0.72rem;
   }
 
+  .search-control input {
+    padding-right: 2.8rem;
+  }
+
+  .icon-button {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    min-height: 2rem;
+    padding: 0;
+  }
+
   .activities {
     display: grid;
     gap: 0.65rem;
+  }
+
+  .subsection-title {
+    display: grid;
+    gap: 0.12rem;
   }
 
   .activity-list,
@@ -548,9 +726,12 @@
   }
 
   .activity {
+    width: 100%;
     align-items: flex-start;
-    flex-direction: column;
+    gap: 0.65rem;
     padding: 0.7rem;
+    text-align: left;
+    cursor: pointer;
   }
 
   .activity strong,
@@ -558,6 +739,12 @@
   .pattern strong,
   .steps strong {
     color: var(--text-strong, #0f172a);
+  }
+
+  .activity-copy {
+    display: grid;
+    min-width: 0;
+    gap: 0.18rem;
   }
 
   .capability-row {
@@ -568,6 +755,7 @@
     cursor: pointer;
   }
 
+  .activity.selected,
   .capability-row.selected {
     border-color: var(--accent, #2563eb);
     box-shadow: 0 0 0 1px var(--accent, #2563eb);
@@ -600,7 +788,12 @@
   }
 
   .blue {
-    background: #2563eb;
+    background: #172554;
+  }
+
+  .status.blue {
+    color: #ffffff;
+    background: #172554;
   }
 
   .amber {
@@ -636,6 +829,13 @@
     font-weight: 850;
   }
 
+  .detail-actions {
+    display: grid;
+    justify-items: end;
+    gap: 0.55rem;
+    min-width: 12rem;
+  }
+
   .detail-section {
     display: grid;
     gap: 0.7rem;
@@ -664,6 +864,22 @@
     overflow-wrap: anywhere;
   }
 
+  .token-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .token-list li {
+    padding: 0.35rem 0.5rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.45rem;
+    background: var(--surface-muted, #f8fafc);
+    font-size: 0.84rem;
+  }
+
   .pattern,
   .steps li {
     display: grid;
@@ -677,8 +893,8 @@
   .surface-links {
     display: flex;
     flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 0.55rem;
-    max-width: 58rem;
   }
 
   .surface-links a {
@@ -687,8 +903,8 @@
     align-items: center;
     padding: 0 0.85rem;
     border-radius: 0.5rem;
-    color: #ffffff;
-    background: var(--accent, #2563eb);
+    color: var(--assistant-primary-text, #ffffff);
+    background: var(--assistant-primary-bg, #1d4ed8);
     font-weight: 800;
     text-decoration: none;
   }
@@ -697,6 +913,19 @@
   .empty,
   .empty-detail {
     padding: 0.85rem;
+  }
+
+  .empty {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .text-action {
+    width: fit-content;
+    padding: 0 0.75rem;
+    color: var(--assistant-primary-bg, #1d4ed8);
+    border-color: var(--assistant-primary-bg, #1d4ed8);
+    background: var(--surface, #ffffff);
   }
 
   .notice.error {
@@ -729,17 +958,30 @@
       border-bottom: 1px solid var(--border-soft, #dbe3ef);
     }
 
-    .assistant-header,
     .section-title,
     .detail-header {
       align-items: flex-start;
       flex-direction: column;
     }
 
-    .metrics,
+    .catalogue-strip,
+    .filter-panel,
     .detail-metrics,
     .io-grid {
       grid-template-columns: 1fr;
+    }
+
+    .assistant-header {
+      align-items: center;
+    }
+
+    .detail-actions {
+      justify-items: start;
+      min-width: 0;
+    }
+
+    .surface-links {
+      justify-content: flex-start;
     }
 
     .capability-row {

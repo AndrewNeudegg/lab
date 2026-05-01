@@ -1,11 +1,92 @@
 package shell
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/andrewneudegg/lab/pkg/tool"
 )
+
+func TestRegisterIncludesShellRunChain(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := Register(reg, Base{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get("shell.run_chain"); !ok {
+		t.Fatal("expected shell.run_chain to be registered")
+	}
+}
+
+func TestChainToolRunsAllowlistedCommandsInOrder(t *testing.T) {
+	dir := t.TempDir()
+	input, err := json.Marshal(map[string]any{
+		"dir": dir,
+		"commands": [][]string{
+			{"pwd"},
+			{"ls", "."},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := (ChainTool{}).Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("chain tool: %v\n%s", err, raw)
+	}
+	var result struct {
+		Commands []string `json:"commands"`
+		Results  []struct {
+			Command string `json:"command"`
+			Output  string `json:"output"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("results = %d, want 2: %s", len(result.Results), raw)
+	}
+	if result.Commands[0] != "pwd" || result.Results[0].Command != "pwd" {
+		t.Fatalf("first command = %#v, first result = %#v", result.Commands, result.Results[0])
+	}
+	if !strings.Contains(result.Results[0].Output, dir) {
+		t.Fatalf("pwd output = %q, want %q", result.Results[0].Output, dir)
+	}
+}
+
+func TestChainToolStopsAtFirstFailure(t *testing.T) {
+	dir := t.TempDir()
+	input, err := json.Marshal(map[string]any{
+		"dir": dir,
+		"commands": [][]string{
+			{"cat", "missing.txt"},
+			{"pwd"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := (ChainTool{}).Run(context.Background(), input)
+	if err == nil {
+		t.Fatalf("expected chain failure, got %s", raw)
+	}
+	var result struct {
+		FailedIndex int `json:"failed_index"`
+		Results     []struct {
+			Command string `json:"command"`
+		} `json:"results"`
+	}
+	if unmarshalErr := json.Unmarshal(raw, &result); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if result.FailedIndex != 0 || len(result.Results) != 1 || result.Results[0].Command != "cat missing.txt" {
+		t.Fatalf("failure result = %#v, raw = %s", result, raw)
+	}
+}
 
 func TestLimitedToolDestructiveCommandRequiresPolicyApproval(t *testing.T) {
 	policy := tool.NewPolicy(nil)
@@ -14,6 +95,16 @@ func TestLimitedToolDestructiveCommandRequiresPolicyApproval(t *testing.T) {
 	decision := policy.Decide("CoderAgent", LimitedTool{}, input)
 	if !decision.Allowed || !decision.NeedsApproval {
 		t.Fatalf("expected destructive shell command to require approval: %+v", decision)
+	}
+}
+
+func TestChainToolDestructiveCommandRequiresPolicyApproval(t *testing.T) {
+	policy := tool.NewPolicy(nil)
+	input := json.RawMessage(`{"dir":"/tmp/workspaces/task_123","commands":[["pwd"],["rm","-rf","build"]]}`)
+
+	decision := policy.Decide("CoderAgent", ChainTool{}, input)
+	if !decision.Allowed || !decision.NeedsApproval {
+		t.Fatalf("expected destructive shell chain command to require approval: %+v", decision)
 	}
 }
 

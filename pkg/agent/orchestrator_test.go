@@ -1215,6 +1215,52 @@ func TestTaskWorkerToolArgsMustUseTaskWorkspace(t *testing.T) {
 	}
 }
 
+func TestTaskWorkerShellChainDirMustStayInTaskWorkspace(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	chain := &shellRunChainStub{}
+	if err := orch.registry.Register(chain); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task_shell_chain_semantics"
+	workspace := filepath.Join(t.TempDir(), "workspaces", taskID)
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:        taskID,
+		Title:     "shell chain semantic validation",
+		Goal:      "shell chain semantic validation",
+		Status:    taskstore.StatusRunning,
+		Workspace: workspace,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := orch.executeProposedTool(context.Background(), "CoderAgent", proposedToolCall{
+		Tool: "shell.run_chain",
+		Args: json.RawMessage(`{"dir":"/tmp","commands":[["pwd"]]}`),
+	}, taskID)
+	if result.Allowed {
+		t.Fatalf("result = %#v, want validation denial", result)
+	}
+	if chain.ran {
+		t.Fatal("shell.run_chain ran despite dir outside workspace")
+	}
+	if !strings.Contains(result.Reason, "inside the task workspace") {
+		t.Fatalf("reason = %q, want task workspace validation", result.Reason)
+	}
+
+	result = orch.executeProposedTool(context.Background(), "CoderAgent", proposedToolCall{
+		Tool: "shell.run_chain",
+		Args: json.RawMessage(`{"dir":"` + workspace + `","commands":[["pwd"]]}`),
+	}, taskID)
+	if !result.Allowed || result.Error != "" {
+		t.Fatalf("allowed result = %#v", result)
+	}
+	if !chain.ran {
+		t.Fatal("shell.run_chain did not run with task workspace")
+	}
+}
+
 func TestCreateTaskUsesConciseReply(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 
@@ -6086,12 +6132,15 @@ func TestCoderPromptExposesLimitedShellAndContextSearch(t *testing.T) {
 	if err := orch.registry.Register(shellRunLimitedStub{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := orch.registry.Register(&shellRunChainStub{}); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt := orch.coderPrompt(taskstore.Task{
 		ID:        "task_123",
 		Workspace: "/tmp/workspaces/task_123",
 	})
-	for _, want := range []string{"shell.run_limited", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md", "#2563eb", "#60a5fa"} {
+	for _, want := range []string{"shell.run_limited", "shell.run_chain", "allowlisted command arrays", "grep-like context", "context_lines", "Mermaid fenced diagrams", "docs/diagramming-and-brand-colours.md", "#2563eb", "#60a5fa"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("coder prompt missing %q:\n%s", want, prompt)
 		}
@@ -6816,6 +6865,21 @@ func (shellRunLimitedStub) Schema() json.RawMessage {
 func (shellRunLimitedStub) Risk() tool.RiskLevel { return tool.RiskLow }
 func (shellRunLimitedStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{"output":""}`), nil
+}
+
+type shellRunChainStub struct {
+	ran bool
+}
+
+func (shellRunChainStub) Name() string        { return "shell.run_chain" }
+func (shellRunChainStub) Description() string { return "Run allowlisted command arrays in order." }
+func (shellRunChainStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["dir","commands"],"properties":{"dir":{"type":"string"},"commands":{"type":"array","items":{"type":"array","items":{"type":"string"}}}}}`)
+}
+func (shellRunChainStub) Risk() tool.RiskLevel { return tool.RiskLow }
+func (s *shellRunChainStub) Run(context.Context, json.RawMessage) (json.RawMessage, error) {
+	s.ran = true
+	return json.RawMessage(`{"results":[]}`), nil
 }
 
 type internetSearchStub struct {

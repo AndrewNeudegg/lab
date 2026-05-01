@@ -115,6 +115,8 @@ Rejected envelopes are sent back to the model with the full JSON Schema and the 
 
 New local development tasks create one queued task record and one isolated worktree. The chat reply stays compact: it links the summarised task title to `/tasks?task=<task_id>` and notes that a worker will start automatically. The task goal itself is not clipped for display; keep important constraints in the brief and let title summarisation handle the task-list label. Opening the link selects the new task in the dashboard without a full page reload. To start or reassign the task explicitly, use:
 
+Messages that explicitly say `no action needed`, `no action required`, or `do not create a task` are treated as notes and do not queue work, even if they accidentally start with `new`. A clear development goal such as `new fix no action needed messages` still creates a task.
+
 ```text
 run <task_id>
 delegate <task_id> to codex

@@ -283,6 +283,73 @@ func TestTaskCreationIntentRejectsStatusAndExistingTaskCommands(t *testing.T) {
 	}
 }
 
+func TestNoActionNoticeDoesNotCreateTask(t *testing.T) {
+	for _, input := range []string{
+		"New this is a test no action needed",
+		"create a task no action needed",
+	} {
+		t.Run(input, func(t *testing.T) {
+			orch := newTestOrchestrator(t, nil)
+
+			reply, err := orch.Handle(context.Background(), "test", input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reply != "Noted. I did not create a task." {
+				t.Fatalf("reply = %q, want no-action acknowledgement", reply)
+			}
+			tasks, err := orch.tasks.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tasks) != 0 {
+				t.Fatalf("task count = %d, want no queued task", len(tasks))
+			}
+		})
+	}
+}
+
+func TestTaskCommandRejectsNonCreatableGoal(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	reply, err := orch.Handle(context.Background(), "test", "new status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "usage: new <goal>" {
+		t.Fatalf("reply = %q, want usage", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("task count = %d, want no queued task", len(tasks))
+	}
+}
+
+func TestNoActionPhraseCanStillDescribeTaskWork(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+
+	reply, err := orch.Handle(context.Background(), "test", "new fix no action needed messages so they do not create queued tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created queued task") {
+		t.Fatalf("reply = %q, want task creation", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want one queued task", len(tasks))
+	}
+	if !strings.Contains(tasks[0].Goal, "fix no action needed messages") {
+		t.Fatalf("goal = %q, want preserved task goal", tasks[0].Goal)
+	}
+}
+
 func TestSearchTheWebUsesInternetTool(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	search := &internetSearchStub{}

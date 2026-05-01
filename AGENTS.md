@@ -12,6 +12,17 @@
 - Documentation must be written and kept in sync with behaviour, commands, UI, configuration, tools, and workflows in the same change. If no docs update is needed, state why in the handoff.
 - Documentation is for humans and LLMs. Keep it concise, use British spelling, and emphasise discoverability and usability with clear titles, searchable terms, related links, and current examples.
 
+## UI/UX Agent Work
+
+- Do not start UI implementation from an open-ended prompt. Before editing, write or preserve a compact UI/UX brief that names the operator goal, primary workflow, changed surfaces, relevant existing patterns, desktop and mobile layout approach, and expected loading, empty, error, disabled, long-content, and success states.
+- Reuse the dashboard's existing components, interaction patterns, CSS variables, semantic colour roles, spacing, typography, and documentation before inventing new UI. If a design source, component story, screenshot baseline, or Figma reference exists, inspect it before changing code.
+- Optimise operational surfaces for repeated use: dense but readable layouts, visible system status, clear next actions, consistent navigation, reversible or recoverable actions, and plain-language errors. Avoid decorative layouts that make task state, health state, terminal state, documentation, or workflow state harder to scan.
+- Add or update regression coverage for the exact interaction and state that changed. Coverage must include role/text assertions, keyboard or focus checks when the surface is interactive, desktop and mobile layout assertions, desktop and mobile accessibility checks, and desktop and mobile visual comparisons for deterministic surfaces.
+- Browser UAT for UI work must include a screenshot review of the changed state on both desktop and mobile. Deterministic visual states must use visual baselines on both desktop and mobile; volatile states must use attached or inspected screenshots plus explicit layout assertions on both desktop and mobile.
+- The final handoff for UI work must state the design source or existing pattern used, the browser/UAT command run, the interaction exercised, the viewport coverage, the accessibility or visual checks performed, and any residual UI risk.
+
+See `docs/ui-ux-agent-work.md` for the full UI/UX workflow, review checklist, and required automation.
+
 ## homelabctl
 
 - Use `homelabctl` for interactive `homelabd` operation instead of ad hoc HTTP calls. See `docs/homelabctl.md`.

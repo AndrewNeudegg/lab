@@ -82,9 +82,12 @@ Keep Playwright specs deterministic:
 - keep UI assertions user-centred: visible text, roles, enabled/disabled states, selected items, screenshots, and mobile overflow
 - keep workers at one for dashboard UAT unless the suite has been made explicitly parallel-safe
 
+For UI/UX work, pair these browser checks with the pre-implementation brief, state coverage, accessibility expectations, and screenshot review in `docs/ui-ux-agent-work.md`.
+
 ## Related Links
 
 - `AGENTS.md` for Definition of Done rules
+- `docs/ui-ux-agent-work.md` for the UI/UX agent workflow and handoff checklist
 - `docs/task-workflow.md` for review, approval, and verification states
 - `docs/remote-agents.md` for remote worker semantics
 - `docs/homelabctl.md` for operator commands

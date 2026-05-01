@@ -158,7 +158,9 @@ Recovery decisions are written to the JSONL event log as `task.recovery.*` event
 
 ## Agent Completion Expectations
 
-When a task changes user-facing behavior, commands, UI, configuration, tools, or workflow, the worker should update relevant docs or help text in the same patch.
+When a task changes user-facing behavior, commands, UI, configuration, tools, or workflow, the worker must update relevant docs or help text in the same patch.
+
+When a task changes UI/UX, the worker must follow `docs/ui-ux-agent-work.md`: define the design brief before editing, reuse existing dashboard patterns, cover relevant interaction states, run isolated browser UAT, inspect screenshots or visual baselines, and report the exact interaction and viewport coverage in the handoff.
 
 Agents should include Mermaid fenced diagrams when a compact state machine, dependency graph, architecture map, or handoff diagram would improve human or machine understanding. Use the homelabd brand diagram palette documented in `AGENTS.md` and avoid diagram-level Mermaid init directives that override the shared theme.
 

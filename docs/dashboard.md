@@ -17,6 +17,8 @@ Healthd is also deliberately separate: its API is served by the `healthd` Go ser
 
 Agent browser testing is deliberately separate from the supervised dashboard. Use `nix develop -c bun run --cwd web uat:tasks` for task-page UAT and `nix develop -c bun run --cwd web uat:site` for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes. Both start an isolated Playwright/Vite server from the task worktree and use mocked APIs. Do not restart the production dashboard or `homelabd` stack for agent validation. See `docs/agentic-testing.md`.
 
+For dashboard UI/UX changes, agents must start from the brief, reuse, state coverage, accessibility, and screenshot-review workflow in `docs/ui-ux-agent-work.md`.
+
 ## Progressive Web App
 
 The dashboard is installable as a Progressive Web App from HTTPS, `localhost`, or `127.0.0.1`. The app shell links `/manifest.webmanifest`, app icons, iOS web-app metadata, theme colours, and a SvelteKit service worker from `web/dashboard/src/service-worker.ts`. Production builds register the service worker; dev-server UAT keeps registration off so cached workers cannot affect mocked browser tests. When Chromium exposes `beforeinstallprompt`, the navbar shows an `Install` action. Browser-level install controls such as Add to Dock or Add to Home Screen remain valid when the browser does not expose that event.

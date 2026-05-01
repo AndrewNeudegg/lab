@@ -615,11 +615,29 @@
     <div class="session-sidebar-header">
       <strong>Chats</strong>
       <div class="session-sidebar-actions">
-        <button type="button" class="new-chat-button" disabled={loading || clearing} on:click={startNewChat}>
-          New chat
+        <button
+          type="button"
+          class="icon-button new-chat-button"
+          aria-label="New chat"
+          title="New chat"
+          disabled={loading || clearing}
+          on:click={startNewChat}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
         </button>
-        <button type="button" class="clear-all-button" disabled={loading || clearing} on:click={clearAllChats}>
-          Clear all
+        <button
+          type="button"
+          class="icon-button clear-all-button"
+          aria-label="Clear all chats"
+          title="Clear all chats"
+          disabled={loading || clearing}
+          on:click={clearAllChats}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 7h16M9 7V5h6v2M9 11v6M15 11v6M6 7l1 13h10l1-13" />
+          </svg>
         </button>
       </div>
     </div>
@@ -647,18 +665,22 @@
 
   <main class="chat-card">
     <header class="chat-toolbar">
-      <div>
-        <span>Current chat</span>
+      <div class="chat-title-group">
         <h1>{currentSessionTitle}</h1>
+        <span>{messages.length} message{messages.length === 1 ? '' : 's'}</span>
       </div>
       <div class="chat-toolbar-actions">
         <button
           type="button"
-          class="clear-current-button"
+          class="icon-button clear-current-button"
+          aria-label={clearing ? 'Clearing chat' : 'Clear current chat'}
+          title={clearing ? 'Clearing chat' : 'Clear current chat'}
           disabled={!hasCurrentMessages || loading || clearing}
           on:click={clearCurrentChat}
         >
-          {clearing ? 'Clearing' : 'Clear'}
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 7h16M9 7V5h6v2M9 11v6M15 11v6M6 7l1 13h10l1-13" />
+          </svg>
         </button>
       </div>
     </header>
@@ -756,7 +778,12 @@
 
     <section class="prompt-actions" aria-label="Prompt shortcuts">
       {#each promptActions as action}
-        <button type="button" disabled={loading || clearing} on:click={() => sendCommand(action.command)}>
+        <button
+          type="button"
+          class="prompt-action-chip"
+          disabled={loading || clearing}
+          on:click={() => sendCommand(action.command)}
+        >
           <strong>{action.label}</strong>
           <span>{action.hint}</span>
         </button>
@@ -773,18 +800,7 @@
       on:drop={handleDrop}
     >
       <label class="hidden" for="message">Message</label>
-      <div class="composer-field">
-        <textarea
-          id="message"
-          bind:this={inputEl}
-          bind:value={draft}
-          autocomplete="off"
-          placeholder="Tell homelabd what you want done. Drop files here to attach them."
-          disabled={loading || clearing}
-          rows="3"
-          on:input={handleDraftInput}
-          on:keydown={handleComposerKeydown}
-        ></textarea>
+      <div class="composer-row">
         <input
           class="hidden"
           bind:this={fileInputEl}
@@ -792,10 +808,64 @@
           id="chat-attachments"
           type="file"
           multiple
+          aria-label="Selected files"
           disabled={loading || clearing}
           on:input={handleFileInput}
           on:change={handleFileInput}
         />
+        <button
+          type="button"
+          class="icon-button attach-button"
+          aria-label="Attach"
+          title="Attach files"
+          disabled={loading || clearing}
+          on:click={triggerFileInput}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m21 8.5-9.6 9.6a5 5 0 0 1-7.1-7.1l9.9-9.9a3.4 3.4 0 0 1 4.8 4.8l-9.9 9.9a1.8 1.8 0 0 1-2.5-2.5l8.7-8.7" />
+          </svg>
+        </button>
+        <div class="composer-field">
+          <textarea
+            id="message"
+            bind:this={inputEl}
+            bind:value={draft}
+            autocomplete="off"
+            placeholder="Tell homelabd what you want done."
+            disabled={loading || clearing}
+            rows="2"
+            on:input={handleDraftInput}
+            on:keydown={handleComposerKeydown}
+          ></textarea>
+        </div>
+        <div class="composer-buttons">
+          {#if loading}
+            <button
+              type="button"
+              class="icon-button cancel-send-button"
+              aria-label="Cancel current message send"
+              title="Cancel current message send"
+              on:click={cancelCurrentSend}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 6l12 12M18 6 6 18" />
+              </svg>
+            </button>
+          {/if}
+          <button
+            type="submit"
+            class="icon-button send-button"
+            aria-label={loading ? 'Sending' : 'Send'}
+            title={loading ? 'Sending' : 'Send'}
+            disabled={loading || clearing || (!draft.trim() && pendingAttachments.length === 0)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 12 20 4l-5 16-3-7-8-1zM12 13l8-9" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="composer-secondary">
         {#if pendingAttachments.length}
           <div class="attachment-list pending-attachments" aria-label="Pending attachments">
             {#each pendingAttachments as attachment}
@@ -807,10 +877,13 @@
                 <button
                   type="button"
                   aria-label={`Remove ${attachment.name}`}
+                  title={`Remove ${attachment.name}`}
                   disabled={loading || clearing}
                   on:click={() => removePendingAttachment(attachment.id)}
                 >
-                  Remove
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M6 6l12 12M18 6 6 18" />
+                  </svg>
                 </button>
               </span>
             {/each}
@@ -818,24 +891,6 @@
         {/if}
         {#if attachmentError}
           <p class="attachment-error" role="alert">{attachmentError}</p>
-        {/if}
-      </div>
-      <div class="composer-buttons">
-        <button type="button" class="attach-button" disabled={loading || clearing} on:click={triggerFileInput}>
-          Attach
-        </button>
-        <button type="submit" disabled={loading || clearing || (!draft.trim() && pendingAttachments.length === 0)}>
-          {loading ? 'Sending' : 'Send'}
-        </button>
-        {#if loading}
-          <button
-            type="button"
-            class="cancel-send-button"
-            aria-label="Cancel current message send"
-            on:click={cancelCurrentSend}
-          >
-            Cancel
-          </button>
         {/if}
       </div>
     </form>
@@ -892,7 +947,43 @@
   .attachment-list {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.45rem;
+    gap: 0.4rem;
+  }
+
+  .icon-button {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    height: 2.2rem;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.45rem;
+    color: #243047;
+    background: #ffffff;
+    cursor: pointer;
+  }
+
+  .icon-button:hover:not(:disabled),
+  .icon-button:focus-visible {
+    border-color: #93c5fd;
+    color: #1d4ed8;
+    background: #eff6ff;
+    outline: none;
+  }
+
+  .icon-button svg {
+    width: 1.05rem;
+    height: 1.05rem;
+  }
+
+  .icon-button path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .session-sidebar {
@@ -915,7 +1006,7 @@
   }
 
   .session-sidebar-header {
-    padding: 0.75rem;
+    padding: 0.58rem 0.65rem;
     border-bottom: 1px solid #e2e8f0;
   }
 
@@ -926,9 +1017,9 @@
 
   .session-sidebar-actions {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: flex-end;
-    gap: 0.4rem;
+    gap: 0.35rem;
   }
 
   .session-list {
@@ -987,23 +1078,8 @@
     font-weight: 650;
   }
 
-  .new-chat-button,
   .clear-all-button,
-  .chat-toolbar-actions button {
-    box-sizing: border-box;
-    min-height: 2rem;
-    max-width: 100%;
-    padding: 0 0.68rem;
-    border: 1px solid #cbd5e1;
-    border-radius: 0.45rem;
-    color: #243047;
-    background: #ffffff;
-    font-size: 0.78rem;
-    font-weight: 850;
-    cursor: pointer;
-  }
-
-  .clear-all-button {
+  .chat-toolbar-actions .clear-current-button {
     border-color: #fecaca;
     color: #991b1b;
     background: #fff7f7;
@@ -1011,25 +1087,24 @@
 
   .chat-toolbar {
     min-width: 0;
-    padding: 0.75rem 1rem;
+    padding: 0.55rem 0.75rem;
     border-bottom: 1px solid #dde4ef;
     background: #ffffff;
   }
 
-  .chat-toolbar div:first-child {
+  .chat-title-group {
     min-width: 0;
   }
 
-  .chat-toolbar span {
+  .chat-title-group span {
     display: block;
     color: #64748b;
-    font-size: 0.68rem;
-    font-weight: 800;
-    text-transform: uppercase;
+    font-size: 0.72rem;
+    font-weight: 700;
   }
 
   .chat-toolbar h1 {
-    margin: 0.12rem 0 0;
+    margin: 0;
     color: #0f172a;
     font-size: 1rem;
     line-height: 1.25;
@@ -1040,9 +1115,9 @@
 
   .chat-toolbar-actions {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: flex-end;
-    gap: 0.45rem;
+    gap: 0.35rem;
     flex-shrink: 0;
   }
 
@@ -1054,14 +1129,14 @@
 
   .message-actions button,
   .prompt-actions button {
-    min-height: 2rem;
+    min-height: 1.85rem;
     max-width: 100%;
-    padding: 0 0.7rem;
+    padding: 0 0.55rem;
     border: 1px solid #cbd5e1;
-    border-radius: 0.55rem;
+    border-radius: 999px;
     color: #243047;
     background: #ffffff;
-    font-size: 0.82rem;
+    font-size: 0.76rem;
     font-weight: 750;
     text-decoration: none;
     overflow-wrap: anywhere;
@@ -1083,18 +1158,18 @@
   .messages {
     display: flex;
     flex-direction: column;
-    gap: 0.8rem;
+    gap: 0.65rem;
     min-height: 0;
     overflow-y: auto;
-    padding: 1rem;
+    padding: 0.75rem;
   }
 
   .message {
     display: grid;
     gap: 0.45rem;
     min-width: 0;
-    width: min(48rem, 92%);
-    padding: 0.85rem 0.95rem;
+    width: min(44rem, 90%);
+    padding: 0.75rem 0.85rem;
     border: 1px solid #e2e8f0;
     border-radius: 0.9rem;
     background: #ffffff;
@@ -1148,8 +1223,9 @@
 
   .empty-chat {
     display: grid;
-    place-items: center;
-    min-height: 10rem;
+    place-items: start center;
+    min-height: 0;
+    padding-top: 2rem;
     color: #64748b;
     text-align: center;
   }
@@ -1157,7 +1233,7 @@
   .empty-chat h2 {
     margin: 0;
     color: #172033;
-    font-size: 1.35rem;
+    font-size: 1rem;
     line-height: 1.2;
   }
 
@@ -1297,14 +1373,17 @@
   }
 
   .prompt-actions {
-    padding: 0 1rem 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid #dde4ef;
+    background: #f8fafc;
   }
 
   .prompt-actions button {
-    display: grid;
-    gap: 0.1rem;
-    min-width: 8rem;
-    padding-block: 0.45rem;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    min-width: 0;
+    padding-block: 0.25rem;
     text-align: left;
   }
 
@@ -1321,10 +1400,8 @@
 
   .composer {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: 0.75rem;
-    padding: 1rem;
+    gap: 0.5rem;
+    padding: 0.65rem 0.75rem;
     border-top: 1px solid #dde4ef;
     background: #ffffff;
   }
@@ -1334,10 +1411,35 @@
     outline-offset: -0.5rem;
   }
 
+  .composer-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
   .composer-field,
+  .composer-secondary,
   .composer-buttons {
     display: grid;
-    gap: 0.55rem;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .composer-buttons {
+    display: flex;
+    flex-wrap: nowrap;
+  }
+
+  .composer .icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 0.6rem;
+  }
+
+  .composer-secondary {
+    padding-left: 3.25rem;
   }
 
   .pending-attachments {
@@ -1350,14 +1452,30 @@
   }
 
   .attachment-chip.pending button {
-    min-height: 1.8rem;
-    padding: 0 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    padding: 0;
     border: 1px solid #cbd5e1;
     border-radius: 0.45rem;
     color: #243047;
     background: #ffffff;
     font-size: 0.72rem;
     font-weight: 800;
+  }
+
+  .attachment-chip.pending button svg {
+    width: 0.9rem;
+    height: 0.9rem;
+  }
+
+  .attachment-chip.pending button path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
   }
 
   .attachment-error {
@@ -1370,11 +1488,11 @@
   textarea {
     box-sizing: border-box;
     width: 100%;
-    min-height: 4.3rem;
-    max-height: 12rem;
-    padding: 0.8rem 0.9rem;
+    min-height: 2.75rem;
+    max-height: 9rem;
+    padding: 0.6rem 0.75rem;
     border: 1px solid #cbd5e1;
-    border-radius: 0.75rem;
+    border-radius: 0.6rem;
     color: #111827;
     background: #ffffff;
     line-height: 1.45;
@@ -1386,31 +1504,19 @@
     outline: 3px solid rgb(37 99 235 / 0.14);
   }
 
-  .composer-buttons button,
-  .composer-buttons .attach-button {
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 5.75rem;
-    min-height: 2.05rem;
-    border: 1px solid #cbd5e1;
-    border-radius: 0.75rem;
-    color: #243047;
-    background: #ffffff;
-    font-weight: 850;
-    cursor: pointer;
-    text-align: center;
-  }
-
-  .composer button[type='submit'] {
-    min-height: 2.05rem;
+  .composer .send-button {
     border: 0;
     color: #ffffff;
     background: #2563eb;
   }
 
-  .composer-buttons .cancel-send-button {
+  .composer .send-button:hover:not(:disabled),
+  .composer .send-button:focus-visible {
+    color: #ffffff;
+    background: #1d4ed8;
+  }
+
+  .composer .cancel-send-button {
     border-color: #fecaca;
     color: #991b1b;
     background: #fff7f7;
@@ -1421,7 +1527,7 @@
     opacity: 0.58;
   }
 
-  :global(html[data-theme='dark']) .composer-buttons .cancel-send-button {
+  :global(html[data-theme='dark']) .composer .cancel-send-button {
     border-color: #7f1d1d !important;
     color: #fecaca !important;
     background: #450a0a !important;
@@ -1433,18 +1539,24 @@
 
   :global(html[data-theme='dark']) .session-sidebar,
   :global(html[data-theme='dark']) .chat-toolbar,
+  :global(html[data-theme='dark']) .prompt-actions,
+  :global(html[data-theme='dark']) .composer,
   :global(html[data-theme='dark']) .session-item:hover:not(:disabled),
   :global(html[data-theme='dark']) .session-item:focus-visible,
   :global(html[data-theme='dark']) .session-item.active,
-  :global(html[data-theme='dark']) .new-chat-button,
-  :global(html[data-theme='dark']) .chat-toolbar-actions button {
+  :global(html[data-theme='dark']) .icon-button:not(.send-button),
+  :global(html[data-theme='dark']) .prompt-actions button,
+  :global(html[data-theme='dark']) .attachment-chip.pending button,
+  :global(html[data-theme='dark']) textarea {
     color: var(--text) !important;
     border-color: var(--border-soft) !important;
     background: var(--surface) !important;
   }
 
   :global(html[data-theme='dark']) .session-sidebar-header,
-  :global(html[data-theme='dark']) .chat-toolbar {
+  :global(html[data-theme='dark']) .chat-toolbar,
+  :global(html[data-theme='dark']) .prompt-actions,
+  :global(html[data-theme='dark']) .composer {
     border-color: var(--border-soft) !important;
   }
 
@@ -1456,12 +1568,14 @@
   :global(html[data-theme='dark']) .session-title,
   :global(html[data-theme='dark']) .session-sidebar-header strong,
   :global(html[data-theme='dark']) .chat-toolbar h1,
-  :global(html[data-theme='dark']) .empty-chat h2 {
+  :global(html[data-theme='dark']) .empty-chat h2,
+  :global(html[data-theme='dark']) .prompt-actions strong {
     color: var(--text-strong) !important;
   }
 
   :global(html[data-theme='dark']) .session-meta,
-  :global(html[data-theme='dark']) .chat-toolbar span {
+  :global(html[data-theme='dark']) .chat-title-group span,
+  :global(html[data-theme='dark']) .prompt-actions span {
     color: var(--muted) !important;
   }
 
@@ -1470,6 +1584,25 @@
     border-color: #7f1d1d !important;
     color: #fecaca !important;
     background: #450a0a !important;
+  }
+
+  :global(html[data-theme='dark']) .icon-button:hover:not(:disabled),
+  :global(html[data-theme='dark']) .icon-button:focus-visible,
+  :global(html[data-theme='dark']) .prompt-actions button:hover:not(:disabled),
+  :global(html[data-theme='dark']) .prompt-actions button:focus-visible {
+    color: #bfdbfe !important;
+    border-color: var(--border) !important;
+    background: var(--surface-hover) !important;
+  }
+
+  :global(html[data-theme='dark']) .composer .send-button {
+    color: #ffffff !important;
+    background: #2563eb !important;
+  }
+
+  :global(html[data-theme='dark']) .composer .send-button:hover:not(:disabled),
+  :global(html[data-theme='dark']) .composer .send-button:focus-visible {
+    background: #1d4ed8 !important;
   }
 
   .hidden {
@@ -1492,7 +1625,7 @@
     }
 
     .session-sidebar {
-      max-height: 10rem;
+      max-height: 7.8rem;
     }
 
     .session-sidebar-header {
@@ -1503,22 +1636,20 @@
       gap: 0.35rem;
     }
 
-    .new-chat-button,
-    .clear-all-button {
-      min-height: 1.85rem;
-      padding-inline: 0.5rem;
-      font-size: 0.72rem;
+    .session-sidebar .icon-button {
+      width: 2rem;
+      height: 2rem;
     }
 
     .session-list {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.35rem;
-      max-height: 6.7rem;
+      max-height: 4.8rem;
       padding: 0.45rem;
     }
 
     .session-item {
-      min-height: 3rem;
+      min-height: 2.15rem;
       padding: 0.42rem 0.5rem;
     }
 
@@ -1533,26 +1664,46 @@
 
   @media (max-width: 720px) {
     .chat-toolbar {
-      align-items: start;
-      padding: 0.65rem 0.75rem;
+      padding: 0.5rem 0.65rem;
     }
 
     .chat-toolbar-actions {
-      display: grid;
-      grid-template-columns: 1fr;
+      display: flex;
+    }
+
+    .messages {
+      padding: 0.6rem;
+    }
+
+    .prompt-actions {
+      padding: 0.45rem 0.6rem;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+    }
+
+    .prompt-actions button {
+      flex: 0 0 auto;
+    }
+
+    .prompt-actions span {
+      display: none;
     }
 
     .composer {
-      grid-template-columns: 1fr;
+      padding: 0.55rem 0.6rem;
     }
 
-    .composer-buttons {
-      grid-template-columns: 1fr 1fr;
+    .composer-row {
+      gap: 0.4rem;
     }
 
-    .composer-buttons button,
-    .composer-buttons .attach-button {
-      min-height: 2.8rem;
+    .composer .icon-button {
+      width: 2.65rem;
+      height: 2.65rem;
+    }
+
+    .composer-secondary {
+      padding-left: 0;
     }
 
     .message {

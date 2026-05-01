@@ -758,7 +758,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
         expect(dialog.message()).toContain('Clear this chat?');
         await dialog.accept();
       });
-      await page.getByRole('button', { name: 'Clear', exact: true }).click();
+      await page.getByRole('button', { name: 'Clear current chat' }).click();
       const request = await clearRequest;
       const body = request.postDataJSON() as { conversation_id?: string };
       expect(body.conversation_id).toMatch(/^chat_/);

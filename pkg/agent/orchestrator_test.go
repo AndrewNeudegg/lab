@@ -1545,6 +1545,28 @@ func TestCreateTaskUsesSummarizedTitle(t *testing.T) {
 	}
 }
 
+func TestCreateTaskUnwrapsJSONSummaryTitle(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	summarizer := &taskTitleSummaryStub{summary: `{"summary":"Implement schema-aware chat buttons"}`}
+	if err := orch.registry.Register(summarizer); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.Handle(context.Background(), "test", "new teach the chat to be able to use and create buttons"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Title != "Implement schema-aware chat buttons" {
+		t.Fatalf("title = %q, want unwrapped JSON summary title", tasks[0].Title)
+	}
+}
+
 func TestCreateTaskClipsSummarizedTitleToTaskPaneLimit(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	summarizer := &taskTitleSummaryStub{summary: strings.Repeat("title ", 40)}

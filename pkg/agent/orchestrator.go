@@ -416,6 +416,9 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 			return programResult(o.deleteTask(ctx, selector))
 		}
 	}
+	if isNoActionNotice(message) {
+		return programResult(noActionNoticeReply(), nil)
+	}
 	if goal, ok := taskCreationGoal(message); ok {
 		return programResult(o.createTaskOrPlanningBriefWithAttachments(ctx, goal, attachments, true))
 	}
@@ -457,7 +460,14 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 	case "forget", "unlearn":
 		return programResult(o.unlearnInteractionLesson(strings.TrimSpace(strings.TrimPrefix(message, fields[0]))))
 	case "new", "task":
-		return programResult(o.createTaskOrPlanningBriefWithAttachments(ctx, strings.TrimSpace(strings.TrimPrefix(message, fields[0])), attachments, true))
+		goal := strings.TrimSpace(strings.TrimPrefix(message, fields[0]))
+		if isNoActionNotice(goal) {
+			return programResult(noActionNoticeReply(), nil)
+		}
+		if !isCreatableTaskGoal(goal) {
+			return programResult("usage: new <goal>", nil)
+		}
+		return programResult(o.createTaskOrPlanningBriefWithAttachments(ctx, cleanupTaskCreationGoal(goal), attachments, true))
 	case "tasks":
 		return programResult(o.listTasks())
 	case "restart":
@@ -899,6 +909,14 @@ func commandWord(field string) string {
 }
 
 func taskCreationGoal(message string) (string, bool) {
+	goal, ok := rawTaskCreationGoal(message)
+	if !ok || !isCreatableTaskGoal(goal) {
+		return "", false
+	}
+	return cleanupTaskCreationGoal(goal), true
+}
+
+func rawTaskCreationGoal(message string) (string, bool) {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
 		return "", false
@@ -911,9 +929,6 @@ func taskCreationGoal(message string) (string, bool) {
 	switch first {
 	case "new", "task":
 		goal := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
-		if !isCreatableTaskGoal(goal) {
-			return "", false
-		}
 		return cleanupTaskCreationGoal(goal), true
 	case "tasks":
 		return "", false
@@ -923,9 +938,6 @@ func taskCreationGoal(message string) (string, bool) {
 	for _, prefix := range taskCreationPrefixes() {
 		if strings.HasPrefix(normalized, prefix+" ") {
 			goal := wordsAfterPrefix(trimmed, len(strings.Fields(prefix)))
-			if !isCreatableTaskGoal(goal) {
-				return "", false
-			}
 			return cleanupTaskCreationGoal(goal), true
 		}
 	}
@@ -936,9 +948,6 @@ func taskCreationGoal(message string) (string, bool) {
 				continue
 			}
 			goal := wordsAfterPrefix(trimmed, len(strings.Fields(normalized[:idx+len(marker)])))
-			if !isCreatableTaskGoal(goal) {
-				return "", false
-			}
 			return cleanupTaskCreationGoal(goal), true
 		}
 	}
@@ -1001,6 +1010,9 @@ func isCreatableTaskGoal(goal string) bool {
 	if goal == "" {
 		return false
 	}
+	if isNoActionNotice(goal) {
+		return false
+	}
 	normalized := normalizeIntentText(goal)
 	switch normalized {
 	case "", "status", "task status", "tasks", "active tasks", "list active tasks", "list all active tasks", "in flight", "whats cooking", "what is cooking":
@@ -1010,6 +1022,42 @@ func isCreatableTaskGoal(goal string) bool {
 		return false
 	}
 	return true
+}
+
+func isNoActionNotice(message string) bool {
+	normalized := normalizeIntentText(message)
+	if normalized == "" || !hasNoActionDirective(normalized) {
+		return false
+	}
+	if goal, ok := rawTaskCreationGoal(message); ok && strings.TrimSpace(goal) != "" {
+		return !isPlainWorkRequest(goal)
+	}
+	return !isPlainWorkRequest(message)
+}
+
+func hasNoActionDirective(normalized string) bool {
+	for _, phrase := range []string{
+		"no action needed",
+		"no action required",
+		"no action necessary",
+		"no work needed",
+		"no work required",
+		"no task needed",
+		"no task required",
+		"do not create a task",
+		"dont create a task",
+		"do not make a task",
+		"dont make a task",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func noActionNoticeReply() string {
+	return "Noted. I did not create a task."
 }
 
 func isWebSearchRequest(message string) bool {

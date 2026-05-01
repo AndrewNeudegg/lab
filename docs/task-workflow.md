@@ -207,7 +207,7 @@ These write tools are high-risk and approval-gated by default. Task review still
 
 ## Shell Agent Tools
 
-`shell.run_limited` executes only allowlisted command arrays without shell expansion. Read-only inspection and search commands such as `pwd`, `ls`, `find`, `grep`, `rg`, `cat`, `wc`, `head`, and `tail` are available for task worktrees, along with routine build/test commands. `find` execution hooks and `rg --pre` preprocessors are rejected. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
+`shell.run_limited` executes one allowlisted command array without shell expansion. `shell.run_chain` executes multiple allowlisted command arrays in order and stops at the first failure, giving agents `&&`-style sequencing without shell parsing. Read-only inspection and search commands such as `pwd`, `ls`, `find`, `grep`, `rg`, `cat`, `wc`, `head`, and `tail` are available for task worktrees, along with routine build/test commands. `find` execution hooks and `rg --pre` preprocessors are rejected. Potentially destructive allowlisted commands, including `rm`, `rmdir`, `mv`, `cp`, `git clean`, `git reset`, `git restore`, `git rm`, and `git checkout -- <path>`, are classified as high risk by the tool policy and create an approval request before execution.
 
 Review pending shell requests with `approvals`, then use `approve <approval_id>` or `deny <approval_id>`.
 

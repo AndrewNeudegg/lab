@@ -55,7 +55,7 @@ func workspaceRequiredForTaskTool(name string, schema json.RawMessage) bool {
 }
 
 func dirRequiredForTaskTool(name string, schema json.RawMessage) bool {
-	if strings.HasPrefix(name, "git.") || strings.HasPrefix(name, "go.") || strings.HasPrefix(name, "bun.") || name == "shell.run_limited" {
+	if strings.HasPrefix(name, "git.") || strings.HasPrefix(name, "go.") || strings.HasPrefix(name, "bun.") || name == "shell.run_limited" || name == "shell.run_chain" {
 		return schemaDeclaresProperty(schema, "dir")
 	}
 	return false

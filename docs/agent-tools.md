@@ -23,7 +23,7 @@ Orchestrator-style agents respond with one JSON object:
 }
 ```
 
-Each `args` object must match the tool's schema. Empty args are treated as `{}`. The Orchestrator validates the JSON shape, required fields, primitive types, enum values, and numeric bounds before policy checks or handlers run. Task workers also get semantic validation: workspace-scoped `repo.*` calls must use the task worktree, and `dir`-scoped Git, Go, Bun, and limited shell calls must stay inside it. Results are JSON and are stored in the event log as `tool.result`; denied calls are stored as `tool.call.denied`.
+Each `args` object must match the tool's schema. Empty args are treated as `{}`. The Orchestrator validates the JSON shape, required fields, primitive types, enum values, and numeric bounds before policy checks or handlers run. Task workers also get semantic validation: workspace-scoped `repo.*` calls must use the task worktree, and `dir`-scoped Git, Go, Bun, and shell calls must stay inside it. Results are JSON and are stored in the event log as `tool.result`; denied calls are stored as `tool.call.denied`.
 
 Final `done=true` responses may include `"buttons": ["Yes", "No"]`. Buttons are optional reply choices, limited to eight single-line labels of 1-80 characters. They must be omitted on `done=false` tool-work responses, and dashboard chat sends the clicked label as the next user message.
 
@@ -58,7 +58,7 @@ Ask chat `tools` or `what tools are available?` to see the live catalogue as a c
 
 Provider adapters declare their structured-output capabilities. OpenAI and Gemini agent turns include a provider-native structured-output schema for the response envelope where supported. Providers with tool calling but no native JSON schema get a `final.submit` tool for final answers. Self-hosted providers without either capability still get the same prompt contract, and all providers pass through the same Go validation and repair loop before any tool call can execute.
 
-Pseudo-tools such as `chat.history`, `chat.search`, `chat.send`, `task.create`, `task.run`, and `workflow.run` are not package tools, but they still appear in the catalogue and pass through the same policy path. `task.create` accepts `goal`, optional `target`, and optional `attachments`; large homelabd feature goals create a design brief approval that stores internal planning metadata before queueing. Package tools implement `pkg/tool.Tool`; tools with input-dependent risk, such as `shell.run_limited`, also implement `RiskFor`.
+Pseudo-tools such as `chat.history`, `chat.search`, `chat.send`, `task.create`, `task.run`, and `workflow.run` are not package tools, but they still appear in the catalogue and pass through the same policy path. `task.create` accepts `goal`, optional `target`, and optional `attachments`; large homelabd feature goals create a design brief approval that stores internal planning metadata before queueing. Package tools implement `pkg/tool.Tool`; tools with input-dependent risk, such as `shell.run_limited` and `shell.run_chain`, also implement `RiskFor`.
 
 ## Argument Conventions
 
@@ -66,7 +66,7 @@ Pseudo-tools such as `chat.history`, `chat.search`, `chat.send`, `task.create`, 
 - `path` is repository-relative or workspace-relative, depending on whether `workspace` is supplied. Absolute paths and parent traversal are rejected by repository helpers.
 - `dir` is the working directory for Git, shell, and validation commands. Prefer the isolated task workspace for agent work.
 - `target` is required by some high-impact operations and optional on others; include it whenever the schema accepts it so the human approval request has an explicit destination.
-- `command` is an argv array, not a shell string. Pipes, redirects, glob expansion, and environment assignment do not happen unless the executable itself implements them.
+- `command` is an argv array, not a shell string. `commands` is a list of argv arrays for ordered shell chains. Pipes, redirects, glob expansion, and environment assignment do not happen unless the executable itself implements them.
 
 ## Policy And Approval
 
@@ -78,7 +78,7 @@ Tools declare one of these risk levels:
 - `high`: creates an approval request before execution.
 - `critical`: reserved for tools that must include an explicit `target`; otherwise denied.
 
-`policy.require_approval_for` in `config.json` can force approval for specific tool names regardless of risk. `shell.run_limited` also upgrades known destructive command arrays to high risk.
+`policy.require_approval_for` in `config.json` can force approval for specific tool names regardless of risk. `shell.run_limited` and `shell.run_chain` also upgrade known destructive command arrays to high risk.
 
 Pending approvals can be edited before they are granted:
 
@@ -90,8 +90,8 @@ The replacement args must be one JSON object and must pass the target tool schem
 
 Default role access:
 
-- `OrchestratorAgent`: chat history/search/send pseudo-tools, task and workflow pseudo-tools, external delegation, memory list/read/remember/unlearn/proposal, text, internet, health error reads, repo read/diff, git read/write/worktree, Go/Bun validation, limited and approved shell.
-- `CoderAgent`: text, internet, repo read/write patch/diff, git read, Go/Bun validation, limited shell.
+- `OrchestratorAgent`: chat history/search/send pseudo-tools, task and workflow pseudo-tools, external delegation, memory list/read/remember/unlearn/proposal, text, internet, health error reads, repo read/diff, git read/write/worktree, Go/Bun validation, limited, chained, and approved shell.
+- `CoderAgent`: text, internet, repo read/write patch/diff, git read, Go/Bun validation, limited and chained shell.
 - `UXAgent`: same as `CoderAgent`, with UX/browser-UAT expectations in its prompt.
 - `ResearchAgent`: text, internet, and memory proposals.
 - `ReviewerAgent`: text, internet, repo read/search/diff, git read/merge check, Go/Bun validation.
@@ -142,12 +142,19 @@ Normal task review uses `git.merge_approved`; agents should not merge task branc
 
 ## Shell Tools
 
-Both shell tools execute command arrays directly with no shell expansion.
+Shell tools execute command arrays directly with no shell expansion.
 
 - `shell.run_limited`: required args: `dir`, `command`. Only allowlisted commands run without approval. The default timeout is `limits.max_shell_seconds`, currently 60 seconds in `config.example.json`.
+- `shell.run_chain`: required args: `dir`, `commands`. Optional args: `target`. Runs a list of allowlisted command arrays in order and stops at the first failure. Use it when commands need `&&`-style sequencing without shell parsing.
 - `shell.run_approved`: required args: `dir`, `command`, `target`. Runs after policy approval when a command is high risk or outside the limited allowlist.
 
-`shell.run_limited` allows read-only inspection commands such as `pwd`, `cat`, `ls`, `wc`, `head`, `tail`, `grep`, `rg`, and `find` when their path arguments are relative and do not traverse upwards. It rejects `find` execution or write actions such as `-exec`, `-delete`, and `-fprint`, and rejects `rg --pre` preprocessors.
+`shell.run_limited` and `shell.run_chain` allow read-only inspection commands such as `pwd`, `cat`, `ls`, `wc`, `head`, `tail`, `grep`, `rg`, and `find` when their path arguments are relative and do not traverse upwards. They reject `find` execution or write actions such as `-exec`, `-delete`, and `-fprint`, and reject `rg --pre` preprocessors.
+
+Example chained inspection:
+
+```json
+{"tool":"shell.run_chain","args":{"dir":"/home/lab/lab/workspaces/task_123","commands":[["pwd"],["find",".","-maxdepth","2","-type","f"]]}}
+```
 
 Allowlisted validation commands include:
 

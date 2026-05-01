@@ -95,7 +95,7 @@ func defaultAgentTools() map[string]map[string]bool {
 			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
 			"git.commit", "git.revert", "git.merge", "git.worktree_create", "git.worktree_remove",
 			"go.test", "go.build", "bun.check", "bun.build", "bun.test", "bun.uat.ui", "bun.uat.tasks", "bun.uat.site",
-			"shell.run_limited", "shell.run_approved",
+			"shell.run_limited", "shell.run_chain", "shell.run_approved",
 		),
 		"CoderAgent": allow(
 			"text.correct", "text.summarize",
@@ -103,7 +103,7 @@ func defaultAgentTools() map[string]map[string]bool {
 			"repo.list", "repo.search", "repo.read", "repo.write_patch", "repo.current_diff",
 			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
 			"go.fmt", "go.test", "go.build", "test.run", "bun.check", "bun.build", "bun.test", "bun.uat.ui", "bun.uat.tasks", "bun.uat.site",
-			"shell.run_limited",
+			"shell.run_limited", "shell.run_chain",
 		),
 		"UXAgent": allow(
 			"text.correct", "text.summarize",
@@ -111,7 +111,7 @@ func defaultAgentTools() map[string]map[string]bool {
 			"repo.list", "repo.search", "repo.read", "repo.write_patch", "repo.current_diff",
 			"git.status", "git.diff", "git.branch", "git.describe", "git.log", "git.show",
 			"go.fmt", "go.test", "go.build", "test.run", "bun.check", "bun.build", "bun.test", "bun.uat.ui", "bun.uat.tasks", "bun.uat.site",
-			"shell.run_limited",
+			"shell.run_limited", "shell.run_chain",
 		),
 		"ResearchAgent": allow("text.correct", "text.summarize", "internet.search", "internet.fetch", "internet.research", "memory.propose_write"),
 		"ReviewerAgent": allow("text.correct", "text.summarize", "internet.search", "internet.fetch", "internet.research", "repo.read", "repo.search", "repo.current_diff", "git.diff", "git.status", "git.branch", "git.describe", "git.log", "git.show", "git.merge_check", "go.test", "go.build", "test.run", "bun.check", "bun.build", "bun.test", "bun.uat.ui", "bun.uat.tasks", "bun.uat.site"),

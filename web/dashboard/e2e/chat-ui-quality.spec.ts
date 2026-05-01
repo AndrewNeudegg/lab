@@ -98,7 +98,11 @@ for (const viewport of [
 
       await expect(page.getByRole('heading', { name: 'Tighten chat page controls' })).toBeVisible();
       await expect(page.getByRole('button', { name: 'New chat' })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Clear all chats' })).toBeVisible();
+      if (viewport.mobile) {
+        await expect(page.getByRole('button', { name: 'Clear all chats' })).toBeHidden();
+      } else {
+        await expect(page.getByRole('button', { name: 'Clear all chats' })).toBeVisible();
+      }
       await expect(page.getByRole('button', { name: 'Clear current chat' })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Attach' })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled();
@@ -106,18 +110,28 @@ for (const viewport of [
       const metrics = await page.evaluate(() => {
         const messages = document.querySelector('.messages') as HTMLElement | null;
         const composer = document.querySelector('.composer') as HTMLElement | null;
+        const composerRow = document.querySelector('.composer-row') as HTMLElement | null;
         const promptActions = document.querySelector('.prompt-actions') as HTMLElement | null;
+        const sessionSidebar = document.querySelector('.session-sidebar') as HTMLElement | null;
+        const chatToolbar = document.querySelector('.chat-toolbar') as HTMLElement | null;
+        const composerRowStyle = composerRow ? getComputedStyle(composerRow) : null;
         const iconButtons = Array.from(
           document.querySelectorAll(
             '.session-sidebar-actions button, .chat-toolbar-actions button, .attach-button, .composer-buttons button'
           )
-        );
+        ).filter((button) => {
+          const rect = button.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
         return {
           bodyWidth: document.body.scrollWidth,
           viewport: window.innerWidth,
           messagesHeight: messages?.getBoundingClientRect().height ?? 0,
           composerHeight: composer?.getBoundingClientRect().height ?? 0,
+          composerRowBorderWidth: Number.parseFloat(composerRowStyle?.borderTopWidth || '0'),
           promptHeight: promptActions?.getBoundingClientRect().height ?? 0,
+          sessionSidebarHeight: sessionSidebar?.getBoundingClientRect().height ?? 0,
+          chatToolbarHeight: chatToolbar?.getBoundingClientRect().height ?? 0,
           iconButtonText: iconButtons.map((button) => button.textContent?.trim() || ''),
           iconButtonMinSize: Math.min(
             ...iconButtons.map((button) => {
@@ -130,8 +144,17 @@ for (const viewport of [
       expect(metrics.bodyWidth, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewport + 2);
       expect(metrics.messagesHeight, JSON.stringify(metrics)).toBeGreaterThan(metrics.composerHeight * 3);
       expect(metrics.promptHeight, JSON.stringify(metrics)).toBeLessThan(56);
-      expect(metrics.iconButtonText, JSON.stringify(metrics)).toEqual(['', '', '', '', '']);
+      expect(metrics.composerRowBorderWidth, JSON.stringify(metrics)).toBeGreaterThanOrEqual(1);
+      expect(metrics.iconButtonText, JSON.stringify(metrics)).toEqual(
+        viewport.mobile ? ['', '', '', ''] : ['', '', '', '', '']
+      );
       expect(metrics.iconButtonMinSize, JSON.stringify(metrics)).toBeGreaterThanOrEqual(32);
+      if (viewport.mobile) {
+        expect(metrics.sessionSidebarHeight, JSON.stringify(metrics)).toBeLessThanOrEqual(58);
+        expect(metrics.chatToolbarHeight, JSON.stringify(metrics)).toBeLessThanOrEqual(48);
+        expect(metrics.composerHeight, JSON.stringify(metrics)).toBeLessThanOrEqual(76);
+        expect(metrics.promptHeight, JSON.stringify(metrics)).toBeLessThanOrEqual(42);
+      }
 
       await expectNoAxeViolations(page);
       await expect(page).toHaveScreenshot(`chat-ui-quality-${viewport.name}.png`, {

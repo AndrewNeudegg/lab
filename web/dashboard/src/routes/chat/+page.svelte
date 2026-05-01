@@ -831,9 +831,9 @@
             bind:this={inputEl}
             bind:value={draft}
             autocomplete="off"
-            placeholder="Tell homelabd what you want done."
+            placeholder="Message homelabd"
             disabled={loading || clearing}
-            rows="2"
+            rows="1"
             on:input={handleDraftInput}
             on:keydown={handleComposerKeydown}
           ></textarea>
@@ -1412,11 +1412,21 @@
   }
 
   .composer-row {
+    box-sizing: border-box;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: end;
-    gap: 0.5rem;
+    gap: 0.25rem;
     min-width: 0;
+    padding: 0.3rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 0.75rem;
+    background: #ffffff;
+  }
+
+  .composer-row:focus-within {
+    border-color: #2563eb;
+    outline: 3px solid rgb(37 99 235 / 0.14);
   }
 
   .composer-field,
@@ -1433,9 +1443,15 @@
   }
 
   .composer .icon-button {
-    width: 2.75rem;
-    height: 2.75rem;
+    width: 2.3rem;
+    height: 2.3rem;
     border-radius: 0.6rem;
+  }
+
+  .composer .attach-button,
+  .composer .cancel-send-button {
+    border-color: transparent;
+    background: transparent;
   }
 
   .composer-secondary {
@@ -1488,20 +1504,19 @@
   textarea {
     box-sizing: border-box;
     width: 100%;
-    min-height: 2.75rem;
-    max-height: 9rem;
-    padding: 0.6rem 0.75rem;
-    border: 1px solid #cbd5e1;
+    min-height: 2.35rem;
+    max-height: 8rem;
+    padding: 0.45rem 0.35rem;
+    border: 0;
     border-radius: 0.6rem;
     color: #111827;
-    background: #ffffff;
+    background: transparent;
     line-height: 1.45;
-    resize: vertical;
+    resize: none;
   }
 
   textarea:focus {
-    border-color: #2563eb;
-    outline: 3px solid rgb(37 99 235 / 0.14);
+    outline: none;
   }
 
   .composer .send-button {
@@ -1528,9 +1543,9 @@
   }
 
   :global(html[data-theme='dark']) .composer .cancel-send-button {
-    border-color: #7f1d1d !important;
+    border-color: transparent !important;
     color: #fecaca !important;
-    background: #450a0a !important;
+    background: transparent !important;
   }
 
   :global(html[data-theme='dark']) .chat-shell {
@@ -1541,6 +1556,7 @@
   :global(html[data-theme='dark']) .chat-toolbar,
   :global(html[data-theme='dark']) .prompt-actions,
   :global(html[data-theme='dark']) .composer,
+  :global(html[data-theme='dark']) .composer-row,
   :global(html[data-theme='dark']) .session-item:hover:not(:disabled),
   :global(html[data-theme='dark']) .session-item:focus-visible,
   :global(html[data-theme='dark']) .session-item.active,
@@ -1556,8 +1572,20 @@
   :global(html[data-theme='dark']) .session-sidebar-header,
   :global(html[data-theme='dark']) .chat-toolbar,
   :global(html[data-theme='dark']) .prompt-actions,
-  :global(html[data-theme='dark']) .composer {
+  :global(html[data-theme='dark']) .composer,
+  :global(html[data-theme='dark']) .composer-row {
     border-color: var(--border-soft) !important;
+  }
+
+  :global(html[data-theme='dark']) .composer-row:focus-within {
+    border-color: #60a5fa !important;
+    outline-color: rgb(96 165 250 / 0.22) !important;
+  }
+
+  :global(html[data-theme='dark']) .composer .attach-button,
+  :global(html[data-theme='dark']) .composer .cancel-send-button {
+    border-color: transparent !important;
+    background: transparent !important;
   }
 
   :global(html[data-theme='dark']) .session-item.active {
@@ -1620,37 +1648,74 @@
       --chat-navbar-height: 4.25rem;
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr);
-      gap: 0.5rem;
-      padding: calc(var(--chat-navbar-height) + 0.5rem) 0.5rem 0.5rem;
+      gap: 0.4rem;
+      padding: calc(var(--chat-navbar-height) + 0.45rem) 0.45rem 0.45rem;
     }
 
     .session-sidebar {
-      max-height: 7.8rem;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      height: 3rem;
+      max-height: none;
+      min-height: 3rem;
+      padding: 0.35rem;
     }
 
     .session-sidebar-header {
-      padding: 0.5rem 0.55rem;
+      display: contents;
+    }
+
+    .session-sidebar-header strong {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
 
     .session-sidebar-actions {
-      gap: 0.35rem;
+      order: 0;
+      flex: 0 0 auto;
+      gap: 0.2rem;
     }
 
     .session-sidebar .icon-button {
-      width: 2rem;
-      height: 2rem;
+      width: 2.1rem;
+      height: 2.1rem;
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .session-sidebar .clear-all-button {
+      display: none;
     }
 
     .session-list {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.35rem;
-      max-height: 4.8rem;
-      padding: 0.45rem;
+      order: 1;
+      display: flex;
+      flex: 1 1 auto;
+      align-items: center;
+      gap: 0.3rem;
+      min-width: 0;
+      max-height: none;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0;
+      scrollbar-width: none;
+    }
+
+    .session-list::-webkit-scrollbar {
+      display: none;
     }
 
     .session-item {
-      min-height: 2.15rem;
-      padding: 0.42rem 0.5rem;
+      flex: 0 0 min(10.5rem, 58vw);
+      min-height: 2.1rem;
+      padding: 0.4rem 0.5rem;
     }
 
     .session-title {
@@ -1658,31 +1723,46 @@
     }
 
     .session-meta {
-      font-size: 0.64rem;
+      display: none;
     }
   }
 
   @media (max-width: 720px) {
     .chat-toolbar {
-      padding: 0.5rem 0.65rem;
+      padding: 0.42rem 0.55rem;
     }
 
     .chat-toolbar-actions {
       display: flex;
     }
 
+    .chat-title-group span {
+      display: none;
+    }
+
+    .chat-toolbar-actions .clear-current-button {
+      width: 2rem;
+      height: 2rem;
+      border-color: transparent;
+      color: #64748b;
+      background: transparent;
+    }
+
     .messages {
-      padding: 0.6rem;
+      padding: 0.55rem;
     }
 
     .prompt-actions {
-      padding: 0.45rem 0.6rem;
+      gap: 0.3rem;
+      padding: 0.35rem 0.55rem;
       flex-wrap: nowrap;
       overflow-x: auto;
     }
 
     .prompt-actions button {
       flex: 0 0 auto;
+      min-height: 1.75rem;
+      padding-inline: 0.5rem;
     }
 
     .prompt-actions span {
@@ -1690,16 +1770,17 @@
     }
 
     .composer {
-      padding: 0.55rem 0.6rem;
+      padding: 0.45rem 0.55rem;
     }
 
     .composer-row {
-      gap: 0.4rem;
+      gap: 0.2rem;
+      padding: 0.25rem;
     }
 
     .composer .icon-button {
-      width: 2.65rem;
-      height: 2.65rem;
+      width: 2.25rem;
+      height: 2.25rem;
     }
 
     .composer-secondary {

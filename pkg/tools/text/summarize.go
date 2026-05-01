@@ -277,8 +277,14 @@ func fallbackSummary(text string, maxCharacters int) string {
 
 func cleanSummaryText(value string, maxCharacters int) string {
 	value = compactWhitespace(value)
+	if recovered := looseSummaryTextField(value, "summary", "title"); recovered != "" {
+		value = recovered
+	}
 	value = strings.Trim(value, " \t\r\n\"'`")
 	for {
+		if recovered := looseSummaryTextField(value, "summary", "title"); recovered != "" {
+			value = recovered
+		}
 		lower := strings.ToLower(value)
 		switch {
 		case strings.HasPrefix(lower, "summary:"):
@@ -289,6 +295,89 @@ func cleanSummaryText(value string, maxCharacters int) string {
 			return clipSummary(value, maxCharacters)
 		}
 	}
+}
+
+func looseSummaryTextField(value string, keys ...string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, key := range keys {
+		for _, quotedKey := range []string{`"` + key + `"`, `'` + key + `'`} {
+			searchFrom := 0
+			for searchFrom < len(value) {
+				idx := strings.Index(value[searchFrom:], quotedKey)
+				if idx < 0 {
+					break
+				}
+				idx += searchFrom
+				pos := idx + len(quotedKey)
+				for pos < len(value) && strings.ContainsRune(" \t\r\n", rune(value[pos])) {
+					pos++
+				}
+				if pos >= len(value) || value[pos] != ':' {
+					searchFrom = idx + len(quotedKey)
+					continue
+				}
+				pos++
+				for pos < len(value) && strings.ContainsRune(" \t\r\n", rune(value[pos])) {
+					pos++
+				}
+				if pos >= len(value) {
+					return ""
+				}
+				if value[pos] == '"' || value[pos] == '\'' {
+					return cleanLooseSummaryText(readLooseSummaryQuoted(value[pos+1:], value[pos]))
+				}
+				return cleanLooseSummaryText(readLooseSummaryBare(value[pos:]))
+			}
+		}
+	}
+	return ""
+}
+
+func readLooseSummaryQuoted(value string, quote byte) string {
+	var b strings.Builder
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if escaped {
+			switch ch {
+			case 'n', 'r', 't':
+				b.WriteByte(' ')
+			default:
+				b.WriteByte(ch)
+			}
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == quote {
+			break
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
+func readLooseSummaryBare(value string) string {
+	end := len(value)
+	for _, separator := range []string{",", "}", "\n", "\r"} {
+		if idx := strings.Index(value, separator); idx >= 0 && idx < end {
+			end = idx
+		}
+	}
+	return value[:end]
+}
+
+func cleanLooseSummaryText(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimRight(value, " \t\r\n,}")
+	value = strings.Trim(value, " \t\r\n\"'`")
+	return compactWhitespace(value)
 }
 
 func removeTaskTitleBoilerplate(value string) string {

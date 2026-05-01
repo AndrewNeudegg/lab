@@ -154,6 +154,22 @@ describe('task queue attention logic', () => {
     expect(taskInputText(detailed)).toContain('Task goal: expose the full input below activity.');
   });
 
+  test('cleans structured task-title artefacts before display', () => {
+    const malformed = timedTask({
+      id: 'task_json_title',
+      title: '{"summary":"Implement schema-aware chat buttons',
+      goal: 'teach the chat to create buttons'
+    });
+    const nested = timedTask({
+      id: 'task_nested_json_title',
+      title: '{"summary":"{\\"summary\\":\\"Make task summaries human-readable\\"}"}',
+      goal: 'make task summaries readable'
+    });
+
+    expect(taskSummaryTitle(malformed)).toBe('Implement schema-aware chat buttons');
+    expect(taskSummaryTitle(nested)).toBe('Make task summaries human-readable');
+  });
+
   test('summarizes full task input when no title exists', () => {
     const detailed = timedTask({
       id: 'task_long',

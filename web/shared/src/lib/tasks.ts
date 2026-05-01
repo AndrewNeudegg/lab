@@ -145,7 +145,78 @@ export const taskRuntimeMs = (
   return ended - started;
 };
 
-const normalizedTaskText = (value = '') => value.trim().replace(/\s+/g, ' ');
+const structuredTaskTitleKeys = ['summary', 'title', 'message'] as const;
+
+const looseStructuredTaskTitle = (value: string) => {
+  const match = value.match(/["'](?:summary|title|message)["']\s*:\s*["']([^"'\r\n}]*)/i);
+  return match?.[1]?.trim() || '';
+};
+
+const parsedStructuredTaskTitleValue = (value: unknown, depth = 0): string => {
+  if (depth > 4 || value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return '';
+    }
+    try {
+      return parsedStructuredTaskTitleValue(JSON.parse(trimmed), depth + 1);
+    } catch {
+      return '';
+    }
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return '';
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of structuredTaskTitleKeys) {
+    const field = record[key];
+    if (typeof field === 'string') {
+      return parsedStructuredTaskTitleValue(field, depth + 1) || field.trim();
+    }
+    const parsed = parsedStructuredTaskTitleValue(field, depth + 1);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return '';
+};
+
+const parsedStructuredTaskTitle = (value: string) => {
+  try {
+    return parsedStructuredTaskTitleValue(JSON.parse(value));
+  } catch {
+    return '';
+  }
+};
+
+const cleanTaskDisplayText = (value = '') => {
+  let next = value.trim().replace(/\s+/g, ' ');
+  for (let depth = 0; depth < 4 && next; depth += 1) {
+    const recovered = parsedStructuredTaskTitle(next) || looseStructuredTaskTitle(next);
+    if (!recovered || recovered === next) {
+      break;
+    }
+    next = recovered.trim().replace(/\s+/g, ' ');
+  }
+  next = next.trim().replace(/\s+/g, ' ').replace(/^[`"']+|[`"']+$/g, '');
+  for (;;) {
+    const lower = next.toLowerCase();
+    if (lower.startsWith('summary:')) {
+      next = next.slice('summary:'.length).trim();
+      continue;
+    }
+    if (lower.startsWith('title:')) {
+      next = next.slice('title:'.length).trim();
+      continue;
+    }
+    return next;
+  }
+};
+
+const normalizedTaskText = (value = '') => cleanTaskDisplayText(value);
 
 export const taskInputText = (task: Pick<HomelabdTask, 'id' | 'title' | 'goal'>) =>
   task.goal?.trim() || task.title?.trim() || task.id;

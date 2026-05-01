@@ -17,7 +17,7 @@ type Base struct {
 }
 
 func Register(reg *tool.Registry, base Base) error {
-	for _, t := range []tool.Tool{LimitedTool{timeout: base.Timeout}, ApprovedTool{timeout: base.Timeout}} {
+	for _, t := range []tool.Tool{LimitedTool{timeout: base.Timeout}, ChainTool{timeout: base.Timeout}, ApprovedTool{timeout: base.Timeout}} {
 		if err := reg.Register(t); err != nil {
 			return err
 		}
@@ -52,6 +52,54 @@ func (t LimitedTool) Run(ctx context.Context, input json.RawMessage) (json.RawMe
 		return nil, fmt.Errorf("command not allowlisted: %s", strings.Join(req.Command, " "))
 	}
 	return run(ctx, t.timeout, req.Dir, req.Command)
+}
+
+type ChainTool struct{ timeout time.Duration }
+
+func (ChainTool) Name() string { return "shell.run_chain" }
+func (ChainTool) Description() string {
+	return "Run allowlisted command arrays in order, stopping at the first failure; destructive commands require policy approval."
+}
+func (ChainTool) Schema() json.RawMessage {
+	return schema(`{"type":"object","required":["dir","commands"],"properties":{"dir":{"type":"string"},"commands":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"array","minItems":1,"items":{"type":"string"}}},"target":{"type":"string"}}}`)
+}
+func (ChainTool) Risk() tool.RiskLevel { return tool.RiskLow }
+func (ChainTool) RiskFor(input json.RawMessage) tool.RiskLevel {
+	return riskForChainInput(input, tool.RiskLow)
+}
+func (t ChainTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Dir      string     `json:"dir"`
+		Commands [][]string `json:"commands"`
+	}
+	if err := json.Unmarshal(input, &req); err != nil {
+		return nil, err
+	}
+	if len(req.Commands) == 0 {
+		return nil, fmt.Errorf("commands is required")
+	}
+	for i, command := range req.Commands {
+		if !allowed(command) {
+			return nil, fmt.Errorf("command %d not allowlisted: %s", i+1, strings.Join(command, " "))
+		}
+	}
+	childCtx, cancel := commandContext(ctx, t.timeout)
+	defer cancel()
+	results := make([]commandResult, 0, len(req.Commands))
+	for i, command := range req.Commands {
+		result, err := runCommand(childCtx, req.Dir, command)
+		results = append(results, result)
+		if err != nil {
+			b, _ := json.Marshal(map[string]any{
+				"commands":       commandStrings(req.Commands),
+				"failed_command": result.Command,
+				"failed_index":   i,
+				"results":        results,
+			})
+			return b, err
+		}
+	}
+	return json.Marshal(map[string]any{"commands": commandStrings(req.Commands), "results": results})
 }
 
 type ApprovedTool struct{ timeout time.Duration }
@@ -89,6 +137,27 @@ func riskForInput(input json.RawMessage, fallback tool.RiskLevel) tool.RiskLevel
 		return risk
 	}
 	return fallback
+}
+
+func riskForChainInput(input json.RawMessage, fallback tool.RiskLevel) tool.RiskLevel {
+	var req struct {
+		Commands [][]string `json:"commands"`
+	}
+	if err := json.Unmarshal(input, &req); err != nil {
+		return fallback
+	}
+	risk := tool.RiskLow
+	for _, command := range req.Commands {
+		switch commandRisk(command) {
+		case tool.RiskHigh:
+			return tool.RiskHigh
+		case tool.RiskLow:
+			continue
+		default:
+			risk = fallback
+		}
+	}
+	return risk
 }
 
 func commandRisk(command []string) tool.RiskLevel {
@@ -258,25 +327,45 @@ func allowDestructive(command []string) bool {
 	return false
 }
 
-func run(ctx context.Context, timeout time.Duration, dir string, command []string) (json.RawMessage, error) {
-	if len(command) == 0 {
-		return nil, fmt.Errorf("command is required")
-	}
+type commandResult struct {
+	Command  string `json:"command"`
+	Output   string `json:"output"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+}
+
+func commandContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	childCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	cmd := exec.CommandContext(childCtx, command[0], command[1:]...)
+	return context.WithTimeout(ctx, timeout)
+}
+
+func runCommand(ctx context.Context, dir string, command []string) (commandResult, error) {
+	if len(command) == 0 {
+		return commandResult{}, fmt.Errorf("command is required")
+	}
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
-	result := map[string]any{"command": strings.Join(command, " "), "output": string(out)}
-	if childCtx.Err() == context.DeadlineExceeded {
-		result["timed_out"] = true
-	}
+	result := commandResult{Command: strings.Join(command, " "), Output: string(out), TimedOut: ctx.Err() == context.DeadlineExceeded}
+	return result, err
+}
+
+func run(ctx context.Context, timeout time.Duration, dir string, command []string) (json.RawMessage, error) {
+	childCtx, cancel := commandContext(ctx, timeout)
+	defer cancel()
+	result, err := runCommand(childCtx, dir, command)
+	b, _ := json.Marshal(result)
 	if err != nil {
-		b, _ := json.Marshal(result)
 		return b, err
 	}
-	return json.Marshal(result)
+	return b, nil
+}
+
+func commandStrings(commands [][]string) []string {
+	values := make([]string, 0, len(commands))
+	for _, command := range commands {
+		values = append(values, strings.Join(command, " "))
+	}
+	return values
 }

@@ -8593,7 +8593,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 		"- Use internet.fetch on promising result URLs before relying on details; prefer official, primary, or scholarly sources.",
 		"- Every repo tool call that supports workspace must include this exact workspace: " + t.Workspace,
 		"- Apply edits only with repo.write_patch using a unified diff against repository-relative paths.",
-		"- Use shell.run_limited with dir set to the task workspace for allowlisted command arrays when a dedicated repo or test tool is too narrow.",
+		"- Use shell.run_limited with dir set to the task workspace for one allowlisted command array, or shell.run_chain for multiple allowlisted command arrays that must run in order.",
 		"- Prefer small, targeted patches. Do not rewrite unrelated files.",
 		"- If no code, docs, configuration, or workflow change is required, make no edits and start the final done=true message with `No change required:` followed by the reason.",
 		"- " + agentDiagramGuidance,
@@ -8611,7 +8611,7 @@ func (o *Orchestrator) coderPrompt(t taskstore.Task) string {
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
 			"go.fmt": true, "go.test": true, "go.build": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.ui": true, "bun.uat.tasks": true, "bun.uat.site": true,
-			"shell.run_limited": true,
+			"shell.run_limited": true, "shell.run_chain": true,
 		}),
 	}, "\n")
 }
@@ -8662,7 +8662,7 @@ func (o *Orchestrator) uxPrompt(t taskstore.Task) string {
 			"repo.list": true, "repo.search": true, "repo.read": true, "repo.write_patch": true, "repo.current_diff": true,
 			"git.status": true, "git.diff": true, "git.branch": true, "git.describe": true, "git.log": true, "git.show": true,
 			"go.fmt": true, "go.test": true, "go.build": true, "test.run": true, "bun.check": true, "bun.build": true, "bun.test": true, "bun.uat.ui": true, "bun.uat.tasks": true, "bun.uat.site": true,
-			"shell.run_limited": true,
+			"shell.run_limited": true, "shell.run_chain": true,
 		}),
 	}, "\n")
 }

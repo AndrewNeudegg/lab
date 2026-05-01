@@ -59,6 +59,7 @@ func TestUXAgentCanResearchPatchAndRunBrowserUATCommand(t *testing.T) {
 		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:ui"]}`},
 		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:tasks"]}`},
 		{name: "shell.run_limited", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","command":["nix","develop","-c","bun","run","--cwd","web","uat:site"]}`},
+		{name: "shell.run_chain", risk: RiskLow, input: `{"dir":"/tmp/workspaces/task_123","commands":[["pwd"],["ls","."]]}`},
 	} {
 		decision := policy.Decide("UXAgent", stubTool{name: tt.name, risk: tt.risk}, json.RawMessage(tt.input))
 		if !decision.Allowed || decision.NeedsApproval {

@@ -57,6 +57,21 @@ func TestSummarizeToolUnwrapsNestedJSONSummary(t *testing.T) {
 	}
 }
 
+func TestSummarizeToolRepairsMalformedJSONSummary(t *testing.T) {
+	provider := &summaryProvider{content: `{"summary":"Implement schema-aware chat buttons`}
+	raw, err := NewSummarizeTool(provider, "summary-model").Run(context.Background(), json.RawMessage(`{"text":"teach the chat to create buttons","purpose":"task_title","max_characters":84}`))
+	if err != nil {
+		t.Fatalf("run summarize: %v", err)
+	}
+	var result SummaryResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.Summary != "Implement schema-aware chat buttons" {
+		t.Fatalf("summary = %q, want repaired JSON summary value", result.Summary)
+	}
+}
+
 func TestSummarizeToolClipsModelOutputToMaxCharacters(t *testing.T) {
 	provider := &summaryProvider{content: `{"summary":"Make active task list titles concise and useful"}`}
 	raw, err := NewSummarizeTool(provider, "summary-model").Run(context.Background(), json.RawMessage(`{"text":"make active task list titles concise and useful","purpose":"task_title","max_characters":24}`))

@@ -1634,6 +1634,32 @@ func TestCreateTaskUnwrapsJSONSummaryTitle(t *testing.T) {
 	}
 }
 
+func TestCreateTaskRepairsMalformedJSONSummaryTitle(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	summarizer := &taskTitleSummaryStub{summary: `{"summary":"Implement schema-aware chat buttons`}
+	if err := orch.registry.Register(summarizer); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.Handle(context.Background(), "test", "new teach the chat to be able to use and create buttons")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Title != "Implement schema-aware chat buttons" {
+		t.Fatalf("title = %q, want repaired JSON summary title", tasks[0].Title)
+	}
+	if strings.Contains(reply, `{"summary"`) {
+		t.Fatalf("reply = %q, should not expose malformed JSON summary", reply)
+	}
+}
+
 func TestCreateTaskClipsSummarizedTitleToTaskPaneLimit(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	summarizer := &taskTitleSummaryStub{summary: strings.Repeat("title ", 40)}
@@ -4536,6 +4562,25 @@ func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestOpenEndedChatDoesNotReturnToolProgressAsFinalReply(t *testing.T) {
+	progress := `{"message":"Reading the rest of pkg/knowledge/knowledge.go to understand the research modes.","done":false,"tool_calls":[{"tool":"chat.history","args":{"limit":1}}]}`
+	provider := &scriptedProvider{contents: []string{progress, progress, progress, progress}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "In knowledge space what do the different research modes mean?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reply, "Reading the rest of pkg/knowledge/knowledge.go") {
+		t.Fatalf("reply = %q, should not expose tool-progress status as final reply", reply)
+	}
+	if !strings.Contains(reply, "did not get a final answer") {
+		t.Fatalf("reply = %q, want explicit missing-final-answer message", reply)
+	}
+}
+
 func TestOpenEndedChatStripsMetaSentenceFromDirectReply(t *testing.T) {
 	provider := &staticProvider{content: `{"message":"I'll check that. Use status to see active work.","done":true,"tool_calls":[]}`}
 	orch := newTestOrchestrator(t, nil)
@@ -4952,6 +4997,26 @@ func TestReflectPreservesLongTaskGoalInSuggestedAction(t *testing.T) {
 	}
 	if strings.Contains(reply, "[truncated]") {
 		t.Fatalf("reply = %q, should not mark suggested task goal as truncated", reply)
+	}
+}
+
+func TestReflectRepairsMalformedJSONCandidate(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = &staticProvider{content: `{"reflection":"The agent initially conflated research depth with report modes","task_goal":"Fix Knowledge Space research mode explanations`}
+	orch.model = "test-model"
+
+	reply, err := orch.Handle(context.Background(), "test", "please reflect on our recent interaction and suggest one improvement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reply, `{"reflection"`) {
+		t.Fatalf("reply = %q, should not expose malformed reflection JSON", reply)
+	}
+	if !strings.Contains(reply, "Reflection: The agent initially conflated research depth with report modes") {
+		t.Fatalf("reply = %q, want repaired reflection", reply)
+	}
+	if !strings.Contains(reply, "`new Fix Knowledge Space research mode explanations`") {
+		t.Fatalf("reply = %q, want repaired suggested action", reply)
 	}
 }
 

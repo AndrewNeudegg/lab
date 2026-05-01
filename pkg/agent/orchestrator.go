@@ -2791,7 +2791,7 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 		messages = append(messages, llm.Message{Role: "user", Content: message})
 	}
 	toolCallsUsed := 0
-	lastMessage := ""
+	lastFinalMessage := ""
 	var lastValidationErr error
 	strategy := agentResponseStrategyFor(o.provider)
 	for turn := 0; turn < 4; turn++ {
@@ -2837,14 +2837,12 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			messages = append(messages, llm.Message{Role: "user", Content: agentResponseQualityRetryPrompt(issue)})
 			continue
 		}
-		if parsed.Message != "" {
-			lastMessage = parsed.Message
-		}
 		if len(parsed.ToolCalls) == 0 || parsed.Done {
-			if lastMessage == "" {
-				lastMessage = "Done."
+			lastFinalMessage = strings.TrimSpace(parsed.Message)
+			if lastFinalMessage == "" {
+				lastFinalMessage = "Done."
 			}
-			return lastMessage, source, nil
+			return lastFinalMessage, source, nil
 		}
 		messages = append(messages, llm.Message{Role: "assistant", Content: mustJSON(parsed)})
 		var results []toolExecution
@@ -2857,18 +2855,18 @@ func (o *Orchestrator) handleWithLLM(ctx context.Context, message string) (strin
 			result := o.executeProposedTool(ctx, "OrchestratorAgent", call, "")
 			results = append(results, result)
 			if result.NeedsApproval {
-				return formatApprovalStop(lastMessage, result), "program", nil
+				return formatApprovalStop(parsed.Message, result), "program", nil
 			}
 		}
 		messages = append(messages, llm.Message{Role: "user", Content: toolResultsPrompt(results)})
 	}
-	if lastValidationErr != nil && lastMessage == "" {
+	if lastValidationErr != nil && lastFinalMessage == "" {
 		return programResult("I could not get a valid JSON response from the configured LLM provider after retrying. I did not create a task; try again or switch provider if this repeats.", nil)
 	}
-	if lastMessage == "" {
-		lastMessage = "Stopped after reaching the turn limit."
+	if lastFinalMessage == "" {
+		lastFinalMessage = "I used tools for this request but did not get a final answer from the model before the turn limit. No task was created; please ask again or narrow the question."
 	}
-	return lastMessage, "program", nil
+	return lastFinalMessage, "program", nil
 }
 
 func assistantDevelopmentCommitmentGoal(message string) (string, bool) {
@@ -3327,9 +3325,21 @@ func (o *Orchestrator) reflectOnInteraction(ctx context.Context, message string)
 	recordInteractionModelTurn(ctx, resp.Usage)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.message", Actor: "OrchestratorAgent", Payload: eventlog.Payload(map[string]any{"provider": source, "model": resp.Model, "message": resp.Message.Content, "usage": resp.Usage})})
 
+	rawReflectionContent := strings.TrimSpace(resp.Message.Content)
 	var result reflectionResult
-	if err := json.Unmarshal([]byte(extractJSON(resp.Message.Content)), &result); err != nil {
-		result.Reflection = strings.TrimSpace(resp.Message.Content)
+	if err := json.Unmarshal([]byte(extractJSON(rawReflectionContent)), &result); err != nil {
+		result.Reflection = looseJSONTextField(rawReflectionContent, "reflection", "message", "summary")
+		result.TaskGoal = looseJSONTextField(rawReflectionContent, "task_goal", "goal", "action", "title", "summary")
+		if result.Reflection == "" {
+			result.Reflection = rawReflectionContent
+		}
+	} else {
+		if strings.TrimSpace(result.Reflection) == "" {
+			result.Reflection = looseJSONTextField(rawReflectionContent, "reflection", "message", "summary")
+		}
+		if strings.TrimSpace(result.TaskGoal) == "" {
+			result.TaskGoal = looseJSONTextField(rawReflectionContent, "task_goal", "goal", "action", "title", "summary")
+		}
 	}
 	result.Reflection = cleanReflectionText(result.Reflection)
 	result.TaskGoal = cleanNewTaskGoal(result.TaskGoal)
@@ -3347,17 +3357,35 @@ func (o *Orchestrator) reflectOnInteraction(ctx context.Context, message string)
 
 func cleanReflectionText(value string) string {
 	value = strings.TrimSpace(value)
+	if recovered := looseJSONTextField(value, "reflection", "message", "summary"); recovered != "" {
+		value = recovered
+	}
 	value = strings.ReplaceAll(value, "`", "'")
 	return strings.Join(strings.Fields(value), " ")
 }
 
 func cleanNewTaskGoal(value string) string {
 	value = strings.TrimSpace(value)
+	if recovered := looseJSONTextField(value, "task_goal", "goal", "action", "title", "summary"); recovered != "" {
+		value = recovered
+	}
 	value = strings.ReplaceAll(value, "`", "'")
 	value = strings.ReplaceAll(value, "<", "")
 	value = strings.ReplaceAll(value, ">", "")
 	value = strings.Join(strings.Fields(value), " ")
-	return strings.TrimSpace(strings.TrimPrefix(value, "new "))
+	for {
+		lower := strings.ToLower(value)
+		switch {
+		case strings.HasPrefix(lower, "new "):
+			value = strings.TrimSpace(value[len("new "):])
+		case strings.HasPrefix(lower, "task "):
+			value = strings.TrimSpace(value[len("task "):])
+		case strings.HasPrefix(lower, "goal "):
+			value = strings.TrimSpace(value[len("goal "):])
+		default:
+			return value
+		}
+	}
 }
 
 func responseSource(resp llm.CompletionResponse, fallback string) string {
@@ -3772,6 +3800,97 @@ func firstJSONObject(s string) string {
 		}
 	}
 	return ""
+}
+
+func looseJSONTextField(value string, keys ...string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, key := range keys {
+		if field := looseJSONTextFieldWithKey(value, `"`+key+`"`); field != "" {
+			return field
+		}
+		if field := looseJSONTextFieldWithKey(value, `'`+key+`'`); field != "" {
+			return field
+		}
+	}
+	return ""
+}
+
+func looseJSONTextFieldWithKey(value, quotedKey string) string {
+	searchFrom := 0
+	for searchFrom < len(value) {
+		idx := strings.Index(value[searchFrom:], quotedKey)
+		if idx < 0 {
+			return ""
+		}
+		idx += searchFrom
+		pos := idx + len(quotedKey)
+		for pos < len(value) && unicode.IsSpace(rune(value[pos])) {
+			pos++
+		}
+		if pos >= len(value) || value[pos] != ':' {
+			searchFrom = idx + len(quotedKey)
+			continue
+		}
+		pos++
+		for pos < len(value) && unicode.IsSpace(rune(value[pos])) {
+			pos++
+		}
+		if pos >= len(value) {
+			return ""
+		}
+		if value[pos] == '"' || value[pos] == '\'' {
+			return cleanLooseJSONTextValue(readLooseQuotedText(value[pos+1:], value[pos]))
+		}
+		return cleanLooseJSONTextValue(readLooseBareText(value[pos:]))
+	}
+	return ""
+}
+
+func readLooseQuotedText(value string, quote byte) string {
+	var b strings.Builder
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if escaped {
+			switch ch {
+			case 'n', 'r', 't':
+				b.WriteByte(' ')
+			default:
+				b.WriteByte(ch)
+			}
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == quote {
+			break
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
+func readLooseBareText(value string) string {
+	end := len(value)
+	for _, separator := range []string{",", "}", "\n", "\r"} {
+		if idx := strings.Index(value, separator); idx >= 0 && idx < end {
+			end = idx
+		}
+	}
+	return value[:end]
+}
+
+func cleanLooseJSONTextValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimRight(value, " \t\r\n,}")
+	value = strings.Trim(value, " \t\r\n\"'`")
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func (o *Orchestrator) createTask(ctx context.Context, goal string) (string, error) {
@@ -4317,10 +4436,16 @@ func fallbackTaskTitle(goal string, maxCharacters int) string {
 
 func cleanTaskTitle(value string, maxCharacters int) string {
 	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if recovered := looseJSONTextField(value, "summary", "title", "message"); recovered != "" {
+		value = recovered
+	}
 	value = unwrapTaskTitleJSON(value)
 	value = strings.Trim(value, " \t\r\n\"'`")
 	for {
 		value = unwrapTaskTitleJSON(value)
+		if recovered := looseJSONTextField(value, "summary", "title", "message"); recovered != "" {
+			value = recovered
+		}
 		lower := strings.ToLower(value)
 		switch {
 		case strings.HasPrefix(lower, "summary:"):
@@ -8279,6 +8404,7 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 	}
 	toolCallsUsed := 0
 	lastMessage := ""
+	lastStatusMessage := ""
 	var allResults []toolExecution
 	completed := false
 	var lastValidationErr error
@@ -8312,13 +8438,12 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 			messages = append(messages, llm.Message{Role: "user", Content: agentResponseQualityRetryPrompt(issue)})
 			continue
 		}
-		if parsed.Message != "" {
-			lastMessage = parsed.Message
-		}
 		if len(parsed.ToolCalls) == 0 || parsed.Done {
+			lastMessage = strings.TrimSpace(parsed.Message)
 			completed = true
 			break
 		}
+		lastStatusMessage = strings.TrimSpace(parsed.Message)
 		messages = append(messages, llm.Message{Role: "assistant", Content: mustJSON(parsed)})
 		var turnResults []toolExecution
 		for _, call := range parsed.ToolCalls {
@@ -8334,8 +8459,8 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 				t.Status = taskstore.StatusAwaitingApproval
 				t.Result = agent.Name + " is waiting for approval: " + result.ApprovalID
 				_ = o.tasks.Save(t)
-				_ = o.writeRunArtifact(taskID, "awaiting_approval", lastMessage, allResults, result.Reason)
-				return formatApprovalStop(lastMessage, result), nil
+				_ = o.writeRunArtifact(taskID, "awaiting_approval", lastStatusMessage, allResults, result.Reason)
+				return formatApprovalStop(lastStatusMessage, result), nil
 			}
 		}
 		messages = append(messages, llm.Message{Role: "user", Content: toolResultsPrompt(turnResults)})
@@ -8350,7 +8475,7 @@ func (o *Orchestrator) runSpecialistTask(ctx context.Context, selector string, a
 		t.Status = taskstore.StatusFailed
 		t.Result = errText
 		_ = o.tasks.Save(t)
-		_ = o.writeRunArtifact(taskID, status, lastMessage, allResults, errText)
+		_ = o.writeRunArtifact(taskID, status, lastStatusMessage, allResults, errText)
 		return "", fmt.Errorf("%s", errText)
 	}
 

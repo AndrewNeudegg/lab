@@ -550,12 +550,13 @@ func (ResearchTool) Description() string {
 	return "Run a bounded multi-query research fan-out: plan subqueries, search web and/or academic sources, fetch top pages, deduplicate evidence, and return a source bundle for the LLM to synthesize."
 }
 func (ResearchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"]},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web fan-out searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"},"max_searches":{"type":"integer","minimum":1,"maximum":8},"max_sources":{"type":"integer","minimum":1,"maximum":20},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
+	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"queries":{"type":"array","items":{"type":"string"},"description":"optional explicit fan-out search queries; when present these replace generated subqueries"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"]},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web fan-out searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"},"max_searches":{"type":"integer","minimum":1,"maximum":8},"max_sources":{"type":"integer","minimum":1,"maximum":20},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
 }
 func (ResearchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 	var req struct {
 		Query          string   `json:"query"`
+		Queries        []string `json:"queries"`
 		Source         string   `json:"source"`
 		Depth          string   `json:"depth"`
 		Provider       string   `json:"provider"`
@@ -598,7 +599,10 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 		fetchPages = *req.Fetch
 	}
 
-	subqueries := researchSubqueries(req.Query, source, req.TrustedDomains, maxSearches)
+	subqueries := compactResearchQueries(req.Queries, maxSearches)
+	if len(subqueries) == 0 {
+		subqueries = researchSubqueries(req.Query, source, req.TrustedDomains, maxSearches)
+	}
 	search := SearchTool{base: t.base}
 	options := webSearchOptions{Provider: req.Provider, TimeRange: req.TimeRange, Language: req.Language}
 	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options, maxSources)
@@ -838,6 +842,10 @@ func researchSubqueries(query, source string, trustedDomains []string, limit int
 			candidates = append(candidates, "site:"+domain+" "+query)
 		}
 	}
+	return compactResearchQueries(candidates, limit)
+}
+
+func compactResearchQueries(candidates []string, limit int) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, candidate := range candidates {

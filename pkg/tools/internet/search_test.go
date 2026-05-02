@@ -340,6 +340,53 @@ func TestResearchToolFansOutSearchesAndFetchesSources(t *testing.T) {
 	}
 }
 
+func TestResearchToolUsesExplicitQueriesWithoutGeneratedSuffixes(t *testing.T) {
+	var searched []string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "search.example" {
+			t.Fatalf("unexpected host %q", r.URL.Host)
+		}
+		query := r.URL.Query().Get("q")
+		searched = append(searched, query)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"Results":[{"Text":"Cheese source","FirstURL":"https://example.com/cheese-source"}]
+			}`)),
+		}, nil
+	})}
+
+	raw, err := ResearchTool{base: Base{Endpoint: "https://search.example/", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"cheese research","queries":["fresh cheese families","aged hard cheese types","fresh cheese families"],"source":"web","max_searches":2,"max_sources":4,"fetch":false}`))
+	if err != nil {
+		t.Fatalf("run research: %v", err)
+	}
+	var result struct {
+		Subqueries []string `json:"subqueries"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal research result: %v", err)
+	}
+	if strings.Join(result.Subqueries, "|") != "fresh cheese families|aged hard cheese types" {
+		t.Fatalf("subqueries = %#v, want explicit deduplicated queries only", result.Subqueries)
+	}
+	searchedSet := map[string]bool{}
+	for _, query := range searched {
+		searchedSet[query] = true
+	}
+	for _, query := range result.Subqueries {
+		if !searchedSet[query] {
+			t.Fatalf("searched = %#v, want explicit subquery %q", searched, query)
+		}
+	}
+	for _, query := range result.Subqueries {
+		if strings.Contains(query, "official documentation") || strings.Contains(query, "implementation guide") {
+			t.Fatalf("subquery %q included generated software suffix", query)
+		}
+	}
+}
+
 func TestSearchToolRequiresQuery(t *testing.T) {
 	_, err := SearchTool{}.Run(context.Background(), json.RawMessage(`{"query":"   "}`))
 	if err == nil {

@@ -421,14 +421,21 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		maxSources = knowledgeMaxSourcesForDepth(run.Depth)
 		run.MaxSources = maxSources
 	}
-	raw, err := o.runTool(ctx, "homelabd", "internet.research", map[string]any{
-		"query":       query,
-		"source":      "all",
-		"depth":       run.Depth,
-		"provider":    "searxng",
-		"max_sources": maxSources,
-		"fetch":       true,
-	}, "")
+	maxSearches := knowledgeMaxSearchesForDepth(run.Depth)
+	queries := knowledgeDiscoveryQueries(run, query, maxSearches)
+	toolInput := map[string]any{
+		"query":        query,
+		"source":       "web",
+		"depth":        run.Depth,
+		"provider":     "searxng",
+		"max_sources":  maxSources,
+		"max_searches": maxSearches,
+		"fetch":        true,
+	}
+	if len(queries) > 0 {
+		toolInput["queries"] = queries
+	}
+	raw, err := o.runTool(ctx, "homelabd", "internet.research", toolInput, "")
 	if err != nil {
 		return space, run, err
 	}
@@ -665,8 +672,27 @@ func knowledgeRunRetrievalQuery(run knowledgestore.ResearchRun) (string, error) 
 	return strings.Join(compact, "\n"), nil
 }
 
+func knowledgeDiscoveryQueries(run knowledgestore.ResearchRun, primary string, limit int) []string {
+	candidates := append([]string{}, run.Plan.SearchQueries...)
+	if len(candidates) == 0 {
+		candidates = append(candidates, run.Plan.RewrittenObjective, run.Objective, run.Question, primary)
+	}
+	return compactKnowledgeStrings(candidates, limit)
+}
+
 func effectiveKnowledgeRunSourceIDs(run knowledgestore.ResearchRun) []string {
 	return appendUniqueStrings(nil, run.SourceIDs...)
+}
+
+func knowledgeMaxSearchesForDepth(depth string) int {
+	switch strings.ToLower(strings.TrimSpace(depth)) {
+	case "quick":
+		return 2
+	case "deep":
+		return 8
+	default:
+		return 4
+	}
 }
 
 func knowledgeMaxSourcesForDepth(depth string) int {
@@ -754,6 +780,24 @@ func countKnowledgeSources(space knowledgestore.Space, sourceIDs []string) int {
 
 func knowledgeUsage(usage llm.Usage) knowledgestore.TokenUsage {
 	return knowledgestore.TokenUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens}
+}
+
+func compactKnowledgeStrings(values []string, limit int) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		value = strings.Join(strings.Fields(value), " ")
+		key := strings.ToLower(value)
+		if value == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func addKnowledgeUsage(left, right knowledgestore.TokenUsage) knowledgestore.TokenUsage {

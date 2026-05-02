@@ -200,7 +200,7 @@ For UI work, browser UAT must use the task worktree or remote workdir, not the p
 Internet tools are read-only for local state but they do make outbound network requests.
 
 - `internet.search`: required args: `query`. Optional args: `source`, `provider`, `max_results`, `time_range`, `language`. `source` is `web`, `academic`, or `all`; default is `web`. `provider` is `auto`, `searxng`, `brave`, `tavily`, or `duckduckgo`. `max_results` defaults to 8 and clamps to 20. Academic search uses OpenAlex.
-- `internet.research`: required args: `query`. Optional args: `source`, `depth`, `provider`, `time_range`, `language`, `max_searches`, `max_sources`, `fetch`, `trusted_domains`. It plans subqueries, searches, deduplicates URLs, optionally fetches top pages, and returns an evidence bundle. `source` defaults to `all`, `depth` defaults to `standard`, `max_searches` clamps to 8, and `max_sources` clamps to 20.
+- `internet.research`: required args: `query`. Optional args: `queries`, `source`, `depth`, `provider`, `time_range`, `language`, `max_searches`, `max_sources`, `fetch`, `trusted_domains`. It plans subqueries, or uses explicit `queries` when provided, searches, deduplicates URLs, optionally fetches top pages, and returns an evidence bundle. `source` defaults to `all`, `depth` defaults to `standard`, `max_searches` clamps to 8, and `max_sources` clamps to 20.
 - `internet.fetch`: required args: `url`. Optional args: `max_chars`. Fetches public HTTP(S) URLs only. Private hosts are rejected. Reads at most 2 MiB from the response and returns extracted text clamped to 500-20,000 characters, default 12,000.
 
 Research depth defaults:

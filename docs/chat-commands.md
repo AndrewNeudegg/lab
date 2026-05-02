@@ -254,7 +254,7 @@ deep research local LLM agent web research architecture
 research academic papers on deep research agents
 ```
 
-Research runs through `internet.research`. It creates fan-out queries, searches web and/or academic sources, deduplicates URLs, fetches bounded text from top public pages, and returns follow-up queries. SearXNG is used for web fan-out by default. Brave, Tavily, and DuckDuckGo remain available as explicit fallbacks; Brave and Tavily require their existing API key environment variables.
+Research runs through `internet.research`. It creates fan-out queries, or uses explicit `queries` supplied by a caller, searches web and/or academic sources, deduplicates URLs, fetches bounded text from top public pages, and returns follow-up queries. SearXNG is used for web fan-out by default. Brave, Tavily, and DuckDuckGo remain available as explicit providers; Brave and Tavily require their existing API key environment variables.
 
 ## Task Worktree Recovery
 

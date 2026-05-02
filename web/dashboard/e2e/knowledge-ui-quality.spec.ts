@@ -144,6 +144,14 @@ const freezeTime = async (page: Page) => {
 const mockKnowledgeApis = async (page: Page) => {
   await freezeTime(page);
   let knowledgeSpaces = [structuredClone(baseKnowledgeSpace)];
+  const researchRunRequests: Array<{
+    objective?: string;
+    depth?: string;
+    mode?: string;
+    discover_sources?: boolean;
+    max_sources?: number;
+    source_ids?: string[];
+  }> = [];
 
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [] } });
@@ -249,9 +257,12 @@ const mockKnowledgeApis = async (page: Page) => {
     const body = route.request().postDataJSON() as {
       objective?: string;
       depth?: string;
+      mode?: string;
       discover_sources?: boolean;
       max_sources?: number;
+      source_ids?: string[];
     };
+    researchRunRequests.push(body);
     const run = {
       ...knowledgeRun,
       id: 'krun_created',
@@ -299,6 +310,8 @@ const mockKnowledgeApis = async (page: Page) => {
     knowledgeSpaces = [updated];
     await route.fulfill({ status: 201, json: { space: updated, run, reply: 'Research run queued.' } });
   });
+
+  return { researchRunRequests };
 };
 
 const expectKnowledgeReady = async (page: Page) => {
@@ -401,7 +414,7 @@ for (const viewport of [
     });
 
     test('uses suggested questions, grounded ask, runs, and artefacts as explicit selectors', async ({ page }) => {
-      await mockKnowledgeApis(page);
+      const api = await mockKnowledgeApis(page);
       await page.goto('/knowledge');
       await expectKnowledgeReady(page);
 
@@ -419,14 +432,29 @@ for (const viewport of [
 
       await page.getByRole('tab', { name: /Research Runs/ }).click();
       await page.locator('#knowledge-panel-runs').getByLabel('Objective').fill('Compare evidence review');
-      await expect(page.getByLabel('Discover online sources')).toBeChecked();
+      await expect(page.getByLabel('Search internet and import sources')).toBeChecked();
       await page.getByLabel('Max sources').fill('6');
       await page.getByRole('button', { name: 'Start run' }).click();
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText(
         'Compare evidence review'
       );
+      expect(api.researchRunRequests).toHaveLength(1);
+      expect(api.researchRunRequests[0]).toMatchObject({
+        objective: 'Compare evidence review',
+        depth: 'standard',
+        mode: 'research',
+        discover_sources: true,
+        max_sources: 6,
+        source_ids: [knowledgeSource.id]
+      });
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Queued');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('example.com');
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      await expect(page).toHaveScreenshot(`knowledge-research-run-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled'
+      });
 
       await page.getByRole('tab', { name: /Artefacts/ }).click();
       await page.getByRole('button', { name: /How should evidence be reviewed/ }).first().click();

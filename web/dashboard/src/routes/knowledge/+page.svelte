@@ -847,12 +847,12 @@
             <form class="research-form" on:submit|preventDefault={() => void askKnowledge()}>
               <div class="panel-title">
                 <div>
-                  <h3>Ask the corpus</h3>
+                  <h3>Ask stored sources</h3>
                   <p>{selectedSourceSummary}</p>
                 </div>
               </div>
 
-              <label for="corpus-query">Corpus search</label>
+              <label for="corpus-query">Stored-source search</label>
               <div class="inline-submit">
                 <input id="corpus-query" bind:value={corpusQueryDraft} autocomplete="off" />
                 <button
@@ -1001,7 +1001,7 @@
                 </select>
                 <label class="inline-check">
                   <input type="checkbox" bind:checked={discoverSourcesDraft} />
-                  <span>Discover online sources</span>
+                  <span>Search internet and import sources</span>
                 </label>
                 <label for="run-max-sources">Max sources</label>
                 <input
@@ -1067,7 +1067,7 @@
                     </div>
                     <div>
                       <dt>Discovery</dt>
-                      <dd>{latestSelectedRun.discover_sources ? `up to ${latestSelectedRun.max_sources || 0}` : 'stored only'}</dd>
+                      <dd>{latestSelectedRun.discover_sources ? `internet, up to ${latestSelectedRun.max_sources || 0}` : 'stored only'}</dd>
                     </div>
                     {#if modelProvenanceLabel(latestSelectedRun.provider, latestSelectedRun.model)}
                       <div>
@@ -1610,7 +1610,7 @@
   }
 
   .notice.success {
-    color: var(--success, #16a34a);
+    color: #166534;
     border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
   }
 
@@ -2264,6 +2264,10 @@
 
   :global([data-theme='dark']) .tabs button.active {
     color: var(--knowledge-primary-text, #ffffff);
+  }
+
+  :global([data-theme='dark']) .notice.success {
+    color: var(--success, #4ade80);
   }
 
   @media (max-width: 1080px) {

@@ -333,6 +333,245 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	}
 }
 
+func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
+	research := &controlInternetResearchStub{sources: []map[string]any{
+		{
+			"query":        "online cheese types and properties",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Cheddar cheese profile",
+			"url":          "https://example.com/cheddar",
+			"domain":       "example.com",
+			"snippet":      "Cheddar is a hard cheese with ageing, texture, and melting properties.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Cheddar cheese profile",
+			"text":         "Cheddar is a hard aged cheese with firm texture, sharp flavour, and reliable melting properties.",
+		},
+		{
+			"query":        "online cheese types and properties",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Brie cheese profile",
+			"url":          "https://example.com/brie",
+			"domain":       "example.com",
+			"snippet":      "Brie is a soft-ripened cheese with a bloomy rind and creamy interior.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Brie cheese profile",
+			"text":         "Brie is a soft-ripened cheese with a bloomy rind, creamy interior, mild aroma, and high moisture.",
+		},
+	}}
+	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{
+		`{
+			"rewritten_objective":"online cheese types and properties",
+			"clarifying_questions":[],
+			"search_queries":["cheddar brie cheese properties"],
+			"steps":["Search online","Import fetched sources","Synthesize cited comparison"],
+			"expected_outputs":["Cited cheese property report"]
+		}`,
+		`{
+			"summary":"Cheddar is a hard aged cheese with sharp flavour and melting properties.",
+			"key_terms":["cheddar","hard cheese","melting"],
+			"questions":["What properties does cheddar have?"],
+			"claims":[{"id":"claim_cheddar","text":"Cheddar is hard, aged, and melts reliably.","importance":"high"}],
+			"entities":[{"name":"Cheddar","type":"cheese","description":"Hard aged cheese"}],
+			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"summary":"Brie is a soft-ripened cheese with a bloomy rind and creamy interior.",
+			"key_terms":["brie","soft-ripened","bloomy rind"],
+			"questions":["What properties does brie have?"],
+			"claims":[{"id":"claim_brie","text":"Brie has a bloomy rind and creamy interior.","importance":"high"}],
+			"entities":[{"name":"Brie","type":"cheese","description":"Soft-ripened cheese"}],
+			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"answer":"The run imported online evidence for cheddar and brie. Cheddar is hard and aged [S1], while brie is soft-ripened with a bloomy rind [S2].",
+			"key_findings":["[S1] Cheddar has hard aged melting properties.","[S2] Brie has a creamy soft-ripened profile."],
+			"gaps":["Only two discovered cheese profiles were imported."]
+		}`,
+	}}, research)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Cheese research","objective":"Build a cheese type corpus"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+
+	runPath := "/knowledge/spaces/" + createBody.Space.ID + "/research-runs"
+	ran := requestJSON(t, mux, http.MethodPost, runPath, `{"objective":"Search online for types of cheese and their properties","depth":"quick","discover_sources":true,"max_sources":2}`, "", http.StatusCreated)
+	var runBody struct {
+		Space knowledgestore.Space       `json:"space"`
+		Run   knowledgestore.ResearchRun `json:"run"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+	if runBody.Run.Status != knowledgestore.ResearchRunStatusQueued || !runBody.Run.DiscoverSources || runBody.Run.MaxSources != 2 {
+		t.Fatalf("initial run = %#v, want queued discovery run with max sources", runBody.Run)
+	}
+
+	completedSpace, completedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted {
+		t.Fatalf("run = %#v, want completed", completedRun)
+	}
+	if len(completedSpace.Sources) != 2 {
+		t.Fatalf("sources = %#v, want two imported online cheese sources", completedSpace.Sources)
+	}
+	if len(completedRun.Candidates) != 2 || completedRun.Candidates[0].Status != "imported" || completedRun.Candidates[1].Status != "imported" {
+		t.Fatalf("candidates = %#v, want two imported candidates", completedRun.Candidates)
+	}
+	if completedRun.ReportID == "" || completedRun.EvidenceCount == 0 || completedRun.SourcesExamined != 2 || completedRun.WorkspacePath == "" {
+		t.Fatalf("completed run = %#v, want report, evidence, imported source count, and workspace", completedRun)
+	}
+	if !containsResearchEvent(completedRun.Events, "discovery", "Imported 2 online sources") {
+		t.Fatalf("events = %#v, want discovery import event", completedRun.Events)
+	}
+	for _, source := range completedSpace.Sources {
+		if source.Ingestion.State != knowledgestore.SourceStatusReady || len(source.Claims) == 0 {
+			t.Fatalf("source = %#v, want model-analysed ready source with claims", source)
+		}
+		if !strings.Contains(source.Provenance.Extractor, "internet.research") || !strings.Contains(source.Provenance.Extractor, "language-model") {
+			t.Fatalf("source provenance = %#v, want internet research and language model provenance", source.Provenance)
+		}
+	}
+	calls := research.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("internet research calls = %#v, want one call", calls)
+	}
+	call := calls[0]
+	if call.Provider != "searxng" || !call.Fetch || call.MaxSources != 2 || call.MaxSearches != 2 || call.Depth != "quick" || call.Source != "web" {
+		t.Fatalf("internet research call = %#v, want explicit fetched SearXNG cheese discovery", call)
+	}
+	if len(call.Queries) != 1 || call.Queries[0] != "cheddar brie cheese properties" {
+		t.Fatalf("internet research queries = %#v, want model-planned cheese query", call.Queries)
+	}
+}
+
+func TestKnowledgeResearchRunDiscoveryFailureIsVisibleOverAPI(t *testing.T) {
+	research := &controlInternetResearchStub{sources: []map[string]any{
+		{
+			"query":       "cheese taxonomy",
+			"kind":        "web",
+			"provider":    "searxng",
+			"title":       "Unavailable cheese source",
+			"url":         "https://example.com/unavailable-cheese",
+			"domain":      "example.com",
+			"snippet":     "This result could not be fetched.",
+			"fetch_error": "fetch failed: 503 service unavailable",
+		},
+	}}
+	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{
+		`{
+			"rewritten_objective":"cheese taxonomy",
+			"clarifying_questions":[],
+			"search_queries":["cheese taxonomy"],
+			"steps":["Search online","Import fetched sources","Report failure if no source text is usable"],
+			"expected_outputs":["Visible failure"]
+		}`,
+	}}, research)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Cheese taxonomy"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"Search online for cheese taxonomy","discover_sources":true,"max_sources":1}`, "", http.StatusCreated)
+	var runBody struct {
+		Run knowledgestore.ResearchRun `json:"run"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+
+	failedSpace, failedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if failedRun.Status != knowledgestore.ResearchRunStatusFailed {
+		t.Fatalf("run = %#v, want failed discovery run", failedRun)
+	}
+	if !strings.Contains(failedRun.Error, "online discovery did not import any usable sources") {
+		t.Fatalf("error = %q, want visible no usable sources failure", failedRun.Error)
+	}
+	if len(failedRun.Candidates) != 1 || failedRun.Candidates[0].Status != "failed" || !strings.Contains(failedRun.Candidates[0].Error, "503") {
+		t.Fatalf("candidates = %#v, want failed candidate with fetch error", failedRun.Candidates)
+	}
+	if len(failedSpace.Sources) != 0 || len(failedSpace.Reports) != 0 || failedRun.ReportID != "" {
+		t.Fatalf("space = %#v run = %#v, want no imported sources or report on discovery failure", failedSpace, failedRun)
+	}
+	if !containsResearchEvent(failedRun.Events, "failed", "online discovery did not import any usable sources") {
+		t.Fatalf("events = %#v, want failure event", failedRun.Events)
+	}
+}
+
+func TestKnowledgeResearchRunStoredOnlyDoesNotCallOnlineDiscovery(t *testing.T) {
+	research := &controlInternetResearchStub{}
+	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{
+		`{
+			"summary":"Stored cheese note says mozzarella is a fresh high-moisture cheese.",
+			"key_terms":["mozzarella","fresh cheese"],
+			"questions":["What kind of cheese is mozzarella?"],
+			"claims":[{"id":"claim_mozzarella","text":"Mozzarella is fresh and high-moisture.","importance":"medium"}],
+			"entities":[{"name":"Mozzarella","type":"cheese","description":"Fresh cheese"}],
+			"reliability_notes":["Operator-provided text source."]
+		}`,
+		`{
+			"rewritten_objective":"Summarise stored cheese source",
+			"clarifying_questions":[],
+			"search_queries":["mozzarella fresh cheese"],
+			"steps":["Retrieve stored evidence","Synthesize answer"],
+			"expected_outputs":["Stored-source report"]
+		}`,
+		`{
+			"answer":"The stored source says mozzarella is a fresh high-moisture cheese [S1].",
+			"key_findings":["[S1] Mozzarella is fresh and high-moisture."],
+			"gaps":["No online discovery was requested."]
+		}`,
+	}}, research)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Stored cheese notes"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	added := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/sources", `{"title":"Mozzarella note","kind":"note","content":"Mozzarella is a fresh high-moisture cheese used for quick comparisons."}`, "", http.StatusCreated)
+	var sourceBody struct {
+		Source knowledgestore.Source `json:"source"`
+	}
+	if err := json.NewDecoder(added.Body).Decode(&sourceBody); err != nil {
+		t.Fatal(err)
+	}
+	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"Summarise stored cheese source","source_ids":["`+sourceBody.Source.ID+`"],"discover_sources":false}`, "", http.StatusCreated)
+	var runBody struct {
+		Run knowledgestore.ResearchRun `json:"run"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+
+	space, run := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if run.Status != knowledgestore.ResearchRunStatusCompleted || run.DiscoverSources || len(run.Candidates) != 0 {
+		t.Fatalf("run = %#v, want completed stored-only run with no candidates", run)
+	}
+	if len(space.Sources) != 1 || run.SourcesExamined != 1 || run.ReportID == "" {
+		t.Fatalf("space = %#v run = %#v, want stored source report", space, run)
+	}
+	if len(research.Calls()) != 0 {
+		t.Fatalf("internet research calls = %#v, want none for stored-only run", research.Calls())
+	}
+}
+
 func TestKnowledgeSpaceListEndpointReturnsEmptyArray(t *testing.T) {
 	server, _, _ := newHTTPTestServer(t)
 	mux := http.NewServeMux()
@@ -866,18 +1105,28 @@ func newHTTPTestServer(t *testing.T) (*Server, *taskstore.Store, config.Config) 
 }
 
 func newKnowledgeHTTPTestServer(t *testing.T, provider llm.Provider) *Server {
+	return newKnowledgeHTTPTestServerWithTools(t, provider)
+}
+
+func newKnowledgeHTTPTestServerWithTools(t *testing.T, provider llm.Provider, tools ...tool.Tool) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.DataDir = filepath.Join(dir, "data")
 	cfg.Repo.Root = dir
 	cfg.Repo.WorkspaceRoot = filepath.Join(dir, "workspaces")
+	registry := tool.NewRegistry()
+	for _, registeredTool := range tools {
+		if err := registry.Register(registeredTool); err != nil {
+			t.Fatal(err)
+		}
+	}
 	orch := agent.NewOrchestrator(
 		cfg,
 		eventlog.NewStore(filepath.Join(cfg.DataDir, "events")),
 		taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks")),
 		approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals")),
-		tool.NewRegistry(),
+		registry,
 		tool.NewPolicy(nil),
 		provider,
 		"test-model",
@@ -973,6 +1222,62 @@ func (p *scriptedControlProvider) Complete(_ context.Context, req llm.Completion
 		Model:    req.Model,
 		Usage:    llm.Usage{InputTokens: 10, OutputTokens: 6, TotalTokens: 16},
 	}, nil
+}
+
+type controlInternetResearchCall struct {
+	Query       string   `json:"query"`
+	Queries     []string `json:"queries"`
+	Source      string   `json:"source"`
+	Depth       string   `json:"depth"`
+	Provider    string   `json:"provider"`
+	MaxSearches int      `json:"max_searches"`
+	MaxSources  int      `json:"max_sources"`
+	Fetch       bool     `json:"fetch"`
+}
+
+type controlInternetResearchStub struct {
+	mu           sync.Mutex
+	calls        []controlInternetResearchCall
+	sources      []map[string]any
+	searchErrors []string
+}
+
+func (controlInternetResearchStub) Name() string        { return "internet.research" }
+func (controlInternetResearchStub) Description() string { return "stubbed internet research" }
+func (controlInternetResearchStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (controlInternetResearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *controlInternetResearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var call controlInternetResearchCall
+	_ = json.Unmarshal(raw, &call)
+	s.mu.Lock()
+	s.calls = append(s.calls, call)
+	s.mu.Unlock()
+	return json.Marshal(map[string]any{
+		"query":           call.Query,
+		"source":          call.Source,
+		"depth":           call.Depth,
+		"method":          "stubbed search and fetch",
+		"search_provider": call.Provider,
+		"sources":         s.sources,
+		"search_errors":   s.searchErrors,
+	})
+}
+
+func (s *controlInternetResearchStub) Calls() []controlInternetResearchCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]controlInternetResearchCall(nil), s.calls...)
+}
+
+func containsResearchEvent(events []knowledgestore.ResearchRunEvent, stage, text string) bool {
+	for _, event := range events {
+		if event.Stage == stage && strings.Contains(event.Message, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForKnowledgeRun(t *testing.T, mux *http.ServeMux, spaceID, runID string) (knowledgestore.Space, knowledgestore.ResearchRun) {

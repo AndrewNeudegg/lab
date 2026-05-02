@@ -213,6 +213,17 @@ const knowledgeSource = {
   key_terms: ['source', 'evidence', 'reports'],
   questions: ['What does this source show about evidence?'],
   word_count: 8,
+  ingestion: { state: 'ready', stage: 'indexed', message: 'Source is indexed.', completed_at: now },
+  chunks: [{
+    id: 'chunk_1',
+    source_id: 'ksrc_20260428_120000_33333333',
+    source_title: 'Source transparency notes',
+    index: 0,
+    citation_label: 'S1.1',
+    text: 'Source-grounded reports should keep evidence visible beside generated claims.',
+    terms: ['source', 'evidence'],
+    word_count: 8
+  }],
   created_at: now,
   updated_at: now
 };
@@ -242,6 +253,7 @@ const knowledgeSpace = {
   objective: 'Keep source-grounded research easy to review.',
   sources: [knowledgeSource],
   reports: [knowledgeReport],
+  research_runs: [],
   insight: {
     source_count: 1,
     word_count: 8,
@@ -473,6 +485,7 @@ const mockDashboardApis = async (page: Page) => {
         description: body.description,
         sources: [],
         reports: [],
+        research_runs: [],
         insight: { source_count: 0, word_count: 0, key_terms: [], suggested_questions: [], updated_at: now },
         created_at: now,
         updated_at: now
@@ -497,6 +510,16 @@ const mockDashboardApis = async (page: Page) => {
       content: body.content || '',
       summary: body.content || 'Added source summary.',
       word_count: (body.content || '').split(/\s+/).filter(Boolean).length,
+      ingestion: { state: 'ready', stage: 'indexed', message: 'Source is indexed.', completed_at: now },
+      chunks: [{
+        id: 'ksrc_created_chunk_001',
+        source_id: 'ksrc_created',
+        source_title: body.title || 'Added source',
+        index: 0,
+        citation_label: 'CREA.1',
+        text: body.content || 'Added source summary.',
+        word_count: (body.content || '').split(/\s+/).filter(Boolean).length
+      }],
       created_at: now,
       updated_at: now
     };
@@ -514,7 +537,7 @@ const mockDashboardApis = async (page: Page) => {
       updated_at: now
     };
     knowledgeSpaces = [updated, ...knowledgeSpaces.slice(1)];
-    await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source processed' } });
+    await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source indexed' } });
   });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research$/, async (route) => {
     const body = route.request().postDataJSON() as { question?: string; mode?: string };
@@ -533,6 +556,59 @@ const mockDashboardApis = async (page: Page) => {
     };
     knowledgeSpaces = [updated, ...knowledgeSpaces.slice(1)];
     await route.fulfill({ json: { space: updated, report, reply: 'Research report created' } });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/ask$/, async (route) => {
+    const body = route.request().postDataJSON() as { question?: string };
+    await route.fulfill({
+      json: {
+        result: {
+          question: body.question || knowledgeReport.question,
+          answer: knowledgeReport.answer,
+          evidence: knowledgeReport.evidence,
+          gaps: knowledgeReport.gaps,
+          created_at: now
+        },
+        reply: 'Grounded answer created.'
+      }
+    });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/query$/, async (route) => {
+    await route.fulfill({
+      json: {
+        result: {
+          query: 'evidence',
+          terms: ['evidence'],
+          evidence: knowledgeReport.evidence,
+          created_at: now
+        },
+        reply: 'Corpus query completed.'
+      }
+    });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research-runs$/, async (route) => {
+    const body = route.request().postDataJSON() as { objective?: string; depth?: string };
+    const run = {
+      id: 'krun_created',
+      objective: body.objective || 'Research run',
+      depth: body.depth || 'standard',
+      status: 'completed',
+      mode: 'research',
+      sources_examined: 1,
+      evidence_count: 1,
+      events: [{ id: 'krun_event_1', stage: 'retrieval', message: 'Retrieved matching corpus chunks.', created_at: now }],
+      created_at: now,
+      updated_at: now
+    };
+    const report = { ...knowledgeReport, id: 'kreport_run', run_id: run.id, created_at: now };
+    const current = knowledgeSpaces[0];
+    const updated = {
+      ...current,
+      research_runs: [run, ...(current.research_runs || [])],
+      reports: [report, ...(current.reports || [])],
+      updated_at: now
+    };
+    knowledgeSpaces = [updated, ...knowledgeSpaces.slice(1)];
+    await route.fulfill({ status: 201, json: { space: updated, run, report, reply: 'Research run completed.' } });
   });
   await page.route(/\/api\/terminal\/sessions$/, async (route) => {
     await route.fulfill({ status: 201, json: { id: 'term_site', shell: '/bin/sh', cwd: '/workspace', created_at: now, persistent: true } });
@@ -810,13 +886,17 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByLabel('Source title').fill('Review notes');
     await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
     await page.locator('.source-form button[type="submit"]').click();
-    await expect(page.getByText('Source processed')).toBeVisible();
-    await page.getByRole('tab', { name: 'Research' }).click();
+    await expect(page.getByText('Source indexed')).toBeVisible();
+    await page.getByRole('tab', { name: 'Ask' }).click();
     await page.getByRole('textbox', { name: 'Question' }).fill('How should evidence be reviewed?');
-    await page.getByLabel('Mode', { exact: true }).selectOption('brief');
-    await page.getByRole('button', { name: 'Create brief' }).click();
-    await expect(page.getByText('Research report created')).toBeVisible();
-    await expect(page.locator('[aria-label="Report evidence"]')).toContainText('[S1]');
+    await page.getByRole('button', { name: 'Ask', exact: true }).click();
+    await expect(page.getByText('Grounded answer created.')).toBeVisible();
+    await expect(page.locator('[aria-label="Answer evidence"]')).toContainText('[S1]');
+    await page.getByRole('tab', { name: /Research Runs/ }).click();
+    await page.locator('#knowledge-panel-runs').getByLabel('Objective').fill('Compare evidence handling');
+    await page.getByRole('button', { name: 'Start run' }).click();
+    await expect(page.getByText('Research run completed.')).toBeVisible();
+    await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Compare evidence handling');
   } else if (route.startsWith('/docs')) {
     if (mobile) {
       const docsNavigationToggle = page.getByRole('button', { name: 'Expand docs navigation' });

@@ -19,19 +19,27 @@ const (
 	ReportModeResearch = "research"
 	ReportModeBrief    = "brief"
 	ReportModeStudy    = "study"
+
+	SourceStatusReady      = "ready"
+	SourceStatusFailed     = "failed"
+	SourceStatusProcessing = "processing"
+
+	ResearchRunStatusCompleted = "completed"
+	ResearchRunStatusFailed    = "failed"
 )
 
 type Space struct {
-	ID          string       `json:"id"`
-	Title       string       `json:"title"`
-	Description string       `json:"description,omitempty"`
-	Objective   string       `json:"objective,omitempty"`
-	Sources     []Source     `json:"sources,omitempty"`
-	Reports     []Report     `json:"reports,omitempty"`
-	Insight     SpaceInsight `json:"insight"`
-	CreatedBy   string       `json:"created_by,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
+	ID           string        `json:"id"`
+	Title        string        `json:"title"`
+	Description  string        `json:"description,omitempty"`
+	Objective    string        `json:"objective,omitempty"`
+	Sources      []Source      `json:"sources,omitempty"`
+	Reports      []Report      `json:"reports,omitempty"`
+	ResearchRuns []ResearchRun `json:"research_runs,omitempty"`
+	Insight      SpaceInsight  `json:"insight"`
+	CreatedBy    string        `json:"created_by,omitempty"`
+	CreatedAt    time.Time     `json:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at"`
 }
 
 type SpaceInsight struct {
@@ -43,21 +51,56 @@ type SpaceInsight struct {
 }
 
 type Source struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Kind      string    `json:"kind"`
-	URI       string    `json:"uri,omitempty"`
-	Content   string    `json:"content"`
-	Summary   string    `json:"summary"`
-	KeyTerms  []string  `json:"key_terms,omitempty"`
-	Questions []string  `json:"questions,omitempty"`
-	WordCount int       `json:"word_count"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         string           `json:"id"`
+	Title      string           `json:"title"`
+	Kind       string           `json:"kind"`
+	URI        string           `json:"uri,omitempty"`
+	Content    string           `json:"content"`
+	Summary    string           `json:"summary"`
+	KeyTerms   []string         `json:"key_terms,omitempty"`
+	Questions  []string         `json:"questions,omitempty"`
+	WordCount  int              `json:"word_count"`
+	Provenance SourceProvenance `json:"provenance,omitempty"`
+	Ingestion  SourceIngestion  `json:"ingestion,omitempty"`
+	Chunks     []SourceChunk    `json:"chunks,omitempty"`
+	CreatedAt  time.Time        `json:"created_at"`
+	UpdatedAt  time.Time        `json:"updated_at"`
+}
+
+type SourceProvenance struct {
+	URI          string    `json:"uri,omitempty"`
+	CanonicalURI string    `json:"canonical_uri,omitempty"`
+	ContentType  string    `json:"content_type,omitempty"`
+	ContentHash  string    `json:"content_hash,omitempty"`
+	ByteCount    int       `json:"byte_count,omitempty"`
+	SnapshotPath string    `json:"snapshot_path,omitempty"`
+	FetchedAt    time.Time `json:"fetched_at,omitempty"`
+	Extractor    string    `json:"extractor,omitempty"`
+}
+
+type SourceIngestion struct {
+	State       string    `json:"state,omitempty"`
+	Stage       string    `json:"stage,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+}
+
+type SourceChunk struct {
+	ID            string   `json:"id"`
+	SourceID      string   `json:"source_id"`
+	SourceTitle   string   `json:"source_title"`
+	Index         int      `json:"index"`
+	CitationLabel string   `json:"citation_label"`
+	Text          string   `json:"text"`
+	Terms         []string `json:"terms,omitempty"`
+	WordCount     int      `json:"word_count"`
 }
 
 type Report struct {
 	ID          string     `json:"id"`
+	RunID       string     `json:"run_id,omitempty"`
 	Question    string     `json:"question"`
 	Mode        string     `json:"mode"`
 	Answer      string     `json:"answer"`
@@ -71,10 +114,67 @@ type Evidence struct {
 	ID            string   `json:"id"`
 	SourceID      string   `json:"source_id"`
 	SourceTitle   string   `json:"source_title"`
+	SourceKind    string   `json:"source_kind,omitempty"`
+	SourceURI     string   `json:"source_uri,omitempty"`
+	ChunkID       string   `json:"chunk_id,omitempty"`
 	CitationLabel string   `json:"citation_label"`
 	Excerpt       string   `json:"excerpt"`
 	Terms         []string `json:"terms,omitempty"`
 	Score         int      `json:"score"`
+}
+
+type QueryRequest struct {
+	Query     string   `json:"query"`
+	SourceIDs []string `json:"source_ids,omitempty"`
+	Limit     int      `json:"limit,omitempty"`
+}
+
+type QueryResult struct {
+	Query     string     `json:"query"`
+	Terms     []string   `json:"terms,omitempty"`
+	Evidence  []Evidence `json:"evidence"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type AskRequest struct {
+	Question  string   `json:"question"`
+	SourceIDs []string `json:"source_ids,omitempty"`
+	Limit     int      `json:"limit,omitempty"`
+}
+
+type AskResult struct {
+	Question  string     `json:"question"`
+	Answer    string     `json:"answer"`
+	Evidence  []Evidence `json:"evidence,omitempty"`
+	Gaps      []string   `json:"gaps,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type ResearchRun struct {
+	ID              string             `json:"id"`
+	Objective       string             `json:"objective"`
+	Scope           string             `json:"scope,omitempty"`
+	Depth           string             `json:"depth"`
+	Status          string             `json:"status"`
+	Question        string             `json:"question,omitempty"`
+	Mode            string             `json:"mode"`
+	SourceIDs       []string           `json:"source_ids,omitempty"`
+	ReportID        string             `json:"report_id,omitempty"`
+	SourcesExamined int                `json:"sources_examined,omitempty"`
+	EvidenceCount   int                `json:"evidence_count,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	Events          []ResearchRunEvent `json:"events,omitempty"`
+	CreatedAt       time.Time          `json:"created_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+	StartedAt       time.Time          `json:"started_at,omitempty"`
+	FinishedAt      time.Time          `json:"finished_at,omitempty"`
+}
+
+type ResearchRunEvent struct {
+	ID        string    `json:"id"`
+	Stage     string    `json:"stage"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type CreateSpaceRequest struct {
@@ -93,6 +193,15 @@ type AddSourceRequest struct {
 
 type ResearchRequest struct {
 	Question  string   `json:"question"`
+	Mode      string   `json:"mode,omitempty"`
+	SourceIDs []string `json:"source_ids,omitempty"`
+}
+
+type CreateResearchRunRequest struct {
+	Objective string   `json:"objective"`
+	Scope     string   `json:"scope,omitempty"`
+	Depth     string   `json:"depth,omitempty"`
+	Question  string   `json:"question,omitempty"`
 	Mode      string   `json:"mode,omitempty"`
 	SourceIDs []string `json:"source_ids,omitempty"`
 }
@@ -152,6 +261,9 @@ func NormalizeSpace(space Space) (Space, error) {
 	for index := range space.Reports {
 		space.Reports[index] = normalizeReport(space.Reports[index])
 	}
+	for index := range space.ResearchRuns {
+		space.ResearchRuns[index] = normalizeResearchRun(space.ResearchRuns[index])
+	}
 	insightAt := space.UpdatedAt
 	if insightAt.IsZero() {
 		insightAt = time.Now().UTC()
@@ -182,24 +294,37 @@ func NormalizeSource(source Source) (Source, error) {
 	source.Kind = normalizeSourceKind(source.Kind)
 	source.URI = strings.TrimSpace(source.URI)
 	source.Content = cleanWhitespace(source.Content)
+	source.Provenance = normalizeSourceProvenance(source.Provenance, source)
+	source.Ingestion = normalizeSourceIngestion(source.Ingestion, source.Content != "")
 	if source.Title == "" {
 		source.Title = firstLine(source.Content)
 	}
 	if source.Title == "" {
+		source.Title = source.URI
+	}
+	if source.Title == "" {
 		return Source{}, errors.New("knowledge source title is required")
 	}
-	if source.Content == "" {
+	if source.Content == "" && source.Ingestion.State != SourceStatusFailed {
 		return Source{}, errors.New("knowledge source content is required")
 	}
 	if source.Kind == SourceKindURL && source.URI == "" {
 		source.URI = source.Title
 	}
+	if source.Provenance.URI == "" {
+		source.Provenance.URI = source.URI
+	}
 	source.WordCount = len(contentWords(source.Content, true))
 	source.KeyTerms = topTerms(source.Content, 8)
 	source.Questions = sourceQuestions(source.KeyTerms, source.Title)
 	if source.Summary == "" {
-		source.Summary = summarise(source.Content, source.KeyTerms, 2, 480)
+		if source.Ingestion.State == SourceStatusFailed {
+			source.Summary = "Ingestion failed: " + source.Ingestion.Error
+		} else {
+			source.Summary = summarise(source.Content, source.KeyTerms, 2, 480)
+		}
 	}
+	source.Chunks = normalizeSourceChunks(source)
 	return source, nil
 }
 
@@ -277,6 +402,24 @@ func AddReport(space Space, report Report, now time.Time) (Space, error) {
 	return normalized, nil
 }
 
+func AddResearchRun(space Space, run ResearchRun, now time.Time) (Space, error) {
+	normalized, err := NormalizeSpace(space)
+	if err != nil {
+		return Space{}, err
+	}
+	run = normalizeResearchRun(run)
+	if run.ID == "" {
+		return Space{}, errors.New("knowledge research run id is required")
+	}
+	normalized.ResearchRuns = append([]ResearchRun{run}, normalized.ResearchRuns...)
+	if len(normalized.ResearchRuns) > 30 {
+		normalized.ResearchRuns = normalized.ResearchRuns[:30]
+	}
+	normalized.UpdatedAt = now
+	normalized.Insight = BuildSpaceInsight(normalized.Sources, now)
+	return normalized, nil
+}
+
 func BuildSpaceInsight(sources []Source, now time.Time) SpaceInsight {
 	var builder strings.Builder
 	wordCount := 0
@@ -297,6 +440,7 @@ func BuildSpaceInsight(sources []Source, now time.Time) SpaceInsight {
 
 func normalizeReport(report Report) Report {
 	report.ID = strings.TrimSpace(report.ID)
+	report.RunID = strings.TrimSpace(report.RunID)
 	report.Question = strings.TrimSpace(report.Question)
 	report.Mode = normalizeReportMode(report.Mode)
 	report.Answer = strings.TrimSpace(report.Answer)
@@ -306,11 +450,33 @@ func normalizeReport(report Report) Report {
 		report.Evidence[index].ID = strings.TrimSpace(report.Evidence[index].ID)
 		report.Evidence[index].SourceID = strings.TrimSpace(report.Evidence[index].SourceID)
 		report.Evidence[index].SourceTitle = strings.TrimSpace(report.Evidence[index].SourceTitle)
+		report.Evidence[index].SourceKind = strings.TrimSpace(report.Evidence[index].SourceKind)
+		report.Evidence[index].SourceURI = strings.TrimSpace(report.Evidence[index].SourceURI)
+		report.Evidence[index].ChunkID = strings.TrimSpace(report.Evidence[index].ChunkID)
 		report.Evidence[index].CitationLabel = strings.TrimSpace(report.Evidence[index].CitationLabel)
 		report.Evidence[index].Excerpt = strings.TrimSpace(report.Evidence[index].Excerpt)
 		report.Evidence[index].Terms = compactStrings(report.Evidence[index].Terms, 8)
 	}
 	return report
+}
+
+func normalizeResearchRun(run ResearchRun) ResearchRun {
+	run.ID = strings.TrimSpace(run.ID)
+	run.Objective = strings.TrimSpace(run.Objective)
+	run.Scope = strings.TrimSpace(run.Scope)
+	run.Depth = normalizeResearchDepth(run.Depth)
+	run.Status = normalizeResearchRunStatus(run.Status)
+	run.Question = strings.TrimSpace(run.Question)
+	run.Mode = normalizeReportMode(run.Mode)
+	run.ReportID = strings.TrimSpace(run.ReportID)
+	run.Error = strings.TrimSpace(run.Error)
+	run.SourceIDs = compactStrings(run.SourceIDs, 200)
+	for index := range run.Events {
+		run.Events[index].ID = strings.TrimSpace(run.Events[index].ID)
+		run.Events[index].Stage = strings.TrimSpace(run.Events[index].Stage)
+		run.Events[index].Message = strings.TrimSpace(run.Events[index].Message)
+	}
+	return run
 }
 
 func normalizeSourceKind(kind string) string {
@@ -341,6 +507,30 @@ func normalizeReportMode(mode string) string {
 	}
 }
 
+func normalizeResearchDepth(depth string) string {
+	switch strings.ToLower(strings.TrimSpace(depth)) {
+	case "", "standard", "normal":
+		return "standard"
+	case "quick", "shallow":
+		return "quick"
+	case "deep", "long":
+		return "deep"
+	default:
+		return "standard"
+	}
+}
+
+func normalizeResearchRunStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case ResearchRunStatusFailed:
+		return ResearchRunStatusFailed
+	case "", ResearchRunStatusCompleted, "done", "ready":
+		return ResearchRunStatusCompleted
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
 func selectedSources(sources []Source, ids []string) []Source {
 	if len(ids) == 0 {
 		return sources
@@ -363,6 +553,7 @@ func selectedSources(sources []Source, ids []string) []Source {
 
 type evidenceCandidate struct {
 	source Source
+	chunk  SourceChunk
 	text   string
 	terms  []string
 	score  int
@@ -371,19 +562,26 @@ type evidenceCandidate struct {
 func rankEvidence(sources []Source, queryTerms []string, mode string) []Evidence {
 	var candidates []evidenceCandidate
 	for _, source := range sources {
-		for _, chunk := range sourceChunks(source.Content) {
-			score, matched := scoreText(chunk, queryTerms)
+		sourceCandidates := 0
+		chunks := source.Chunks
+		if len(chunks) == 0 {
+			chunks = normalizeSourceChunks(source)
+		}
+		for _, chunk := range chunks {
+			score, matched := scoreText(chunk.Text, queryTerms)
 			if score == 0 {
 				continue
 			}
 			candidates = append(candidates, evidenceCandidate{
 				source: source,
-				text:   chunk,
+				chunk:  chunk,
+				text:   chunk.Text,
 				terms:  matched,
 				score:  score,
 			})
+			sourceCandidates++
 		}
-		if len(candidates) == 0 && source.Summary != "" {
+		if sourceCandidates == 0 && source.Summary != "" && source.Ingestion.State != SourceStatusFailed {
 			candidates = append(candidates, evidenceCandidate{
 				source: source,
 				text:   source.Summary,
@@ -415,6 +613,9 @@ func rankEvidence(sources []Source, queryTerms []string, mode string) []Evidence
 			ID:            fmt.Sprintf("evidence_%02d", index+1),
 			SourceID:      candidate.source.ID,
 			SourceTitle:   candidate.source.Title,
+			SourceKind:    candidate.source.Kind,
+			SourceURI:     firstNonEmpty(candidate.source.Provenance.CanonicalURI, candidate.source.Provenance.URI, candidate.source.URI),
+			ChunkID:       candidate.chunk.ID,
 			CitationLabel: fmt.Sprintf("S%d", index+1),
 			Excerpt:       shorten(candidate.text, 420),
 			Terms:         candidate.terms,

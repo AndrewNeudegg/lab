@@ -186,6 +186,38 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			},
 		},
 		{
+			name:       "knowledge source url",
+			args:       []string{"knowledge", "source", "add", "kspace_123", "--url", "https://example.com/research"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces/kspace_123/sources",
+			wantBody: map[string]any{
+				"title": "https://example.com/research",
+				"kind":  "url",
+				"uri":   "https://example.com/research",
+			},
+		},
+		{
+			name:       "knowledge query",
+			args:       []string{"knowledge", "query", "kspace_123", "--limit", "3", "--source", "ksrc_1", "retrieval", "quality"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces/kspace_123/query",
+			wantBody: map[string]any{
+				"query":      "retrieval quality",
+				"limit":      float64(3),
+				"source_ids": []any{"ksrc_1"},
+			},
+		},
+		{
+			name:       "knowledge ask",
+			args:       []string{"knowledge", "ask", "kspace_123", "--source", "ksrc_1", "What", "changed?"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces/kspace_123/ask",
+			wantBody: map[string]any{
+				"question":   "What changed?",
+				"source_ids": []any{"ksrc_1"},
+			},
+		},
+		{
 			name:       "knowledge research",
 			args:       []string{"knowledge", "research", "kspace_123", "--mode", "brief", "--source", "ksrc_1", "--source", "ksrc_2", "How", "should", "operators", "review", "evidence?"},
 			wantMethod: http.MethodPost,
@@ -194,6 +226,19 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 				"question":   "How should operators review evidence?",
 				"mode":       "brief",
 				"source_ids": []any{"ksrc_1", "ksrc_2"},
+			},
+		},
+		{
+			name:       "knowledge research run",
+			args:       []string{"knowledge", "research-run", "kspace_123", "--depth", "deep", "--scope", "public web", "--mode", "research", "--source", "ksrc_1", "Compare", "sources"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces/kspace_123/research-runs",
+			wantBody: map[string]any{
+				"objective":  "Compare sources",
+				"depth":      "deep",
+				"scope":      "public web",
+				"mode":       "research",
+				"source_ids": []any{"ksrc_1"},
 			},
 		},
 	}

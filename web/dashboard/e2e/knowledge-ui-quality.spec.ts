@@ -8,11 +8,35 @@ const knowledgeSource = {
   id: 'ksrc_20260428_120000_33333333',
   title: 'Source transparency notes',
   kind: 'text',
-  content: 'Source-grounded reports should keep evidence visible beside generated claims.',
-  summary: 'Source-grounded reports should keep evidence visible beside generated claims.',
+  content:
+    '## Review flow\n\nSource-grounded reports should keep **evidence visible** beside generated claims.\n\n```mermaid\nflowchart LR\n  Source --> Evidence\n  Evidence --> Claim\n```',
+  summary: 'Source-grounded reports should keep **evidence visible** beside generated claims.',
   key_terms: ['source', 'evidence', 'reports'],
   questions: ['What does this source show about evidence?'],
   word_count: 8,
+  provenance: {
+    content_hash: 'sha256:test',
+    snapshot_path: 'snapshots/kspace/ksrc.txt',
+    extractor: 'plain-text'
+  },
+  ingestion: {
+    state: 'ready',
+    stage: 'indexed',
+    message: 'Source is indexed and available for retrieval.',
+    completed_at: now
+  },
+  chunks: [
+    {
+      id: 'chunk_1',
+      source_id: 'ksrc_20260428_120000_33333333',
+      source_title: 'Source transparency notes',
+      index: 0,
+      citation_label: 'S1.1',
+      text: 'Source-grounded reports should keep evidence visible beside generated claims.',
+      terms: ['source', 'evidence'],
+      word_count: 8
+    }
+  ],
   created_at: now,
   updated_at: now
 };
@@ -22,7 +46,7 @@ const knowledgeReport = {
   question: 'How should evidence be reviewed?',
   mode: 'research',
   answer:
-    'Answering "How should evidence be reviewed?" from 1 stored source:\n- [S1] Keep evidence visible beside generated claims.',
+    '## Evidence review\n\nAnswering "How should evidence be reviewed?" from 1 stored source:\n\n- [S1] Keep **evidence** visible beside generated claims.\n\n```mermaid\nflowchart LR\n  Source --> Evidence\n  Evidence --> Claim\n```',
   key_findings: ['[S1] Keep evidence visible beside generated claims.'],
   evidence: [
     {
@@ -30,7 +54,7 @@ const knowledgeReport = {
       source_id: knowledgeSource.id,
       source_title: knowledgeSource.title,
       citation_label: 'S1',
-      excerpt: 'Source-grounded reports should keep evidence visible beside generated claims.',
+      excerpt: 'Source-grounded reports should keep **evidence visible** beside generated claims.',
       terms: ['evidence'],
       score: 3
     }
@@ -39,12 +63,38 @@ const knowledgeReport = {
   created_at: now
 };
 
+const knowledgeRun = {
+  id: 'krun_20260428_120000_22222222',
+  objective: 'Track evidence review patterns',
+  scope: 'Stored corpus',
+  depth: 'standard',
+  status: 'completed',
+  mode: 'research',
+  source_ids: [knowledgeSource.id],
+  report_id: knowledgeReport.id,
+  sources_examined: 1,
+  evidence_count: 1,
+  events: [
+    {
+      id: 'krun_event_1',
+      stage: 'retrieval',
+      message: 'Retrieved matching corpus chunks from **indexed sources**.',
+      created_at: now
+    }
+  ],
+  created_at: now,
+  updated_at: now,
+  started_at: now,
+  finished_at: now
+};
+
 const baseKnowledgeSpace = {
   id: 'kspace_20260428_120000_55555555',
   title: 'Research synthesis',
   objective: 'Keep source-grounded research easy to review.',
   sources: [knowledgeSource],
   reports: [knowledgeReport],
+  research_runs: [knowledgeRun],
   insight: {
     source_count: 1,
     word_count: 8,
@@ -99,6 +149,18 @@ const mockKnowledgeApis = async (page: Page) => {
       content: body.content || '',
       summary: body.content || 'Added source summary.',
       word_count: (body.content || '').split(/\s+/).filter(Boolean).length,
+      ingestion: { state: 'ready', stage: 'indexed', message: 'Source is indexed.', completed_at: now },
+      chunks: [
+        {
+          id: 'ksrc_created_chunk_001',
+          source_id: 'ksrc_created',
+          source_title: body.title || 'Added source',
+          index: 0,
+          citation_label: 'CREA.1',
+          text: body.content || 'Added source summary.',
+          word_count: (body.content || '').split(/\s+/).filter(Boolean).length
+        }
+      ],
       created_at: now,
       updated_at: now
     };
@@ -115,7 +177,7 @@ const mockKnowledgeApis = async (page: Page) => {
       updated_at: now
     };
     knowledgeSpaces = [updated];
-    await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source processed' } });
+    await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source indexed' } });
   });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research$/, async (route) => {
     const body = route.request().postDataJSON() as { question?: string; mode?: string };
@@ -134,6 +196,55 @@ const mockKnowledgeApis = async (page: Page) => {
     };
     knowledgeSpaces = [updated];
     await route.fulfill({ json: { space: updated, report, reply: 'Research report created' } });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/query$/, async (route) => {
+    await route.fulfill({
+      json: {
+        result: {
+          query: 'evidence',
+          terms: ['evidence'],
+          evidence: knowledgeReport.evidence,
+          created_at: now
+        },
+        reply: 'Corpus query completed.'
+      }
+    });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/ask$/, async (route) => {
+    const body = route.request().postDataJSON() as { question?: string };
+    await route.fulfill({
+      json: {
+        result: {
+          question: body.question || knowledgeReport.question,
+          answer: knowledgeReport.answer,
+          evidence: knowledgeReport.evidence,
+          gaps: knowledgeReport.gaps,
+          created_at: now
+        },
+        reply: 'Grounded answer created.'
+      }
+    });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research-runs$/, async (route) => {
+    const body = route.request().postDataJSON() as { objective?: string; depth?: string };
+    const run = {
+      ...knowledgeRun,
+      id: 'krun_created',
+      objective: body.objective || knowledgeRun.objective,
+      depth: body.depth || 'standard',
+      created_at: now,
+      updated_at: now
+    };
+    const report = { ...knowledgeReport, id: 'kreport_from_run', run_id: run.id, created_at: now };
+    const current = knowledgeSpaces[0];
+    const updated = {
+      ...current,
+      research_runs: [run, ...(current.research_runs || [])],
+      reports: [report, ...(current.reports || [])],
+      updated_at: now
+    };
+    knowledgeSpaces = [updated];
+    await route.fulfill({ status: 201, json: { space: updated, run, report, reply: 'Research run completed.' } });
   });
 };
 
@@ -215,6 +326,10 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Research synthesis' })).toBeInViewport();
       await expect(page.getByRole('heading', { name: 'Processed sources' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Source transparency notes' })).toBeVisible();
+      await expect(page.locator('.source-card .markdown strong').filter({ hasText: 'evidence visible' }).first()).toBeVisible();
+      await page.locator('details.source-content > summary').click();
+      await expect(page.getByRole('heading', { name: 'Review flow' })).toBeVisible();
+      await expect(page.locator('.source-card .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
       await expect(page.getByLabel('Source title')).toBeHidden();
 
       await expectNoVisualArtifacts(page);
@@ -228,27 +343,39 @@ for (const viewport of [
       await page.getByLabel('Source title').fill('Review notes');
       await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
       await page.locator('.source-form button[type="submit"]').click();
-      await expect(page.getByText('Source processed')).toBeVisible();
+      await expect(page.getByText('Source indexed')).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Review notes' })).toBeVisible();
     });
 
-    test('uses suggested questions and reports as explicit selectors', async ({ page }) => {
+    test('uses suggested questions, grounded ask, runs, and artefacts as explicit selectors', async ({ page }) => {
       await mockKnowledgeApis(page);
       await page.goto('/knowledge');
       await expectKnowledgeReady(page);
 
       await page.getByRole('link', { name: /Research synthesis/ }).click();
       await page.getByRole('button', { name: 'What does this space show about source?' }).click();
-      await expect(page.getByRole('tab', { name: /Research/ })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('tab', { name: /Ask/ })).toHaveAttribute('aria-selected', 'true');
       await expect(page.getByRole('textbox', { name: 'Question' })).toHaveValue(
         'What does this space show about source?'
       );
       await expect(page.getByText('All 1 source selected')).toBeVisible();
+      await page.getByRole('button', { name: 'Ask', exact: true }).click();
+      await expect(page.getByRole('article', { name: 'Grounded answer' })).toContainText('[S1]');
+      await expect(page.getByRole('article', { name: 'Grounded answer' }).getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      await expect(page.locator('[aria-label="Grounded answer"] .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
 
-      await page.getByRole('tab', { name: /Reports/ }).click();
-      await page.getByRole('button', { name: /How should evidence be reviewed/ }).click();
-      await expect(page.getByRole('tab', { name: /Research/ })).toHaveAttribute('aria-selected', 'true');
-      await expect(page.getByRole('article', { name: 'Latest research report' })).toContainText('[S1]');
+      await page.getByRole('tab', { name: /Research Runs/ }).click();
+      await page.locator('#knowledge-panel-runs').getByLabel('Objective').fill('Compare evidence review');
+      await page.getByRole('button', { name: 'Start run' }).click();
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText(
+        'Compare evidence review'
+      );
+
+      await page.getByRole('tab', { name: /Artefacts/ }).click();
+      await page.getByRole('button', { name: /How should evidence be reviewed/ }).first().click();
+      await expect(page.getByRole('tab', { name: /Artefacts/ })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('article', { name: 'Selected artefact' })).toContainText('[S1]');
+      await expect(page.getByRole('article', { name: 'Selected artefact' }).getByRole('heading', { name: 'Evidence review' })).toBeVisible();
     });
 
     test('keeps filtered empty states recoverable', async ({ page }) => {

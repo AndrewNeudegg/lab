@@ -5,9 +5,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+type Repository interface {
+	Save(space Space) error
+	Load(id string) (Space, error)
+	List() ([]Space, error)
+}
 
 type Store struct {
 	dir string
@@ -35,7 +42,6 @@ func (s *Store) Save(space Space) error {
 	if space.UpdatedAt.IsZero() {
 		space.UpdatedAt = now
 	}
-	space.Insight = BuildSpaceInsight(space.Sources, space.UpdatedAt)
 	normalized, err := NormalizeSpace(space)
 	if err != nil {
 		return err
@@ -43,11 +49,31 @@ func (s *Store) Save(space Space) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
+	for index := range normalized.Sources {
+		path, err := s.writeSourceSnapshotLocked(normalized.ID, normalized.Sources[index])
+		if err != nil {
+			return err
+		}
+		normalized.Sources[index].Provenance.SnapshotPath = path
+	}
+	normalized.Insight = BuildSpaceInsight(normalized.Sources, normalized.UpdatedAt)
 	b, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(s.dir, normalized.ID+".json"), append(b, '\n'), 0o644)
+}
+
+func (s *Store) writeSourceSnapshotLocked(spaceID string, source Source) (string, error) {
+	if strings.TrimSpace(source.Content) == "" {
+		return source.Provenance.SnapshotPath, nil
+	}
+	relative := filepath.Join("snapshots", spaceID, source.ID+".txt")
+	fullPath := filepath.Join(s.dir, relative)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return "", err
+	}
+	return relative, os.WriteFile(fullPath, []byte(source.Content+"\n"), 0o644)
 }
 
 func (s *Store) Load(id string) (Space, error) {

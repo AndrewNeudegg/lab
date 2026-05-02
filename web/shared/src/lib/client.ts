@@ -11,6 +11,10 @@ import type {
   HomelabdClientOptions,
   HomelabdCreateTaskRequest,
   HomelabdCreateTaskResponse,
+  HomelabdAskKnowledgeSpaceRequest,
+  HomelabdAskKnowledgeSpaceResponse,
+  HomelabdCreateKnowledgeResearchRunRequest,
+  HomelabdCreateKnowledgeResearchRunResponse,
   HomelabdCreateKnowledgeSpaceRequest,
   HomelabdCreateKnowledgeSpaceResponse,
   HomelabdCreateWorkflowRequest,
@@ -22,6 +26,8 @@ import type {
   HomelabdMergeQueueMoveRequest,
   HomelabdMessageRequest,
   HomelabdMessageResponse,
+  HomelabdQueryKnowledgeSpaceRequest,
+  HomelabdQueryKnowledgeSpaceResponse,
   HomelabdResearchKnowledgeSpaceRequest,
   HomelabdResearchKnowledgeSpaceResponse,
   HomelabdSettingsResponse,
@@ -233,6 +239,39 @@ export const createHomelabdClient = (
     researchKnowledgeSpace(spaceId: string, request: HomelabdResearchKnowledgeSpaceRequest) {
       return apiFetch<HomelabdResearchKnowledgeSpaceResponse>(
         `/knowledge/spaces/${encodeURIComponent(spaceId)}/research`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    queryKnowledgeSpace(spaceId: string, request: HomelabdQueryKnowledgeSpaceRequest) {
+      return apiFetch<HomelabdQueryKnowledgeSpaceResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}/query`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    askKnowledgeSpace(spaceId: string, request: HomelabdAskKnowledgeSpaceRequest) {
+      return apiFetch<HomelabdAskKnowledgeSpaceResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}/ask`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    createKnowledgeResearchRun(spaceId: string, request: HomelabdCreateKnowledgeResearchRunRequest) {
+      return apiFetch<HomelabdCreateKnowledgeResearchRunResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}/research-runs`,
         {
           baseUrl,
           fetcher,

@@ -155,10 +155,14 @@ go run ./cmd/homelabctl knowledge show kspace_123
 go run ./cmd/homelabctl knowledge create --objective "Compare sources" --created-by "operator" "Cheese examples"
 go run ./cmd/homelabctl knowledge source add kspace_123 --file docs/knowledge-space.md "Knowledge Space docs"
 go run ./cmd/homelabctl knowledge source add kspace_123 --kind note --content "Brief source text" "Operator note"
+go run ./cmd/homelabctl knowledge source add kspace_123 --url https://example.com/research
+go run ./cmd/homelabctl knowledge query kspace_123 --limit 5 "evidence review"
+go run ./cmd/homelabctl knowledge ask kspace_123 "What does the corpus say about evidence?"
 go run ./cmd/homelabctl knowledge research kspace_123 --mode brief "What does the space show?"
+go run ./cmd/homelabctl knowledge research-run kspace_123 --depth standard --scope "stored corpus" "Create a briefing"
 ```
 
-`knowledge source add` accepts `--file PATH` for Markdown, docs, or notes, and stores the file path as the source reference when `--uri` is not supplied. Use `--file -` to read source text from standard input. `knowledge research` accepts repeated `--source <source_id>` flags when a report should be limited to selected sources.
+`knowledge source add` accepts `--file PATH` for Markdown, docs, or notes, and stores the file path as the source reference when `--uri` is not supplied. Use `--file -` to read source text from standard input. Use `--url URL` to let `homelabd` fetch and snapshot an HTML or plain-text page server-side. `knowledge query`, `knowledge ask`, `knowledge research`, and `knowledge research-run` accept repeated `--source <source_id>` flags when retrieval should be limited to selected sources.
 
 ## Workflow Commands
 

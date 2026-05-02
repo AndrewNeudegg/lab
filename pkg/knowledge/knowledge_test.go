@@ -1,6 +1,9 @@
 package knowledge
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,6 +67,73 @@ func TestResearchReportUsesStoredEvidence(t *testing.T) {
 	}
 }
 
+func TestURLSourceFetchesAndIndexesChunks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Content-Type", "text/html")
+		_, _ = rw.Write([]byte(`<html><head><title>Notebook source</title></head><body><article>Evidence retrieval depends on durable source snapshots. Grounded answers cite chunks for review.</article></body></html>`))
+	}))
+	defer server.Close()
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+
+	source, err := BuildSource(context.Background(), AddSourceRequest{
+		Kind: "url",
+		URI:  server.URL,
+	}, "ksrc_url", now, HTTPFetcher{Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.Title != "Notebook source" || source.Ingestion.State != SourceStatusReady {
+		t.Fatalf("source = %#v, want fetched title and ready state", source)
+	}
+	if source.Provenance.ContentHash == "" || len(source.Chunks) == 0 {
+		t.Fatalf("source = %#v, want provenance hash and chunks", source)
+	}
+}
+
+func TestQueryAskAndResearchRunUseCorpusEvidence(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	space, err := NewSpace(CreateSpaceRequest{Title: "Corpus"}, "kspace_corpus", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewSource(AddSourceRequest{
+		Title:   "Notebook notes",
+		Content: "NotebookLM style tools keep source corpora visible. Research runs should record events, evidence, and gaps for later review.",
+	}, "ksrc_corpus", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	space, err = AddSource(space, source, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	query, err := QuerySpace(space, QueryRequest{Query: "research evidence", Limit: 3}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(query.Evidence) == 0 || query.Evidence[0].ChunkID == "" {
+		t.Fatalf("query = %#v, want chunk-backed evidence", query)
+	}
+	answer, err := AnswerQuestion(space, AskRequest{Question: "How should research be reviewed?"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer.Answer, "[S1]") {
+		t.Fatalf("answer = %q, want cited answer", answer.Answer)
+	}
+	updated, run, report, err := CompleteResearchRun(space, CreateResearchRunRequest{
+		Objective: "Review source-grounded research",
+		Depth:     "deep",
+	}, "krun_test", "kreport_run", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != ResearchRunStatusCompleted || run.ReportID != report.ID || len(updated.ResearchRuns) != 1 || len(updated.Reports) != 1 {
+		t.Fatalf("run = %#v report = %#v updated = %#v, want completed run and stored report", run, report, updated)
+	}
+}
+
 func TestStorePersistsProcessedSpace(t *testing.T) {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	store := NewStore(filepath.Join(t.TempDir(), "knowledge"))
@@ -91,6 +161,9 @@ func TestStorePersistsProcessedSpace(t *testing.T) {
 	}
 	if loaded.Insight.SourceCount != 1 || loaded.Sources[0].Summary == "" {
 		t.Fatalf("loaded = %#v, want persisted processed source", loaded)
+	}
+	if loaded.Sources[0].Provenance.SnapshotPath == "" {
+		t.Fatalf("loaded source = %#v, want filesystem snapshot path", loaded.Sources[0])
 	}
 }
 

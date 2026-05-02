@@ -253,6 +253,44 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 		t.Fatalf("report body = %#v, want stored report with evidence", reportBody)
 	}
 
+	queryPath := "/knowledge/spaces/" + createBody.Space.ID + "/query"
+	queried := requestJSON(t, mux, http.MethodPost, queryPath, `{"query":"evidence labels","limit":3}`, "", http.StatusOK)
+	var queryBody struct {
+		Result knowledgestore.QueryResult `json:"result"`
+	}
+	if err := json.NewDecoder(queried.Body).Decode(&queryBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(queryBody.Result.Evidence) == 0 {
+		t.Fatalf("query body = %#v, want retrieved evidence", queryBody)
+	}
+
+	askPath := "/knowledge/spaces/" + createBody.Space.ID + "/ask"
+	asked := requestJSON(t, mux, http.MethodPost, askPath, `{"question":"How do reviewers use evidence?"}`, "", http.StatusOK)
+	var askBody struct {
+		Result knowledgestore.AskResult `json:"result"`
+	}
+	if err := json.NewDecoder(asked.Body).Decode(&askBody); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(askBody.Result.Answer, "[S1]") {
+		t.Fatalf("ask body = %#v, want cited answer", askBody)
+	}
+
+	runPath := "/knowledge/spaces/" + createBody.Space.ID + "/research-runs"
+	ran := requestJSON(t, mux, http.MethodPost, runPath, `{"objective":"Review evidence handling","depth":"standard"}`, "", http.StatusCreated)
+	var runBody struct {
+		Space  knowledgestore.Space       `json:"space"`
+		Run    knowledgestore.ResearchRun `json:"run"`
+		Report knowledgestore.Report      `json:"report"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+	if runBody.Run.Status != knowledgestore.ResearchRunStatusCompleted || len(runBody.Space.ResearchRuns) != 1 || runBody.Report.RunID != runBody.Run.ID {
+		t.Fatalf("run body = %#v, want completed run and linked report", runBody)
+	}
+
 	listed := requestJSON(t, mux, http.MethodGet, "/knowledge/spaces", "", "", http.StatusOK)
 	if !strings.Contains(listed.Body.String(), createBody.Space.ID) {
 		t.Fatalf("list body = %s, want created space", listed.Body.String())

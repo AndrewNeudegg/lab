@@ -37,7 +37,7 @@ type Orchestrator struct {
 	tasks        *taskstore.Store
 	approvals    *approvalstore.Store
 	workflows    *workflowstore.Store
-	knowledge    *knowledgestore.Store
+	knowledge    knowledgestore.Repository
 	registry     *tool.Registry
 	policy       tool.Policy
 	provider     llm.Provider

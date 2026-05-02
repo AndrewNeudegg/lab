@@ -6,27 +6,34 @@
   import {
     createHomelabdClient,
     knowledgeSpaceURL,
+    Markdown,
     Navbar,
+    type HomelabdKnowledgeAskResult,
     type HomelabdKnowledgeReport,
+    type HomelabdKnowledgeResearchRun,
     type HomelabdKnowledgeSpace
   } from '@homelab/shared';
   import {
     compactKnowledgeID,
     filterKnowledgeSpaces,
+    knowledgeMarkdownPreview,
     knowledgeSpacesFromResponse,
     latestReport,
+    latestResearchRun,
     panelLabel,
     panelItemCount,
     selectKnowledgeSpace,
     spaceSourceCount,
     spaceWordCount,
+    sourceStatusLabel,
+    sourceStatusTone,
     sourceSelectionSummary,
     type KnowledgePanel
   } from './view-model';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
-  const panels: KnowledgePanel[] = ['sources', 'research', 'reports'];
+  const panels: KnowledgePanel[] = ['sources', 'ask', 'runs', 'artefacts'];
 
   let spaces: HomelabdKnowledgeSpace[] = [];
   let selectedSpaceId = '';
@@ -37,7 +44,9 @@
   let loading = false;
   let creating = false;
   let addingSource = false;
-  let researching = false;
+  let asking = false;
+  let creatingRun = false;
+  let querying = false;
   let error = '';
   let notice = '';
   let lastRefresh = '';
@@ -54,18 +63,26 @@
   let sourceKindDraft = 'text';
   let sourceURIDraft = '';
   let sourceContentDraft = '';
+  let corpusQueryDraft = '';
   let questionDraft = '';
   let researchModeDraft = 'research';
+  let runObjectiveDraft = '';
+  let runScopeDraft = '';
+  let runDepthDraft = 'standard';
   let activeReport: HomelabdKnowledgeReport | undefined;
+  let activeAskResult: HomelabdKnowledgeAskResult | undefined;
+  let activeRun: HomelabdKnowledgeResearchRun | undefined;
 
   let visibleSpaces: HomelabdKnowledgeSpace[] = [];
   let selectedSpace: HomelabdKnowledgeSpace | undefined;
   let latestSelectedReport: HomelabdKnowledgeReport | undefined;
+  let latestSelectedRun: HomelabdKnowledgeResearchRun | undefined;
   let totalSourceCount = 0;
   let selectedSourceCount = 0;
   let selectedSourceSummary = '';
   let totalReportCount = 0;
   let totalSpaceSourceCount = 0;
+  let sourceReady = false;
 
   $: visibleSpaces = filterKnowledgeSpaces(spaces, search);
   $: selectedSpaceId = selectKnowledgeSpace(
@@ -76,14 +93,21 @@
   );
   $: selectedSpace = spaces.find((space) => space.id === selectedSpaceId);
   $: latestSelectedReport = activeReport || latestReport(selectedSpace);
+  $: latestSelectedRun = activeRun || latestResearchRun(selectedSpace);
   $: totalSourceCount = selectedSpace?.sources?.length || 0;
   $: selectedSourceCount = selectedSourceIds.length;
   $: selectedSourceSummary = sourceSelectionSummary(selectedSourceCount, totalSourceCount);
   $: totalReportCount = spaces.reduce((total, space) => total + (space.reports?.length || 0), 0);
   $: totalSpaceSourceCount = spaces.reduce((total, space) => total + spaceSourceCount(space), 0);
+  $: sourceReady =
+    sourceKindDraft.trim() === 'url'
+      ? !!sourceURIDraft.trim() || !!sourceContentDraft.trim()
+      : !!sourceContentDraft.trim();
   $: if (selectedSpace && selectedSpace.id !== lastSelectedSpaceId) {
     lastSelectedSpaceId = selectedSpace.id;
     activeReport = undefined;
+    activeAskResult = undefined;
+    activeRun = undefined;
     selectedSourceIds = (selectedSpace.sources || []).map((source) => source.id);
     addSourceOpen = !(selectedSpace.sources?.length);
   }
@@ -257,7 +281,7 @@
   };
 
   const addSource = async () => {
-    if (!selectedSpace || addingSource || !sourceTitleDraft.trim() || !sourceContentDraft.trim()) {
+    if (!selectedSpace || addingSource || !sourceReady) {
       return;
     }
     addingSource = true;
@@ -268,7 +292,7 @@
         title: sourceTitleDraft.trim(),
         kind: sourceKindDraft,
         uri: sourceURIDraft.trim() || undefined,
-        content: sourceContentDraft.trim()
+        content: sourceContentDraft.trim() || undefined
       });
       updateSpace(response.space);
       activePanel = 'sources';
@@ -277,7 +301,7 @@
       sourceContentDraft = '';
       selectedSourceIds = (response.space.sources || []).map((source) => source.id);
       addSourceOpen = false;
-      notice = response.reply || 'Source processed.';
+      notice = response.reply || 'Source indexed.';
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to add source.';
     } finally {
@@ -285,27 +309,81 @@
     }
   };
 
-  const runResearch = async () => {
-    if (!selectedSpace || researching || !questionDraft.trim()) {
+  const askKnowledge = async () => {
+    if (!selectedSpace || asking || !questionDraft.trim() || !selectedSourceIds.length) {
       return;
     }
-    researching = true;
+    asking = true;
     error = '';
     notice = '';
     try {
-      const response = await client.researchKnowledgeSpace(selectedSpace.id, {
+      const response = await client.askKnowledgeSpace(selectedSpace.id, {
         question: questionDraft.trim(),
+        source_ids: selectedSourceIds.length ? selectedSourceIds : undefined
+      });
+      activeAskResult = response.result;
+      activePanel = 'ask';
+      notice = response.reply || 'Grounded answer created.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to ask Knowledge Space.';
+    } finally {
+      asking = false;
+    }
+  };
+
+  const queryCorpus = async () => {
+    if (!selectedSpace || querying || !corpusQueryDraft.trim() || !selectedSourceIds.length) {
+      return;
+    }
+    querying = true;
+    error = '';
+    notice = '';
+    try {
+      const response = await client.queryKnowledgeSpace(selectedSpace.id, {
+        query: corpusQueryDraft.trim(),
+        source_ids: selectedSourceIds.length ? selectedSourceIds : undefined,
+        limit: 8
+      });
+      activeAskResult = {
+        question: corpusQueryDraft.trim(),
+        answer: `Found ${response.result.evidence.length} matching evidence chunk${response.result.evidence.length === 1 ? '' : 's'}.`,
+        evidence: response.result.evidence,
+        gaps: response.result.evidence.length ? [] : ['No stored source chunks matched this query.'],
+        created_at: response.result.created_at
+      };
+      activePanel = 'ask';
+      notice = response.reply || 'Corpus query completed.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to query corpus.';
+    } finally {
+      querying = false;
+    }
+  };
+
+  const createResearchRun = async () => {
+    if (!selectedSpace || creatingRun || !runObjectiveDraft.trim() || !selectedSourceIds.length) {
+      return;
+    }
+    creatingRun = true;
+    error = '';
+    notice = '';
+    try {
+      const response = await client.createKnowledgeResearchRun(selectedSpace.id, {
+        objective: runObjectiveDraft.trim(),
+        scope: runScopeDraft.trim() || undefined,
+        depth: runDepthDraft,
         mode: researchModeDraft,
         source_ids: selectedSourceIds.length ? selectedSourceIds : undefined
       });
+      activeRun = response.run;
       activeReport = response.report;
       updateSpace(response.space);
-      activePanel = 'research';
-      notice = response.reply || 'Research report created.';
+      activePanel = 'runs';
+      notice = response.reply || 'Research run completed.';
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to run research.';
+      error = err instanceof Error ? err.message : 'Unable to create research run.';
     } finally {
-      researching = false;
+      creatingRun = false;
     }
   };
 
@@ -329,13 +407,19 @@
 
   const useSuggestedQuestion = (question: string) => {
     questionDraft = question;
-    activePanel = 'research';
+    activePanel = 'ask';
     revealDetailIfCompact();
   };
 
   const selectReport = (report: HomelabdKnowledgeReport) => {
     activeReport = report;
-    activePanel = 'research';
+    activePanel = 'artefacts';
+    revealDetailIfCompact();
+  };
+
+  const selectRun = (run: HomelabdKnowledgeResearchRun) => {
+    activeRun = run;
+    activePanel = 'runs';
     revealDetailIfCompact();
   };
 
@@ -499,7 +583,9 @@
           <div>
             <span class="eyebrow">{compactKnowledgeID(selectedSpace.id)}</span>
             <h2>{selectedSpace.title}</h2>
-            <p>{selectedSpace.objective || selectedSpace.description || 'No objective recorded.'}</p>
+            <div class="detail-summary">
+              <Markdown content={selectedSpace.objective || selectedSpace.description || 'No objective recorded.'} />
+            </div>
           </div>
           <div class="detail-actions" aria-label="Knowledge Space actions">
             <span>{plural(spaceSourceCount(selectedSpace), 'source')}</span>
@@ -578,9 +664,49 @@
                           <span>{source.kind}</span>
                           <h3>{source.title}</h3>
                         </div>
-                        <strong>{source.word_count} words</strong>
+                        <div class="source-state">
+                          <span class={`status-pill ${sourceStatusTone(source)}`}>{sourceStatusLabel(source)}</span>
+                          <strong>{source.word_count} words</strong>
+                        </div>
                       </header>
-                      <p>{source.summary}</p>
+                      {#if source.summary}
+                        <div class="markdown-block compact">
+                          <Markdown content={source.summary} />
+                        </div>
+                      {/if}
+                      {#if source.content}
+                        <details class="source-content">
+                          <summary>Source content</summary>
+                          <div class="markdown-block source-body">
+                            <Markdown content={source.content} headingIds />
+                          </div>
+                        </details>
+                      {/if}
+                      {#if source.uri || source.provenance?.canonical_uri || source.provenance?.snapshot_path}
+                        <dl class="source-meta">
+                          {#if source.provenance?.canonical_uri || source.uri}
+                            <div>
+                              <dt>Reference</dt>
+                              <dd>{source.provenance?.canonical_uri || source.uri}</dd>
+                            </div>
+                          {/if}
+                          {#if source.provenance?.snapshot_path}
+                            <div>
+                              <dt>Snapshot</dt>
+                              <dd>{source.provenance.snapshot_path}</dd>
+                            </div>
+                          {/if}
+                          {#if source.chunks?.length}
+                            <div>
+                              <dt>Chunks</dt>
+                              <dd>{source.chunks.length}</dd>
+                            </div>
+                          {/if}
+                        </dl>
+                      {/if}
+                      {#if source.ingestion?.error}
+                        <p class="source-error">{source.ingestion.error}</p>
+                      {/if}
                       {#if source.key_terms?.length}
                         <div class="chips" aria-label={`${source.title} key terms`}>
                           {#each source.key_terms.slice(0, 6) as term}
@@ -588,10 +714,19 @@
                           {/each}
                         </div>
                       {/if}
+                      {#if source.questions?.length}
+                        <div class="question-chips" aria-label={`${source.title} suggested questions`}>
+                          {#each source.questions.slice(0, 2) as question}
+                            <button type="button" on:click={() => useSuggestedQuestion(question)}>
+                              {question}
+                            </button>
+                          {/each}
+                        </div>
+                      {/if}
                     </article>
                   {/each}
                 {:else}
-                  <p class="empty">No sources have been processed. Add source text before running research.</p>
+                  <p class="empty">No sources have been indexed. Add text or a URL before asking questions.</p>
                 {/if}
               </div>
             </section>
@@ -612,49 +747,71 @@
                   </select>
 
                   <label for="source-uri">Reference</label>
-                  <input id="source-uri" bind:value={sourceURIDraft} autocomplete="off" />
+                  <input
+                    id="source-uri"
+                    bind:value={sourceURIDraft}
+                    autocomplete="off"
+                    placeholder={sourceKindDraft === 'url' ? 'https://example.com/source' : ''}
+                  />
                 </div>
 
-                <label for="source-content">Source text</label>
-                <textarea id="source-content" bind:value={sourceContentDraft} rows="8"></textarea>
+                <label for="source-content">
+                  {sourceKindDraft === 'url' ? 'Fallback or pasted source text' : 'Source text'}
+                </label>
+                <textarea
+                  id="source-content"
+                  bind:value={sourceContentDraft}
+                  rows="8"
+                  placeholder={sourceKindDraft === 'url' ? 'Optional when Reference is a fetchable URL' : ''}
+                ></textarea>
 
                 <div class="form-footer">
-                  <span>{sourceContentDraft.trim().split(/\s+/).filter(Boolean).length} words</span>
+                  <span>
+                    {sourceKindDraft === 'url' && !sourceContentDraft.trim()
+                      ? 'Server fetch'
+                      : `${sourceContentDraft.trim().split(/\s+/).filter(Boolean).length} words`}
+                  </span>
                   <button
                     type="submit"
-                    disabled={addingSource || !sourceTitleDraft.trim() || !sourceContentDraft.trim()}
+                    disabled={addingSource || !sourceReady}
                   >
-                    {addingSource ? 'Processing' : 'Process source'}
+                    {addingSource ? 'Indexing' : 'Index source'}
                   </button>
                 </div>
               </form>
             </details>
           </div>
-        {:else if activePanel === 'research'}
+        {:else if activePanel === 'ask'}
           <div
-            id="knowledge-panel-research"
-            class="panel research-panel"
+            id="knowledge-panel-ask"
+            class="panel ask-panel"
             role="tabpanel"
-            aria-labelledby="knowledge-tab-research"
+            aria-labelledby="knowledge-tab-ask"
           >
-            <form class="research-form" on:submit|preventDefault={() => void runResearch()}>
+            <form class="research-form" on:submit|preventDefault={() => void askKnowledge()}>
               <div class="panel-title">
                 <div>
-                  <h3>Research draft</h3>
+                  <h3>Ask the corpus</h3>
                   <p>{selectedSourceSummary}</p>
                 </div>
+              </div>
+
+              <label for="corpus-query">Corpus search</label>
+              <div class="inline-submit">
+                <input id="corpus-query" bind:value={corpusQueryDraft} autocomplete="off" />
+                <button
+                  type="button"
+                  disabled={querying || !corpusQueryDraft.trim() || !selectedSourceIds.length}
+                  on:click={() => void queryCorpus()}
+                >
+                  {querying ? 'Searching' : 'Search'}
+                </button>
               </div>
 
               <label for="research-question">Question</label>
               <textarea id="research-question" bind:value={questionDraft} rows="3"></textarea>
 
               <div class="research-controls">
-                <label for="research-mode">Mode</label>
-                <select id="research-mode" bind:value={researchModeDraft}>
-                  <option value="research">Research</option>
-                  <option value="brief">Brief</option>
-                  <option value="study">Study</option>
-                </select>
                 <button type="button" disabled={!selectedSpace.sources?.length} on:click={selectAllSources}>
                   Select all
                 </button>
@@ -663,14 +820,14 @@
                 </button>
                 <button
                   type="submit"
-                  disabled={researching || !questionDraft.trim() || !selectedSourceIds.length}
+                  disabled={asking || !questionDraft.trim() || !selectedSourceIds.length}
                 >
-                  {researching ? 'Researching' : researchModeDraft === 'brief' ? 'Create brief' : 'Run research'}
+                  {asking ? 'Answering' : 'Ask'}
                 </button>
               </div>
 
               {#if selectedSpace.sources?.length}
-                <div class="source-select" aria-label="Research source selection">
+                <div class="source-select" aria-label="Ask source selection">
                   {#each selectedSpace.sources as source (source.id)}
                     <label>
                       <input
@@ -685,8 +842,182 @@
               {/if}
             </form>
 
+            {#if activeAskResult}
+              <article class="report-card" aria-label="Grounded answer">
+                <header>
+                  <div>
+                    <span>Answer</span>
+                    <h3>{activeAskResult.question}</h3>
+                  </div>
+                  <strong>{compactTime(activeAskResult.created_at)}</strong>
+                </header>
+                <div class="markdown-block answer-body">
+                  <Markdown content={activeAskResult.answer} headingIds />
+                </div>
+                {#if activeAskResult.evidence?.length}
+                  <div class="evidence-list" aria-label="Answer evidence">
+                    {#each activeAskResult.evidence as evidence (evidence.id)}
+                      <section>
+                        <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
+                        <div class="markdown-block evidence-body">
+                          <Markdown content={evidence.excerpt} />
+                        </div>
+                        {#if evidence.source_uri}
+                          <small>{evidence.source_uri}</small>
+                        {/if}
+                      </section>
+                    {/each}
+                  </div>
+                {/if}
+                {#if activeAskResult.gaps?.length}
+                  <div class="gaps">
+                    {#each activeAskResult.gaps as gap}
+                      <div class="gap-pill"><Markdown content={gap} /></div>
+                    {/each}
+                  </div>
+                {/if}
+              </article>
+            {:else}
+              <p class="empty">Ask a question or search the corpus to inspect cited chunks.</p>
+            {/if}
+          </div>
+        {:else if activePanel === 'runs'}
+          <div
+            id="knowledge-panel-runs"
+            class="panel run-panel"
+            role="tabpanel"
+            aria-labelledby="knowledge-tab-runs"
+          >
+            <form class="research-form" on:submit|preventDefault={() => void createResearchRun()}>
+              <div class="panel-title">
+                <div>
+                  <h3>Research run</h3>
+                  <p>{selectedSourceSummary}</p>
+                </div>
+              </div>
+
+              <label for="run-objective">Objective</label>
+              <textarea id="run-objective" bind:value={runObjectiveDraft} rows="3"></textarea>
+
+              <label for="run-scope">Scope</label>
+              <textarea id="run-scope" bind:value={runScopeDraft} rows="2"></textarea>
+
+              <div class="research-controls">
+                <label for="run-depth">Depth</label>
+                <select id="run-depth" bind:value={runDepthDraft}>
+                  <option value="quick">Quick</option>
+                  <option value="standard">Standard</option>
+                  <option value="deep">Deep</option>
+                </select>
+                <label for="research-mode">Output</label>
+                <select id="research-mode" bind:value={researchModeDraft}>
+                  <option value="research">Research report</option>
+                  <option value="brief">Brief</option>
+                  <option value="study">Study guide</option>
+                </select>
+                <button type="button" disabled={!selectedSpace.sources?.length} on:click={selectAllSources}>
+                  Select all
+                </button>
+                <button type="button" disabled={!selectedSourceIds.length} on:click={clearSourceSelection}>
+                  Clear
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingRun || !runObjectiveDraft.trim() || !selectedSourceIds.length}
+                >
+                  {creatingRun ? 'Starting' : 'Start run'}
+                </button>
+              </div>
+
+              {#if selectedSpace.sources?.length}
+                <div class="source-select" aria-label="Research run source selection">
+                  {#each selectedSpace.sources as source (source.id)}
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={selectedSourceIds.includes(source.id)}
+                        on:change={() => toggleSourceSelection(source.id)}
+                      />
+                      <span>{source.title}</span>
+                    </label>
+                  {/each}
+                </div>
+              {/if}
+            </form>
+
+            <div class="runs-list" aria-label="Research runs">
+              {#if latestSelectedRun}
+                <article class="report-card" aria-label="Selected research run">
+                  <header>
+                    <div>
+                      <span>{latestSelectedRun.status}</span>
+                      <h3>{latestSelectedRun.objective}</h3>
+                    </div>
+                    <strong>{compactTime(latestSelectedRun.created_at)}</strong>
+                  </header>
+                  <dl class="source-meta">
+                    <div>
+                      <dt>Depth</dt>
+                      <dd>{latestSelectedRun.depth}</dd>
+                    </div>
+                    <div>
+                      <dt>Sources</dt>
+                      <dd>{latestSelectedRun.sources_examined || 0}</dd>
+                    </div>
+                    <div>
+                      <dt>Evidence</dt>
+                      <dd>{latestSelectedRun.evidence_count || 0}</dd>
+                    </div>
+                  </dl>
+                  {#if latestSelectedRun.scope}
+                    <div class="markdown-block compact">
+                      <Markdown content={latestSelectedRun.scope} />
+                    </div>
+                  {/if}
+                  {#if latestSelectedRun.events?.length}
+                    <div class="run-events" aria-label="Research run events">
+                      {#each latestSelectedRun.events as event (event.id)}
+                        <section>
+                          <strong>{event.stage}</strong>
+                          <div class="markdown-block compact">
+                            <Markdown content={event.message} />
+                          </div>
+                        </section>
+                      {/each}
+                    </div>
+                  {/if}
+                </article>
+              {:else}
+                <p class="empty">No research runs are stored.</p>
+              {/if}
+
+              {#if selectedSpace.research_runs?.length}
+                <div class="reports-list" aria-label="Stored research runs">
+                  {#each selectedSpace.research_runs as run (run.id)}
+                    <button type="button" class="report-row" on:click={() => selectRun(run)}>
+                      <header>
+                        <div>
+                          <span>{run.status}</span>
+                          <h3>{run.objective}</h3>
+                        </div>
+                        <strong>{compactTime(run.created_at)}</strong>
+                      </header>
+                      <p>{run.evidence_count || 0} cited evidence chunks · {run.depth}</p>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </div>
+        {:else}
+          <div
+            id="knowledge-panel-artefacts"
+            class="panel"
+            role="tabpanel"
+            aria-labelledby="knowledge-tab-artefacts"
+          >
             {#if latestSelectedReport}
-              <article class="report-card" aria-label="Latest research report">
+              <article class="report-card" aria-label="Selected artefact">
                 <header>
                   <div>
                     <span>{latestSelectedReport.mode}</span>
@@ -694,13 +1025,17 @@
                   </div>
                   <strong>{compactTime(latestSelectedReport.created_at)}</strong>
                 </header>
-                <pre>{latestSelectedReport.answer}</pre>
+                <div class="markdown-block answer-body">
+                  <Markdown content={latestSelectedReport.answer} headingIds />
+                </div>
                 {#if latestSelectedReport.evidence?.length}
                   <div class="evidence-list" aria-label="Report evidence">
                     {#each latestSelectedReport.evidence as evidence (evidence.id)}
                       <section>
                         <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
-                        <p>{evidence.excerpt}</p>
+                        <div class="markdown-block evidence-body">
+                          <Markdown content={evidence.excerpt} />
+                        </div>
                       </section>
                     {/each}
                   </div>
@@ -708,23 +1043,13 @@
                 {#if latestSelectedReport.gaps?.length}
                   <div class="gaps">
                     {#each latestSelectedReport.gaps as gap}
-                      <span>{gap}</span>
+                      <div class="gap-pill"><Markdown content={gap} /></div>
                     {/each}
                   </div>
                 {/if}
               </article>
-            {:else}
-              <p class="empty">No report has been generated.</p>
             {/if}
-          </div>
-        {:else}
-          <div
-            id="knowledge-panel-reports"
-            class="panel"
-            role="tabpanel"
-            aria-labelledby="knowledge-tab-reports"
-          >
-            <div class="reports-list" aria-label="Knowledge Space reports">
+            <div class="reports-list" aria-label="Knowledge Space artefacts">
               {#if selectedSpace.reports?.length}
                 {#each selectedSpace.reports as report (report.id)}
                   <button type="button" class="report-row" on:click={() => selectReport(report)}>
@@ -735,7 +1060,7 @@
                       </div>
                       <strong>{compactTime(report.created_at)}</strong>
                     </header>
-                    <p>{report.key_findings?.[0] || report.answer}</p>
+                    <p>{knowledgeMarkdownPreview(report.key_findings?.[0] || report.answer)}</p>
                   </button>
                 {/each}
               {:else}
@@ -865,7 +1190,6 @@
   }
 
   .space-header span,
-  .detail-header p,
   .panel-title p,
   .source-card p,
   .report-row p,
@@ -1093,6 +1417,8 @@
   .rows,
   .source-list,
   .reports-list,
+  .runs-list,
+  .run-events,
   .evidence-list,
   .gaps {
     display: grid;
@@ -1181,6 +1507,12 @@
     gap: 0.45rem;
     flex: 0 0 auto;
     padding: 0.45rem 0.9rem;
+  }
+
+  .tabs button span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .tabs button small {
@@ -1283,10 +1615,151 @@
   }
 
   .source-card p,
-  .report-row p,
-  .evidence-list p {
+  .report-row p {
     margin-top: 0.55rem;
     line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .detail-summary,
+  .markdown-block {
+    min-width: 0;
+  }
+
+  .detail-summary {
+    margin-top: 0.35rem;
+    max-width: 62rem;
+  }
+
+  .detail-summary :global(.markdown),
+  .markdown-block :global(.markdown) {
+    color: var(--text, #172033);
+  }
+
+  .detail-summary :global(.markdown p),
+  .markdown-block :global(.markdown p),
+  .markdown-block :global(.markdown li) {
+    color: var(--text, #172033);
+  }
+
+  .detail-summary :global(.markdown h1),
+  .detail-summary :global(.markdown h2),
+  .detail-summary :global(.markdown h3),
+  .detail-summary :global(.markdown h4),
+  .detail-summary :global(.markdown h5),
+  .detail-summary :global(.markdown h6),
+  .markdown-block :global(.markdown h1),
+  .markdown-block :global(.markdown h2),
+  .markdown-block :global(.markdown h3),
+  .markdown-block :global(.markdown h4),
+  .markdown-block :global(.markdown h5),
+  .markdown-block :global(.markdown h6),
+  .markdown-block :global(.markdown strong) {
+    color: var(--text-strong, #0f172a);
+  }
+
+  .markdown-block.compact {
+    margin-top: 0.55rem;
+  }
+
+  .markdown-block.compact :global(.markdown h1),
+  .markdown-block.compact :global(.markdown h2),
+  .markdown-block.compact :global(.markdown h3) {
+    font-size: 1rem;
+  }
+
+  .answer-body {
+    margin-top: 0.75rem;
+  }
+
+  .evidence-body {
+    margin-top: 0.55rem;
+  }
+
+  .source-content {
+    margin-top: 0.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--bg, #eef2f7);
+  }
+
+  .source-content summary {
+    padding: 0.55rem 0.7rem;
+    color: var(--text-strong, #0f172a);
+    font-weight: 800;
+  }
+
+  .source-body {
+    padding: 0 0.7rem 0.7rem;
+  }
+
+  .source-state {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.45rem;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.6rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--border, #cbd5e1);
+    background: var(--bg, #eef2f7);
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.76rem;
+    font-weight: 850;
+    text-transform: none;
+  }
+
+  .source-card header .status-pill {
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.76rem;
+    text-transform: none;
+  }
+
+  .source-card header .status-pill.success {
+    border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
+    color: #166534;
+  }
+
+  .source-card header .status-pill.danger,
+  .source-error {
+    color: var(--danger, #dc2626);
+  }
+
+  .source-card header .status-pill.danger {
+    border-color: color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border, #cbd5e1));
+  }
+
+  .source-card header .status-pill.active {
+    border-color: color-mix(in srgb, var(--primary, #2563eb) 35%, var(--border, #cbd5e1));
+    color: var(--primary, #2563eb);
+  }
+
+  .source-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0.45rem;
+    margin: 0.75rem 0 0;
+  }
+
+  .source-meta div {
+    min-width: 0;
+  }
+
+  .source-meta dt {
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.75rem;
+    font-weight: 850;
+  }
+
+  .source-meta dd {
+    margin: 0.15rem 0 0;
+    color: var(--text, #172033);
     overflow-wrap: anywhere;
   }
 
@@ -1305,7 +1778,7 @@
   }
 
   .chips span,
-  .gaps span {
+  .gap-pill {
     max-width: 100%;
     padding: 0.3rem 0.5rem;
     border: 1px solid var(--border-soft, #dbe3ef);
@@ -1315,6 +1788,17 @@
     font-size: 0.82rem;
     font-weight: 700;
     overflow-wrap: anywhere;
+  }
+
+  .gap-pill :global(.markdown) {
+    color: inherit;
+    font-size: inherit;
+    line-height: 1.35;
+  }
+
+  .gap-pill :global(.markdown p) {
+    margin: 0;
+    color: inherit;
   }
 
   .question-chips button {
@@ -1330,11 +1814,28 @@
     overflow-wrap: anywhere;
   }
 
+  .ask-panel,
+  .run-panel,
   .research-panel {
     display: grid;
     grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
     gap: 1rem;
     align-items: start;
+  }
+
+  .inline-submit {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.55rem;
+  }
+
+  .inline-submit button {
+    min-height: 2.5rem;
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--border, #cbd5e1);
+    background: var(--panel, #ffffff);
+    color: var(--text, #172033);
+    font-weight: 800;
   }
 
   .research-controls {
@@ -1378,21 +1879,30 @@
     overflow-wrap: anywhere;
   }
 
-  .report-card pre {
-    margin: 0.75rem 0 0;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    color: var(--text, #172033);
-    font: inherit;
-    line-height: 1.5;
-  }
-
   .evidence-list {
     margin-top: 0.8rem;
   }
 
   .evidence-list strong {
     overflow-wrap: anywhere;
+  }
+
+  .evidence-list small {
+    display: block;
+    margin-top: 0.4rem;
+    color: var(--knowledge-muted, #475569);
+    overflow-wrap: anywhere;
+  }
+
+  .run-events section {
+    min-width: 0;
+    padding: 0.65rem 0;
+    border-top: 1px solid var(--border-soft, #dbe3ef);
+  }
+
+  .run-events strong {
+    color: var(--text-strong, #0f172a);
+    text-transform: capitalize;
   }
 
   .empty,
@@ -1418,6 +1928,8 @@
 
   @media (max-width: 1080px) {
     .knowledge-page,
+    .ask-panel,
+    .run-panel,
     .research-panel,
     .sources-panel {
       grid-template-columns: 1fr;
@@ -1451,6 +1963,7 @@
 
     .space-header button,
     .form-footer button,
+    .inline-submit button,
     .research-controls button {
       width: 100%;
     }
@@ -1473,7 +1986,7 @@
 
     .tabs {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       overflow-x: visible;
     }
 
@@ -1485,6 +1998,10 @@
 
     .research-controls select {
       width: 100%;
+    }
+
+    .inline-submit {
+      grid-template-columns: 1fr;
     }
   }
 </style>

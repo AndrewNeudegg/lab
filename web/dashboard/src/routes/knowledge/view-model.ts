@@ -1,6 +1,11 @@
-import type { HomelabdKnowledgeReport, HomelabdKnowledgeSpace } from '@homelab/shared';
+import type {
+  HomelabdKnowledgeReport,
+  HomelabdKnowledgeResearchRun,
+  HomelabdKnowledgeSource,
+  HomelabdKnowledgeSpace
+} from '@homelab/shared';
 
-export type KnowledgePanel = 'sources' | 'research' | 'reports';
+export type KnowledgePanel = 'sources' | 'ask' | 'runs' | 'artefacts';
 
 type KnowledgeSpacesResponseLike = {
   spaces?: HomelabdKnowledgeSpace[] | null;
@@ -23,6 +28,9 @@ export const spaceWordCount = (space?: HomelabdKnowledgeSpace) =>
 
 export const latestReport = (space?: HomelabdKnowledgeSpace): HomelabdKnowledgeReport | undefined =>
   [...(space?.reports || [])].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
+
+export const latestResearchRun = (space?: HomelabdKnowledgeSpace): HomelabdKnowledgeResearchRun | undefined =>
+  [...(space?.research_runs || [])].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
 
 export const knowledgeSpacesFromResponse = (
   response?: KnowledgeSpacesResponseLike | null
@@ -78,10 +86,12 @@ export const selectKnowledgeSpace = (
 
 export const panelLabel = (panel: KnowledgePanel) => {
   switch (panel) {
-    case 'research':
-      return 'Research';
-    case 'reports':
-      return 'Reports';
+    case 'ask':
+      return 'Ask';
+    case 'runs':
+      return 'Research Runs';
+    case 'artefacts':
+      return 'Artefacts';
     default:
       return 'Sources';
   }
@@ -89,9 +99,11 @@ export const panelLabel = (panel: KnowledgePanel) => {
 
 export const panelItemCount = (panel: KnowledgePanel, space?: HomelabdKnowledgeSpace) => {
   switch (panel) {
-    case 'research':
-      return space?.reports?.length || 0;
-    case 'reports':
+    case 'ask':
+      return spaceSourceCount(space);
+    case 'runs':
+      return space?.research_runs?.length || 0;
+    case 'artefacts':
       return space?.reports?.length || 0;
     default:
       return spaceSourceCount(space);
@@ -109,4 +121,47 @@ export const sourceSelectionSummary = (selectedCount: number, totalCount: number
     return `All ${totalCount} ${totalCount === 1 ? 'source' : 'sources'} selected`;
   }
   return `${selectedCount}/${totalCount} sources selected`;
+};
+
+export const sourceStatusLabel = (source?: HomelabdKnowledgeSource) => {
+  const state = (source?.ingestion?.state || 'ready').trim().toLowerCase();
+  switch (state) {
+    case 'failed':
+      return 'Failed';
+    case 'processing':
+      return 'Processing';
+    case 'ready':
+      return 'Ready';
+    default:
+      return state || 'Ready';
+  }
+};
+
+export const sourceStatusTone = (source?: HomelabdKnowledgeSource) => {
+  const state = (source?.ingestion?.state || 'ready').trim().toLowerCase();
+  if (state === 'failed') {
+    return 'danger';
+  }
+  if (state === 'processing') {
+    return 'active';
+  }
+  return 'success';
+};
+
+export const knowledgeMarkdownPreview = (value = '', maxLength = 180) => {
+  const cleaned = value
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+  return `${cleaned.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
 };

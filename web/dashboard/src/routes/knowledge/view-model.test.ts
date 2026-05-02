@@ -3,6 +3,7 @@ import type { HomelabdKnowledgeSpace } from '@homelab/shared';
 import {
   compactKnowledgeID,
   filterKnowledgeSpaces,
+  knowledgeMarkdownPreview,
   knowledgeSpacesFromResponse,
   latestReport,
   panelItemCount,
@@ -91,15 +92,35 @@ describe('knowledge view model', () => {
       insight: { source_count: 2, word_count: 42 },
       reports: [
         { id: 'r1', question: 'old', mode: 'brief', answer: 'old', created_at: '2026-04-28T09:00:00Z' }
+      ],
+      research_runs: [
+        {
+          id: 'run1',
+          objective: 'Compare sources',
+          depth: 'standard',
+          status: 'completed',
+          mode: 'research',
+          created_at: '2026-04-28T09:00:00Z',
+          updated_at: '2026-04-28T09:00:00Z'
+        }
       ]
     });
 
     expect(panelItemCount('sources', item)).toBe(2);
-    expect(panelItemCount('research', item)).toBe(1);
-    expect(panelItemCount('reports', item)).toBe(1);
+    expect(panelItemCount('ask', item)).toBe(2);
+    expect(panelItemCount('runs', item)).toBe(1);
+    expect(panelItemCount('artefacts', item)).toBe(1);
     expect(sourceSelectionSummary(0, 0)).toBe('No sources available');
     expect(sourceSelectionSummary(0, 2)).toBe('No sources selected');
     expect(sourceSelectionSummary(1, 2)).toBe('1/2 sources selected');
     expect(sourceSelectionSummary(2, 2)).toBe('All 2 sources selected');
+  });
+
+  test('builds plain previews from Markdown artefacts without Mermaid source text', () => {
+    expect(
+      knowledgeMarkdownPreview(
+        '## Evidence review\n\n- Keep **evidence** visible.\n\n```mermaid\nflowchart LR\n  A --> B\n```'
+      )
+    ).toBe('Evidence review Keep evidence visible.');
   });
 });

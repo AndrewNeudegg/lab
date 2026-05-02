@@ -5,7 +5,7 @@ The dashboard has these primary operator surfaces:
 - `/assistant`: Assistant capability catalogue, life-improving activities, API-owned workflow templates, and agentic UX patterns.
 - `/chat`: resumable conversations, broad direction, planning, and general commands.
 - `/tasks`: task queue, selected-task record, task actions, and task-scoped activity.
-- `/knowledge`: Knowledge Space source collections, source processing, and source-grounded reports.
+- `/knowledge`: Knowledge Space source corpora, ingestion status, corpus ask/search, research runs, and source-grounded artefacts.
 - `/workflows`: durable LLM/tool workflow creation, cost estimates, run status, and latest outputs.
 - `/docs`: searchable documentation library generated from Markdown files in `./docs`.
 - `/terminal`: browser terminal backed by a homelabd shell session for direct operator commands.
@@ -49,7 +49,7 @@ Dashboard state that operators naturally share must have a URL and must use Svel
 - Task rows and chat-created task links use `/tasks?task=<task_id>` and open the selected task record. Chat task creation replies display the summarised task title as the link text.
 - Plain `/tasks` is the task queue overview and does not auto-select the first task. From the overview, selecting a task pushes `/tasks?task=<task_id>`, so browser Back returns to the overview instead of another task detail.
 - Returning from a task record preserves the active task triage and execution-queue filters. Direct task links fall back to `All` only when the task is hidden by the current queue context.
-- Knowledge Space rows use `/knowledge?space=<space_id>` and open the selected source collection.
+- Knowledge Space rows use `/knowledge?space=<space_id>` and open the selected research corpus.
 - Workflow rows use `/workflows?workflow=<workflow_id>` and open the selected workflow detail.
 - Terminal tabs use `/terminal?session=<terminal_session_id>` once a backend session exists, or `/terminal?tab=<tab_id>` before startup.
 - Docs use `/docs/<slug>` plus heading hashes, for example `/docs/task-workflow#browser-uat`.
@@ -71,12 +71,13 @@ The `/docs` page imports every Markdown file under `./docs` into the dashboard. 
 
 ## Markdown Diagrams And Brand Colours
 
-Chat replies and docs pages render Mermaid fenced blocks. Use diagrams when a state machine, workflow, queue, dependency graph, or handoff is easier to scan visually than as prose.
+Chat replies, docs pages, and Knowledge Space research surfaces render Mermaid fenced blocks. Use diagrams when a state machine, workflow, queue, dependency graph, or handoff is easier to scan visually than as prose.
 
 ```mermaid
 flowchart LR
   Chat[Chat reply] --> Markdown[Markdown renderer]
   Docs[Docs page] --> Markdown
+  Knowledge[Knowledge answer] --> Markdown
   Markdown --> Mermaid[Mermaid SVG]
   Mermaid --> Theme{Theme}
   Theme --> Light[Light brand palette]
@@ -234,7 +235,7 @@ If a component does not answer one of those questions, it should not be in the p
 - Changes vs main: task-scoped diff review loaded from `GET /tasks/{task_id}/diff`. It shows the branch comparison, summary counts, changed-file navigation, split/unified toggles, line numbers, addition/deletion colour, wrapped long lines, and inline changed-text highlights. On medium-width screens the file list moves above the diff, and split mode keeps readable code width inside the diff scroller rather than compressing side-by-side columns. Use this before review, conflict-resolution delegation, or approval.
 - Long diagnostics: worker trace, task activity, reviewed plan, and original input use disclosures. Keep the summary line meaningful, because operators often need to scan the result and only expand a long section when investigating a failure or review detail.
 - `/assistant` page: catalogue of life-improving activities and capabilities backed by `GET /assistant`. Keep the API as the source of truth for capability names, activity mapping, workflow templates, autonomy levels, safeguards, and UX pattern guidance. Activities are outcome selectors, capabilities are the implementation choices, filters narrow the catalogue with a clear reset path, and related surface links live with the selected capability. The UI may filter and select, but it must not invent Assistant behaviour that the API did not return.
-- `/knowledge` page: source-grounded Knowledge Space workbench backed by typed Knowledge Space endpoints. Spaces are navigation, processed sources are the evidence surface, suggested questions start a research draft, stored reports select a report for inspection, and add/create forms stay scoped behind explicit controls so existing evidence and reports remain primary. Search must have a clear reset path.
+- `/knowledge` page: source-grounded Knowledge Space workbench backed by typed Knowledge Space endpoints. Spaces are navigation, indexed sources are the evidence surface, suggested questions start a grounded Ask draft, Research Runs show durable run state and events, and Artefacts select stored reports for inspection. Add/create forms stay scoped behind explicit controls so existing evidence, provenance, runs, and reports remain primary. Search must have a clear reset path.
 - `/chat` page: chat-session history, selected transcript, and compact composer. It does not show selected task detail because selecting tasks and typing chat commands are separate jobs. `New chat` lives as an icon button in the history pane, creates or selects an empty local session, and sends future dashboard messages with that session's `conversation_id`, so orchestration history and chat search stay scoped to the selected conversation. The current-chat clear icon removes the selected browser session and asks homelabd to delete matching server event-log and HTTP transcript entries; the desktop history clear-all icon lives beside `New chat` and clears every local session plus all server chat transcript context.
 - Chat message footers: small, persistent metadata at the bottom of each bubble. The footer shows the exchange number, and assistant replies also show returned orchestration stats such as model turns, tool calls, token count, and API-measured elapsed response time when available. Keep it secondary but readable; do not hide these counts behind hover-only controls.
 - `/chat` reply buttons: assistant responses can include structured `buttons` from the `/message` API. Render them in the assistant bubble with the existing action-chip pattern, disable them while chat is sending or clearing, and send the clicked button text as the next user message. Long labels must wrap inside the bubble on desktop and mobile without creating horizontal page scroll.
@@ -312,7 +313,7 @@ On compact screens `/chat` keeps chat-session history above the selected convers
 
 On compact screens `/assistant` stacks controls, outcome selectors, capability rows, and selected detail. Tapping an activity or capability is navigation within the catalogue, so it must reveal the selected capability detail rather than leaving the operator above a changed section they cannot see. Keep the summary and totals compact so useful outcomes and related surface links remain reachable.
 
-On compact screens `/knowledge` stacks the Knowledge Space list above the selected record. Selecting a space is navigation, so it must reveal the selected detail below the pinned navbar. Keep processed sources visible before add-source controls, because evidence review is the primary job once a space is selected.
+On compact screens `/knowledge` stacks the Knowledge Space list above the selected record. Selecting a space is navigation, so it must reveal the selected detail below the pinned navbar. Keep indexed sources visible before add-source controls, because evidence review is the primary job once a space is selected.
 
 On compact screens `/terminal` keeps the xterm viewport as the primary scroll area and places large control-key buttons below it. Include controls for keys commonly missing or awkward on Android keyboards, including `Ctrl-C`, `Ctrl-D`, `Ctrl-Z`, `Tab`, `Esc`, and arrow keys.
 

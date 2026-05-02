@@ -411,6 +411,7 @@ export interface HomelabdKnowledgeSpace {
   objective?: string;
   sources?: HomelabdKnowledgeSource[];
   reports?: HomelabdKnowledgeReport[];
+  research_runs?: HomelabdKnowledgeResearchRun[];
   insight: HomelabdKnowledgeInsight;
   created_by?: string;
   created_at: string;
@@ -435,12 +436,47 @@ export interface HomelabdKnowledgeSource {
   key_terms?: string[];
   questions?: string[];
   word_count: number;
+  provenance?: HomelabdKnowledgeSourceProvenance;
+  ingestion?: HomelabdKnowledgeSourceIngestion;
+  chunks?: HomelabdKnowledgeSourceChunk[];
   created_at: string;
   updated_at: string;
 }
 
+export interface HomelabdKnowledgeSourceProvenance {
+  uri?: string;
+  canonical_uri?: string;
+  content_type?: string;
+  content_hash?: string;
+  byte_count?: number;
+  snapshot_path?: string;
+  fetched_at?: string;
+  extractor?: string;
+}
+
+export interface HomelabdKnowledgeSourceIngestion {
+  state?: 'ready' | 'failed' | 'processing' | string;
+  stage?: string;
+  message?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface HomelabdKnowledgeSourceChunk {
+  id: string;
+  source_id: string;
+  source_title: string;
+  index: number;
+  citation_label: string;
+  text: string;
+  terms?: string[];
+  word_count: number;
+}
+
 export interface HomelabdKnowledgeReport {
   id: string;
+  run_id?: string;
   question: string;
   mode: 'research' | 'brief' | 'study' | string;
   answer: string;
@@ -454,10 +490,55 @@ export interface HomelabdKnowledgeEvidence {
   id: string;
   source_id: string;
   source_title: string;
+  source_kind?: string;
+  source_uri?: string;
+  chunk_id?: string;
   citation_label: string;
   excerpt: string;
   terms?: string[];
   score: number;
+}
+
+export interface HomelabdKnowledgeQueryResult {
+  query: string;
+  terms?: string[];
+  evidence: HomelabdKnowledgeEvidence[];
+  created_at: string;
+}
+
+export interface HomelabdKnowledgeAskResult {
+  question: string;
+  answer: string;
+  evidence?: HomelabdKnowledgeEvidence[];
+  gaps?: string[];
+  created_at: string;
+}
+
+export interface HomelabdKnowledgeResearchRun {
+  id: string;
+  objective: string;
+  scope?: string;
+  depth: 'quick' | 'standard' | 'deep' | string;
+  status: 'completed' | 'failed' | string;
+  question?: string;
+  mode: 'research' | 'brief' | 'study' | string;
+  source_ids?: string[];
+  report_id?: string;
+  sources_examined?: number;
+  evidence_count?: number;
+  error?: string;
+  events?: HomelabdKnowledgeResearchRunEvent[];
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface HomelabdKnowledgeResearchRunEvent {
+  id: string;
+  stage: string;
+  message: string;
+  created_at: string;
 }
 
 export interface HomelabdKnowledgeSpacesResponse {
@@ -479,7 +560,7 @@ export interface HomelabdAddKnowledgeSourceRequest {
   title: string;
   kind?: string;
   uri?: string;
-  content: string;
+  content?: string;
 }
 
 export interface HomelabdAddKnowledgeSourceResponse {
@@ -496,6 +577,44 @@ export interface HomelabdResearchKnowledgeSpaceRequest {
 
 export interface HomelabdResearchKnowledgeSpaceResponse {
   space: HomelabdKnowledgeSpace;
+  report: HomelabdKnowledgeReport;
+  reply: string;
+}
+
+export interface HomelabdQueryKnowledgeSpaceRequest {
+  query: string;
+  source_ids?: string[];
+  limit?: number;
+}
+
+export interface HomelabdQueryKnowledgeSpaceResponse {
+  result: HomelabdKnowledgeQueryResult;
+  reply: string;
+}
+
+export interface HomelabdAskKnowledgeSpaceRequest {
+  question: string;
+  source_ids?: string[];
+  limit?: number;
+}
+
+export interface HomelabdAskKnowledgeSpaceResponse {
+  result: HomelabdKnowledgeAskResult;
+  reply: string;
+}
+
+export interface HomelabdCreateKnowledgeResearchRunRequest {
+  objective: string;
+  scope?: string;
+  depth?: 'quick' | 'standard' | 'deep' | string;
+  question?: string;
+  mode?: 'research' | 'brief' | 'study' | string;
+  source_ids?: string[];
+}
+
+export interface HomelabdCreateKnowledgeResearchRunResponse {
+  space: HomelabdKnowledgeSpace;
+  run: HomelabdKnowledgeResearchRun;
   report: HomelabdKnowledgeReport;
   reply: string;
 }
@@ -727,6 +846,18 @@ export interface HomelabdClient {
     spaceId: string,
     request: HomelabdResearchKnowledgeSpaceRequest
   ): Promise<HomelabdResearchKnowledgeSpaceResponse>;
+  queryKnowledgeSpace(
+    spaceId: string,
+    request: HomelabdQueryKnowledgeSpaceRequest
+  ): Promise<HomelabdQueryKnowledgeSpaceResponse>;
+  askKnowledgeSpace(
+    spaceId: string,
+    request: HomelabdAskKnowledgeSpaceRequest
+  ): Promise<HomelabdAskKnowledgeSpaceResponse>;
+  createKnowledgeResearchRun(
+    spaceId: string,
+    request: HomelabdCreateKnowledgeResearchRunRequest
+  ): Promise<HomelabdCreateKnowledgeResearchRunResponse>;
   createWorkflow(request: HomelabdCreateWorkflowRequest): Promise<HomelabdWorkflowActionResponse>;
   listWorkflows(): Promise<HomelabdWorkflowsResponse>;
   getWorkflow(workflowId: string): Promise<HomelabdWorkflow>;

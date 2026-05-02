@@ -13,6 +13,9 @@ const knowledgeSource = {
   summary: 'Source-grounded reports should keep **evidence visible** beside generated claims.',
   key_terms: ['source', 'evidence', 'reports'],
   questions: ['What does this source show about evidence?'],
+  claims: [{ id: 'claim_1', text: 'Evidence should stay visible beside generated claims.', importance: 'high' }],
+  entities: [{ name: 'Knowledge Space', type: 'product', description: 'Research corpus' }],
+  reliability_notes: ['Operator-provided source text.'],
   word_count: 8,
   provenance: {
     content_hash: 'sha256:test',
@@ -60,6 +63,9 @@ const knowledgeReport = {
     }
   ],
   gaps: ['Only stored Knowledge Space sources were used for this report.'],
+  provider: 'openai',
+  model: 'gpt-5.2',
+  usage: { input_tokens: 320, output_tokens: 120, total_tokens: 440 },
   created_at: now
 };
 
@@ -70,10 +76,19 @@ const knowledgeRun = {
   depth: 'standard',
   status: 'completed',
   mode: 'research',
+  discover_sources: false,
+  plan: {
+    rewritten_objective: 'Track evidence review patterns across the stored corpus.',
+    search_queries: ['evidence visible generated claims'],
+    steps: ['Retrieve cited chunks', 'Synthesize report']
+  },
   source_ids: [knowledgeSource.id],
   report_id: knowledgeReport.id,
   sources_examined: 1,
   evidence_count: 1,
+  provider: 'openai',
+  model: 'gpt-5.2',
+  usage: { input_tokens: 280, output_tokens: 90, total_tokens: 370 },
   events: [
     {
       id: 'krun_event_1',
@@ -82,6 +97,7 @@ const knowledgeRun = {
       created_at: now
     }
   ],
+  workspace_path: 'runs/kspace/krun',
   created_at: now,
   updated_at: now,
   started_at: now,
@@ -177,7 +193,7 @@ const mockKnowledgeApis = async (page: Page) => {
       updated_at: now
     };
     knowledgeSpaces = [updated];
-    await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source indexed' } });
+    await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source analysed' } });
   });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research$/, async (route) => {
     const body = route.request().postDataJSON() as { question?: string; mode?: string };
@@ -217,8 +233,12 @@ const mockKnowledgeApis = async (page: Page) => {
         result: {
           question: body.question || knowledgeReport.question,
           answer: knowledgeReport.answer,
+          key_findings: knowledgeReport.key_findings,
           evidence: knowledgeReport.evidence,
           gaps: knowledgeReport.gaps,
+          provider: 'openai',
+          model: 'gpt-5.2',
+          usage: { input_tokens: 210, output_tokens: 70, total_tokens: 280 },
           created_at: now
         },
         reply: 'Grounded answer created.'
@@ -226,25 +246,58 @@ const mockKnowledgeApis = async (page: Page) => {
     });
   });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research-runs$/, async (route) => {
-    const body = route.request().postDataJSON() as { objective?: string; depth?: string };
+    const body = route.request().postDataJSON() as {
+      objective?: string;
+      depth?: string;
+      discover_sources?: boolean;
+      max_sources?: number;
+    };
     const run = {
       ...knowledgeRun,
       id: 'krun_created',
       objective: body.objective || knowledgeRun.objective,
       depth: body.depth || 'standard',
+      status: 'queued',
+      discover_sources: Boolean(body.discover_sources),
+      max_sources: body.max_sources,
+      source_candidates: body.discover_sources
+        ? [
+            {
+              id: 'candidate_created',
+              query: body.objective || knowledgeRun.objective,
+              kind: 'web',
+              provider: 'searxng',
+              title: 'Evidence review source',
+              url: 'https://example.com/evidence-review',
+              domain: 'example.com',
+              snippet: 'Research runs preserve cited evidence for review.',
+              source_id: 'ksrc_discovered',
+              status: 'imported'
+            }
+          ]
+        : [],
+      workspace_path: 'runs/kspace/krun_created',
+      report_id: undefined,
+      evidence_count: 0,
+      events: [
+        {
+          id: 'krun_created_event_1',
+          stage: 'queued',
+          message: 'Research run queued for language model planning.',
+          created_at: now
+        }
+      ],
       created_at: now,
       updated_at: now
     };
-    const report = { ...knowledgeReport, id: 'kreport_from_run', run_id: run.id, created_at: now };
     const current = knowledgeSpaces[0];
     const updated = {
       ...current,
       research_runs: [run, ...(current.research_runs || [])],
-      reports: [report, ...(current.reports || [])],
       updated_at: now
     };
     knowledgeSpaces = [updated];
-    await route.fulfill({ status: 201, json: { space: updated, run, report, reply: 'Research run completed.' } });
+    await route.fulfill({ status: 201, json: { space: updated, run, reply: 'Research run queued.' } });
   });
 };
 
@@ -343,7 +396,7 @@ for (const viewport of [
       await page.getByLabel('Source title').fill('Review notes');
       await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
       await page.locator('.source-form button[type="submit"]').click();
-      await expect(page.getByText('Source indexed')).toBeVisible();
+      await expect(page.getByText('Source analysed')).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Review notes' })).toBeVisible();
     });
 
@@ -366,10 +419,14 @@ for (const viewport of [
 
       await page.getByRole('tab', { name: /Research Runs/ }).click();
       await page.locator('#knowledge-panel-runs').getByLabel('Objective').fill('Compare evidence review');
+      await expect(page.getByLabel('Discover online sources')).toBeChecked();
+      await page.getByLabel('Max sources').fill('6');
       await page.getByRole('button', { name: 'Start run' }).click();
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText(
         'Compare evidence review'
       );
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Queued');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('example.com');
 
       await page.getByRole('tab', { name: /Artefacts/ }).click();
       await page.getByRole('button', { name: /How should evidence be reviewed/ }).first().click();

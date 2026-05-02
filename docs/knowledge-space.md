@@ -1,29 +1,36 @@
 # Knowledge Space
 
-Knowledge Space is the dashboard mode for source-grounded research work. It keeps source material, backend processing output, corpus queries, grounded answers, research runs, and generated reports in one durable filesystem-backed place under `data/knowledge`.
+Knowledge Space is the dashboard mode for source-grounded research work. It keeps source material, language-model analysis, corpus queries, grounded answers, research runs, and generated reports in one durable filesystem-backed place under `data/knowledge`.
 
 ## Workflow
 
 ```mermaid
 flowchart LR
   Space[Create space] --> Source[Add source text]
-  Space --> URL[Add URL source]
+  Space --> URL[Add URL or PDF source]
   Source --> Process[Ingest and snapshot]
   URL --> Process
-  Process --> Index[Summary, chunks, terms, questions]
+  Process --> Analyse[LLM source analysis]
+  Analyse --> Index[Chunks, claims, terms, questions]
   Index --> Ask[Ask or query corpus]
   Ask --> Evidence[Cited evidence]
   Index --> Run[Start research run]
-  Run --> Report[Stored artefact]
+  Run --> Plan[LLM plan]
+  Plan --> Discover[Optional online discovery]
+  Discover --> Import[Fetch, snapshot, and analyse sources]
+  Import --> Index
+  Plan --> Report[LLM report artefact]
 ```
 
 ## Behaviour
 
 - A space stores a title, optional objective, processed sources, aggregate key terms, suggested questions, research runs, and recent reports.
-- Adding a text, note, or file source stores a static copy of the supplied text. Adding a URL source can fetch the page server-side, extract readable text, snapshot it, and record fetch provenance.
-- Every indexed source has ingestion state, provenance, content hash, snapshot path, word count, summary, key terms, suggested questions, and retrieval chunks.
-- Querying or asking the corpus is source-bound. The backend ranks matching chunks and returns evidence labels, excerpts, and coverage gaps. The current answer engine is deterministic and local, but the API shape is ready for an LLM/RAG provider.
-- Starting a research run records a durable run with objective, scope, depth, source selection, lifecycle events, and a linked report artefact. In this pass runs complete synchronously over stored sources.
+- Adding a text, note, file, email export, connected-resource export, URL, or PDF URL stores a static source snapshot and provenance. URL ingestion extracts HTML, plain text, JSON/XML-like text, or PDF text server-side.
+- Every ready source has ingestion state, provenance, content hash, snapshot path, word count, retrieval chunks, and model-produced summary, key terms, questions, claims, entities, and reliability notes.
+- Source analysis, grounded answers, report generation, and research planning require the configured `homelabd` language model provider. If the provider fails, the operation records or returns that failure instead of fabricating deterministic content.
+- Querying the corpus is source-bound lexical retrieval over stored chunks. Asking the corpus ranks matching chunks, sends them to the configured model, and returns an answer with evidence labels, key findings, gaps, model, and token usage.
+- Starting a research run records a durable queued run with objective, scope, depth, source selection, optional online discovery, lifecycle events, model plan, evidence counts, model provenance, candidate source state, workspace path, and a linked report artefact when synthesis completes. Runs advance asynchronously through queued, planning, discovering, retrieving, reading, synthesising, reviewing, completed, or failed states.
+- When `discover_sources` is enabled, the run uses the registered `internet.research` tool with fetched pages, imports usable candidates as normal URL sources, runs model source analysis, and then synthesises over the expanded corpus. Search, fetch, model, and import failures stay visible on the run; the executor does not substitute fabricated source content.
 - The dashboard renders Markdown and Mermaid diagrams in objectives, source summaries, source content, answers, cited evidence, research run events, gaps, and saved artefacts.
 - The dashboard page is `/knowledge`; direct links use `/knowledge?space=<space_id>`.
 
@@ -38,25 +45,26 @@ go run ./cmd/homelabctl knowledge source add kspace_123 --url https://example.co
 go run ./cmd/homelabctl knowledge query kspace_123 --limit 5 "evidence handling"
 go run ./cmd/homelabctl knowledge ask kspace_123 "How should operators use this space?"
 go run ./cmd/homelabctl knowledge research-run kspace_123 --depth standard --scope "stored sources" "Create a source-grounded briefing"
+go run ./cmd/homelabctl knowledge research-run kspace_123 --discover --max-sources 8 --depth deep "Research current source-grounded evidence patterns"
 ```
 
-The CLI mirrors the dashboard flow: create a space, add text/file/URL sources, query or ask the corpus, then start a research run against all or selected sources. See `docs/homelabctl.md#knowledge-space-commands` for the full command reference.
+The CLI mirrors the dashboard flow: create a space, add text/file/URL sources, query or ask the corpus, then start a research run against stored, selected, and optionally discovered online sources. See `docs/homelabctl.md#knowledge-space-commands` for the full command reference.
 
 ## HTTP API
 
 - `GET /knowledge/spaces`: list spaces. An empty store returns `{"spaces":[]}` and the dashboard shows the empty state.
 - `POST /knowledge/spaces`: create a space with `title`, optional `objective`, and optional `description`.
 - `GET /knowledge/spaces/{space_id}`: load one space.
-- `POST /knowledge/spaces/{space_id}/sources`: add and index a source with `title`, optional `kind`, optional `uri`, and optional `content`. URL sources may omit `content` when `uri` is fetchable.
+- `POST /knowledge/spaces/{space_id}/sources`: add, snapshot, and analyse a source with `title`, optional `kind`, optional `uri`, and optional `content`. URL sources may omit `content` when `uri` is fetchable. Non-URL sources need source text.
 - `POST /knowledge/spaces/{space_id}/query`: search indexed source chunks with `query`, optional `limit`, and optional `source_ids`.
-- `POST /knowledge/spaces/{space_id}/ask`: answer a grounded question with `question`, optional `limit`, and optional `source_ids`.
-- `POST /knowledge/spaces/{space_id}/research`: create a report with `question`, optional `mode` (`research`, `brief`, or `study`), and optional `source_ids`.
-- `POST /knowledge/spaces/{space_id}/research-runs`: create a durable research run with `objective`, optional `scope`, optional `depth` (`quick`, `standard`, or `deep`), optional `mode`, and optional `source_ids`.
+- `POST /knowledge/spaces/{space_id}/ask`: answer a grounded question with `question`, optional `limit`, and optional `source_ids`. The response includes model provenance and usage.
+- `POST /knowledge/spaces/{space_id}/research`: create an immediate model-backed report with `question`, optional `mode` (`research`, `brief`, or `study`), and optional `source_ids`.
+- `POST /knowledge/spaces/{space_id}/research-runs`: create a durable asynchronous research run with `objective`, optional `scope`, optional `depth` (`quick`, `standard`, or `deep`), optional `mode`, optional `source_ids`, optional `discover_sources`, and optional `max_sources`. The create response returns the queued run; poll `GET /knowledge/spaces/{space_id}` for status, candidate sources, workspace path, and report linkage.
 
 ## Operator Notes
 
-Processing lives in `homelabd`, not in the browser. The dashboard submits source text or URL metadata, chooses selected sources, and renders ingestion status, provenance, summaries, chunks, evidence, gaps, runs, and saved artefacts returned by the API.
+Processing lives in `homelabd`, not in the browser. The dashboard submits source text or URL metadata, chooses selected sources, and renders ingestion status, provenance, model analysis, chunks, evidence, gaps, runs, plans, model usage, and saved artefacts returned by the API.
 
 An empty Knowledge Space store is normal on a new install or after a data reset. The `/knowledge` page should show `0` spaces and `0` sources with the `New space` control; a raw `response.spaces is null` or iterator error is a bug, not an operator action.
 
-The current implementation is deterministic and local to stored sources. URL ingestion supports HTML and plain text; PDF text extraction, OAuth connectors, hosted Deep Research adapters, semantic embeddings, and multi-day autonomous scheduling are extension points. The storage contract is abstracted behind the Knowledge repository interface while the active implementation remains directory-backed JSON plus source snapshots.
+The active implementation remains directory-backed JSON plus source snapshots plus per-run workspaces behind the Knowledge repository interface. There is no SQLite dependency. Semantic embeddings, OAuth connector pulls, hosted Deep Research adapters, and resumable multi-day schedulers are still extension points, but the production answer/report/source-analysis/research path is language-model backed.

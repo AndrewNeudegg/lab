@@ -56,12 +56,60 @@ func (s *Store) Save(space Space) error {
 		}
 		normalized.Sources[index].Provenance.SnapshotPath = path
 	}
+	for index := range normalized.ResearchRuns {
+		path, err := s.writeResearchRunWorkspaceLocked(normalized.ID, normalized.ResearchRuns[index])
+		if err != nil {
+			return err
+		}
+		normalized.ResearchRuns[index].WorkspacePath = path
+	}
 	normalized.Insight = BuildSpaceInsight(normalized.Sources, normalized.UpdatedAt)
 	b, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(s.dir, normalized.ID+".json"), append(b, '\n'), 0o644)
+}
+
+func (s *Store) writeResearchRunWorkspaceLocked(spaceID string, run ResearchRun) (string, error) {
+	if strings.TrimSpace(run.ID) == "" {
+		return run.WorkspacePath, nil
+	}
+	relative := filepath.Join("runs", spaceID, run.ID)
+	fullDir := filepath.Join(s.dir, relative)
+	if err := os.MkdirAll(fullDir, 0o755); err != nil {
+		return "", err
+	}
+	run.WorkspacePath = relative
+	state, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(fullDir, "state.json"), append(state, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	var events strings.Builder
+	for _, event := range run.Events {
+		line, err := json.Marshal(event)
+		if err != nil {
+			return "", err
+		}
+		events.Write(line)
+		events.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(fullDir, "events.jsonl"), []byte(events.String()), 0o644); err != nil {
+		return "", err
+	}
+	if len(run.Candidates) > 0 {
+		candidates, err := json.MarshalIndent(run.Candidates, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(fullDir, "sources.json"), append(candidates, '\n'), 0o644); err != nil {
+			return "", err
+		}
+	}
+	return relative, nil
 }
 
 func (s *Store) writeSourceSnapshotLocked(spaceID string, source Source) (string, error) {

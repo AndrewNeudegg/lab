@@ -231,32 +231,15 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 }
 
 func buildProvider(cfg config.Config) (llm.Provider, string, error) {
-	var candidates []llm.ProviderCandidate
-	addCandidate := func(name string) error {
-		providerCfg, ok := cfg.Providers[name]
-		if !ok {
-			return fmt.Errorf("provider %q not configured", name)
-		}
-		provider, model, err := buildSingleProvider(name, providerCfg)
-		if err != nil {
-			return err
-		}
-		candidates = append(candidates, llm.ProviderCandidate{Name: name, Model: model, Provider: provider})
-		return nil
+	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]
+	if !ok {
+		return nil, "", fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
 	}
-	if err := addCandidate(cfg.DefaultProvider); err != nil {
+	provider, model, err := buildSingleProvider(cfg.DefaultProvider, providerCfg)
+	if err != nil {
 		return nil, "", err
 	}
-	if cfg.DefaultProvider != "openai" {
-		if providerCfg, ok := cfg.Providers["openai"]; ok && providerUsable(providerCfg) {
-			provider, model, err := buildSingleProvider("openai", providerCfg)
-			if err != nil {
-				return nil, "", err
-			}
-			candidates = append(candidates, llm.ProviderCandidate{Name: "openai", Model: model, Provider: provider})
-		}
-	}
-	return llm.NewFallbackProvider(candidates), candidates[0].Model, nil
+	return provider, model, nil
 }
 
 func buildSingleProvider(name string, providerCfg config.ProviderConfig) (llm.Provider, string, error) {
@@ -267,15 +250,6 @@ func buildSingleProvider(name string, providerCfg config.ProviderConfig) (llm.Pr
 		return llm.WithRetry(llm.NewOpenAICompatible(name, providerCfg.BaseURL, providerCfg.APIKey), llm.RetryConfig{}), providerCfg.Model, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported provider type %q", providerCfg.Type)
-	}
-}
-
-func providerUsable(providerCfg config.ProviderConfig) bool {
-	switch providerCfg.Type {
-	case "gemini", "openai-compatible", "":
-		return providerCfg.APIKey != "" || strings.Contains(providerCfg.BaseURL, "localhost") || strings.Contains(providerCfg.BaseURL, "127.0.0.1")
-	default:
-		return false
 	}
 }
 

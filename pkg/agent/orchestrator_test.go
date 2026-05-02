@@ -18,6 +18,7 @@ import (
 
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
+	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
 	"github.com/andrewneudegg/lab/pkg/llm"
 	memstore "github.com/andrewneudegg/lab/pkg/memory"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
@@ -6536,6 +6537,96 @@ func seedTaskGraph(t *testing.T, orch *Orchestrator, goal string) (taskstore.Tas
 	return parent, children
 }
 
+func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	provider := &scriptedProvider{contents: []string{
+		`{
+			"rewritten_objective":"Explain evidence review with newly discovered sources",
+			"clarifying_questions":[],
+			"search_queries":["evidence review citations"],
+			"steps":["Search online","Import fetched sources","Synthesize cited answer"],
+			"expected_outputs":["Markdown report"]
+		}`,
+		`{
+			"summary":"Discovered source says research runs should preserve citations.",
+			"key_terms":["evidence","citations"],
+			"questions":["How should cited evidence be reviewed?"],
+			"claims":[{"id":"claim_1","text":"Research runs should preserve citations.","importance":"high"}],
+			"entities":[{"name":"Knowledge Space","type":"product","description":"Research corpus"}],
+			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"answer":"The imported source says evidence review should preserve citations [S1].",
+			"key_findings":["[S1] Citations remain attached to generated claims."],
+			"gaps":[]
+		}`,
+	}}
+	orch.provider = provider
+	orch.model = "test-model"
+	research := &knowledgeInternetResearchStub{}
+	if err := orch.registry.Register(research); err != nil {
+		t.Fatal(err)
+	}
+	store := knowledgestore.NewStore(filepath.Join(orch.cfg.DataDir, "knowledge"))
+	space, err := knowledgestore.NewSpace(knowledgestore.CreateSpaceRequest{Title: "Autonomous corpus"}, "kspace_discovery", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(space); err != nil {
+		t.Fatal(err)
+	}
+	orch.WithKnowledge(store)
+
+	_, run, _, _, err := orch.StartKnowledgeResearchRun(context.Background(), space.ID, knowledgestore.CreateResearchRunRequest{
+		Objective:       "Explain evidence review with newly discovered sources",
+		Depth:           "standard",
+		Mode:            "research",
+		DiscoverSources: true,
+		MaxSources:      2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var loaded knowledgestore.Space
+	var completed knowledgestore.ResearchRun
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		loaded, err = store.Load(space.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, candidateRun := range loaded.ResearchRuns {
+			if candidateRun.ID == run.ID {
+				completed = candidateRun
+				break
+			}
+		}
+		if completed.Status == knowledgestore.ResearchRunStatusCompleted || completed.Status == knowledgestore.ResearchRunStatusFailed {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if completed.Status != knowledgestore.ResearchRunStatusCompleted {
+		t.Fatalf("run = %#v, want completed discovery run", completed)
+	}
+	if len(loaded.Sources) != 1 || loaded.Sources[0].URI != "https://example.com/evidence-review" || loaded.Sources[0].Ingestion.State != knowledgestore.SourceStatusReady {
+		t.Fatalf("sources = %#v, want imported analysed online source", loaded.Sources)
+	}
+	if len(completed.Candidates) != 1 || completed.Candidates[0].Status != "imported" || completed.Candidates[0].SourceID == "" {
+		t.Fatalf("candidates = %#v, want imported candidate with source id", completed.Candidates)
+	}
+	if completed.WorkspacePath == "" || completed.ReportID == "" || completed.SourcesExamined != 1 || completed.EvidenceCount == 0 {
+		t.Fatalf("completed run = %#v, want workspace, report, source, and evidence metadata", completed)
+	}
+	if research.provider != "searxng" || !research.fetch || research.maxSources != 2 {
+		t.Fatalf("research request provider=%q fetch=%v maxSources=%d, want explicit searxng fetch max 2", research.provider, research.fetch, research.maxSources)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("model requests = %d, want plan, source analysis, and report", len(provider.requests))
+	}
+}
+
 type delegateStub struct {
 	started  chan struct{}
 	release  chan struct{}
@@ -7031,6 +7122,56 @@ func (s *internetResearchStub) Run(_ context.Context, raw json.RawMessage) (json
 			"url":     "https://example.com/agent-search",
 			"domain":  "example.com",
 			"snippet": "Fan-out search and fetched evidence.",
+		}},
+	})
+}
+
+type knowledgeInternetResearchStub struct {
+	query      string
+	depth      string
+	provider   string
+	maxSources int
+	fetch      bool
+}
+
+func (knowledgeInternetResearchStub) Name() string        { return "internet.research" }
+func (knowledgeInternetResearchStub) Description() string { return "" }
+func (knowledgeInternetResearchStub) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (knowledgeInternetResearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
+func (s *knowledgeInternetResearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		Query      string `json:"query"`
+		Depth      string `json:"depth"`
+		Provider   string `json:"provider"`
+		MaxSources int    `json:"max_sources"`
+		Fetch      bool   `json:"fetch"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	s.query = req.Query
+	s.depth = req.Depth
+	s.provider = req.Provider
+	s.maxSources = req.MaxSources
+	s.fetch = req.Fetch
+	return json.Marshal(map[string]any{
+		"query":           req.Query,
+		"source":          "all",
+		"depth":           req.Depth,
+		"method":          "plan -> fan-out search -> fetch",
+		"search_provider": req.Provider,
+		"sources": []map[string]any{{
+			"query":        req.Query,
+			"kind":         "web",
+			"provider":     req.Provider,
+			"title":        "Evidence review source",
+			"url":          "https://example.com/evidence-review",
+			"domain":       "example.com",
+			"snippet":      "Research runs preserve cited evidence for review.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Evidence review source",
+			"text":         "Evidence review systems keep citations attached to generated claims so reviewers can inspect source-grounded answers.",
 		}},
 	})
 }

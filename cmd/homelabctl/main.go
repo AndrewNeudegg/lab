@@ -368,12 +368,12 @@ func (c cli) knowledgeSource(args []string) error {
 
 func (c cli) knowledgeSourceAdd(args []string) error {
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
-		return fmt.Errorf("usage: homelabctl knowledge source add <space_id> [--kind text|url|file|note] [--url URL|--uri URI] [--file PATH|--content TEXT] [title]")
+		return fmt.Errorf("usage: homelabctl knowledge source add <space_id> [--kind text|url|file|note|email|mcp] [--url URL|--uri URI] [--file PATH|--content TEXT] [title]")
 	}
 	spaceID := args[0]
 	flags := flag.NewFlagSet("knowledge source add", flag.ContinueOnError)
 	flags.SetOutput(c.err)
-	kind := flags.String("kind", "", "source kind: text, url, file, or note")
+	kind := flags.String("kind", "", "source kind: text, url, file, note, email, or mcp")
 	uri := flags.String("uri", "", "source reference URI or path")
 	urlValue := flags.String("url", "", "fetch and add a web URL")
 	filePath := flags.String("file", "", "read source content from this file, or - for stdin")
@@ -409,10 +409,10 @@ func (c cli) knowledgeSourceAdd(args []string) error {
 		title = sourceURI
 	}
 	if title == "" {
-		return fmt.Errorf("usage: homelabctl knowledge source add <space_id> [--kind text|url|file|note] [--url URL|--uri URI] [--file PATH|--content TEXT] [title]")
+		return fmt.Errorf("usage: homelabctl knowledge source add <space_id> [--kind text|url|file|note|email|mcp] [--url URL|--uri URI] [--file PATH|--content TEXT] [title]")
 	}
 	if strings.TrimSpace(contentValue) == "" && !(sourceKind == "url" && sourceURI != "") {
-		return fmt.Errorf("knowledge source content is required; use --file, --content, or --url")
+		return fmt.Errorf("knowledge source content is required; use --file, --content, or --url for fetchable URLs")
 	}
 	body := map[string]any{"title": title}
 	if strings.TrimSpace(contentValue) != "" {
@@ -528,7 +528,7 @@ func (c cli) knowledgeAsk(args []string) error {
 
 func (c cli) knowledgeResearchRun(args []string) error {
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
-		return fmt.Errorf("usage: homelabctl knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--source SOURCE_ID]... <objective>")
+		return fmt.Errorf("usage: homelabctl knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--discover] [--max-sources N] [--source SOURCE_ID]... <objective>")
 	}
 	spaceID := args[0]
 	flags := flag.NewFlagSet("knowledge research-run", flag.ContinueOnError)
@@ -536,6 +536,8 @@ func (c cli) knowledgeResearchRun(args []string) error {
 	depth := flags.String("depth", "", "research depth: quick, standard, or deep")
 	scope := flags.String("scope", "", "research scope")
 	mode := flags.String("mode", "", "report mode: research, brief, or study")
+	discover := flags.Bool("discover", false, "search online and import fetched sources before synthesis")
+	maxSources := flags.Int("max-sources", 0, "maximum online sources to import when discovery is enabled")
 	var sourceIDs stringListFlag
 	flags.Var(&sourceIDs, "source", "limit run to a source id; repeat for multiple sources")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -543,7 +545,7 @@ func (c cli) knowledgeResearchRun(args []string) error {
 	}
 	objective := strings.TrimSpace(strings.Join(flags.Args(), " "))
 	if objective == "" {
-		return fmt.Errorf("usage: homelabctl knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--source SOURCE_ID]... <objective>")
+		return fmt.Errorf("usage: homelabctl knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--discover] [--max-sources N] [--source SOURCE_ID]... <objective>")
 	}
 	body := map[string]any{"objective": objective}
 	if value := strings.TrimSpace(*depth); value != "" {
@@ -557,6 +559,12 @@ func (c cli) knowledgeResearchRun(args []string) error {
 	}
 	if len(sourceIDs) > 0 {
 		body["source_ids"] = []string(sourceIDs)
+	}
+	if *discover || *maxSources > 0 {
+		body["discover_sources"] = true
+	}
+	if *maxSources > 0 {
+		body["max_sources"] = *maxSources
 	}
 	return c.do(http.MethodPost, path("knowledge", "spaces", spaceID, "research-runs"), body)
 }
@@ -1297,11 +1305,11 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] knowledge list
   homelabctl [-addr http://127.0.0.1:18080] knowledge show <space_id>
   homelabctl [-addr http://127.0.0.1:18080] knowledge create [--objective TEXT] [--description TEXT] [--created-by NAME] <title>
-  homelabctl [-addr http://127.0.0.1:18080] knowledge source add <space_id> [--kind text|url|file|note] [--url URL|--uri URI] [--file PATH|--content TEXT] [title]
+  homelabctl [-addr http://127.0.0.1:18080] knowledge source add <space_id> [--kind text|url|file|note|email|mcp] [--url URL|--uri URI] [--file PATH|--content TEXT] [title]
   homelabctl [-addr http://127.0.0.1:18080] knowledge query <space_id> [--limit N] [--source SOURCE_ID]... <query>
   homelabctl [-addr http://127.0.0.1:18080] knowledge ask <space_id> [--limit N] [--source SOURCE_ID]... <question>
   homelabctl [-addr http://127.0.0.1:18080] knowledge research <space_id> [--mode research|brief|study] [--source SOURCE_ID]... <question>
-  homelabctl [-addr http://127.0.0.1:18080] knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--source SOURCE_ID]... <objective>
+  homelabctl [-addr http://127.0.0.1:18080] knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--discover] [--max-sources N] [--source SOURCE_ID]... <objective>
 
   homelabctl [-addr http://127.0.0.1:18080] workflow new <name>: <goal>
   homelabctl [-addr http://127.0.0.1:18080] workflow list

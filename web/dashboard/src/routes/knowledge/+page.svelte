@@ -20,8 +20,11 @@
     knowledgeSpacesFromResponse,
     latestReport,
     latestResearchRun,
+    modelProvenanceLabel,
     panelLabel,
     panelItemCount,
+    researchRunStatusLabel,
+    researchRunStatusTone,
     selectKnowledgeSpace,
     spaceSourceCount,
     spaceWordCount,
@@ -69,6 +72,8 @@
   let runObjectiveDraft = '';
   let runScopeDraft = '';
   let runDepthDraft = 'standard';
+  let discoverSourcesDraft = true;
+  let maxSourcesDraft = 8;
   let activeReport: HomelabdKnowledgeReport | undefined;
   let activeAskResult: HomelabdKnowledgeAskResult | undefined;
   let activeRun: HomelabdKnowledgeResearchRun | undefined;
@@ -80,9 +85,13 @@
   let totalSourceCount = 0;
   let selectedSourceCount = 0;
   let selectedSourceSummary = '';
+  let researchRunSourceSummary = '';
+  let requestedMaxSources = 8;
+  let canStartResearchRun = false;
   let totalReportCount = 0;
   let totalSpaceSourceCount = 0;
   let sourceReady = false;
+  let sourceReferenceAccepted = false;
 
   $: visibleSpaces = filterKnowledgeSpaces(spaces, search);
   $: selectedSpaceId = selectKnowledgeSpace(
@@ -97,12 +106,24 @@
   $: totalSourceCount = selectedSpace?.sources?.length || 0;
   $: selectedSourceCount = selectedSourceIds.length;
   $: selectedSourceSummary = sourceSelectionSummary(selectedSourceCount, totalSourceCount);
+  $: requestedMaxSources = Math.min(20, Math.max(1, Number(maxSourcesDraft) || 1));
+  $: researchRunSourceSummary = discoverSourcesDraft
+    ? `${selectedSourceSummary}; online discovery will import up to ${requestedMaxSources} source${requestedMaxSources === 1 ? '' : 's'}`
+    : selectedSourceSummary;
+  $: canStartResearchRun = !!runObjectiveDraft.trim() && (discoverSourcesDraft || selectedSourceIds.length > 0);
   $: totalReportCount = spaces.reduce((total, space) => total + (space.reports?.length || 0), 0);
   $: totalSpaceSourceCount = spaces.reduce((total, space) => total + spaceSourceCount(space), 0);
+  $: sourceReferenceAccepted = sourceKindDraft.trim() === 'url';
   $: sourceReady =
-    sourceKindDraft.trim() === 'url'
+    sourceReferenceAccepted
       ? !!sourceURIDraft.trim() || !!sourceContentDraft.trim()
       : !!sourceContentDraft.trim();
+  $: if (activeRun && selectedSpace?.research_runs?.length) {
+    const refreshedRun = selectedSpace.research_runs.find((run) => run.id === activeRun?.id);
+    if (refreshedRun && refreshedRun !== activeRun) {
+      activeRun = refreshedRun;
+    }
+  }
   $: if (selectedSpace && selectedSpace.id !== lastSelectedSpaceId) {
     lastSelectedSpaceId = selectedSpace.id;
     activeReport = undefined;
@@ -301,7 +322,7 @@
       sourceContentDraft = '';
       selectedSourceIds = (response.space.sources || []).map((source) => source.id);
       addSourceOpen = false;
-      notice = response.reply || 'Source indexed.';
+      notice = response.reply || 'Source analysed.';
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to add source.';
     } finally {
@@ -361,7 +382,7 @@
   };
 
   const createResearchRun = async () => {
-    if (!selectedSpace || creatingRun || !runObjectiveDraft.trim() || !selectedSourceIds.length) {
+    if (!selectedSpace || creatingRun || !canStartResearchRun) {
       return;
     }
     creatingRun = true;
@@ -373,13 +394,15 @@
         scope: runScopeDraft.trim() || undefined,
         depth: runDepthDraft,
         mode: researchModeDraft,
-        source_ids: selectedSourceIds.length ? selectedSourceIds : undefined
+        source_ids: selectedSourceIds.length ? selectedSourceIds : undefined,
+        discover_sources: discoverSourcesDraft || undefined,
+        max_sources: discoverSourcesDraft ? requestedMaxSources : undefined
       });
       activeRun = response.run;
       activeReport = response.report;
       updateSpace(response.space);
       activePanel = 'runs';
-      notice = response.reply || 'Research run completed.';
+      notice = response.reply || (response.report ? 'Research run completed.' : 'Research run queued.');
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to create research run.';
     } finally {
@@ -674,6 +697,18 @@
                           <Markdown content={source.summary} />
                         </div>
                       {/if}
+                      {#if source.claims?.length}
+                        <div class="claims-list" aria-label={`${source.title} claims`}>
+                          {#each source.claims.slice(0, 3) as claim}
+                            <section>
+                              <strong>{claim.importance || 'Claim'}</strong>
+                              <div class="markdown-block compact">
+                                <Markdown content={claim.text} />
+                              </div>
+                            </section>
+                          {/each}
+                        </div>
+                      {/if}
                       {#if source.content}
                         <details class="source-content">
                           <summary>Source content</summary>
@@ -682,7 +717,7 @@
                           </div>
                         </details>
                       {/if}
-                      {#if source.uri || source.provenance?.canonical_uri || source.provenance?.snapshot_path}
+                      {#if source.uri || source.provenance?.canonical_uri || source.provenance?.snapshot_path || source.provenance?.extractor}
                         <dl class="source-meta">
                           {#if source.provenance?.canonical_uri || source.uri}
                             <div>
@@ -702,10 +737,32 @@
                               <dd>{source.chunks.length}</dd>
                             </div>
                           {/if}
+                          {#if source.provenance?.extractor}
+                            <div>
+                              <dt>Extractor</dt>
+                              <dd>{source.provenance.extractor}</dd>
+                            </div>
+                          {/if}
                         </dl>
                       {/if}
                       {#if source.ingestion?.error}
                         <p class="source-error">{source.ingestion.error}</p>
+                      {/if}
+                      {#if source.entities?.length || source.reliability_notes?.length}
+                        <div class="source-analysis">
+                          {#if source.entities?.length}
+                            <div>
+                              <strong>Entities</strong>
+                              <p>{source.entities.slice(0, 4).map((entity) => entity.name).join(', ')}</p>
+                            </div>
+                          {/if}
+                          {#if source.reliability_notes?.length}
+                            <div>
+                              <strong>Reliability</strong>
+                              <p>{source.reliability_notes.slice(0, 2).join(' ')}</p>
+                            </div>
+                          {/if}
+                        </div>
                       {/if}
                       {#if source.key_terms?.length}
                         <div class="chips" aria-label={`${source.title} key terms`}>
@@ -726,7 +783,7 @@
                     </article>
                   {/each}
                 {:else}
-                  <p class="empty">No sources have been indexed. Add text or a URL before asking questions.</p>
+                  <p class="empty">No sources have been analysed. Add text or a URL before asking questions.</p>
                 {/if}
               </div>
             </section>
@@ -744,6 +801,8 @@
                     <option value="url">URL</option>
                     <option value="file">File</option>
                     <option value="note">Note</option>
+                    <option value="email">Email</option>
+                    <option value="mcp">Connected resource</option>
                   </select>
 
                   <label for="source-uri">Reference</label>
@@ -755,14 +814,11 @@
                   />
                 </div>
 
-                <label for="source-content">
-                  {sourceKindDraft === 'url' ? 'Fallback or pasted source text' : 'Source text'}
-                </label>
+                <label for="source-content">Source text</label>
                 <textarea
                   id="source-content"
                   bind:value={sourceContentDraft}
                   rows="8"
-                  placeholder={sourceKindDraft === 'url' ? 'Optional when Reference is a fetchable URL' : ''}
                 ></textarea>
 
                 <div class="form-footer">
@@ -854,6 +910,34 @@
                 <div class="markdown-block answer-body">
                   <Markdown content={activeAskResult.answer} headingIds />
                 </div>
+                {#if activeAskResult.key_findings?.length}
+                  <div class="claims-list" aria-label="Answer key findings">
+                    {#each activeAskResult.key_findings as finding}
+                      <section>
+                        <strong>Finding</strong>
+                        <div class="markdown-block compact">
+                          <Markdown content={finding} />
+                        </div>
+                      </section>
+                    {/each}
+                  </div>
+                {/if}
+                {#if modelProvenanceLabel(activeAskResult.provider, activeAskResult.model) || activeAskResult.usage?.total_tokens}
+                  <dl class="source-meta">
+                    {#if modelProvenanceLabel(activeAskResult.provider, activeAskResult.model)}
+                      <div>
+                        <dt>Model</dt>
+                        <dd>{modelProvenanceLabel(activeAskResult.provider, activeAskResult.model)}</dd>
+                      </div>
+                    {/if}
+                    {#if activeAskResult.usage?.total_tokens}
+                      <div>
+                        <dt>Tokens</dt>
+                        <dd>{activeAskResult.usage.total_tokens}</dd>
+                      </div>
+                    {/if}
+                  </dl>
+                {/if}
                 {#if activeAskResult.evidence?.length}
                   <div class="evidence-list" aria-label="Answer evidence">
                     {#each activeAskResult.evidence as evidence (evidence.id)}
@@ -892,7 +976,7 @@
               <div class="panel-title">
                 <div>
                   <h3>Research run</h3>
-                  <p>{selectedSourceSummary}</p>
+                  <p>{researchRunSourceSummary}</p>
                 </div>
               </div>
 
@@ -915,6 +999,19 @@
                   <option value="brief">Brief</option>
                   <option value="study">Study guide</option>
                 </select>
+                <label class="inline-check">
+                  <input type="checkbox" bind:checked={discoverSourcesDraft} />
+                  <span>Discover online sources</span>
+                </label>
+                <label for="run-max-sources">Max sources</label>
+                <input
+                  id="run-max-sources"
+                  type="number"
+                  min="1"
+                  max="20"
+                  bind:value={maxSourcesDraft}
+                  disabled={!discoverSourcesDraft}
+                />
                 <button type="button" disabled={!selectedSpace.sources?.length} on:click={selectAllSources}>
                   Select all
                 </button>
@@ -923,7 +1020,7 @@
                 </button>
                 <button
                   type="submit"
-                  disabled={creatingRun || !runObjectiveDraft.trim() || !selectedSourceIds.length}
+                  disabled={creatingRun || !canStartResearchRun}
                 >
                   {creatingRun ? 'Starting' : 'Start run'}
                 </button>
@@ -950,7 +1047,7 @@
                 <article class="report-card" aria-label="Selected research run">
                   <header>
                     <div>
-                      <span>{latestSelectedRun.status}</span>
+                      <span class={`status-pill ${researchRunStatusTone(latestSelectedRun)}`}>{researchRunStatusLabel(latestSelectedRun)}</span>
                       <h3>{latestSelectedRun.objective}</h3>
                     </div>
                     <strong>{compactTime(latestSelectedRun.created_at)}</strong>
@@ -968,11 +1065,96 @@
                       <dt>Evidence</dt>
                       <dd>{latestSelectedRun.evidence_count || 0}</dd>
                     </div>
+                    <div>
+                      <dt>Discovery</dt>
+                      <dd>{latestSelectedRun.discover_sources ? `up to ${latestSelectedRun.max_sources || 0}` : 'stored only'}</dd>
+                    </div>
+                    {#if modelProvenanceLabel(latestSelectedRun.provider, latestSelectedRun.model)}
+                      <div>
+                        <dt>Model</dt>
+                        <dd>{modelProvenanceLabel(latestSelectedRun.provider, latestSelectedRun.model)}</dd>
+                      </div>
+                    {/if}
+                    {#if latestSelectedRun.usage?.total_tokens}
+                      <div>
+                        <dt>Tokens</dt>
+                        <dd>{latestSelectedRun.usage.total_tokens}</dd>
+                      </div>
+                    {/if}
+                    {#if latestSelectedRun.workspace_path}
+                      <div>
+                        <dt>Workspace</dt>
+                        <dd>{latestSelectedRun.workspace_path}</dd>
+                      </div>
+                    {/if}
                   </dl>
                   {#if latestSelectedRun.scope}
                     <div class="markdown-block compact">
                       <Markdown content={latestSelectedRun.scope} />
                     </div>
+                  {/if}
+                  {#if latestSelectedRun.plan?.rewritten_objective || latestSelectedRun.plan?.search_queries?.length || latestSelectedRun.plan?.steps?.length}
+                    <div class="run-plan" aria-label="Research run plan">
+                      {#if latestSelectedRun.plan?.rewritten_objective}
+                        <section>
+                          <strong>Objective</strong>
+                          <div class="markdown-block compact">
+                            <Markdown content={latestSelectedRun.plan.rewritten_objective} />
+                          </div>
+                        </section>
+                      {/if}
+                      {#if latestSelectedRun.plan?.search_queries?.length}
+                        <section>
+                          <strong>Queries</strong>
+                          <div class="chips">
+                            {#each latestSelectedRun.plan.search_queries.slice(0, 6) as query}
+                              <span>{query}</span>
+                            {/each}
+                          </div>
+                        </section>
+                      {/if}
+                      {#if latestSelectedRun.plan?.steps?.length}
+                        <section>
+                          <strong>Steps</strong>
+                          <ol>
+                            {#each latestSelectedRun.plan.steps.slice(0, 6) as step}
+                              <li>{step}</li>
+                            {/each}
+                          </ol>
+                        </section>
+                      {/if}
+                    </div>
+                  {/if}
+                  {#if latestSelectedRun.source_candidates?.length}
+                    <div class="source-candidates" aria-label="Discovered source candidates">
+                      {#each latestSelectedRun.source_candidates as candidate (candidate.id)}
+                        <section>
+                          <header>
+                            <strong>{candidate.title || candidate.url}</strong>
+                            <span class={`candidate-status ${candidate.status}`}>{candidate.status}</span>
+                          </header>
+                          {#if candidate.url}
+                            <a href={candidate.url} target="_blank" rel="noreferrer">
+                              {candidate.domain || candidate.url}
+                            </a>
+                          {/if}
+                          {#if candidate.snippet}
+                            <div class="markdown-block compact">
+                              <Markdown content={candidate.snippet} />
+                            </div>
+                          {/if}
+                          {#if candidate.source_id}
+                            <small>Imported as {candidate.source_id}</small>
+                          {/if}
+                          {#if candidate.error}
+                            <p class="source-error">{candidate.error}</p>
+                          {/if}
+                        </section>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if latestSelectedRun.error}
+                    <p class="source-error">{latestSelectedRun.error}</p>
                   {/if}
                   {#if latestSelectedRun.events?.length}
                     <div class="run-events" aria-label="Research run events">
@@ -997,7 +1179,7 @@
                     <button type="button" class="report-row" on:click={() => selectRun(run)}>
                       <header>
                         <div>
-                          <span>{run.status}</span>
+                          <span class={`status-pill ${researchRunStatusTone(run)}`}>{researchRunStatusLabel(run)}</span>
                           <h3>{run.objective}</h3>
                         </div>
                         <strong>{compactTime(run.created_at)}</strong>
@@ -1028,6 +1210,34 @@
                 <div class="markdown-block answer-body">
                   <Markdown content={latestSelectedReport.answer} headingIds />
                 </div>
+                {#if latestSelectedReport.key_findings?.length}
+                  <div class="claims-list" aria-label="Report key findings">
+                    {#each latestSelectedReport.key_findings as finding}
+                      <section>
+                        <strong>Finding</strong>
+                        <div class="markdown-block compact">
+                          <Markdown content={finding} />
+                        </div>
+                      </section>
+                    {/each}
+                  </div>
+                {/if}
+                {#if modelProvenanceLabel(latestSelectedReport.provider, latestSelectedReport.model) || latestSelectedReport.usage?.total_tokens}
+                  <dl class="source-meta">
+                    {#if modelProvenanceLabel(latestSelectedReport.provider, latestSelectedReport.model)}
+                      <div>
+                        <dt>Model</dt>
+                        <dd>{modelProvenanceLabel(latestSelectedReport.provider, latestSelectedReport.model)}</dd>
+                      </div>
+                    {/if}
+                    {#if latestSelectedReport.usage?.total_tokens}
+                      <div>
+                        <dt>Tokens</dt>
+                        <dd>{latestSelectedReport.usage.total_tokens}</dd>
+                      </div>
+                    {/if}
+                  </dl>
+                {/if}
                 {#if latestSelectedReport.evidence?.length}
                   <div class="evidence-list" aria-label="Report evidence">
                     {#each latestSelectedReport.evidence as evidence (evidence.id)}
@@ -1419,6 +1629,8 @@
   .reports-list,
   .runs-list,
   .run-events,
+  .run-plan,
+  .claims-list,
   .evidence-list,
   .gaps {
     display: grid;
@@ -1615,6 +1827,7 @@
   }
 
   .source-card p,
+  .source-analysis p,
   .report-row p {
     margin-top: 0.55rem;
     line-height: 1.5;
@@ -1715,27 +1928,37 @@
     text-transform: none;
   }
 
-  .source-card header .status-pill {
+  .source-card header .status-pill,
+  .report-card header .status-pill,
+  .report-row header .status-pill {
     color: var(--knowledge-muted, #475569);
     font-size: 0.76rem;
     text-transform: none;
   }
 
-  .source-card header .status-pill.success {
+  .source-card header .status-pill.success,
+  .report-card header .status-pill.success,
+  .report-row header .status-pill.success {
     border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
     color: #166534;
   }
 
   .source-card header .status-pill.danger,
+  .report-card header .status-pill.danger,
+  .report-row header .status-pill.danger,
   .source-error {
     color: var(--danger, #dc2626);
   }
 
-  .source-card header .status-pill.danger {
+  .source-card header .status-pill.danger,
+  .report-card header .status-pill.danger,
+  .report-row header .status-pill.danger {
     border-color: color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border, #cbd5e1));
   }
 
-  .source-card header .status-pill.active {
+  .source-card header .status-pill.active,
+  .report-card header .status-pill.active,
+  .report-row header .status-pill.active {
     border-color: color-mix(in srgb, var(--primary, #2563eb) 35%, var(--border, #cbd5e1));
     color: var(--primary, #2563eb);
   }
@@ -1766,6 +1989,45 @@
   .source-list,
   .source-list-section {
     margin-top: 1rem;
+  }
+
+  .claims-list,
+  .source-analysis,
+  .run-plan {
+    margin-top: 0.75rem;
+  }
+
+  .claims-list section,
+  .source-analysis,
+  .run-plan section {
+    min-width: 0;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--bg, #eef2f7);
+  }
+
+  .source-analysis {
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+
+  .claims-list strong,
+  .source-analysis strong,
+  .run-plan strong {
+    color: var(--text-strong, #0f172a);
+    overflow-wrap: anywhere;
+  }
+
+  .run-plan ol {
+    margin: 0.45rem 0 0;
+    padding-left: 1.25rem;
+  }
+
+  .run-plan li {
+    margin-top: 0.25rem;
+    overflow-wrap: anywhere;
   }
 
   .chips,
@@ -1846,9 +2108,29 @@
     min-width: 100%;
   }
 
-  .research-controls select {
+  .research-controls select,
+  .research-controls input[type='number'] {
     width: auto;
     min-width: 9rem;
+  }
+
+  .inline-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: min(100%, 16rem);
+    padding: 0.45rem 0.55rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--bg, #eef2f7);
+    color: var(--text, #172033);
+    font-weight: 800;
+  }
+
+  .inline-check input {
+    width: 1rem;
+    min-width: 1rem;
+    height: 1rem;
   }
 
   .source-select {
@@ -1903,6 +2185,64 @@
   .run-events strong {
     color: var(--text-strong, #0f172a);
     text-transform: capitalize;
+  }
+
+  .source-candidates {
+    display: grid;
+    gap: 0.55rem;
+    margin-top: 0.75rem;
+  }
+
+  .source-candidates section {
+    min-width: 0;
+    padding: 0.7rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+  }
+
+  .source-candidates header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.6rem;
+    min-width: 0;
+  }
+
+  .source-candidates strong,
+  .source-candidates a,
+  .source-candidates small {
+    overflow-wrap: anywhere;
+  }
+
+  .source-candidates a,
+  .source-candidates small {
+    display: block;
+    margin-top: 0.4rem;
+    color: var(--knowledge-muted, #475569);
+  }
+
+  .candidate-status {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.45rem;
+    padding: 0.18rem 0.45rem;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 999px;
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.72rem;
+    font-weight: 850;
+    text-transform: capitalize;
+  }
+
+  .candidate-status.imported {
+    border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
+    color: #166534;
+  }
+
+  .candidate-status.failed {
+    border-color: color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border, #cbd5e1));
+    color: var(--danger, #dc2626);
   }
 
   .empty,
@@ -1996,7 +2336,9 @@
       padding: 0.45rem 0.35rem;
     }
 
-    .research-controls select {
+    .research-controls select,
+    .research-controls input[type='number'],
+    .inline-check {
       width: 100%;
     }
 

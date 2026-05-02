@@ -6,7 +6,10 @@ import {
   knowledgeMarkdownPreview,
   knowledgeSpacesFromResponse,
   latestReport,
+  modelProvenanceLabel,
   panelItemCount,
+  researchRunStatusLabel,
+  researchRunStatusTone,
   selectKnowledgeSpace,
   spaceSourceCount,
   spaceWordCount,
@@ -122,5 +125,15 @@ describe('knowledge view model', () => {
         '## Evidence review\n\n- Keep **evidence** visible.\n\n```mermaid\nflowchart LR\n  A --> B\n```'
       )
     ).toBe('Evidence review Keep evidence visible.');
+  });
+
+  test('labels model provenance and research run states', () => {
+    expect(modelProvenanceLabel('openai', 'gpt-5.2')).toBe('openai / gpt-5.2');
+    expect(modelProvenanceLabel('', '')).toBe('');
+    expect(researchRunStatusLabel({ status: 'discovering' } as never)).toBe('Discovering');
+    expect(researchRunStatusLabel({ status: 'synthesizing' } as never)).toBe('Synthesising');
+    expect(researchRunStatusTone({ status: 'synthesizing' } as never)).toBe('active');
+    expect(researchRunStatusTone({ status: 'completed' } as never)).toBe('success');
+    expect(researchRunStatusTone({ status: 'failed' } as never)).toBe('danger');
   });
 });

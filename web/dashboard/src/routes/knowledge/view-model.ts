@@ -148,6 +148,50 @@ export const sourceStatusTone = (source?: HomelabdKnowledgeSource) => {
   return 'success';
 };
 
+export const researchRunStatusLabel = (run?: HomelabdKnowledgeResearchRun) => {
+  const status = (run?.status || 'queued').trim().toLowerCase();
+  switch (status) {
+    case 'queued':
+      return 'Queued';
+    case 'planning':
+      return 'Planning';
+    case 'discovering':
+      return 'Discovering';
+    case 'retrieving':
+      return 'Retrieving';
+    case 'reading':
+      return 'Reading';
+    case 'synthesizing':
+      return 'Synthesising';
+    case 'reviewing':
+      return 'Reviewing';
+    case 'completed':
+      return 'Completed';
+    case 'failed':
+      return 'Failed';
+    case 'cancelled':
+      return 'Cancelled';
+    default:
+      return status || 'Queued';
+  }
+};
+
+export const researchRunStatusTone = (run?: HomelabdKnowledgeResearchRun) => {
+  const status = (run?.status || 'queued').trim().toLowerCase();
+  if (status === 'completed') {
+    return 'success';
+  }
+  if (status === 'failed' || status === 'cancelled') {
+    return 'danger';
+  }
+  return 'active';
+};
+
+export const modelProvenanceLabel = (provider?: string, model?: string) => {
+  const parts = [provider, model].map((part) => part?.trim()).filter(Boolean);
+  return parts.length ? parts.join(' / ') : '';
+};
+
 export const knowledgeMarkdownPreview = (value = '', maxLength = 180) => {
   const cleaned = value
     .replace(/```[\s\S]*?```/g, ' ')

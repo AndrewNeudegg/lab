@@ -39,100 +39,6 @@ func QuerySpace(space Space, req QueryRequest, now time.Time) (QueryResult, erro
 	}, nil
 }
 
-func AnswerQuestion(space Space, req AskRequest, now time.Time) (AskResult, error) {
-	question := strings.TrimSpace(req.Question)
-	if question == "" {
-		return AskResult{}, fmt.Errorf("question is required")
-	}
-	query, err := QuerySpace(space, QueryRequest{
-		Query:     question,
-		SourceIDs: req.SourceIDs,
-		Limit:     req.Limit,
-	}, now)
-	if err != nil {
-		return AskResult{}, err
-	}
-	normalized, err := NormalizeSpace(space)
-	if err != nil {
-		return AskResult{}, err
-	}
-	sources := selectedSources(normalized.Sources, req.SourceIDs)
-	findings := findingsFromEvidence(query.Evidence, ReportModeResearch)
-	return AskResult{
-		Question:  question,
-		Answer:    buildAnswer(question, sources, query.Evidence, findings),
-		Evidence:  query.Evidence,
-		Gaps:      researchGaps(sources, query.Terms, query.Evidence),
-		CreatedAt: now,
-	}, nil
-}
-
-func CompleteResearchRun(space Space, req CreateResearchRunRequest, runID, reportID string, now time.Time) (Space, ResearchRun, Report, error) {
-	normalized, err := NormalizeSpace(space)
-	if err != nil {
-		return Space{}, ResearchRun{}, Report{}, err
-	}
-	objective := strings.TrimSpace(req.Objective)
-	question := strings.TrimSpace(req.Question)
-	if objective == "" {
-		objective = question
-	}
-	if question == "" {
-		question = objective
-	}
-	if objective == "" {
-		return Space{}, ResearchRun{}, Report{}, fmt.Errorf("research objective is required")
-	}
-	run := ResearchRun{
-		ID:         strings.TrimSpace(runID),
-		Objective:  objective,
-		Scope:      strings.TrimSpace(req.Scope),
-		Depth:      normalizeResearchDepth(req.Depth),
-		Status:     ResearchRunStatusCompleted,
-		Question:   question,
-		Mode:       normalizeReportMode(req.Mode),
-		SourceIDs:  compactStrings(req.SourceIDs, 200),
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		StartedAt:  now,
-		FinishedAt: now,
-		Events: []ResearchRunEvent{
-			{ID: fmt.Sprintf("%s_evt_01", runID), Stage: "planning", Message: "Research objective recorded and source scope prepared.", CreatedAt: now},
-			{ID: fmt.Sprintf("%s_evt_02", runID), Stage: "retrieval", Message: "Retrieved matching corpus chunks from indexed sources.", CreatedAt: now},
-			{ID: fmt.Sprintf("%s_evt_03", runID), Stage: "synthesis", Message: "Created a source-grounded report with evidence and gaps.", CreatedAt: now},
-		},
-	}
-	report, err := GenerateReport(normalized, ResearchRequest{
-		Question:  question,
-		Mode:      run.Mode,
-		SourceIDs: run.SourceIDs,
-	}, reportID, now)
-	if err != nil {
-		run.Status = ResearchRunStatusFailed
-		run.Error = err.Error()
-		run.Events = append(run.Events, ResearchRunEvent{ID: fmt.Sprintf("%s_evt_04", runID), Stage: "failed", Message: err.Error(), CreatedAt: now})
-		normalized, addErr := AddResearchRun(normalized, run, now)
-		if addErr != nil {
-			return Space{}, ResearchRun{}, Report{}, addErr
-		}
-		return normalized, run, Report{}, err
-	}
-	report.RunID = run.ID
-	report = normalizeReport(report)
-	run.ReportID = report.ID
-	run.SourcesExamined = len(selectedSources(normalized.Sources, run.SourceIDs))
-	run.EvidenceCount = len(report.Evidence)
-	normalized, err = AddReport(normalized, report, now)
-	if err != nil {
-		return Space{}, ResearchRun{}, Report{}, err
-	}
-	normalized, err = AddResearchRun(normalized, run, now)
-	if err != nil {
-		return Space{}, ResearchRun{}, Report{}, err
-	}
-	return normalized, normalizeResearchRun(run), report, nil
-}
-
 func normalizeSourceProvenance(provenance SourceProvenance, source Source) SourceProvenance {
 	provenance.URI = strings.TrimSpace(firstNonEmpty(provenance.URI, source.URI))
 	provenance.CanonicalURI = strings.TrimSpace(provenance.CanonicalURI)
@@ -160,7 +66,7 @@ func normalizeSourceIngestion(ingestion SourceIngestion, hasContent bool) Source
 		}
 	}
 	if ingestion.State == SourceStatusReady && ingestion.Message == "" {
-		ingestion.Message = "Source is indexed and available for retrieval."
+		ingestion.Message = "Source is analysed and available for retrieval."
 	}
 	if ingestion.State == SourceStatusFailed && ingestion.Stage == "" {
 		ingestion.Stage = "ingestion"

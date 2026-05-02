@@ -126,7 +126,11 @@ func (s *Server) handleKnowledgeSpace(rw http.ResponseWriter, req *http.Request)
 			writeError(rw, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(rw, http.StatusCreated, map[string]any{"space": space, "run": run, "report": report, "reply": reply})
+		out := map[string]any{"space": space, "run": run, "reply": reply}
+		if report.ID != "" {
+			out["report"] = report
+		}
+		writeJSON(rw, http.StatusCreated, out)
 		return
 	}
 	writeError(rw, http.StatusMethodNotAllowed, "method not allowed")

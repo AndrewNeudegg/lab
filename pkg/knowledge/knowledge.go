@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	SourceKindText = "text"
-	SourceKindURL  = "url"
-	SourceKindFile = "file"
-	SourceKindNote = "note"
+	SourceKindText  = "text"
+	SourceKindURL   = "url"
+	SourceKindFile  = "file"
+	SourceKindNote  = "note"
+	SourceKindEmail = "email"
+	SourceKindMCP   = "mcp"
 
 	ReportModeResearch = "research"
 	ReportModeBrief    = "brief"
@@ -24,8 +26,16 @@ const (
 	SourceStatusFailed     = "failed"
 	SourceStatusProcessing = "processing"
 
-	ResearchRunStatusCompleted = "completed"
-	ResearchRunStatusFailed    = "failed"
+	ResearchRunStatusQueued       = "queued"
+	ResearchRunStatusPlanning     = "planning"
+	ResearchRunStatusDiscovering  = "discovering"
+	ResearchRunStatusRetrieving   = "retrieving"
+	ResearchRunStatusReading      = "reading"
+	ResearchRunStatusSynthesizing = "synthesizing"
+	ResearchRunStatusReviewing    = "reviewing"
+	ResearchRunStatusCompleted    = "completed"
+	ResearchRunStatusFailed       = "failed"
+	ResearchRunStatusCancelled    = "cancelled"
 )
 
 type Space struct {
@@ -51,20 +61,35 @@ type SpaceInsight struct {
 }
 
 type Source struct {
-	ID         string           `json:"id"`
-	Title      string           `json:"title"`
-	Kind       string           `json:"kind"`
-	URI        string           `json:"uri,omitempty"`
-	Content    string           `json:"content"`
-	Summary    string           `json:"summary"`
-	KeyTerms   []string         `json:"key_terms,omitempty"`
-	Questions  []string         `json:"questions,omitempty"`
-	WordCount  int              `json:"word_count"`
-	Provenance SourceProvenance `json:"provenance,omitempty"`
-	Ingestion  SourceIngestion  `json:"ingestion,omitempty"`
-	Chunks     []SourceChunk    `json:"chunks,omitempty"`
-	CreatedAt  time.Time        `json:"created_at"`
-	UpdatedAt  time.Time        `json:"updated_at"`
+	ID          string           `json:"id"`
+	Title       string           `json:"title"`
+	Kind        string           `json:"kind"`
+	URI         string           `json:"uri,omitempty"`
+	Content     string           `json:"content"`
+	Summary     string           `json:"summary"`
+	KeyTerms    []string         `json:"key_terms,omitempty"`
+	Questions   []string         `json:"questions,omitempty"`
+	Claims      []SourceClaim    `json:"claims,omitempty"`
+	Entities    []SourceEntity   `json:"entities,omitempty"`
+	Reliability []string         `json:"reliability_notes,omitempty"`
+	WordCount   int              `json:"word_count"`
+	Provenance  SourceProvenance `json:"provenance,omitempty"`
+	Ingestion   SourceIngestion  `json:"ingestion,omitempty"`
+	Chunks      []SourceChunk    `json:"chunks,omitempty"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+type SourceClaim struct {
+	ID         string `json:"id"`
+	Text       string `json:"text"`
+	Importance string `json:"importance,omitempty"`
+}
+
+type SourceEntity struct {
+	Name        string `json:"name"`
+	Type        string `json:"type,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type SourceProvenance struct {
@@ -107,6 +132,9 @@ type Report struct {
 	KeyFindings []string   `json:"key_findings,omitempty"`
 	Evidence    []Evidence `json:"evidence,omitempty"`
 	Gaps        []string   `json:"gaps,omitempty"`
+	Provider    string     `json:"provider,omitempty"`
+	Model       string     `json:"model,omitempty"`
+	Usage       TokenUsage `json:"usage,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 }
 
@@ -143,11 +171,21 @@ type AskRequest struct {
 }
 
 type AskResult struct {
-	Question  string     `json:"question"`
-	Answer    string     `json:"answer"`
-	Evidence  []Evidence `json:"evidence,omitempty"`
-	Gaps      []string   `json:"gaps,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	Question    string     `json:"question"`
+	Answer      string     `json:"answer"`
+	KeyFindings []string   `json:"key_findings,omitempty"`
+	Evidence    []Evidence `json:"evidence,omitempty"`
+	Gaps        []string   `json:"gaps,omitempty"`
+	Provider    string     `json:"provider,omitempty"`
+	Model       string     `json:"model,omitempty"`
+	Usage       TokenUsage `json:"usage,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type TokenUsage struct {
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
+	TotalTokens  int `json:"total_tokens,omitempty"`
 }
 
 type ResearchRun struct {
@@ -158,16 +196,47 @@ type ResearchRun struct {
 	Status          string             `json:"status"`
 	Question        string             `json:"question,omitempty"`
 	Mode            string             `json:"mode"`
+	Plan            ResearchPlan       `json:"plan,omitempty"`
+	DiscoverSources bool               `json:"discover_sources,omitempty"`
+	MaxSources      int                `json:"max_sources,omitempty"`
+	Candidates      []SourceCandidate  `json:"source_candidates,omitempty"`
 	SourceIDs       []string           `json:"source_ids,omitempty"`
 	ReportID        string             `json:"report_id,omitempty"`
 	SourcesExamined int                `json:"sources_examined,omitempty"`
 	EvidenceCount   int                `json:"evidence_count,omitempty"`
+	Provider        string             `json:"provider,omitempty"`
+	Model           string             `json:"model,omitempty"`
+	Usage           TokenUsage         `json:"usage,omitempty"`
+	WorkspacePath   string             `json:"workspace_path,omitempty"`
 	Error           string             `json:"error,omitempty"`
 	Events          []ResearchRunEvent `json:"events,omitempty"`
 	CreatedAt       time.Time          `json:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
 	StartedAt       time.Time          `json:"started_at,omitempty"`
 	FinishedAt      time.Time          `json:"finished_at,omitempty"`
+}
+
+type ResearchPlan struct {
+	RewrittenObjective  string   `json:"rewritten_objective,omitempty"`
+	ClarifyingQuestions []string `json:"clarifying_questions,omitempty"`
+	SearchQueries       []string `json:"search_queries,omitempty"`
+	Steps               []string `json:"steps,omitempty"`
+	ExpectedOutputs     []string `json:"expected_outputs,omitempty"`
+}
+
+type SourceCandidate struct {
+	ID          string `json:"id"`
+	Query       string `json:"query,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Title       string `json:"title"`
+	URL         string `json:"url,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+	Snippet     string `json:"snippet,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	SourceID    string `json:"source_id,omitempty"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
 }
 
 type ResearchRunEvent struct {
@@ -198,12 +267,14 @@ type ResearchRequest struct {
 }
 
 type CreateResearchRunRequest struct {
-	Objective string   `json:"objective"`
-	Scope     string   `json:"scope,omitempty"`
-	Depth     string   `json:"depth,omitempty"`
-	Question  string   `json:"question,omitempty"`
-	Mode      string   `json:"mode,omitempty"`
-	SourceIDs []string `json:"source_ids,omitempty"`
+	Objective       string   `json:"objective"`
+	Scope           string   `json:"scope,omitempty"`
+	Depth           string   `json:"depth,omitempty"`
+	Question        string   `json:"question,omitempty"`
+	Mode            string   `json:"mode,omitempty"`
+	SourceIDs       []string `json:"source_ids,omitempty"`
+	DiscoverSources bool     `json:"discover_sources,omitempty"`
+	MaxSources      int      `json:"max_sources,omitempty"`
 }
 
 var wordPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9']*`)
@@ -315,15 +386,12 @@ func NormalizeSource(source Source) (Source, error) {
 		source.Provenance.URI = source.URI
 	}
 	source.WordCount = len(contentWords(source.Content, true))
-	source.KeyTerms = topTerms(source.Content, 8)
-	source.Questions = sourceQuestions(source.KeyTerms, source.Title)
-	if source.Summary == "" {
-		if source.Ingestion.State == SourceStatusFailed {
-			source.Summary = "Ingestion failed: " + source.Ingestion.Error
-		} else {
-			source.Summary = summarise(source.Content, source.KeyTerms, 2, 480)
-		}
-	}
+	source.Summary = strings.TrimSpace(source.Summary)
+	source.KeyTerms = compactStrings(source.KeyTerms, 12)
+	source.Questions = compactStrings(source.Questions, 8)
+	source.Claims = normalizeSourceClaims(source.Claims)
+	source.Entities = normalizeSourceEntities(source.Entities)
+	source.Reliability = compactStrings(source.Reliability, 8)
 	source.Chunks = normalizeSourceChunks(source)
 	return source, nil
 }
@@ -353,37 +421,6 @@ func AddSource(space Space, source Source, now time.Time) (Space, error) {
 	return normalized, nil
 }
 
-func GenerateReport(space Space, req ResearchRequest, reportID string, now time.Time) (Report, error) {
-	normalized, err := NormalizeSpace(space)
-	if err != nil {
-		return Report{}, err
-	}
-	question := strings.TrimSpace(req.Question)
-	if question == "" {
-		return Report{}, errors.New("research question is required")
-	}
-	mode := normalizeReportMode(req.Mode)
-	sources := selectedSources(normalized.Sources, req.SourceIDs)
-	queryTerms := topTerms(question, 8)
-	if len(queryTerms) == 0 {
-		queryTerms = normalized.Insight.KeyTerms
-	}
-	evidence := rankEvidence(sources, queryTerms, mode)
-	findings := findingsFromEvidence(evidence, mode)
-	gaps := researchGaps(sources, queryTerms, evidence)
-	report := Report{
-		ID:          strings.TrimSpace(reportID),
-		Question:    question,
-		Mode:        mode,
-		Answer:      buildAnswer(question, sources, evidence, findings),
-		KeyFindings: findings,
-		Evidence:    evidence,
-		Gaps:        gaps,
-		CreatedAt:   now,
-	}
-	return normalizeReport(report), nil
-}
-
 func AddReport(space Space, report Report, now time.Time) (Space, error) {
 	normalized, err := NormalizeSpace(space)
 	if err != nil {
@@ -411,7 +448,17 @@ func AddResearchRun(space Space, run ResearchRun, now time.Time) (Space, error) 
 	if run.ID == "" {
 		return Space{}, errors.New("knowledge research run id is required")
 	}
-	normalized.ResearchRuns = append([]ResearchRun{run}, normalized.ResearchRuns...)
+	found := false
+	for index, existing := range normalized.ResearchRuns {
+		if existing.ID == run.ID {
+			normalized.ResearchRuns[index] = run
+			found = true
+			break
+		}
+	}
+	if !found {
+		normalized.ResearchRuns = append([]ResearchRun{run}, normalized.ResearchRuns...)
+	}
 	if len(normalized.ResearchRuns) > 30 {
 		normalized.ResearchRuns = normalized.ResearchRuns[:30]
 	}
@@ -423,9 +470,15 @@ func AddResearchRun(space Space, run ResearchRun, now time.Time) (Space, error) 
 func BuildSpaceInsight(sources []Source, now time.Time) SpaceInsight {
 	var builder strings.Builder
 	wordCount := 0
+	var questions []string
 	for _, source := range sources {
-		builder.WriteString(source.Content)
+		if len(source.KeyTerms) > 0 {
+			builder.WriteString(strings.Join(source.KeyTerms, " "))
+		} else {
+			builder.WriteString(source.Content)
+		}
 		builder.WriteByte(' ')
+		questions = append(questions, source.Questions...)
 		wordCount += source.WordCount
 	}
 	terms := topTerms(builder.String(), 12)
@@ -433,7 +486,7 @@ func BuildSpaceInsight(sources []Source, now time.Time) SpaceInsight {
 		SourceCount:        len(sources),
 		WordCount:          wordCount,
 		KeyTerms:           terms,
-		SuggestedQuestions: sourceQuestions(terms, "this space"),
+		SuggestedQuestions: compactStrings(questions, 6),
 		UpdatedAt:          now,
 	}
 }
@@ -446,6 +499,8 @@ func normalizeReport(report Report) Report {
 	report.Answer = strings.TrimSpace(report.Answer)
 	report.KeyFindings = compactStrings(report.KeyFindings, 8)
 	report.Gaps = compactStrings(report.Gaps, 8)
+	report.Provider = strings.TrimSpace(report.Provider)
+	report.Model = strings.TrimSpace(report.Model)
 	for index := range report.Evidence {
 		report.Evidence[index].ID = strings.TrimSpace(report.Evidence[index].ID)
 		report.Evidence[index].SourceID = strings.TrimSpace(report.Evidence[index].SourceID)
@@ -468,7 +523,18 @@ func normalizeResearchRun(run ResearchRun) ResearchRun {
 	run.Status = normalizeResearchRunStatus(run.Status)
 	run.Question = strings.TrimSpace(run.Question)
 	run.Mode = normalizeReportMode(run.Mode)
+	run.Plan = normalizeResearchPlan(run.Plan)
+	if run.MaxSources < 0 {
+		run.MaxSources = 0
+	}
+	if run.MaxSources > 20 {
+		run.MaxSources = 20
+	}
+	run.Candidates = normalizeSourceCandidates(run.Candidates)
 	run.ReportID = strings.TrimSpace(run.ReportID)
+	run.Provider = strings.TrimSpace(run.Provider)
+	run.Model = strings.TrimSpace(run.Model)
+	run.WorkspacePath = strings.TrimSpace(run.WorkspacePath)
 	run.Error = strings.TrimSpace(run.Error)
 	run.SourceIDs = compactStrings(run.SourceIDs, 200)
 	for index := range run.Events {
@@ -489,6 +555,10 @@ func normalizeSourceKind(kind string) string {
 		return SourceKindFile
 	case "note":
 		return SourceKindNote
+	case "email", "mail", "gmail":
+		return SourceKindEmail
+	case "mcp", "connector", "connected":
+		return SourceKindMCP
 	default:
 		return SourceKindText
 	}
@@ -522,13 +592,104 @@ func normalizeResearchDepth(depth string) string {
 
 func normalizeResearchRunStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
+	case ResearchRunStatusQueued:
+		return ResearchRunStatusQueued
+	case ResearchRunStatusPlanning:
+		return ResearchRunStatusPlanning
+	case ResearchRunStatusDiscovering:
+		return ResearchRunStatusDiscovering
+	case ResearchRunStatusRetrieving:
+		return ResearchRunStatusRetrieving
+	case ResearchRunStatusReading:
+		return ResearchRunStatusReading
+	case ResearchRunStatusSynthesizing:
+		return ResearchRunStatusSynthesizing
+	case ResearchRunStatusReviewing:
+		return ResearchRunStatusReviewing
 	case ResearchRunStatusFailed:
 		return ResearchRunStatusFailed
+	case ResearchRunStatusCancelled:
+		return ResearchRunStatusCancelled
 	case "", ResearchRunStatusCompleted, "done", "ready":
 		return ResearchRunStatusCompleted
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
 	}
+}
+
+func normalizeSourceClaims(claims []SourceClaim) []SourceClaim {
+	out := make([]SourceClaim, 0, len(claims))
+	for index, claim := range claims {
+		claim.ID = strings.TrimSpace(claim.ID)
+		if claim.ID == "" {
+			claim.ID = fmt.Sprintf("claim_%02d", index+1)
+		}
+		claim.Text = strings.TrimSpace(claim.Text)
+		claim.Importance = strings.TrimSpace(claim.Importance)
+		if claim.Text != "" {
+			out = append(out, claim)
+		}
+		if len(out) >= 12 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeSourceEntities(entities []SourceEntity) []SourceEntity {
+	out := make([]SourceEntity, 0, len(entities))
+	for _, entity := range entities {
+		entity.Name = strings.TrimSpace(entity.Name)
+		entity.Type = strings.TrimSpace(entity.Type)
+		entity.Description = strings.TrimSpace(entity.Description)
+		if entity.Name != "" {
+			out = append(out, entity)
+		}
+		if len(out) >= 20 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeResearchPlan(plan ResearchPlan) ResearchPlan {
+	plan.RewrittenObjective = strings.TrimSpace(plan.RewrittenObjective)
+	plan.ClarifyingQuestions = compactStrings(plan.ClarifyingQuestions, 8)
+	plan.SearchQueries = compactStrings(plan.SearchQueries, 12)
+	plan.Steps = compactStrings(plan.Steps, 12)
+	plan.ExpectedOutputs = compactStrings(plan.ExpectedOutputs, 8)
+	return plan
+}
+
+func normalizeSourceCandidates(candidates []SourceCandidate) []SourceCandidate {
+	out := make([]SourceCandidate, 0, len(candidates))
+	for index, candidate := range candidates {
+		candidate.ID = strings.TrimSpace(candidate.ID)
+		if candidate.ID == "" {
+			candidate.ID = fmt.Sprintf("candidate_%03d", index+1)
+		}
+		candidate.Query = strings.TrimSpace(candidate.Query)
+		candidate.Kind = strings.TrimSpace(candidate.Kind)
+		candidate.Provider = strings.TrimSpace(candidate.Provider)
+		candidate.Title = strings.TrimSpace(candidate.Title)
+		candidate.URL = strings.TrimSpace(candidate.URL)
+		candidate.Domain = strings.TrimSpace(candidate.Domain)
+		candidate.Snippet = strings.TrimSpace(candidate.Snippet)
+		candidate.ContentType = strings.TrimSpace(candidate.ContentType)
+		candidate.SourceID = strings.TrimSpace(candidate.SourceID)
+		candidate.Status = strings.ToLower(strings.TrimSpace(candidate.Status))
+		if candidate.Status == "" {
+			candidate.Status = "candidate"
+		}
+		candidate.Error = strings.TrimSpace(candidate.Error)
+		if candidate.Title != "" || candidate.URL != "" || candidate.Snippet != "" {
+			out = append(out, candidate)
+		}
+		if len(out) >= 50 {
+			break
+		}
+	}
+	return out
 }
 
 func selectedSources(sources []Source, ids []string) []Source {

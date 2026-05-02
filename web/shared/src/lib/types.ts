@@ -429,18 +429,33 @@ export interface HomelabdKnowledgeInsight {
 export interface HomelabdKnowledgeSource {
   id: string;
   title: string;
-  kind: 'text' | 'url' | 'file' | 'note' | string;
+  kind: 'text' | 'url' | 'file' | 'note' | 'email' | 'mcp' | string;
   uri?: string;
   content: string;
   summary: string;
   key_terms?: string[];
   questions?: string[];
+  claims?: HomelabdKnowledgeSourceClaim[];
+  entities?: HomelabdKnowledgeSourceEntity[];
+  reliability_notes?: string[];
   word_count: number;
   provenance?: HomelabdKnowledgeSourceProvenance;
   ingestion?: HomelabdKnowledgeSourceIngestion;
   chunks?: HomelabdKnowledgeSourceChunk[];
   created_at: string;
   updated_at: string;
+}
+
+export interface HomelabdKnowledgeSourceClaim {
+  id: string;
+  text: string;
+  importance?: string;
+}
+
+export interface HomelabdKnowledgeSourceEntity {
+  name: string;
+  type?: string;
+  description?: string;
 }
 
 export interface HomelabdKnowledgeSourceProvenance {
@@ -483,6 +498,9 @@ export interface HomelabdKnowledgeReport {
   key_findings?: string[];
   evidence?: HomelabdKnowledgeEvidence[];
   gaps?: string[];
+  provider?: string;
+  model?: string;
+  usage?: HomelabdKnowledgeTokenUsage;
   created_at: string;
 }
 
@@ -509,8 +527,12 @@ export interface HomelabdKnowledgeQueryResult {
 export interface HomelabdKnowledgeAskResult {
   question: string;
   answer: string;
+  key_findings?: string[];
   evidence?: HomelabdKnowledgeEvidence[];
   gaps?: string[];
+  provider?: string;
+  model?: string;
+  usage?: HomelabdKnowledgeTokenUsage;
   created_at: string;
 }
 
@@ -519,13 +541,32 @@ export interface HomelabdKnowledgeResearchRun {
   objective: string;
   scope?: string;
   depth: 'quick' | 'standard' | 'deep' | string;
-  status: 'completed' | 'failed' | string;
+  status:
+    | 'queued'
+    | 'planning'
+    | 'discovering'
+    | 'retrieving'
+    | 'reading'
+    | 'synthesizing'
+    | 'reviewing'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | string;
   question?: string;
   mode: 'research' | 'brief' | 'study' | string;
+  plan?: HomelabdKnowledgeResearchPlan;
+  discover_sources?: boolean;
+  max_sources?: number;
+  source_candidates?: HomelabdKnowledgeSourceCandidate[];
   source_ids?: string[];
   report_id?: string;
   sources_examined?: number;
   evidence_count?: number;
+  provider?: string;
+  model?: string;
+  usage?: HomelabdKnowledgeTokenUsage;
+  workspace_path?: string;
   error?: string;
   events?: HomelabdKnowledgeResearchRunEvent[];
   created_at: string;
@@ -534,11 +575,40 @@ export interface HomelabdKnowledgeResearchRun {
   finished_at?: string;
 }
 
+export interface HomelabdKnowledgeSourceCandidate {
+  id: string;
+  query?: string;
+  kind?: string;
+  provider?: string;
+  title: string;
+  url?: string;
+  domain?: string;
+  snippet?: string;
+  content_type?: string;
+  source_id?: string;
+  status: string;
+  error?: string;
+}
+
+export interface HomelabdKnowledgeResearchPlan {
+  rewritten_objective?: string;
+  clarifying_questions?: string[];
+  search_queries?: string[];
+  steps?: string[];
+  expected_outputs?: string[];
+}
+
 export interface HomelabdKnowledgeResearchRunEvent {
   id: string;
   stage: string;
   message: string;
   created_at: string;
+}
+
+export interface HomelabdKnowledgeTokenUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
 }
 
 export interface HomelabdKnowledgeSpacesResponse {
@@ -610,12 +680,14 @@ export interface HomelabdCreateKnowledgeResearchRunRequest {
   question?: string;
   mode?: 'research' | 'brief' | 'study' | string;
   source_ids?: string[];
+  discover_sources?: boolean;
+  max_sources?: number;
 }
 
 export interface HomelabdCreateKnowledgeResearchRunResponse {
   space: HomelabdKnowledgeSpace;
   run: HomelabdKnowledgeResearchRun;
-  report: HomelabdKnowledgeReport;
+  report?: HomelabdKnowledgeReport;
   reply: string;
 }
 

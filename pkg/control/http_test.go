@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -211,7 +212,38 @@ func TestAssistantEndpointReturnsFilteredCatalogue(t *testing.T) {
 }
 
 func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
-	server, _, _ := newHTTPTestServer(t)
+	server := newKnowledgeHTTPTestServer(t, &scriptedControlProvider{contents: []string{
+		`{
+			"summary":"Evidence should stay beside generated answers for review.",
+			"key_terms":["evidence","answers","review"],
+			"questions":["How do reviewers verify answers?"],
+			"claims":[{"id":"c1","text":"Research reports need source labels.","importance":"high"}],
+			"entities":[{"name":"Research reports","type":"artefact","description":"Source-grounded outputs"}],
+			"reliability_notes":["Operator-provided text source."]
+		}`,
+		`{
+			"answer":"Reviewers verify answers by checking the visible evidence labels [S1].",
+			"key_findings":["[S1] Source labels keep claims verifiable."],
+			"gaps":["Only stored corpus evidence was used."]
+		}`,
+		`{
+			"answer":"Reviewers use cited evidence to verify generated claims [S1].",
+			"key_findings":["[S1] Evidence stays beside answers."],
+			"gaps":["No connected external source was queried."]
+		}`,
+		`{
+			"rewritten_objective":"Review evidence handling",
+			"clarifying_questions":["Which report audience matters most?"],
+			"search_queries":["evidence labels reviewers verify claims"],
+			"steps":["Retrieve stored evidence","Synthesize cited report"],
+			"expected_outputs":["Markdown report"]
+		}`,
+		`{
+			"answer":"## Evidence handling\nThe run found that research reports need source labels so reviewers can verify claims [S1].",
+			"key_findings":["[S1] Source labels support claim verification."],
+			"gaps":["No web or connector sources were added."]
+		}`,
+	}})
 	mux := http.NewServeMux()
 	server.register(mux)
 
@@ -282,13 +314,17 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	var runBody struct {
 		Space  knowledgestore.Space       `json:"space"`
 		Run    knowledgestore.ResearchRun `json:"run"`
-		Report knowledgestore.Report      `json:"report"`
+		Report *knowledgestore.Report     `json:"report"`
 	}
 	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
 		t.Fatal(err)
 	}
-	if runBody.Run.Status != knowledgestore.ResearchRunStatusCompleted || len(runBody.Space.ResearchRuns) != 1 || runBody.Report.RunID != runBody.Run.ID {
-		t.Fatalf("run body = %#v, want completed run and linked report", runBody)
+	if runBody.Run.Status != knowledgestore.ResearchRunStatusQueued || len(runBody.Space.ResearchRuns) != 1 || runBody.Report != nil {
+		t.Fatalf("run body = %#v, want queued async run without immediate report", runBody)
+	}
+	completedSpace, completedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted || completedRun.ReportID == "" || len(completedSpace.Reports) != 2 {
+		t.Fatalf("run = %#v space = %#v, want completed run and stored report", completedRun, completedSpace)
 	}
 
 	listed := requestJSON(t, mux, http.MethodGet, "/knowledge/spaces", "", "", http.StatusOK)
@@ -829,6 +865,26 @@ func newHTTPTestServer(t *testing.T) (*Server, *taskstore.Store, config.Config) 
 	return &Server{Orchestrator: orch}, tasks, cfg
 }
 
+func newKnowledgeHTTPTestServer(t *testing.T, provider llm.Provider) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = filepath.Join(dir, "data")
+	cfg.Repo.Root = dir
+	cfg.Repo.WorkspaceRoot = filepath.Join(dir, "workspaces")
+	orch := agent.NewOrchestrator(
+		cfg,
+		eventlog.NewStore(filepath.Join(cfg.DataDir, "events")),
+		taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks")),
+		approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals")),
+		tool.NewRegistry(),
+		tool.NewPolicy(nil),
+		provider,
+		"test-model",
+	)
+	return &Server{Orchestrator: orch}
+}
+
 func newRemoteControlTestServer(t *testing.T) (*Server, *taskstore.Store, *approvalstore.Store, *http.ServeMux) {
 	t.Helper()
 	dir := t.TempDir()
@@ -894,6 +950,50 @@ func (messageStatsProvider) Complete(_ context.Context, req llm.CompletionReques
 		Provider: messageStatsProvider{}.Name(),
 		Model:    req.Model,
 	}, nil
+}
+
+type scriptedControlProvider struct {
+	mu       sync.Mutex
+	contents []string
+}
+
+func (p *scriptedControlProvider) Name() string { return "scripted" }
+
+func (p *scriptedControlProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.contents) == 0 {
+		return llm.CompletionResponse{}, context.Canceled
+	}
+	content := p.contents[0]
+	p.contents = p.contents[1:]
+	return llm.CompletionResponse{
+		Message:  llm.Message{Role: "assistant", Content: content},
+		Provider: p.Name(),
+		Model:    req.Model,
+		Usage:    llm.Usage{InputTokens: 10, OutputTokens: 6, TotalTokens: 16},
+	}, nil
+}
+
+func waitForKnowledgeRun(t *testing.T, mux *http.ServeMux, spaceID, runID string) (knowledgestore.Space, knowledgestore.ResearchRun) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	path := "/knowledge/spaces/" + spaceID
+	for time.Now().Before(deadline) {
+		response := requestJSON(t, mux, http.MethodGet, path, "", "", http.StatusOK)
+		var space knowledgestore.Space
+		if err := json.NewDecoder(response.Body).Decode(&space); err != nil {
+			t.Fatal(err)
+		}
+		for _, run := range space.ResearchRuns {
+			if run.ID == runID && (run.Status == knowledgestore.ResearchRunStatusCompleted || run.Status == knowledgestore.ResearchRunStatusFailed) {
+				return space, run
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("knowledge research run %s did not finish", runID)
+	return knowledgestore.Space{}, knowledgestore.ResearchRun{}
 }
 
 func writeJSONFile(t *testing.T, path string, value any) {

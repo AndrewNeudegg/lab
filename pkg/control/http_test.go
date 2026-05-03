@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -444,21 +445,6 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 			"follow_up_queries":[]
 		}`,
 		`{
-			"summary":"The source is an event calendar covering dates, sponsors, venues, and registration.",
-			"key_terms":["conference","events","sponsors"],
-			"questions":["What event logistics are listed?"],
-			"claims":[{"id":"claim_event","text":"The page lists conference logistics.","importance":"low"}],
-			"entities":[{"name":"Conference calendar","type":"event listing","description":"Events page"}],
-			"reliability_notes":["Fetched online source."]
-		}`,
-		`{
-			"decision":"reject",
-			"relevance_score":5,
-			"reason":"The source does not cover cheese types, properties, or taxonomy.",
-			"coverage":[],
-			"follow_up_queries":["fresh blue washed rind cheese taxonomy"]
-		}`,
-		`{
 			"decision":"continue",
 			"stop_reason":"Cheddar and brie are covered, but fresh and blue families are still missing.",
 			"supported_claims":["Cheddar is a hard aged cheese.","Brie is a soft-ripened cheese."],
@@ -541,8 +527,11 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 	if len(completedSpace.Sources) != 4 {
 		t.Fatalf("sources = %#v, want four imported online cheese sources after follow-up discovery", completedSpace.Sources)
 	}
-	if len(completedRun.Candidates) != 5 || completedRun.Candidates[0].Status != "accepted" || completedRun.Candidates[1].Status != "accepted" || completedRun.Candidates[2].Status != "rejected" || completedRun.Candidates[3].Status != "accepted" || completedRun.Candidates[4].Status != "accepted" {
-		t.Fatalf("candidates = %#v, want iterative accepted cheese candidates and rejected unrelated candidate", completedRun.Candidates)
+	if len(completedRun.Candidates) != 4 || completedRun.Candidates[0].Status != "accepted" || completedRun.Candidates[1].Status != "accepted" || completedRun.Candidates[2].Status != "accepted" || completedRun.Candidates[3].Status != "accepted" {
+		t.Fatalf("candidates = %#v, want only accepted cheese candidates in the candidate pool", completedRun.Candidates)
+	}
+	if completedRun.ResearchLoops[0].RejectedCount != 1 {
+		t.Fatalf("first loop = %#v, want unrelated search result filtered before the candidate pool", completedRun.ResearchLoops[0])
 	}
 	if len(completedRun.ResearchLoops) != 2 || completedRun.ResearchLoops[0].Decision != "continue" || completedRun.ResearchLoops[1].Decision != "complete" || completedRun.StopReason == "" {
 		t.Fatalf("research loops = %#v stop=%q, want continue then complete loop decisions", completedRun.ResearchLoops, completedRun.StopReason)
@@ -579,14 +568,305 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 		t.Fatalf("internet research calls = %#v, want initial and follow-up calls", calls)
 	}
 	call := calls[0]
-	if call.Provider != "searxng" || !call.Fetch || call.MaxSearches != 2 || call.Depth != "quick" || call.Source != "web" {
-		t.Fatalf("internet research call = %#v, want explicit fetched SearXNG cheese discovery", call)
+	if call.Provider != "searxng" || !call.Fetch || call.MaxSearches != 2 || call.Depth != "quick" || call.Source != "all" || call.Language != "en" {
+		t.Fatalf("internet research call = %#v, want explicit fetched SearXNG all-source English cheese discovery", call)
 	}
 	if len(call.Queries) != 1 || call.Queries[0] != "cheddar brie cheese properties" {
 		t.Fatalf("internet research queries = %#v, want model-planned cheese query", call.Queries)
 	}
 	if len(calls[1].Queries) != 1 || calls[1].Queries[0] != "fresh blue washed rind cheese taxonomy" {
 		t.Fatalf("follow-up research queries = %#v, want coverage-driven follow-up query", calls[1].Queries)
+	}
+}
+
+func TestKnowledgeResearchRunPreflightsUnsafeAndOffTopicDiscoveryCandidates(t *testing.T) {
+	research := &controlInternetResearchStub{sources: []map[string]any{
+		{
+			"query":        "bean cultivation geographic distribution",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Yuuechka Russian streamer biography",
+			"url":          "https://example.ru/yuuechka-streamer-biography",
+			"domain":       "example.ru",
+			"snippet":      "Profile, broadcasts, fan posts, and channel updates.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Yuuechka Russian streamer biography",
+			"text":         "This page is a streamer biography with fan posts and channel updates.",
+		},
+		{
+			"query":        "bean cultivation geographic distribution",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "GitHub - Stripchat recorder",
+			"url":          "https://github.com/example/stripchat-recorder",
+			"domain":       "github.com",
+			"snippet":      "Webcam recorder source code and adult streaming capture scripts.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "GitHub - Stripchat recorder",
+			"text":         "Repository README for an adult streaming recorder.",
+		},
+		{
+			"query":        "bean cultivation geographic distribution",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Bean cultivation geography report",
+			"url":          "https://example.org/beans-cultivation-geography",
+			"domain":       "example.org",
+			"snippet":      "Beans are cultivated across Latin America, Africa, and Asia because climate, rainfall, soils, and markets vary by region.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Bean cultivation geography report",
+			"text":         "Beans are cultivated across Latin America, Africa, and Asia. Regional choices depend on rainfall, soil fertility, temperature, markets, and local diets.",
+		},
+	}}
+	provider := &sequencedControlProvider{responses: []sequencedControlResponse{
+		{content: `{
+			"rewritten_objective":"bean cultivation geography",
+			"clarifying_questions":[],
+			"search_queries":["bean cultivation geographic distribution"],
+			"steps":["Search online","Import relevant fetched sources","Synthesize geographic cultivation answer"],
+			"expected_outputs":["Cited bean cultivation geography report"]
+		}`},
+		{content: `{
+			"summary":"Beans are cultivated across Latin America, Africa, and Asia for climatic, soil, market, and dietary reasons.",
+			"key_terms":["beans","cultivation","geography"],
+			"questions":["Where are beans cultivated?"],
+			"claims":[{"id":"claim_beans","text":"Bean cultivation varies by region because of climate, soil, markets, and diets.","importance":"high"}],
+			"entities":[{"name":"Beans","type":"crop","description":"Cultivated crop family"}],
+			"reliability_notes":["Fetched online source."]
+		}`},
+		{content: `{
+			"decision":"accept",
+			"relevance_score":91,
+			"reason":"The source directly covers where beans are cultivated and why regional conditions matter.",
+			"coverage":["bean cultivation geography","regional drivers"],
+			"follow_up_queries":[]
+		}`},
+		{content: `{
+			"decision":"complete",
+			"stop_reason":"The accepted source directly covers geographic cultivation and regional drivers.",
+			"supported_claims":["Beans are cultivated across Latin America, Africa, and Asia."],
+			"gaps":[],
+			"follow_up_queries":[],
+			"coverage":["bean cultivation geography","regional drivers"]
+		}`},
+		{content: `{
+			"answer":"Beans are cultivated across Latin America, Africa, and Asia, with regional choices shaped by climate, rainfall, soil, markets, and diets [S1].",
+			"key_findings":["[S1] Geography and production drivers are connected."],
+			"gaps":[]
+		}`},
+	}}
+	server := newKnowledgeHTTPTestServerWithTools(t, provider, research)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Bean research"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"To discover what kinds of beans are cultivated in which geographic areas and why.","depth":"standard","discover_sources":true}`, "", http.StatusCreated)
+	var runBody struct {
+		Run knowledgestore.ResearchRun `json:"run"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+
+	completedSpace, completedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted {
+		t.Fatalf("run = %#v, want completed", completedRun)
+	}
+	if len(completedSpace.Sources) != 1 || completedSpace.Sources[0].Title != "Bean cultivation geography report" {
+		t.Fatalf("sources = %#v, want only the relevant bean source imported", completedSpace.Sources)
+	}
+	if len(completedRun.Candidates) != 1 {
+		t.Fatalf("candidates = %#v, want only source candidates that passed preflight", completedRun.Candidates)
+	}
+	if completedRun.Candidates[0].Status != "accepted" {
+		t.Fatalf("candidate = %#v, want accepted bean source", completedRun.Candidates[0])
+	}
+	if completedRun.ResearchLoops[0].RejectedCount != 2 {
+		t.Fatalf("loop = %#v, want two search results filtered before the candidate pool", completedRun.ResearchLoops[0])
+	}
+	if !containsResearchEvent(completedRun.Events, "discovery", "Filtered 2 search results before the candidate pool") {
+		t.Fatalf("events = %#v, want preflight filtering event", completedRun.Events)
+	}
+	if provider.Requests() != 5 {
+		t.Fatalf("provider requests = %d, want plan, one source analysis/evaluation, coverage, and synthesis only", provider.Requests())
+	}
+}
+
+func TestKnowledgeResearchRunUsesObjectiveLanguageAndAllSourceDiscovery(t *testing.T) {
+	research := &controlInternetResearchStub{sources: []map[string]any{
+		{
+			"query":        "frijoles cultivo geografia Mexico",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Frijoles cultivados en Mexico",
+			"url":          "https://example.mx/frijoles-cultivo-mexico",
+			"domain":       "example.mx",
+			"snippet":      "Los frijoles se cultivan en Mexico por clima, suelos, mercados y cocina regional.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Frijoles cultivados en Mexico",
+			"text":         "Los frijoles se cultivan en Mexico por clima, suelos, mercados, disponibilidad de agua y cocina regional.",
+		},
+	}}
+	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{
+		`{
+			"rewritten_objective":"frijoles cultivo geografia Mexico",
+			"clarifying_questions":[],
+			"search_queries":["frijoles cultivo geografia Mexico"],
+			"steps":["Buscar fuentes web y academicas","Importar fuentes relevantes","Sintetizar respuesta citada"],
+			"expected_outputs":["Informe citado sobre frijoles"]
+		}`,
+		`{
+			"summary":"Los frijoles se cultivan en Mexico por clima, suelos, mercados, agua y cocina regional.",
+			"key_terms":["frijoles","cultivo","Mexico"],
+			"questions":["Donde se cultivan frijoles?"],
+			"claims":[{"id":"claim_frijoles","text":"El cultivo de frijoles depende de clima, suelos, mercados, agua y cocina regional.","importance":"high"}],
+			"entities":[{"name":"Frijoles","type":"cultivo","description":"Legumbre cultivada"}],
+			"reliability_notes":["Fuente online recuperada."]
+		}`,
+		`{
+			"decision":"accept",
+			"relevance_score":90,
+			"reason":"La fuente responde donde se cultivan frijoles y por que.",
+			"coverage":["frijoles cultivo geografia Mexico"],
+			"follow_up_queries":[]
+		}`,
+		`{
+			"decision":"complete",
+			"stop_reason":"La fuente cubre geografia y razones de cultivo.",
+			"supported_claims":["El cultivo de frijoles depende de clima, suelos, mercados, agua y cocina regional."],
+			"gaps":[],
+			"follow_up_queries":[],
+			"coverage":["frijoles cultivo geografia Mexico"]
+		}`,
+		`{
+			"answer":"Los frijoles se cultivan en Mexico por clima, suelos, mercados, agua y cocina regional [S1].",
+			"key_findings":["[S1] La geografia y las razones de cultivo estan conectadas."],
+			"gaps":[]
+		}`,
+	}}, research)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Investigacion de frijoles"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"Que tipos de frijoles se cultivan en Mexico y por que?","depth":"quick","discover_sources":true}`, "", http.StatusCreated)
+	var runBody struct {
+		Run knowledgestore.ResearchRun `json:"run"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+
+	completedSpace, completedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted || len(completedSpace.Sources) != 1 {
+		t.Fatalf("space = %#v run = %#v, want completed Spanish discovery run with one source", completedSpace, completedRun)
+	}
+	calls := research.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("internet research calls = %#v, want one discovery call", calls)
+	}
+	if calls[0].Source != "all" || calls[0].Language != "es" || calls[0].Provider != "searxng" {
+		t.Fatalf("internet research call = %#v, want all-source Spanish SearXNG discovery", calls[0])
+	}
+}
+
+func TestKnowledgeResearchRunRetriesModelRateLimitDuringDiscovery(t *testing.T) {
+	research := &controlInternetResearchStub{sources: []map[string]any{
+		{
+			"query":        "bean cultivation geographic distribution",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Bean cultivation geography report",
+			"url":          "https://example.org/beans-cultivation-geography",
+			"domain":       "example.org",
+			"snippet":      "Beans are cultivated across Latin America, Africa, and Asia because climate, rainfall, soils, and markets vary by region.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Bean cultivation geography report",
+			"text":         "Beans are cultivated across Latin America, Africa, and Asia. Regional choices depend on rainfall, soil fertility, temperature, markets, and local diets.",
+		},
+	}}
+	provider := &sequencedControlProvider{responses: []sequencedControlResponse{
+		{content: `{
+			"rewritten_objective":"bean cultivation geography",
+			"clarifying_questions":[],
+			"search_queries":["bean cultivation geographic distribution"],
+			"steps":["Search online","Import relevant fetched sources","Synthesize geographic cultivation answer"],
+			"expected_outputs":["Cited bean cultivation geography report"]
+		}`},
+		{err: llm.RetryableAfter(errors.New("gemini provider returned 429 Too Many Requests"), time.Millisecond)},
+		{content: `{
+			"summary":"Beans are cultivated across Latin America, Africa, and Asia for climatic, soil, market, and dietary reasons.",
+			"key_terms":["beans","cultivation","geography"],
+			"questions":["Where are beans cultivated?"],
+			"claims":[{"id":"claim_beans","text":"Bean cultivation varies by region because of climate, soil, markets, and diets.","importance":"high"}],
+			"entities":[{"name":"Beans","type":"crop","description":"Cultivated crop family"}],
+			"reliability_notes":["Fetched online source."]
+		}`},
+		{content: `{
+			"decision":"accept",
+			"relevance_score":91,
+			"reason":"The source directly covers where beans are cultivated and why regional conditions matter.",
+			"coverage":["bean cultivation geography","regional drivers"],
+			"follow_up_queries":[]
+		}`},
+		{content: `{
+			"decision":"complete",
+			"stop_reason":"The accepted source directly covers geographic cultivation and regional drivers.",
+			"supported_claims":["Beans are cultivated across Latin America, Africa, and Asia."],
+			"gaps":[],
+			"follow_up_queries":[],
+			"coverage":["bean cultivation geography","regional drivers"]
+		}`},
+		{content: `{
+			"answer":"Beans are cultivated across Latin America, Africa, and Asia, with regional choices shaped by climate, rainfall, soil, markets, and diets [S1].",
+			"key_findings":["[S1] Geography and production drivers are connected."],
+			"gaps":[]
+		}`},
+	}}
+	server := newKnowledgeHTTPTestServerWithTools(t, llm.WithRetry(provider, llm.RetryConfig{MaxAttempts: 2, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}), research)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Bean research"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"To discover what kinds of beans are cultivated in which geographic areas and why.","depth":"standard","discover_sources":true}`, "", http.StatusCreated)
+	var runBody struct {
+		Run knowledgestore.ResearchRun `json:"run"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+
+	completedSpace, completedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted {
+		t.Fatalf("run = %#v, want completed after retrying provider rate limit", completedRun)
+	}
+	if len(completedSpace.Sources) != 1 || completedRun.ReportID == "" {
+		t.Fatalf("space = %#v run = %#v, want imported source and report after retry", completedSpace, completedRun)
+	}
+	if provider.Requests() != 6 {
+		t.Fatalf("provider requests = %d, want one rate-limited attempt plus retry", provider.Requests())
 	}
 }
 
@@ -1426,12 +1706,52 @@ func (p *scriptedControlProvider) Complete(_ context.Context, req llm.Completion
 	}, nil
 }
 
+type sequencedControlProvider struct {
+	mu        sync.Mutex
+	responses []sequencedControlResponse
+	requests  int
+}
+
+type sequencedControlResponse struct {
+	content string
+	err     error
+}
+
+func (p *sequencedControlProvider) Name() string { return "sequenced" }
+
+func (p *sequencedControlProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests++
+	if len(p.responses) == 0 {
+		return llm.CompletionResponse{}, context.Canceled
+	}
+	response := p.responses[0]
+	p.responses = p.responses[1:]
+	if response.err != nil {
+		return llm.CompletionResponse{}, response.err
+	}
+	return llm.CompletionResponse{
+		Message:  llm.Message{Role: "assistant", Content: response.content},
+		Provider: p.Name(),
+		Model:    req.Model,
+		Usage:    llm.Usage{InputTokens: 10, OutputTokens: 6, TotalTokens: 16},
+	}, nil
+}
+
+func (p *sequencedControlProvider) Requests() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.requests
+}
+
 type controlInternetResearchCall struct {
 	Query       string   `json:"query"`
 	Queries     []string `json:"queries"`
 	Source      string   `json:"source"`
 	Depth       string   `json:"depth"`
 	Provider    string   `json:"provider"`
+	Language    string   `json:"language"`
 	MaxSearches int      `json:"max_searches"`
 	Fetch       bool     `json:"fetch"`
 }

@@ -616,9 +616,10 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		toolInput := map[string]any{
 			"query":        primaryQuery,
 			"queries":      queries,
-			"source":       "web",
+			"source":       "all",
 			"depth":        run.Depth,
 			"provider":     "searxng",
+			"language":     knowledgeDiscoveryLanguage(run),
 			"max_searches": maxSearches,
 			"fetch":        true,
 		}
@@ -723,6 +724,7 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 func (o *Orchestrator) processKnowledgeDiscoveryBundle(ctx context.Context, store knowledgestore.Repository, space knowledgestore.Space, run knowledgestore.ResearchRun, bundle knowledgeResearchBundle) (knowledgestore.Space, knowledgestore.ResearchRun, knowledgeDiscoveryLoopResult, error) {
 	result := knowledgeDiscoveryLoopResult{}
 	var err error
+	filteredReasons := map[string]int{}
 	if len(bundle.SearchErrors) > 0 {
 		result.Failed += len(bundle.SearchErrors)
 		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{
@@ -746,6 +748,11 @@ func (o *Orchestrator) processKnowledgeDiscoveryBundle(ctx context.Context, stor
 		if hasExistingCandidate && existingCandidate.Status == "rejected" {
 			result.Rejected++
 			result.CandidateIDs = appendUniqueStrings(result.CandidateIDs, existingCandidate.ID)
+			continue
+		}
+		if skip, reason := knowledgeCandidatePreflight(run, candidateState); skip {
+			filteredReasons[reason]++
+			result.Rejected++
 			continue
 		}
 		run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
@@ -880,6 +887,9 @@ func (o *Orchestrator) processKnowledgeDiscoveryBundle(ctx context.Context, stor
 		}
 	}
 	now := time.Now().UTC()
+	if len(filteredReasons) > 0 {
+		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: knowledgeFilteredCandidatesMessage(filteredReasons), CreatedAt: now})
+	}
 	if result.Imported > 0 {
 		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: fmt.Sprintf("Imported %d online source%s into the corpus.", result.Imported, pluralSuffix(result.Imported)), CreatedAt: now})
 	} else if result.Usable > 0 {
@@ -1144,6 +1154,222 @@ func knowledgeEvidenceLimitForDepth(depth string) int {
 		return 48
 	default:
 		return 32
+	}
+}
+
+func knowledgeDiscoveryLanguage(run knowledgestore.ResearchRun) string {
+	text := strings.Join([]string{
+		run.Objective,
+		run.Question,
+		run.Scope,
+		run.Plan.RewrittenObjective,
+		strings.Join(run.Plan.SearchQueries, " "),
+		strings.Join(run.Plan.Steps, " "),
+		strings.Join(run.Plan.ExpectedOutputs, " "),
+	}, " ")
+	if language := knowledgeInferLanguage(text); language != "" {
+		return language
+	}
+	return "en"
+}
+
+func knowledgeInferLanguage(value string) string {
+	lower := " " + strings.ToLower(strings.Join(strings.Fields(value), " ")) + " "
+	for _, r := range lower {
+		switch {
+		case r >= 0x0400 && r <= 0x052f:
+			return "ru"
+		case r >= 0x0370 && r <= 0x03ff:
+			return "el"
+		case r >= 0x0590 && r <= 0x05ff:
+			return "he"
+		case r >= 0x0600 && r <= 0x06ff:
+			return "ar"
+		case r >= 0x0900 && r <= 0x097f:
+			return "hi"
+		case r >= 0x3040 && r <= 0x30ff:
+			return "ja"
+		case r >= 0x4e00 && r <= 0x9fff:
+			return "zh"
+		case r >= 0xac00 && r <= 0xd7af:
+			return "ko"
+		case r >= 0x0e00 && r <= 0x0e7f:
+			return "th"
+		}
+	}
+	switch {
+	case strings.ContainsAny(lower, "¿¡ñ") ||
+		knowledgeContainsAny(lower, []string{" qué ", " como ", " dónde ", " cuales ", " cuáles ", " para ", " porque ", " queso ", " quesos ", " frijol ", " frijoles ", " habas ", " cultivo ", " cultivan "}):
+		return "es"
+	case strings.ContainsAny(lower, "àâçéèêëîïôùûüÿœæ") ||
+		knowledgeContainsAny(lower, []string{" quel ", " quelle ", " quels ", " quelles ", " dans ", " pour ", " avec ", " fromage ", " fromages ", " haricot ", " haricots "}):
+		return "fr"
+	case strings.ContainsAny(lower, "äöüß") ||
+		knowledgeContainsAny(lower, []string{" der ", " die ", " das ", " und ", " mit ", " für ", " käse ", " bohnen "}):
+		return "de"
+	case strings.ContainsAny(lower, "ãõ") ||
+		knowledgeContainsAny(lower, []string{" quais ", " como ", " onde ", " para ", " porque ", " queijo ", " queijos ", " feijão ", " feijões "}):
+		return "pt"
+	case knowledgeContainsAny(lower, []string{" quale ", " quali ", " come ", " dove ", " perché ", " formaggio ", " formaggi ", " fagiolo ", " fagioli "}):
+		return "it"
+	default:
+		return ""
+	}
+}
+
+func knowledgeCandidatePreflight(run knowledgestore.ResearchRun, candidate knowledgestore.SourceCandidate) (bool, string) {
+	text := strings.ToLower(strings.Join([]string{
+		candidate.Title,
+		candidate.Snippet,
+		candidate.URL,
+		candidate.Domain,
+	}, " "))
+	if knowledgeContainsAny(text, []string{
+		"stripchat",
+		"chaturbate",
+		"onlyfans",
+		"camgirl",
+		"webcam model",
+		"webcam recorder",
+		"adult streaming",
+		"porn",
+		"xxx",
+		"erotic",
+		"nude",
+	}) {
+		return true, "adult or streaming-site search result"
+	}
+	if knowledgeCandidateIsSourceCodeHost(candidate) && !knowledgeRunAllowsCodeSources(run) {
+		return true, "source-code host unrelated to a non-software research objective"
+	}
+	if !knowledgeCandidateHasResearchOverlap(run, candidate) {
+		return true, "low-overlap search result"
+	}
+	return false, ""
+}
+
+func knowledgeFilteredCandidatesMessage(reasons map[string]int) string {
+	total := 0
+	items := make([]string, 0, len(reasons))
+	for reason, count := range reasons {
+		total += count
+		items = append(items, fmt.Sprintf("%d %s", count, reason))
+	}
+	sort.Strings(items)
+	return fmt.Sprintf("Filtered %d search result%s before the candidate pool: %s.", total, pluralSuffix(total), strings.Join(items, "; "))
+}
+
+func knowledgeContainsAny(value string, needles []string) bool {
+	for _, needle := range needles {
+		needle = strings.TrimSpace(strings.ToLower(needle))
+		if needle != "" && strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeCandidateIsSourceCodeHost(candidate knowledgestore.SourceCandidate) bool {
+	domain := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(candidate.Domain)), "www.")
+	url := strings.ToLower(strings.TrimSpace(candidate.URL))
+	for _, host := range []string{"github.com", "gitlab.com", "bitbucket.org", "sourceforge.net", "npmjs.com", "pkg.go.dev"} {
+		if domain == host || strings.HasSuffix(domain, "."+host) || strings.Contains(url, "://"+host+"/") || strings.Contains(url, "://www."+host+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeRunAllowsCodeSources(run knowledgestore.ResearchRun) bool {
+	text := strings.ToLower(strings.Join([]string{
+		run.Objective,
+		run.Question,
+		run.Scope,
+		run.Plan.RewrittenObjective,
+		strings.Join(run.Plan.SearchQueries, " "),
+		strings.Join(run.Plan.Steps, " "),
+		strings.Join(run.Plan.ExpectedOutputs, " "),
+	}, " "))
+	if knowledgeContainsAny(text, []string{"github", "gitlab", "source code", "repository", "programming", "software", "developer", "api", "sdk", "library", "package", "module", "implementation"}) {
+		return true
+	}
+	terms := knowledgeTokenSet(text)
+	for _, term := range []string{"code", "coding", "repo", "repos", "release", "releases", "changelog", "commit", "commits"} {
+		if terms[term] {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeCandidateHasResearchOverlap(run knowledgestore.ResearchRun, candidate knowledgestore.SourceCandidate) bool {
+	researchTerms := knowledgeRunResearchTerms(run)
+	if len(researchTerms) == 0 {
+		return true
+	}
+	candidateTerms := knowledgeTokenSet(strings.Join([]string{
+		candidate.Title,
+		candidate.Snippet,
+		candidate.URL,
+		candidate.Domain,
+	}, " "))
+	for term := range candidateTerms {
+		if researchTerms[term] {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeRunResearchTerms(run knowledgestore.ResearchRun) map[string]bool {
+	return knowledgeTokenSet(strings.Join([]string{
+		run.Objective,
+		run.Question,
+		run.Scope,
+		run.Plan.RewrittenObjective,
+		strings.Join(run.Plan.SearchQueries, " "),
+		strings.Join(run.Plan.Steps, " "),
+		strings.Join(run.Plan.ExpectedOutputs, " "),
+	}, " "))
+}
+
+func knowledgeTokenSet(value string) map[string]bool {
+	cleaned := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return r
+		}
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return ' '
+	}, strings.ToLower(value))
+	terms := map[string]bool{}
+	for _, token := range strings.Fields(cleaned) {
+		knowledgeAddToken(terms, token)
+	}
+	return terms
+}
+
+func knowledgeAddToken(terms map[string]bool, token string) {
+	token = strings.TrimSpace(strings.ToLower(token))
+	if len(token) < 3 || knowledgeStopToken(token) {
+		return
+	}
+	terms[token] = true
+	if strings.HasSuffix(token, "ies") && len(token) > 4 {
+		terms[strings.TrimSuffix(token, "ies")+"y"] = true
+	}
+	if strings.HasSuffix(token, "s") && len(token) > 4 {
+		terms[strings.TrimSuffix(token, "s")] = true
+	}
+}
+
+func knowledgeStopToken(token string) bool {
+	switch token {
+	case "about", "after", "again", "against", "all", "also", "and", "any", "are", "around", "because", "been", "before", "being", "between", "both", "but", "can", "could", "current", "does", "each", "every", "few", "for", "from", "had", "has", "have", "having", "how", "into", "its", "kind", "kinds", "latest", "more", "most", "near", "not", "now", "objective", "off", "online", "other", "our", "out", "over", "per", "produce", "query", "question", "report", "research", "run", "same", "search", "should", "some", "source", "sources", "specific", "study", "such", "than", "that", "the", "their", "then", "there", "these", "this", "those", "through", "type", "types", "use", "using", "want", "what", "when", "where", "which", "while", "why", "with", "within", "would", "www":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -140,6 +140,21 @@ func TestSearchToolUsesSearXNGByDefaultAndAggregatesInstances(t *testing.T) {
 	}
 }
 
+func TestSearchAcceptLanguageUsesRequestedLanguageWithEnglishFallback(t *testing.T) {
+	if got := searchAcceptLanguage(""); got != "en-US,en;q=0.8" {
+		t.Fatalf("empty language header = %q, want English fallback", got)
+	}
+	if got := searchAcceptLanguage("en"); got != "en-US,en;q=0.8" {
+		t.Fatalf("English language header = %q, want English fallback", got)
+	}
+	if got := searchAcceptLanguage("es"); got != "es,en;q=0.4" {
+		t.Fatalf("Spanish language header = %q, want Spanish with English fallback", got)
+	}
+	if got := searchAcceptLanguage("pt-BR"); got != "pt-BR,pt;q=0.8,en;q=0.4" {
+		t.Fatalf("regional language header = %q, want regional, root, and English fallback", got)
+	}
+}
+
 func TestSearchToolRetriesSearXNGRateLimit(t *testing.T) {
 	attempts := 0
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

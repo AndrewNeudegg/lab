@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type Gemini struct {
@@ -58,7 +59,7 @@ func (p *Gemini) Complete(ctx context.Context, req CompletionRequest) (Completio
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("gemini provider returned %s", resp.Status)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			return CompletionResponse{}, Retryable(err)
+			return CompletionResponse{}, RetryableAfter(err, RetryAfterHeader(resp.Header.Get("Retry-After"), time.Now()))
 		}
 		return CompletionResponse{}, err
 	}

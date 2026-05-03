@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type OpenAICompatible struct {
@@ -95,7 +96,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 		details, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		err := fmt.Errorf("llm provider returned %s: %s", resp.Status, strings.TrimSpace(string(details)))
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			return CompletionResponse{}, Retryable(err)
+			return CompletionResponse{}, RetryableAfter(err, RetryAfterHeader(resp.Header.Get("Retry-After"), time.Now()))
 		}
 		return CompletionResponse{}, err
 	}

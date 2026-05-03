@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type RetryableError struct {
-	Err error
+	Err        error
+	RetryAfter time.Duration
 }
 
 func (e RetryableError) Error() string {
@@ -27,6 +30,16 @@ func Retryable(err error) error {
 	return RetryableError{Err: err}
 }
 
+func RetryableAfter(err error, after time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	if after <= 0 {
+		return Retryable(err)
+	}
+	return RetryableError{Err: err, RetryAfter: after}
+}
+
 func IsRetryable(err error) bool {
 	var retryable RetryableError
 	if errors.As(err, &retryable) {
@@ -37,6 +50,33 @@ func IsRetryable(err error) bool {
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "429") || strings.Contains(text, "500") || strings.Contains(text, "502") || strings.Contains(text, "503") || strings.Contains(text, "504") || strings.Contains(text, "timeout") || strings.Contains(text, "temporarily")
+}
+
+func RetryAfter(err error) time.Duration {
+	var retryable RetryableError
+	if errors.As(err, &retryable) {
+		return retryable.RetryAfter
+	}
+	return 0
+}
+
+func RetryAfterHeader(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	delay := when.Sub(now)
+	if delay <= 0 {
+		return 0
+	}
+	return delay
 }
 
 type RetryConfig struct {
@@ -84,6 +124,9 @@ func (p *RetryProvider) Complete(ctx context.Context, req CompletionRequest) (Co
 			return CompletionResponse{}, err
 		}
 		delay := p.backoff(attempt)
+		if retryAfter := RetryAfter(err); retryAfter > delay {
+			delay = retryAfter
+		}
 		if sleepErr := p.sleep(ctx, delay); sleepErr != nil {
 			return CompletionResponse{}, sleepErr
 		}

@@ -323,13 +323,31 @@ func (t SearchTool) getSearXNG(ctx context.Context, endpoint, query string, page
 	} else {
 		httpReq.Header.Set("Accept", "text/html,application/xhtml+xml")
 	}
-	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.8")
+	httpReq.Header.Set("Accept-Language", searchAcceptLanguage(options.Language))
 	httpReq.Header.Set("User-Agent", t.base.userAgent())
 	result, err := t.base.doReadRequestWithRetry(ctx, httpReq, 2<<20)
 	if err != nil {
 		return nil, 0, "", err
 	}
 	return result.Body, result.StatusCode, result.ContentType, nil
+}
+
+func searchAcceptLanguage(language string) string {
+	language = strings.TrimSpace(language)
+	if language == "" {
+		return "en-US,en;q=0.8"
+	}
+	root := strings.ToLower(language)
+	if index := strings.IndexAny(root, "-_"); index >= 0 {
+		root = root[:index]
+	}
+	if root == "" || strings.EqualFold(language, "en") || strings.EqualFold(language, "en-US") {
+		return "en-US,en;q=0.8"
+	}
+	if strings.EqualFold(root, language) {
+		return language + ",en;q=0.4"
+	}
+	return language + "," + root + ";q=0.8,en;q=0.4"
 }
 
 func (t SearchTool) searchDuckDuckGo(ctx context.Context, query string, limit int) (json.RawMessage, error) {

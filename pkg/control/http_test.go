@@ -334,45 +334,75 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 }
 
 func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
-	research := &controlInternetResearchStub{sources: []map[string]any{
+	research := &controlInternetResearchStub{sourceBatches: [][]map[string]any{
 		{
-			"query":        "online cheese types and properties",
-			"kind":         "web",
-			"provider":     "searxng",
-			"title":        "Cheddar cheese profile",
-			"url":          "https://example.com/cheddar",
-			"domain":       "example.com",
-			"snippet":      "Cheddar is a hard cheese with ageing, texture, and melting properties.",
-			"fetched":      true,
-			"content_type": "text/html",
-			"page_title":   "Cheddar cheese profile",
-			"text":         "Cheddar is a hard aged cheese with firm texture, sharp flavour, and reliable melting properties.",
+			{
+				"query":        "online cheese types and properties",
+				"kind":         "web",
+				"provider":     "searxng",
+				"title":        "Cheddar cheese profile",
+				"url":          "https://example.com/cheddar",
+				"domain":       "example.com",
+				"snippet":      "Cheddar is a hard cheese with ageing, texture, and melting properties.",
+				"fetched":      true,
+				"content_type": "text/html",
+				"page_title":   "Cheddar cheese profile",
+				"text":         "Cheddar is a hard aged cheese with firm texture, sharp flavour, and reliable melting properties.",
+			},
+			{
+				"query":        "online cheese types and properties",
+				"kind":         "web",
+				"provider":     "searxng",
+				"title":        "Brie cheese profile",
+				"url":          "https://example.com/brie",
+				"domain":       "example.com",
+				"snippet":      "Brie is a soft-ripened cheese with a bloomy rind and creamy interior.",
+				"fetched":      true,
+				"content_type": "text/html",
+				"page_title":   "Brie cheese profile",
+				"text":         "Brie is a soft-ripened cheese with a bloomy rind, creamy interior, mild aroma, and high moisture.",
+			},
+			{
+				"query":        "online cheese types and properties",
+				"kind":         "web",
+				"provider":     "searxng",
+				"title":        "Conference calendar",
+				"url":          "https://example.com/conference-calendar",
+				"domain":       "example.com",
+				"snippet":      "Events, sponsorships, and venue logistics.",
+				"fetched":      true,
+				"content_type": "text/html",
+				"page_title":   "Conference calendar",
+				"text":         "The annual conference calendar lists event dates, sponsor packages, venue logistics, and registration deadlines.",
+			},
 		},
 		{
-			"query":        "online cheese types and properties",
-			"kind":         "web",
-			"provider":     "searxng",
-			"title":        "Brie cheese profile",
-			"url":          "https://example.com/brie",
-			"domain":       "example.com",
-			"snippet":      "Brie is a soft-ripened cheese with a bloomy rind and creamy interior.",
-			"fetched":      true,
-			"content_type": "text/html",
-			"page_title":   "Brie cheese profile",
-			"text":         "Brie is a soft-ripened cheese with a bloomy rind, creamy interior, mild aroma, and high moisture.",
-		},
-		{
-			"query":        "online cheese types and properties",
-			"kind":         "web",
-			"provider":     "searxng",
-			"title":        "Conference calendar",
-			"url":          "https://example.com/conference-calendar",
-			"domain":       "example.com",
-			"snippet":      "Events, sponsorships, and venue logistics.",
-			"fetched":      true,
-			"content_type": "text/html",
-			"page_title":   "Conference calendar",
-			"text":         "The annual conference calendar lists event dates, sponsor packages, venue logistics, and registration deadlines.",
+			{
+				"query":        "fresh blue washed rind cheese taxonomy",
+				"kind":         "web",
+				"provider":     "searxng",
+				"title":        "Mozzarella cheese profile",
+				"url":          "https://example.com/mozzarella",
+				"domain":       "example.com",
+				"snippet":      "Mozzarella is a fresh high-moisture cheese.",
+				"fetched":      true,
+				"content_type": "text/html",
+				"page_title":   "Mozzarella cheese profile",
+				"text":         "Mozzarella is a fresh high-moisture pasta filata cheese with mild flavour and elastic texture.",
+			},
+			{
+				"query":        "fresh blue washed rind cheese taxonomy",
+				"kind":         "web",
+				"provider":     "searxng",
+				"title":        "Blue cheese profile",
+				"url":          "https://example.com/blue-cheese",
+				"domain":       "example.com",
+				"snippet":      "Blue cheese is ripened with blue mould veining.",
+				"fetched":      true,
+				"content_type": "text/html",
+				"page_title":   "Blue cheese profile",
+				"text":         "Blue cheese is a mould-ripened family with blue veining, salty flavour, and crumbly or creamy textures.",
+			},
 		},
 	}}
 	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{
@@ -426,12 +456,58 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 			"relevance_score":5,
 			"reason":"The source does not cover cheese types, properties, or taxonomy.",
 			"coverage":[],
-			"follow_up_queries":["cheese taxonomy rind moisture milk source"]
+			"follow_up_queries":["fresh blue washed rind cheese taxonomy"]
 		}`,
 		`{
-			"answer":"The run imported online evidence for cheddar and brie. Cheddar is hard and aged [S1], while brie is soft-ripened with a bloomy rind [S2].",
-			"key_findings":["[S1] Cheddar has hard aged melting properties.","[S2] Brie has a creamy soft-ripened profile."],
-			"gaps":["Only two discovered cheese profiles were imported."]
+			"decision":"continue",
+			"stop_reason":"Cheddar and brie are covered, but fresh and blue families are still missing.",
+			"supported_claims":["Cheddar is a hard aged cheese.","Brie is a soft-ripened cheese."],
+			"gaps":["Fresh cheeses are missing.","Blue mould-ripened cheeses are missing."],
+			"follow_up_queries":["fresh blue washed rind cheese taxonomy"],
+			"coverage":["hard aged cheese","soft-ripened cheese"]
+		}`,
+		`{
+			"summary":"Mozzarella is a fresh high-moisture pasta filata cheese.",
+			"key_terms":["mozzarella","fresh cheese","pasta filata"],
+			"questions":["What properties does mozzarella have?"],
+			"claims":[{"id":"claim_mozzarella","text":"Mozzarella is fresh, high-moisture, and elastic.","importance":"high"}],
+			"entities":[{"name":"Mozzarella","type":"cheese","description":"Fresh pasta filata cheese"}],
+			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"decision":"accept",
+			"relevance_score":84,
+			"reason":"Mozzarella covers the fresh cheese gap.",
+			"coverage":["fresh cheeses","Cited cheese property report"],
+			"follow_up_queries":[]
+		}`,
+		`{
+			"summary":"Blue cheese is a mould-ripened family with blue veining and salty flavour.",
+			"key_terms":["blue cheese","mould-ripened","veining"],
+			"questions":["What properties does blue cheese have?"],
+			"claims":[{"id":"claim_blue","text":"Blue cheese is mould-ripened with blue veining.","importance":"high"}],
+			"entities":[{"name":"Blue cheese","type":"cheese family","description":"Mould-ripened cheese family"}],
+			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"decision":"accept",
+			"relevance_score":82,
+			"reason":"Blue cheese covers the mould-ripened taxonomy gap.",
+			"coverage":["blue mould-ripened cheeses","Cited cheese property report"],
+			"follow_up_queries":[]
+		}`,
+		`{
+			"decision":"complete",
+			"stop_reason":"Accepted sources now cover hard aged, soft-ripened, fresh, and blue mould-ripened cheese families.",
+			"supported_claims":["Cheddar is hard aged.","Brie is soft-ripened.","Mozzarella is fresh.","Blue cheese is mould-ripened."],
+			"gaps":[],
+			"follow_up_queries":[],
+			"coverage":["hard aged cheese","soft-ripened cheese","fresh cheeses","blue mould-ripened cheeses"]
+		}`,
+		`{
+			"answer":"The run found a starter cheese taxonomy: cheddar represents hard aged cheeses [S1], brie represents soft-ripened bloomy-rind cheeses [S2], mozzarella represents fresh high-moisture cheeses [S3], and blue cheese represents mould-ripened veined cheeses [S4].",
+			"key_findings":["[S1] Cheddar has hard aged melting properties.","[S2] Brie has a creamy soft-ripened profile.","[S3] Mozzarella is fresh and high-moisture.","[S4] Blue cheese is mould-ripened with blue veining."],
+			"gaps":[]
 		}`,
 	}}, research)
 	mux := http.NewServeMux()
@@ -462,17 +538,20 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted {
 		t.Fatalf("run = %#v, want completed", completedRun)
 	}
-	if len(completedSpace.Sources) != 2 {
-		t.Fatalf("sources = %#v, want two imported online cheese sources", completedSpace.Sources)
+	if len(completedSpace.Sources) != 4 {
+		t.Fatalf("sources = %#v, want four imported online cheese sources after follow-up discovery", completedSpace.Sources)
 	}
-	if len(completedRun.Candidates) != 3 || completedRun.Candidates[0].Status != "accepted" || completedRun.Candidates[1].Status != "accepted" || completedRun.Candidates[2].Status != "rejected" {
-		t.Fatalf("candidates = %#v, want accepted cheese candidates and rejected unrelated candidate", completedRun.Candidates)
+	if len(completedRun.Candidates) != 5 || completedRun.Candidates[0].Status != "accepted" || completedRun.Candidates[1].Status != "accepted" || completedRun.Candidates[2].Status != "rejected" || completedRun.Candidates[3].Status != "accepted" || completedRun.Candidates[4].Status != "accepted" {
+		t.Fatalf("candidates = %#v, want iterative accepted cheese candidates and rejected unrelated candidate", completedRun.Candidates)
 	}
-	if completedRun.ReportID == "" || completedRun.EvidenceCount == 0 || completedRun.SourcesExamined != 2 || completedRun.WorkspacePath == "" {
+	if len(completedRun.ResearchLoops) != 2 || completedRun.ResearchLoops[0].Decision != "continue" || completedRun.ResearchLoops[1].Decision != "complete" || completedRun.StopReason == "" {
+		t.Fatalf("research loops = %#v stop=%q, want continue then complete loop decisions", completedRun.ResearchLoops, completedRun.StopReason)
+	}
+	if completedRun.ReportID == "" || completedRun.EvidenceCount == 0 || completedRun.SourcesExamined != 4 || completedRun.WorkspacePath == "" {
 		t.Fatalf("completed run = %#v, want report, evidence, imported source count, and workspace", completedRun)
 	}
-	if !containsResearchEvent(completedRun.Events, "discovery", "Imported 2 online sources") {
-		t.Fatalf("events = %#v, want discovery import event", completedRun.Events)
+	if !containsResearchEvent(completedRun.Events, "coverage", "Coverage sufficient") {
+		t.Fatalf("events = %#v, want coverage stop event", completedRun.Events)
 	}
 	for _, source := range completedSpace.Sources {
 		if source.Ingestion.State != knowledgestore.SourceStatusReady || len(source.Claims) == 0 {
@@ -483,8 +562,8 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 		}
 	}
 	calls := research.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("internet research calls = %#v, want one call", calls)
+	if len(calls) != 2 {
+		t.Fatalf("internet research calls = %#v, want initial and follow-up calls", calls)
 	}
 	call := calls[0]
 	if call.Provider != "searxng" || !call.Fetch || call.MaxSearches != 2 || call.Depth != "quick" || call.Source != "web" {
@@ -492,6 +571,9 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 	}
 	if len(call.Queries) != 1 || call.Queries[0] != "cheddar brie cheese properties" {
 		t.Fatalf("internet research queries = %#v, want model-planned cheese query", call.Queries)
+	}
+	if len(calls[1].Queries) != 1 || calls[1].Queries[0] != "fresh blue washed rind cheese taxonomy" {
+		t.Fatalf("follow-up research queries = %#v, want coverage-driven follow-up query", calls[1].Queries)
 	}
 }
 
@@ -1277,10 +1359,11 @@ type controlInternetResearchCall struct {
 }
 
 type controlInternetResearchStub struct {
-	mu           sync.Mutex
-	calls        []controlInternetResearchCall
-	sources      []map[string]any
-	searchErrors []string
+	mu            sync.Mutex
+	calls         []controlInternetResearchCall
+	sources       []map[string]any
+	sourceBatches [][]map[string]any
+	searchErrors  []string
 }
 
 func (controlInternetResearchStub) Name() string        { return "internet.research" }
@@ -1294,6 +1377,14 @@ func (s *controlInternetResearchStub) Run(_ context.Context, raw json.RawMessage
 	_ = json.Unmarshal(raw, &call)
 	s.mu.Lock()
 	s.calls = append(s.calls, call)
+	sources := s.sources
+	if len(s.sourceBatches) > 0 {
+		index := len(s.calls) - 1
+		if index >= len(s.sourceBatches) {
+			index = len(s.sourceBatches) - 1
+		}
+		sources = s.sourceBatches[index]
+	}
 	s.mu.Unlock()
 	return json.Marshal(map[string]any{
 		"query":           call.Query,
@@ -1301,7 +1392,7 @@ func (s *controlInternetResearchStub) Run(_ context.Context, raw json.RawMessage
 		"depth":           call.Depth,
 		"method":          "stubbed search and fetch",
 		"search_provider": call.Provider,
-		"sources":         s.sources,
+		"sources":         sources,
 		"search_errors":   s.searchErrors,
 	})
 }

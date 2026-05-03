@@ -1177,6 +1177,88 @@
                       {/if}
                     </div>
                   {/if}
+                  {#if latestSelectedRun.stop_reason}
+                    <section class="run-note" aria-label="Research stop reason">
+                      <strong>Stop reason</strong>
+                      <div class="markdown-block compact">
+                        <Markdown content={latestSelectedRun.stop_reason} />
+                      </div>
+                    </section>
+                  {/if}
+                  {#if latestSelectedRun.research_loops?.length}
+                    <div class="research-loops" aria-label="Research loops">
+                      {#each latestSelectedRun.research_loops as loop (loop.id)}
+                        <section>
+                          <header>
+                            <div>
+                              <strong>Loop {loop.index}</strong>
+                              <small>{loop.queries?.length || 0} searches · {loop.evidence_count || 0} cited chunks</small>
+                            </div>
+                            <span class={`candidate-status ${loop.decision || loop.status}`}>
+                              {loop.decision || loop.status}
+                            </span>
+                          </header>
+                          {#if loop.queries?.length}
+                            <div class="chips" aria-label={`Loop ${loop.index} queries`}>
+                              {#each loop.queries as query}
+                                <span>{query}</span>
+                              {/each}
+                            </div>
+                          {/if}
+                          <dl class="candidate-meta">
+                            <div>
+                              <dt>Accepted</dt>
+                              <dd>{loop.accepted_count || 0}</dd>
+                            </div>
+                            <div>
+                              <dt>Rejected</dt>
+                              <dd>{loop.rejected_count || 0}</dd>
+                            </div>
+                            <div>
+                              <dt>Failed</dt>
+                              <dd>{loop.failed_count || 0}</dd>
+                            </div>
+                            {#if loop.source_ids?.length}
+                              <div>
+                                <dt>Sources</dt>
+                                <dd>{loop.source_ids.length}</dd>
+                              </div>
+                            {/if}
+                          </dl>
+                          {#if loop.stop_reason}
+                            <div class="markdown-block compact">
+                              <Markdown content={loop.stop_reason} />
+                            </div>
+                          {/if}
+                          {#if loop.supported_claims?.length}
+                            <div class="loop-subsection">
+                              <strong>Supported</strong>
+                              {#each loop.supported_claims as claim}
+                                <div class="markdown-block compact"><Markdown content={claim} /></div>
+                              {/each}
+                            </div>
+                          {/if}
+                          {#if loop.gaps?.length}
+                            <div class="gaps" aria-label={`Loop ${loop.index} gaps`}>
+                              {#each loop.gaps as gap}
+                                <div class="gap-pill"><Markdown content={gap} /></div>
+                              {/each}
+                            </div>
+                          {/if}
+                          {#if loop.follow_up_queries?.length}
+                            <div class="loop-subsection">
+                              <strong>Follow-up</strong>
+                              <div class="chips">
+                                {#each loop.follow_up_queries as query}
+                                  <span>{query}</span>
+                                {/each}
+                              </div>
+                            </div>
+                          {/if}
+                        </section>
+                      {/each}
+                    </div>
+                  {/if}
                   {#if latestSelectedRun.coverage?.length}
                     <div class="run-coverage" aria-label="Research coverage">
                       {#each latestSelectedRun.coverage as item (item.id)}
@@ -1429,12 +1511,14 @@
     --knowledge-muted: #475569;
     --knowledge-primary-bg: #172554;
     --knowledge-primary-text: #ffffff;
+    --knowledge-warning-text: #92400e;
   }
 
   :global(html[data-theme='dark']) {
     --knowledge-muted: #b7c6da;
     --knowledge-primary-bg: #172554;
     --knowledge-primary-text: #ffffff;
+    --knowledge-warning-text: #fde68a;
   }
 
   button,
@@ -1750,6 +1834,7 @@
   .runs-list,
   .run-events,
   .run-plan,
+  .research-loops,
   .run-coverage,
   .claims-list,
   .evidence-list,
@@ -2117,6 +2202,7 @@
   .run-plan,
   .run-answer,
   .run-note,
+  .research-loops,
   .run-coverage {
     margin-top: 0.75rem;
   }
@@ -2126,6 +2212,7 @@
   .run-plan section,
   .run-answer,
   .run-note,
+  .research-loops section,
   .run-coverage section {
     min-width: 0;
     padding: 0.65rem;
@@ -2145,6 +2232,7 @@
   }
 
   .run-answer header,
+  .research-loops header,
   .run-coverage header {
     display: flex;
     align-items: flex-start;
@@ -2159,7 +2247,21 @@
     min-width: 0;
   }
 
+  .research-loops header > div {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+
+  .loop-subsection {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.65rem;
+    min-width: 0;
+  }
+
   .run-answer header span,
+  .research-loops small,
   .run-coverage small {
     color: var(--knowledge-muted, #475569);
     font-size: 0.78rem;
@@ -2171,6 +2273,7 @@
   .run-plan strong,
   .run-answer strong,
   .run-note strong,
+  .research-loops strong,
   .run-coverage strong {
     color: var(--text-strong, #0f172a);
     overflow-wrap: anywhere;
@@ -2415,7 +2518,9 @@
 
   .candidate-status.imported,
   .candidate-status.accepted,
-  .candidate-status.covered {
+  .candidate-status.covered,
+  .candidate-status.complete,
+  .candidate-status.completed {
     border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
     color: #166534;
   }
@@ -2427,9 +2532,13 @@
     color: var(--danger, #dc2626);
   }
 
-  .candidate-status.partial {
+  .candidate-status.partial,
+  .candidate-status.continue,
+  .candidate-status.searching,
+  .candidate-status.reading,
+  .candidate-status.evaluating {
     border-color: color-mix(in srgb, var(--warning, #d97706) 35%, var(--border, #cbd5e1));
-    color: var(--warning, #d97706);
+    color: var(--knowledge-warning-text, #92400e);
   }
 
   .empty,

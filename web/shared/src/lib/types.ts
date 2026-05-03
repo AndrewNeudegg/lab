@@ -558,6 +558,7 @@ export interface HomelabdKnowledgeResearchRun {
   plan?: HomelabdKnowledgeResearchPlan;
   discover_sources?: boolean;
   source_candidates?: HomelabdKnowledgeSourceCandidate[];
+  research_loops?: HomelabdKnowledgeResearchLoop[];
   coverage?: HomelabdKnowledgeResearchCoverage[];
   source_ids?: string[];
   report_id?: string;
@@ -568,9 +569,33 @@ export interface HomelabdKnowledgeResearchRun {
   usage?: HomelabdKnowledgeTokenUsage;
   workspace_path?: string;
   error?: string;
+  stop_reason?: string;
   events?: HomelabdKnowledgeResearchRunEvent[];
   created_at: string;
   updated_at: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface HomelabdKnowledgeResearchLoop {
+  id: string;
+  index: number;
+  query: string;
+  queries?: string[];
+  status: string;
+  decision?: string;
+  stop_reason?: string;
+  candidate_ids?: string[];
+  source_ids?: string[];
+  accepted_count?: number;
+  rejected_count?: number;
+  failed_count?: number;
+  evidence_count?: number;
+  coverage?: string[];
+  supported_claims?: string[];
+  gaps?: string[];
+  follow_up_queries?: string[];
+  usage?: HomelabdKnowledgeTokenUsage;
   started_at?: string;
   finished_at?: string;
 }

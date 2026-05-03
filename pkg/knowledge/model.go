@@ -89,6 +89,20 @@ const (
   }
 }`
 
+	researchCoverageDecisionSchema = `{
+  "type": "object",
+  "required": ["decision", "stop_reason", "supported_claims", "gaps", "follow_up_queries", "coverage"],
+  "additionalProperties": false,
+  "properties": {
+    "decision": {"type": "string", "enum": ["complete", "continue"]},
+    "stop_reason": {"type": "string"},
+    "supported_claims": {"type": "array", "items": {"type": "string"}},
+    "gaps": {"type": "array", "items": {"type": "string"}},
+    "follow_up_queries": {"type": "array", "items": {"type": "string"}},
+    "coverage": {"type": "array", "items": {"type": "string"}}
+  }
+}`
+
 	researchReportSchema = `{
   "type": "object",
   "required": ["answer", "key_findings", "gaps"],
@@ -304,6 +318,45 @@ func (m LanguageModel) EvaluateSourceForRun(ctx context.Context, source Source, 
 	return normalizeSourceEvaluation(output), resp, nil
 }
 
+func (m LanguageModel) EvaluateResearchCoverage(ctx context.Context, space Space, run ResearchRun, loop ResearchLoop, evidence []Evidence, now time.Time) (ResearchCoverageDecision, llm.CompletionResponse, error) {
+	if err := m.configured(); err != nil {
+		return ResearchCoverageDecision{}, llm.CompletionResponse{}, err
+	}
+	space, err := NormalizeSpace(space)
+	if err != nil {
+		return ResearchCoverageDecision{}, llm.CompletionResponse{}, err
+	}
+	run = normalizeResearchRun(run)
+	loop = normalizeResearchLoops([]ResearchLoop{loop})[0]
+	var output ResearchCoverageDecision
+	resp, err := m.completeJSON(ctx, "knowledge_research_coverage_decision", researchCoverageDecisionSchema, 1800, []llm.Message{
+		{Role: "system", Content: strings.Join([]string{
+			"You decide whether an iterative research run has enough source coverage to answer its objective.",
+			"Return exactly one JSON object matching the schema.",
+			"Use complete only when the accepted source summaries and evidence can directly answer the objective with citations.",
+			"Use continue when important aspects are missing, weakly sourced, contradictory, or need primary/academic corroboration.",
+			"Follow-up queries must be specific searches that would close the named gaps.",
+			"Do not invent facts beyond the provided source summaries, loop state, coverage, and evidence.",
+		}, "\n")},
+		{Role: "user", Content: "Research coverage review:\n" + mustJSON(map[string]any{
+			"objective":    run.Objective,
+			"question":     firstNonEmpty(run.Question, run.Objective),
+			"scope":        run.Scope,
+			"plan":         run.Plan,
+			"current_loop": loop,
+			"all_loops":    run.ResearchLoops,
+			"coverage":     run.Coverage,
+			"sources":      corpusSourceBriefs(selectedSources(space.Sources, run.SourceIDs)),
+			"evidence":     evidencePrompt(evidence),
+			"evaluated_at": now,
+		})},
+	}, &output)
+	if err != nil {
+		return ResearchCoverageDecision{}, llm.CompletionResponse{}, err
+	}
+	return normalizeResearchCoverageDecision(output), resp, nil
+}
+
 func (m LanguageModel) SynthesizeReport(ctx context.Context, space Space, run ResearchRun, evidence []Evidence, reportID string, now time.Time) (Report, error) {
 	if err := m.configured(); err != nil {
 		return Report{}, err
@@ -328,16 +381,18 @@ func (m LanguageModel) SynthesizeReport(ctx context.Context, space Space, run Re
 			"Identify contradictions, uncertainty, and missing source coverage in gaps.",
 		}, "\n")},
 		{Role: "user", Content: "Research run:\n" + mustJSON(map[string]any{
-			"objective": run.Objective,
-			"question":  firstNonEmpty(run.Question, run.Objective),
-			"scope":     run.Scope,
-			"depth":     run.Depth,
-			"mode":      run.Mode,
-			"plan":      run.Plan,
-			"coverage":  run.Coverage,
-			"space":     corpusSpaceBrief(space),
-			"sources":   corpusSourceBriefs(selectedSources(space.Sources, run.SourceIDs)),
-			"evidence":  evidencePrompt(evidence),
+			"objective":      run.Objective,
+			"question":       firstNonEmpty(run.Question, run.Objective),
+			"scope":          run.Scope,
+			"depth":          run.Depth,
+			"mode":           run.Mode,
+			"plan":           run.Plan,
+			"research_loops": run.ResearchLoops,
+			"stop_reason":    run.StopReason,
+			"coverage":       run.Coverage,
+			"space":          corpusSpaceBrief(space),
+			"sources":        corpusSourceBriefs(selectedSources(space.Sources, run.SourceIDs)),
+			"evidence":       evidencePrompt(evidence),
 		})},
 	}, &output)
 	if err != nil {
@@ -485,6 +540,27 @@ func normalizeSourceEvaluation(input SourceEvaluation) SourceEvaluation {
 	input.Reason = strings.TrimSpace(input.Reason)
 	input.Coverage = compactStrings(input.Coverage, 12)
 	input.FollowUpQueries = compactStrings(input.FollowUpQueries, 8)
+	return input
+}
+
+func normalizeResearchCoverageDecision(input ResearchCoverageDecision) ResearchCoverageDecision {
+	input.Decision = strings.ToLower(strings.TrimSpace(input.Decision))
+	switch input.Decision {
+	case "complete", "continue":
+	default:
+		input.Decision = "continue"
+	}
+	input.StopReason = strings.TrimSpace(input.StopReason)
+	input.SupportedClaims = compactStrings(input.SupportedClaims, 20)
+	input.Gaps = compactStrings(input.Gaps, 20)
+	input.FollowUpQueries = compactStrings(input.FollowUpQueries, 12)
+	input.Coverage = compactStrings(input.Coverage, 20)
+	if input.Decision == "continue" && len(input.FollowUpQueries) == 0 && input.StopReason == "" {
+		input.StopReason = "Coverage is incomplete but the model did not provide follow-up queries."
+	}
+	if input.Decision == "complete" && input.StopReason == "" {
+		input.StopReason = "Coverage is sufficient to answer the research objective."
+	}
 	return input
 }
 

@@ -199,6 +199,7 @@ type ResearchRun struct {
 	Plan            ResearchPlan       `json:"plan,omitempty"`
 	DiscoverSources bool               `json:"discover_sources,omitempty"`
 	Candidates      []SourceCandidate  `json:"source_candidates,omitempty"`
+	ResearchLoops   []ResearchLoop     `json:"research_loops,omitempty"`
 	Coverage        []ResearchCoverage `json:"coverage,omitempty"`
 	SourceIDs       []string           `json:"source_ids,omitempty"`
 	ReportID        string             `json:"report_id,omitempty"`
@@ -209,6 +210,7 @@ type ResearchRun struct {
 	Usage           TokenUsage         `json:"usage,omitempty"`
 	WorkspacePath   string             `json:"workspace_path,omitempty"`
 	Error           string             `json:"error,omitempty"`
+	StopReason      string             `json:"stop_reason,omitempty"`
 	Events          []ResearchRunEvent `json:"events,omitempty"`
 	CreatedAt       time.Time          `json:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
@@ -222,6 +224,29 @@ type ResearchPlan struct {
 	SearchQueries       []string `json:"search_queries,omitempty"`
 	Steps               []string `json:"steps,omitempty"`
 	ExpectedOutputs     []string `json:"expected_outputs,omitempty"`
+}
+
+type ResearchLoop struct {
+	ID              string     `json:"id"`
+	Index           int        `json:"index"`
+	Query           string     `json:"query"`
+	Queries         []string   `json:"queries,omitempty"`
+	Status          string     `json:"status"`
+	Decision        string     `json:"decision,omitempty"`
+	StopReason      string     `json:"stop_reason,omitempty"`
+	CandidateIDs    []string   `json:"candidate_ids,omitempty"`
+	SourceIDs       []string   `json:"source_ids,omitempty"`
+	AcceptedCount   int        `json:"accepted_count,omitempty"`
+	RejectedCount   int        `json:"rejected_count,omitempty"`
+	FailedCount     int        `json:"failed_count,omitempty"`
+	EvidenceCount   int        `json:"evidence_count,omitempty"`
+	Coverage        []string   `json:"coverage,omitempty"`
+	SupportedClaims []string   `json:"supported_claims,omitempty"`
+	Gaps            []string   `json:"gaps,omitempty"`
+	FollowUpQueries []string   `json:"follow_up_queries,omitempty"`
+	Usage           TokenUsage `json:"usage,omitempty"`
+	StartedAt       time.Time  `json:"started_at,omitempty"`
+	FinishedAt      time.Time  `json:"finished_at,omitempty"`
 }
 
 type ResearchCoverage struct {
@@ -239,6 +264,15 @@ type SourceEvaluation struct {
 	Reason          string   `json:"reason"`
 	Coverage        []string `json:"coverage,omitempty"`
 	FollowUpQueries []string `json:"follow_up_queries,omitempty"`
+}
+
+type ResearchCoverageDecision struct {
+	Decision        string   `json:"decision"`
+	StopReason      string   `json:"stop_reason"`
+	SupportedClaims []string `json:"supported_claims,omitempty"`
+	Gaps            []string `json:"gaps,omitempty"`
+	FollowUpQueries []string `json:"follow_up_queries,omitempty"`
+	Coverage        []string `json:"coverage,omitempty"`
 }
 
 type SourceCandidate struct {
@@ -548,12 +582,14 @@ func normalizeResearchRun(run ResearchRun) ResearchRun {
 	run.Mode = normalizeReportMode(run.Mode)
 	run.Plan = normalizeResearchPlan(run.Plan)
 	run.Candidates = normalizeSourceCandidates(run.Candidates)
+	run.ResearchLoops = normalizeResearchLoops(run.ResearchLoops)
 	run.Coverage = normalizeResearchCoverage(run.Coverage)
 	run.ReportID = strings.TrimSpace(run.ReportID)
 	run.Provider = strings.TrimSpace(run.Provider)
 	run.Model = strings.TrimSpace(run.Model)
 	run.WorkspacePath = strings.TrimSpace(run.WorkspacePath)
 	run.Error = strings.TrimSpace(run.Error)
+	run.StopReason = strings.TrimSpace(run.StopReason)
 	run.SourceIDs = compactStrings(run.SourceIDs, 200)
 	for index := range run.Events {
 		run.Events[index].ID = strings.TrimSpace(run.Events[index].ID)
@@ -561,6 +597,37 @@ func normalizeResearchRun(run ResearchRun) ResearchRun {
 		run.Events[index].Message = strings.TrimSpace(run.Events[index].Message)
 	}
 	return run
+}
+
+func normalizeResearchLoops(loops []ResearchLoop) []ResearchLoop {
+	out := make([]ResearchLoop, 0, len(loops))
+	for index, loop := range loops {
+		loop.ID = strings.TrimSpace(loop.ID)
+		if loop.ID == "" {
+			loop.ID = fmt.Sprintf("kloop_%02d", index+1)
+		}
+		if loop.Index <= 0 {
+			loop.Index = index + 1
+		}
+		loop.Query = strings.TrimSpace(loop.Query)
+		loop.Queries = compactStrings(loop.Queries, 12)
+		loop.Status = strings.ToLower(strings.TrimSpace(loop.Status))
+		if loop.Status == "" {
+			loop.Status = "completed"
+		}
+		loop.Decision = strings.ToLower(strings.TrimSpace(loop.Decision))
+		loop.StopReason = strings.TrimSpace(loop.StopReason)
+		loop.CandidateIDs = compactStrings(loop.CandidateIDs, 200)
+		loop.SourceIDs = compactStrings(loop.SourceIDs, 200)
+		loop.Coverage = compactStrings(loop.Coverage, 20)
+		loop.SupportedClaims = compactStrings(loop.SupportedClaims, 20)
+		loop.Gaps = compactStrings(loop.Gaps, 20)
+		loop.FollowUpQueries = compactStrings(loop.FollowUpQueries, 12)
+		if loop.Query != "" || len(loop.Queries) > 0 || len(loop.CandidateIDs) > 0 || len(loop.SourceIDs) > 0 {
+			out = append(out, loop)
+		}
+	}
+	return out
 }
 
 func normalizeSourceKind(kind string) string {

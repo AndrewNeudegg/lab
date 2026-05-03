@@ -112,6 +112,15 @@ func (s *Store) writeResearchRunWorkspaceLocked(spaceID string, run ResearchRun,
 			return "", err
 		}
 	}
+	if len(run.ResearchLoops) > 0 {
+		loops, err := json.MarshalIndent(run.ResearchLoops, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(fullDir, "loops.json"), append(loops, '\n'), 0o644); err != nil {
+			return "", err
+		}
+	}
 	if len(run.Coverage) > 0 {
 		coverage, err := json.MarshalIndent(run.Coverage, "", "  ")
 		if err != nil {

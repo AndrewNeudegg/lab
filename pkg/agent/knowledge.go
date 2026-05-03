@@ -498,36 +498,172 @@ type knowledgeResearchSource struct {
 	Truncated   bool   `json:"truncated"`
 }
 
+type knowledgeDiscoveryLoopResult struct {
+	Imported        int
+	Usable          int
+	Accepted        int
+	Rejected        int
+	Failed          int
+	CandidateIDs    []string
+	SourceIDs       []string
+	FollowUpQueries []string
+}
+
 func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowledgestore.Repository, space knowledgestore.Space, run knowledgestore.ResearchRun) (knowledgestore.Space, knowledgestore.ResearchRun, error) {
 	if o.registry == nil {
 		return space, run, errors.New("internet research tool registry is not configured")
 	}
-	query := firstNonEmptyString(run.Plan.RewrittenObjective, run.Objective, run.Question)
-	if query == "" {
+	primaryQuery := firstNonEmptyString(run.Plan.RewrittenObjective, run.Objective, run.Question)
+	if primaryQuery == "" {
 		return space, run, errors.New("research discovery query is required")
 	}
 	maxSearches := knowledgeMaxSearchesForDepth(run.Depth)
-	queries := knowledgeDiscoveryQueries(run, query, maxSearches)
-	toolInput := map[string]any{
-		"query":        query,
-		"source":       "web",
-		"depth":        run.Depth,
-		"provider":     "searxng",
-		"max_searches": maxSearches,
-		"fetch":        true,
+	nextQueries := knowledgeNextDiscoveryQueries(run, primaryQuery, maxSearches)
+	seenQueries := knowledgeSeenLoopQueries(run.ResearchLoops)
+	model := o.knowledgeModel()
+	for {
+		queries := filterKnowledgeNewQueries(nextQueries, seenQueries, maxSearches)
+		if len(queries) == 0 {
+			if countKnowledgeSources(space, run.SourceIDs) > 0 {
+				now := time.Now().UTC()
+				run.StopReason = firstNonEmptyString(run.StopReason, "Stopped because no new follow-up queries remained after de-duplication.")
+				run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "coverage", Message: run.StopReason, CreatedAt: now})
+				if err := saveKnowledgeRun(store, space, run, now); err != nil {
+					return space, run, err
+				}
+				return space, run, nil
+			}
+			return space, run, errors.New("online discovery did not produce any new search queries")
+		}
+		for _, searched := range queries {
+			seenQueries[strings.ToLower(strings.TrimSpace(searched))] = true
+		}
+		now := time.Now().UTC()
+		loop := knowledgestore.ResearchLoop{
+			ID:        id.New("kloop"),
+			Index:     len(run.ResearchLoops) + 1,
+			Query:     primaryQuery,
+			Queries:   queries,
+			Status:    "searching",
+			StartedAt: now,
+		}
+		run.ResearchLoops = appendOrReplaceResearchLoop(run.ResearchLoops, loop)
+		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery_loop", Message: fmt.Sprintf("Research loop %d searching %d quer%s.", loop.Index, len(queries), pluralY(len(queries))), CreatedAt: now})
+		if err := saveKnowledgeRun(store, space, run, now); err != nil {
+			return space, run, err
+		}
+		toolInput := map[string]any{
+			"query":        primaryQuery,
+			"queries":      queries,
+			"source":       "web",
+			"depth":        run.Depth,
+			"provider":     "searxng",
+			"max_searches": maxSearches,
+			"fetch":        true,
+		}
+		raw, err := o.runTool(ctx, "homelabd", "internet.research", toolInput, "")
+		if err != nil {
+			return space, run, err
+		}
+		var bundle knowledgeResearchBundle
+		if err := json.Unmarshal(raw, &bundle); err != nil {
+			return space, run, fmt.Errorf("decode internet research result: %w", err)
+		}
+		loop.Status = "reading"
+		run.ResearchLoops = appendOrReplaceResearchLoop(run.ResearchLoops, loop)
+		if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
+			return space, run, err
+		}
+		var result knowledgeDiscoveryLoopResult
+		space, run, result, err = o.processKnowledgeDiscoveryBundle(ctx, store, space, run, bundle)
+		if err != nil {
+			return space, run, err
+		}
+		loop.CandidateIDs = appendUniqueStrings(loop.CandidateIDs, result.CandidateIDs...)
+		loop.SourceIDs = appendUniqueStrings(loop.SourceIDs, result.SourceIDs...)
+		loop.AcceptedCount = result.Accepted
+		loop.RejectedCount = result.Rejected
+		loop.FailedCount = result.Failed
+		if countKnowledgeSources(space, run.SourceIDs) == 0 {
+			loop.Status = "completed"
+			loop.Decision = "continue"
+			loop.StopReason = "No usable sources were imported in this loop."
+			loop.FollowUpQueries = result.FollowUpQueries
+			loop.FinishedAt = time.Now().UTC()
+			run.ResearchLoops = appendOrReplaceResearchLoop(run.ResearchLoops, loop)
+			if len(result.FollowUpQueries) == 0 {
+				if err := saveKnowledgeRun(store, space, run, loop.FinishedAt); err != nil {
+					return space, run, err
+				}
+				return space, run, errors.New("online discovery did not import any usable sources")
+			}
+			nextQueries = compactKnowledgeStrings(result.FollowUpQueries, maxSearches)
+			if err := saveKnowledgeRun(store, space, run, loop.FinishedAt); err != nil {
+				return space, run, err
+			}
+			continue
+		}
+		queryResult, err := knowledgestore.ResearchEvidence(space, run, knowledgeEvidenceLimitForDepth(run.Depth))
+		if err != nil {
+			return space, run, err
+		}
+		run.EvidenceCount = len(queryResult)
+		run.Coverage = knowledgestore.BuildResearchCoverage(run, queryResult)
+		loop.EvidenceCount = len(queryResult)
+		loop.Status = "evaluating"
+		run.ResearchLoops = appendOrReplaceResearchLoop(run.ResearchLoops, loop)
+		if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
+			return space, run, err
+		}
+		decision, decisionResp, err := model.EvaluateResearchCoverage(ctx, space, run, loop, queryResult, time.Now().UTC())
+		if err != nil {
+			return space, run, err
+		}
+		run.Provider = firstNonEmptyString(run.Provider, knowledgeResponseProvider(decisionResp.Provider, o.provider))
+		run.Model = firstNonEmptyString(run.Model, knowledgeResponseModel(decisionResp.Model, o.model))
+		usage := knowledgeUsage(decisionResp.Usage)
+		run.Usage = addKnowledgeUsage(run.Usage, usage)
+		loop.Usage = addKnowledgeUsage(loop.Usage, usage)
+		loop.Decision = decision.Decision
+		loop.StopReason = decision.StopReason
+		loop.SupportedClaims = decision.SupportedClaims
+		loop.Gaps = decision.Gaps
+		loop.FollowUpQueries = decision.FollowUpQueries
+		loop.Coverage = decision.Coverage
+		loop.Status = "completed"
+		loop.FinishedAt = time.Now().UTC()
+		run.StopReason = decision.StopReason
+		run.ResearchLoops = appendOrReplaceResearchLoop(run.ResearchLoops, loop)
+		if decision.Decision == "complete" {
+			run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "coverage", Message: "Coverage sufficient: " + decision.StopReason, CreatedAt: loop.FinishedAt})
+			if err := saveKnowledgeRun(store, space, run, loop.FinishedAt); err != nil {
+				return space, run, err
+			}
+			return space, run, nil
+		}
+		followUps := append([]string{}, decision.FollowUpQueries...)
+		followUps = append(followUps, result.FollowUpQueries...)
+		nextQueries = compactKnowledgeStrings(followUps, maxSearches)
+		if len(nextQueries) == 0 {
+			now = time.Now().UTC()
+			run.StopReason = firstNonEmptyString(decision.StopReason, "Coverage remains incomplete, but no follow-up queries were available.")
+			run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "coverage", Message: run.StopReason, CreatedAt: now})
+			if err := saveKnowledgeRun(store, space, run, now); err != nil {
+				return space, run, err
+			}
+			return space, run, nil
+		}
+		if err := saveKnowledgeRun(store, space, run, loop.FinishedAt); err != nil {
+			return space, run, err
+		}
 	}
-	if len(queries) > 0 {
-		toolInput["queries"] = queries
-	}
-	raw, err := o.runTool(ctx, "homelabd", "internet.research", toolInput, "")
-	if err != nil {
-		return space, run, err
-	}
-	var bundle knowledgeResearchBundle
-	if err := json.Unmarshal(raw, &bundle); err != nil {
-		return space, run, fmt.Errorf("decode internet research result: %w", err)
-	}
+}
+
+func (o *Orchestrator) processKnowledgeDiscoveryBundle(ctx context.Context, store knowledgestore.Repository, space knowledgestore.Space, run knowledgestore.ResearchRun, bundle knowledgeResearchBundle) (knowledgestore.Space, knowledgestore.ResearchRun, knowledgeDiscoveryLoopResult, error) {
+	result := knowledgeDiscoveryLoopResult{}
+	var err error
 	if len(bundle.SearchErrors) > 0 {
+		result.Failed += len(bundle.SearchErrors)
 		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{
 			ID:        id.New("kevt"),
 			Stage:     "discovery",
@@ -535,28 +671,33 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 			CreatedAt: time.Now().UTC(),
 		})
 	}
-	imported := 0
-	usable := 0
 	for index, candidate := range bundle.Sources {
 		candidateState := knowledgeCandidateFromResearchSource(candidate, index)
 		existingCandidate, hasExistingCandidate := findKnowledgeCandidate(run.Candidates, candidateState)
 		if hasExistingCandidate && existingCandidate.Status == "accepted" && existingCandidate.SourceID != "" && knowledgeSourceExists(space, existingCandidate.SourceID) {
 			run.SourceIDs = appendUniqueStrings(run.SourceIDs, existingCandidate.SourceID)
-			usable++
+			result.Usable++
+			result.Accepted++
+			result.CandidateIDs = appendUniqueStrings(result.CandidateIDs, existingCandidate.ID)
+			result.SourceIDs = appendUniqueStrings(result.SourceIDs, existingCandidate.SourceID)
 			continue
 		}
 		if hasExistingCandidate && existingCandidate.Status == "rejected" {
+			result.Rejected++
+			result.CandidateIDs = appendUniqueStrings(result.CandidateIDs, existingCandidate.ID)
 			continue
 		}
 		run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+		result.CandidateIDs = appendUniqueStrings(result.CandidateIDs, candidateState.ID)
 		if candidate.FetchError != "" {
 			candidateState.Status = "failed"
 			candidateState.Error = candidate.FetchError
 			candidateState.ExtractionState = "failed"
 			candidateState.ExtractionMessage = candidate.FetchError
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			result.Failed++
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-				return space, run, err
+				return space, run, result, err
 			}
 			continue
 		}
@@ -566,8 +707,9 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 			candidateState.ExtractionState = "failed"
 			candidateState.ExtractionMessage = candidateState.Error
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			result.Failed++
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-				return space, run, err
+				return space, run, result, err
 			}
 			continue
 		}
@@ -577,8 +719,9 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 			candidateState.ExtractionState = "failed"
 			candidateState.ExtractionMessage = candidateState.Error
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			result.Failed++
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-				return space, run, err
+				return space, run, result, err
 			}
 			continue
 		}
@@ -593,8 +736,9 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 			candidateState.Status = "failed"
 			candidateState.Error = err.Error()
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			result.Failed++
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-				return space, run, err
+				return space, run, result, err
 			}
 			continue
 		}
@@ -611,8 +755,9 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 			candidateState.Error = err.Error()
 			candidateState.ExtractionState = firstNonEmptyString(candidateState.ExtractionState, "text")
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			result.Failed++
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-				return space, run, err
+				return space, run, result, err
 			}
 			continue
 		}
@@ -628,8 +773,9 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 			candidateState.Status = "failed"
 			candidateState.Error = err.Error()
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			result.Failed++
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-				return space, run, err
+				return space, run, result, err
 			}
 			continue
 		}
@@ -640,62 +786,60 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		candidateState.RelevanceScore = evaluation.RelevanceScore
 		candidateState.Coverage = evaluation.Coverage
 		candidateState.ExtractionMessage = firstNonEmptyString(evaluation.Reason, candidateState.ExtractionMessage)
+		result.FollowUpQueries = appendUniqueStrings(result.FollowUpQueries, evaluation.FollowUpQueries...)
 		if evaluation.Decision == "reject" {
 			candidateState.Status = "rejected"
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
 			run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: "Rejected source as not useful for this run: " + analyzed.Title, CreatedAt: now})
+			result.Rejected++
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-				return space, run, err
+				return space, run, result, err
 			}
 			continue
 		}
 		space, err = knowledgestore.AddSource(space, analyzed, now)
 		if err != nil {
-			return space, run, err
+			return space, run, result, err
 		}
 		candidateState.Status = "accepted"
 		candidateState.SourceID = analyzed.ID
 		run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
 		run.SourceIDs = appendUniqueStrings(run.SourceIDs, analyzed.ID)
 		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: "Imported and analysed source: " + analyzed.Title, CreatedAt: now})
-		imported++
-		usable++
+		result.Imported++
+		result.Usable++
+		result.Accepted++
+		result.SourceIDs = appendUniqueStrings(result.SourceIDs, analyzed.ID)
 		space, err = knowledgestore.AddResearchRun(space, run, now)
 		if err != nil {
-			return space, run, err
+			return space, run, result, err
 		}
 		if err := store.Save(space); err != nil {
-			return space, run, err
+			return space, run, result, err
 		}
-	}
-	if imported == 0 && usable == 0 {
-		if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
-			return space, run, err
-		}
-		return space, run, errors.New("online discovery did not import any usable sources")
 	}
 	now := time.Now().UTC()
-	if imported > 0 {
-		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: fmt.Sprintf("Imported %d online source%s into the corpus.", imported, pluralSuffix(imported)), CreatedAt: now})
-	} else {
+	if result.Imported > 0 {
+		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: fmt.Sprintf("Imported %d online source%s into the corpus.", result.Imported, pluralSuffix(result.Imported)), CreatedAt: now})
+	} else if result.Usable > 0 {
 		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: "Reused previously imported discovery sources.", CreatedAt: now})
 	}
 	space, err = knowledgestore.AddResearchRun(space, run, now)
 	if err != nil {
-		return space, run, err
+		return space, run, result, err
 	}
 	if err := store.Save(space); err != nil {
-		return space, run, err
+		return space, run, result, err
 	}
 	space, err = store.Load(space.ID)
 	if err != nil {
-		return space, run, err
+		return space, run, result, err
 	}
 	_, run, err = loadKnowledgeRun(store, space.ID, run.ID)
 	if err != nil {
-		return space, run, err
+		return space, run, result, err
 	}
-	return space, run, nil
+	return space, run, result, nil
 }
 
 func (o *Orchestrator) appendKnowledgeEvent(ctx context.Context, eventType string, space knowledgestore.Space, payload map[string]any) {
@@ -875,6 +1019,47 @@ func knowledgeDiscoveryQueries(run knowledgestore.ResearchRun, primary string, l
 	return compactKnowledgeStrings(candidates, limit)
 }
 
+func knowledgeNextDiscoveryQueries(run knowledgestore.ResearchRun, primary string, limit int) []string {
+	for index := len(run.ResearchLoops) - 1; index >= 0; index-- {
+		loop := run.ResearchLoops[index]
+		if strings.EqualFold(strings.TrimSpace(loop.Decision), "continue") && len(loop.FollowUpQueries) > 0 {
+			return compactKnowledgeStrings(loop.FollowUpQueries, limit)
+		}
+	}
+	return knowledgeDiscoveryQueries(run, primary, limit)
+}
+
+func knowledgeSeenLoopQueries(loops []knowledgestore.ResearchLoop) map[string]bool {
+	seen := map[string]bool{}
+	for _, loop := range loops {
+		for _, query := range append([]string{loop.Query}, loop.Queries...) {
+			query = strings.ToLower(strings.TrimSpace(query))
+			if query != "" {
+				seen[query] = true
+			}
+		}
+	}
+	return seen
+}
+
+func filterKnowledgeNewQueries(queries []string, seen map[string]bool, limit int) []string {
+	var out []string
+	local := map[string]bool{}
+	for _, query := range queries {
+		query = strings.Join(strings.Fields(query), " ")
+		key := strings.ToLower(strings.TrimSpace(query))
+		if key == "" || seen[key] || local[key] {
+			continue
+		}
+		local[key] = true
+		out = append(out, query)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 func effectiveKnowledgeRunSourceIDs(run knowledgestore.ResearchRun) []string {
 	return appendUniqueStrings(nil, run.SourceIDs...)
 }
@@ -948,6 +1133,20 @@ func appendOrReplaceKnowledgeCandidate(candidates []knowledgestore.SourceCandida
 	return append(candidates, candidate)
 }
 
+func appendOrReplaceResearchLoop(loops []knowledgestore.ResearchLoop, loop knowledgestore.ResearchLoop) []knowledgestore.ResearchLoop {
+	loop.ID = strings.TrimSpace(loop.ID)
+	if loop.ID == "" {
+		loop.ID = id.New("kloop")
+	}
+	for index, existing := range loops {
+		if existing.ID == loop.ID {
+			loops[index] = loop
+			return loops
+		}
+	}
+	return append(loops, loop)
+}
+
 func findKnowledgeCandidate(candidates []knowledgestore.SourceCandidate, candidate knowledgestore.SourceCandidate) (knowledgestore.SourceCandidate, bool) {
 	id := strings.TrimSpace(candidate.ID)
 	url := strings.TrimSpace(candidate.URL)
@@ -994,6 +1193,13 @@ func pluralSuffix(count int) string {
 		return ""
 	}
 	return "s"
+}
+
+func pluralY(count int) string {
+	if count == 1 {
+		return "y"
+	}
+	return "ies"
 }
 
 func countKnowledgeSources(space knowledgestore.Space, sourceIDs []string) int {

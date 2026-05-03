@@ -235,6 +235,52 @@ func TestResearchPlanAndReportAreModelBacked(t *testing.T) {
 	}
 }
 
+func TestResearchCoverageDecisionIsModelBacked(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	space := modelBackedTestSpace(t, now)
+	provider := &scriptedKnowledgeProvider{contents: []string{`{
+		"decision":"continue",
+		"stop_reason":"The evidence covers stored review notes but not external corroboration.",
+		"supported_claims":["Visible evidence supports review."],
+		"gaps":["External corroboration is missing."],
+		"follow_up_queries":["external evidence review source transparency"],
+		"coverage":["stored review notes"]
+	}`}}
+	model := NewLanguageModel(provider, "test-model")
+	run := ResearchRun{
+		ID:        "krun_loop",
+		Objective: "Review evidence practices",
+		Depth:     "standard",
+		Status:    ResearchRunStatusDiscovering,
+		Mode:      ReportModeResearch,
+		Plan: ResearchPlan{
+			SearchQueries:   []string{"evidence review"},
+			ExpectedOutputs: []string{"Review report"},
+		},
+		SourceIDs: []string{space.Sources[0].ID},
+	}
+	evidence, err := ResearchEvidence(space, run, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, resp, err := model.EvaluateResearchCoverage(context.Background(), space, run, ResearchLoop{
+		ID:      "loop_one",
+		Index:   1,
+		Query:   "evidence review",
+		Queries: []string{"evidence review"},
+		Status:  "evaluating",
+	}, evidence, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Decision != "continue" || len(decision.FollowUpQueries) != 1 || resp.Usage.TotalTokens == 0 {
+		t.Fatalf("decision = %#v response = %#v, want model-backed continue decision", decision, resp)
+	}
+	if len(provider.requests) != 1 || provider.requests[0].ResponseFormat == nil || provider.requests[0].ResponseFormat.Name != "knowledge_research_coverage_decision" {
+		t.Fatalf("requests = %#v, want strict coverage decision request", provider.requests)
+	}
+}
+
 func TestStorePersistsProcessedSpace(t *testing.T) {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	store := NewStore(filepath.Join(t.TempDir(), "knowledge"))
@@ -283,6 +329,22 @@ func TestStoreWritesResearchRunWorkspace(t *testing.T) {
 			URL:    "https://example.com/evidence",
 			Status: "imported",
 		}},
+		ResearchLoops: []ResearchLoop{{
+			ID:              "loop_one",
+			Index:           1,
+			Query:           "cheese taxonomy",
+			Queries:         []string{"cheese taxonomy sources"},
+			Status:          "completed",
+			Decision:        "complete",
+			StopReason:      "Coverage sufficient.",
+			CandidateIDs:    []string{"candidate_one"},
+			SourceIDs:       []string{"ksrc_one"},
+			AcceptedCount:   1,
+			EvidenceCount:   1,
+			SupportedClaims: []string{"Cheese taxonomy is covered."},
+			StartedAt:       now,
+			FinishedAt:      now,
+		}},
 		Events:    []ResearchRunEvent{{ID: "event_one", Stage: "discovery", Message: "Imported source", CreatedAt: now}},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -327,7 +389,7 @@ func TestStoreWritesResearchRunWorkspace(t *testing.T) {
 		t.Fatalf("run = %#v, want workspace path", loaded.ResearchRuns[0])
 	}
 	workspace := filepath.Join(root, loaded.ResearchRuns[0].WorkspacePath)
-	for _, name := range []string{"state.json", "events.jsonl", "sources.json", "candidates.json", "coverage.json", "report.json", "evidence.json"} {
+	for _, name := range []string{"state.json", "events.jsonl", "sources.json", "candidates.json", "loops.json", "coverage.json", "report.json", "evidence.json"} {
 		if _, err := os.Stat(filepath.Join(workspace, name)); err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}

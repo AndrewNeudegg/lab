@@ -107,6 +107,50 @@ const knowledgeRun = {
       notes: 'One cited evidence chunk covers the report.'
     }
   ],
+  research_loops: [
+    {
+      id: 'loop_01',
+      index: 1,
+      query: 'Track evidence review patterns',
+      queries: ['evidence visible generated claims'],
+      status: 'completed',
+      decision: 'continue',
+      stop_reason: 'Stored evidence was useful, but an external source was still needed.',
+      candidate_ids: ['candidate_existing', 'candidate_rejected'],
+      source_ids: [knowledgeSource.id],
+      accepted_count: 1,
+      rejected_count: 1,
+      failed_count: 0,
+      evidence_count: 1,
+      supported_claims: ['Evidence should stay visible beside generated claims.'],
+      gaps: ['Needs an online corroborating source.'],
+      follow_up_queries: ['external evidence review source transparency'],
+      started_at: now,
+      finished_at: now
+    },
+    {
+      id: 'loop_02',
+      index: 2,
+      query: 'Track evidence review patterns',
+      queries: ['external evidence review source transparency'],
+      status: 'completed',
+      decision: 'complete',
+      stop_reason: 'Coverage is sufficient for the evidence review answer.',
+      candidate_ids: ['candidate_existing'],
+      source_ids: [knowledgeSource.id],
+      accepted_count: 1,
+      rejected_count: 0,
+      failed_count: 0,
+      evidence_count: 1,
+      coverage: ['Evidence review report'],
+      supported_claims: ['Cited evidence supports the final answer.'],
+      gaps: [],
+      follow_up_queries: [],
+      started_at: now,
+      finished_at: now
+    }
+  ],
+  stop_reason: 'Coverage is sufficient for the evidence review answer.',
   source_candidates: [
     {
       id: 'candidate_existing',
@@ -342,7 +386,25 @@ const mockKnowledgeApis = async (page: Page) => {
             }
           ]
         : [],
+      research_loops: body.discover_sources
+        ? [
+            {
+              id: 'loop_created',
+              index: 1,
+              query: body.objective || knowledgeRun.objective,
+              queries: [body.objective || knowledgeRun.objective],
+              status: 'searching',
+              accepted_count: 1,
+              rejected_count: 0,
+              failed_count: 0,
+              evidence_count: 0,
+              follow_up_queries: [],
+              started_at: now
+            }
+          ]
+        : [],
       workspace_path: 'runs/kspace/krun_created',
+      stop_reason: undefined,
       report_id: undefined,
       evidence_count: 0,
       events: [
@@ -488,6 +550,10 @@ for (const viewport of [
       await page.getByRole('tab', { name: /Research Runs/ }).click();
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Final answer');
       await expect(page.locator('[aria-label="Research run final answer"]').getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Stop reason');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 1');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 2');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('external evidence review source transparency');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('covered');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('rejected');
       await expectNoVisualArtifacts(page);
@@ -516,6 +582,7 @@ for (const viewport of [
         source_ids: [knowledgeSource.id]
       });
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Queued');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 1');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('example.com');
       await expectNoVisualArtifacts(page);
 

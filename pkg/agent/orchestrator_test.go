@@ -6563,6 +6563,14 @@ func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
 			"follow_up_queries":[]
 		}`,
 		`{
+			"decision":"complete",
+			"stop_reason":"Accepted sources and cited evidence cover the requested evidence review report.",
+			"supported_claims":["Research runs should preserve citations for review."],
+			"gaps":[],
+			"follow_up_queries":[],
+			"coverage":["Markdown report","evidence review citations"]
+		}`,
+		`{
 			"answer":"The imported source says evidence review should preserve citations [S1].",
 			"key_findings":["[S1] Citations remain attached to generated claims."],
 			"gaps":[]
@@ -6628,8 +6636,8 @@ func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
 	if research.provider != "searxng" || !research.fetch {
 		t.Fatalf("research request provider=%q fetch=%v, want explicit fetched SearXNG discovery", research.provider, research.fetch)
 	}
-	if len(provider.requests) != 4 {
-		t.Fatalf("model requests = %d, want plan, source analysis, source evaluation, and report", len(provider.requests))
+	if len(provider.requests) != 5 {
+		t.Fatalf("model requests = %d, want plan, source analysis, source evaluation, coverage decision, and report", len(provider.requests))
 	}
 }
 

@@ -832,7 +832,32 @@ for (const viewport of [
       await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Queued');
       await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Loop 1');
       await expect(page.getByRole('button', { name: /Compare evidence review/ })).toHaveCount(0);
+      const previousResearch = page.getByLabel('Previous research');
+      await expect(previousResearch).toBeVisible();
+      await expect(previousResearch).toContainText('1 older run');
+      await expect(previousResearch).not.toHaveAttribute('open', '');
+      await expect(page.getByRole('button', { name: /Track evidence review patterns/ })).toHaveCount(0);
+      await expectNoHorizontalOverflow(page, [
+        '#knowledge-panel-runs',
+        '[aria-label="Selected research"]',
+        '[aria-label="Previous research"]'
+      ]);
+      await expectNoAxeViolations(page);
+      if (viewport.mobile) {
+        await previousResearch.scrollIntoViewIfNeeded();
+      }
+      await expect(page).toHaveScreenshot(`knowledge-research-created-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled',
+        maxDiffPixels: 100
+      });
+      await previousResearch.locator('summary').click();
+      await expect(previousResearch).toHaveAttribute('open', '');
       await expect(page.getByRole('button', { name: /Track evidence review patterns/ })).toHaveCount(1);
+      await expectNoHorizontalOverflow(page, [
+        '[aria-label="Previous research"]',
+        '[aria-label="Stored research"]'
+      ]);
       const queuedCandidates = page.locator('[aria-label="Discovered source candidates"]');
       await openDetailsIfClosed(queuedCandidates);
       await expect(queuedCandidates.getByText('example.com')).toBeVisible();

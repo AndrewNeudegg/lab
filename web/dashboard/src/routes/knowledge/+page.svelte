@@ -2048,20 +2048,30 @@
               {/if}
 
               {#if storedResearchRuns.length}
-                <div class="reports-list" aria-label="Stored research">
-                  {#each storedResearchRuns as run (run.id)}
-                    <button type="button" class="report-row" on:click={() => selectRun(run)}>
-                      <header>
-                        <div>
-                          <span class={`status-pill ${researchRunStatusTone(run)}`}>{researchRunStatusLabel(run)}</span>
-                          <h3>{run.objective}</h3>
-                        </div>
-                        <strong>{compactTime(run.created_at)}</strong>
-                      </header>
-                      <p>{run.evidence_count || 0} cited evidence chunks</p>
-                    </button>
-                  {/each}
-                </div>
+                <details class="knowledge-disclosure previous-research" aria-label="Previous research">
+                  <summary>
+                    <span>
+                      <strong>Previous research</strong>
+                      <span>{plural(storedResearchRuns.length, 'older run')}</span>
+                    </span>
+                  </summary>
+                  <div class="disclosure-body">
+                    <div class="reports-list" aria-label="Stored research">
+                      {#each storedResearchRuns as run (run.id)}
+                        <button type="button" class="report-row" on:click={() => selectRun(run)}>
+                          <header>
+                            <div>
+                              <span class={`status-pill ${researchRunStatusTone(run)}`}>{researchRunStatusLabel(run)}</span>
+                              <h3>{run.objective}</h3>
+                            </div>
+                            <strong>{compactTime(run.created_at)}</strong>
+                          </header>
+                          <p>{run.evidence_count || 0} cited evidence chunks</p>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                </details>
               {/if}
             </div>
           </div>

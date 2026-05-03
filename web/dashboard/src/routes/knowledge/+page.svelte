@@ -1837,6 +1837,7 @@
   input,
   textarea,
   select {
+    box-sizing: border-box;
     font: inherit;
   }
 
@@ -2176,6 +2177,7 @@
 
   .management-panel,
   .danger-panel {
+    box-sizing: border-box;
     min-width: 0;
     margin-top: 0.8rem;
     padding: 0.85rem;
@@ -2193,6 +2195,10 @@
     justify-content: space-between;
     gap: 0.9rem;
     border: 1px solid color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border, #cbd5e1));
+  }
+
+  .danger-panel > div {
+    min-width: 0;
   }
 
   .danger-panel strong {

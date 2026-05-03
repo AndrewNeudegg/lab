@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 const now = '2026-04-28T12:00:00.000Z';
 
@@ -576,6 +576,18 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.clippedControls, JSON.stringify(metrics)).toEqual([]);
 };
 
+const expectHorizontallyInsideViewport = async (page: Page, locator: Locator) => {
+  await expect(locator).toBeVisible();
+  const box = await locator.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(box!.x, JSON.stringify(box)).toBeGreaterThanOrEqual(-1);
+  expect(box!.x + box!.width, JSON.stringify({ box, viewport })).toBeLessThanOrEqual(
+    viewport!.width + 1
+  );
+};
+
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 1000, mobile: false },
   { name: 'mobile', width: 390, height: 844, mobile: true }
@@ -704,7 +716,11 @@ for (const viewport of [
       await expect(page.getByText('Knowledge Space updated')).toBeVisible();
 
       await page.getByRole('button', { name: 'Delete source Source transparency notes' }).click();
-      await expect(page.getByRole('region', { name: 'Delete source Source transparency notes confirmation' })).toBeVisible();
+      const deleteSourcePanel = page.getByRole('region', {
+        name: 'Delete source Source transparency notes confirmation'
+      });
+      await expect(deleteSourcePanel).toBeVisible();
+      await expectHorizontallyInsideViewport(page, deleteSourcePanel);
       await expectNoVisualArtifacts(page);
       await expectNoAxeViolations(page);
       await expect(page).toHaveScreenshot(`knowledge-delete-source-confirm-${viewport.name}.png`, {
@@ -712,13 +728,15 @@ for (const viewport of [
         animations: 'disabled',
         maxDiffPixels: 100
       });
-      await page.getByRole('region', { name: 'Delete source Source transparency notes confirmation' }).getByRole('button', { name: 'Delete source' }).click();
+      await deleteSourcePanel.getByRole('button', { name: 'Delete source' }).click();
       await expect(page.getByText('Source deleted')).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Source transparency notes' })).toHaveCount(0);
       await expect(page.getByText('No sources have been analysed. Add text or a URL before asking questions.')).toBeVisible();
 
       await page.getByRole('button', { name: 'Delete space' }).click();
-      await expect(page.getByRole('region', { name: 'Delete Knowledge Space confirmation' })).toContainText('Research corpus');
+      const deleteSpacePanel = page.getByRole('region', { name: 'Delete Knowledge Space confirmation' });
+      await expect(deleteSpacePanel).toContainText('Research corpus');
+      await expectHorizontallyInsideViewport(page, deleteSpacePanel);
       await expectNoVisualArtifacts(page);
       await expectNoAxeViolations(page);
       await expect(page).toHaveScreenshot(`knowledge-delete-space-confirm-${viewport.name}.png`, {
@@ -726,7 +744,7 @@ for (const viewport of [
         animations: 'disabled',
         maxDiffPixels: 100
       });
-      await page.getByRole('region', { name: 'Delete Knowledge Space confirmation' }).getByRole('button', { name: 'Delete space' }).click();
+      await deleteSpacePanel.getByRole('button', { name: 'Delete space' }).click();
       await expect(page.getByText('Knowledge Space deleted')).toBeVisible();
       await expect(page.getByText('No Knowledge Space selected')).toBeVisible();
       await expect(page.getByText('No Knowledge Spaces yet.')).toBeVisible();

@@ -76,6 +76,9 @@ func main() {
 	if _, err := runtime.Orchestrator.RecoverRunningTasks(ctx); err != nil {
 		fatal(err)
 	}
+	if _, err := runtime.Orchestrator.RecoverKnowledgeResearchRuns(ctx); err != nil {
+		fatal(err)
+	}
 	runtime.Orchestrator.StartTaskSupervisor(ctx)
 	switch *mode {
 	case "stdio":

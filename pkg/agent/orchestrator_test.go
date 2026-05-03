@@ -6633,6 +6633,122 @@ func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
 	}
 }
 
+func TestRecoverKnowledgeResearchRunsResumesInterruptedRun(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	provider := &scriptedProvider{contents: []string{`{
+		"answer":"Recovered research keeps source-grounded evidence visible [S1].",
+		"key_findings":["[S1] Evidence remains available after run recovery."],
+		"gaps":[]
+	}`}}
+	orch.provider = provider
+	orch.model = "test-model"
+	store := knowledgestore.NewStore(filepath.Join(orch.cfg.DataDir, "knowledge"))
+	now := time.Now().UTC()
+	space, err := knowledgestore.NewSpace(knowledgestore.CreateSpaceRequest{Title: "Recovered research"}, "kspace_recover", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := knowledgestore.NewSource(knowledgestore.AddSourceRequest{
+		Title:   "Durable evidence",
+		Kind:    knowledgestore.SourceKindNote,
+		Content: "Durable research runs must resume after daemon restart and keep evidence visible for synthesis.",
+	}, "ksrc_recover", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	space, err = knowledgestore.AddSource(space, source, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := knowledgestore.ResearchRun{
+		ID:        "krun_recover",
+		Objective: "Explain durable research recovery",
+		Depth:     "standard",
+		Status:    knowledgestore.ResearchRunStatusRetrieving,
+		Question:  "How should interrupted research recover?",
+		Mode:      knowledgestore.ReportModeResearch,
+		Plan: knowledgestore.ResearchPlan{
+			RewrittenObjective: "Explain durable research recovery",
+			SearchQueries:      []string{"durable research resume evidence"},
+			ExpectedOutputs:    []string{"Recovered cited report"},
+		},
+		SourceIDs: []string{source.ID},
+		CreatedAt: now,
+		UpdatedAt: now,
+		StartedAt: now,
+		Events: []knowledgestore.ResearchRunEvent{{
+			ID:        "kevt_existing",
+			Stage:     "retrieval",
+			Message:   "Interrupted while retrieving evidence.",
+			CreatedAt: now,
+		}},
+	}
+	space, err = knowledgestore.AddResearchRun(space, run, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(space); err != nil {
+		t.Fatal(err)
+	}
+	orch.WithKnowledge(store)
+
+	recovered, err := orch.RecoverKnowledgeResearchRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	loaded, completed := waitForKnowledgeRunTerminal(t, store, space.ID, run.ID)
+	if completed.Status != knowledgestore.ResearchRunStatusCompleted || completed.ReportID == "" {
+		t.Fatalf("run = %#v, want completed recovered run with report", completed)
+	}
+	if len(loaded.Reports) != 1 || !strings.Contains(loaded.Reports[0].Answer, "Recovered research") {
+		t.Fatalf("reports = %#v, want recovered report", loaded.Reports)
+	}
+	if !knowledgeRunHasEvent(completed, "recovered") {
+		t.Fatalf("events = %#v, want recovered event", completed.Events)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("model requests = %d, want synthesis only because the plan already existed", len(provider.requests))
+	}
+}
+
+func waitForKnowledgeRunTerminal(t *testing.T, store *knowledgestore.Store, spaceID, runID string) (knowledgestore.Space, knowledgestore.ResearchRun) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var loaded knowledgestore.Space
+	var run knowledgestore.ResearchRun
+	for time.Now().Before(deadline) {
+		var err error
+		loaded, err = store.Load(spaceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, candidate := range loaded.ResearchRuns {
+			if candidate.ID == runID {
+				run = candidate
+				break
+			}
+		}
+		if run.Status == knowledgestore.ResearchRunStatusCompleted || run.Status == knowledgestore.ResearchRunStatusFailed {
+			return loaded, run
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for knowledge run %s terminal status; latest = %#v", runID, run)
+	return loaded, run
+}
+
+func knowledgeRunHasEvent(run knowledgestore.ResearchRun, stage string) bool {
+	for _, event := range run.Events {
+		if event.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
 type delegateStub struct {
 	started  chan struct{}
 	release  chan struct{}

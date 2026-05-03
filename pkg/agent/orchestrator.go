@@ -32,22 +32,24 @@ import (
 )
 
 type Orchestrator struct {
-	cfg          config.Config
-	events       *eventlog.Store
-	tasks        *taskstore.Store
-	approvals    *approvalstore.Store
-	workflows    *workflowstore.Store
-	knowledge    knowledgestore.Repository
-	registry     *tool.Registry
-	policy       tool.Policy
-	provider     llm.Provider
-	model        string
-	memory       *memstore.Store
-	remoteAgents *remoteagent.Store
-	logger       *slog.Logger
-	activeMu     sync.Mutex
-	active       map[string]activeTaskRun
-	settingsMu   sync.Mutex
+	cfg           config.Config
+	events        *eventlog.Store
+	tasks         *taskstore.Store
+	approvals     *approvalstore.Store
+	workflows     *workflowstore.Store
+	knowledge     knowledgestore.Repository
+	registry      *tool.Registry
+	policy        tool.Policy
+	provider      llm.Provider
+	model         string
+	memory        *memstore.Store
+	remoteAgents  *remoteagent.Store
+	logger        *slog.Logger
+	activeMu      sync.Mutex
+	active        map[string]activeTaskRun
+	knowledgeMu   sync.Mutex
+	knowledgeRuns map[string]struct{}
+	settingsMu    sync.Mutex
 }
 
 func (o *Orchestrator) WithRemoteAgents(store *remoteagent.Store) *Orchestrator {
@@ -222,7 +224,19 @@ type RuntimeSettings struct {
 }
 
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
-	return &Orchestrator{cfg: cfg, events: events, tasks: tasks, approvals: approvals, registry: registry, policy: policy, provider: provider, model: model, logger: slog.Default(), active: make(map[string]activeTaskRun)}
+	return &Orchestrator{
+		cfg:           cfg,
+		events:        events,
+		tasks:         tasks,
+		approvals:     approvals,
+		registry:      registry,
+		policy:        policy,
+		provider:      provider,
+		model:         model,
+		logger:        slog.Default(),
+		active:        make(map[string]activeTaskRun),
+		knowledgeRuns: make(map[string]struct{}),
+	}
 }
 
 func (o *Orchestrator) WithLogger(logger *slog.Logger) *Orchestrator {

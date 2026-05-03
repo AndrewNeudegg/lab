@@ -143,6 +143,43 @@ printf 'OCR cheese taxonomy evidence'
 	}
 }
 
+func TestExtractPDFTextUsesOCRWhenEmbeddedTextIsUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	pdftoppm := writeExecutable(t, filepath.Join(dir, "pdftoppm"), `#!/bin/sh
+prefix="${9}"
+printf 'fake image' > "${prefix}-1.png"
+`)
+	tesseract := writeExecutable(t, filepath.Join(dir, "tesseract"), `#!/bin/sh
+printf 'OCR readable PDF evidence'
+`)
+
+	body := []byte("%PDF-1.7\nBT (\001\002\003\004\005\006) Tj ET\n")
+	_, text, extractor, err := ExtractFetchedText(context.Background(), body, "application/pdf", TextExtractionOptions{
+		PDFOCR: PDFOCROptions{
+			PDFToPPMCommand:  pdftoppm,
+			TesseractCommand: tesseract,
+			MaxPages:         1,
+			Timeout:          time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extractor != "pdf+ocr" || !strings.Contains(text, "OCR readable PDF evidence") {
+		t.Fatalf("extractor = %q text = %q, want OCR text for unreadable embedded text", extractor, text)
+	}
+}
+
+func TestExtractPDFTextRejectsUnreadableEmbeddedTextWhenOCRDisabled(t *testing.T) {
+	body := []byte("%PDF-1.7\nBT (\001\002\003\004\005\006) Tj ET\n")
+	_, _, _, err := ExtractFetchedText(context.Background(), body, "application/pdf", TextExtractionOptions{
+		PDFOCR: PDFOCROptions{Disabled: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not readable enough") {
+		t.Fatalf("err = %v, want unreadable embedded text error", err)
+	}
+}
+
 func TestExtractPDFTextReportsMissingOCRDependency(t *testing.T) {
 	_, _, _, err := ExtractFetchedText(context.Background(), []byte("%PDF-1.7\n% scanned image only\n"), "application/pdf", TextExtractionOptions{
 		PDFOCR: PDFOCROptions{PDFToPPMCommand: "homelabd-missing-pdftoppm"},

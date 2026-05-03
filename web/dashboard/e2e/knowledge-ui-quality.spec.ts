@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
 const now = '2026-04-28T12:00:00.000Z';
+const longResearchToken =
+  'research-overflow-regression-source-with-a-very-long-unbroken-identifier-for-mobile-and-desktop-layout-checks';
 
 const knowledgeSource = {
   id: 'ksrc_20260428_120000_33333333',
@@ -179,7 +181,7 @@ const knowledgeRun = {
       kind: 'web',
       provider: 'searxng',
       title: 'Source transparency notes',
-      url: 'https://example.com/source-transparency',
+      url: `https://example.com/source-transparency/${longResearchToken}`,
       domain: 'example.com',
       snippet: 'Evidence should stay visible beside generated claims.',
       content_type: 'text/html',
@@ -198,8 +200,8 @@ const knowledgeRun = {
       query: 'evidence visible generated claims',
       kind: 'web',
       provider: 'searxng',
-      title: 'Unrelated event calendar',
-      url: 'https://example.com/events',
+      title: `Unrelated event calendar ${longResearchToken}`,
+      url: `https://example.com/events/${longResearchToken}`,
       domain: 'example.com',
       snippet: 'Event dates and venue logistics.',
       content_type: 'text/html',
@@ -212,7 +214,7 @@ const knowledgeRun = {
       status: 'rejected'
     }
   ],
-  workspace_path: 'runs/kspace/krun',
+  workspace_path: `runs/kspace/krun/${longResearchToken}`,
   created_at: now,
   updated_at: now,
   started_at: now,
@@ -576,6 +578,47 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.clippedControls, JSON.stringify(metrics)).toEqual([]);
 };
 
+const expectNoHorizontalOverflow = async (page: Page, selectors: string[]) => {
+  const overflowing = await page.evaluate((targetSelectors) => {
+    const isHidden = (element: Element) => {
+      let current: Element | null = element;
+      while (current && current !== document.body) {
+        const style = getComputedStyle(current);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
+    };
+    return targetSelectors.flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector))
+        .filter((element) => {
+          if (isHidden(element)) {
+            return false;
+          }
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && element.scrollWidth > element.clientWidth + 2;
+        })
+        .map((element) => ({
+          selector,
+          text: (element.textContent || element.getAttribute('aria-label') || '').trim().slice(0, 120),
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth
+        }))
+    );
+  }, selectors);
+  expect(overflowing, JSON.stringify(overflowing)).toEqual([]);
+};
+
+const openDetailsIfClosed = async (locator: Locator) => {
+  const isOpen = await locator.evaluate((element) => element.hasAttribute('open'));
+  if (!isOpen) {
+    await locator.locator('summary').click();
+  }
+  await expect(locator).toHaveAttribute('open', '');
+};
+
 const expectHorizontallyInsideViewport = async (page: Page, locator: Locator) => {
   await expect(locator).toBeVisible();
   const box = await locator.boundingBox();
@@ -621,13 +664,16 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Research synthesis' })).toBeInViewport();
       await expect(page.getByRole('heading', { name: 'Processed sources' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Source transparency notes' })).toBeVisible();
-      await expect(page.locator('.source-card .markdown strong').filter({ hasText: 'evidence visible' }).first()).toBeVisible();
-      await expect(page.locator('details.source-details').first()).toContainText('Evidence, metadata, and full text');
+      await expect(page.locator('.source-card .markdown strong').filter({ hasText: 'evidence visible' }).first()).toBeHidden();
+      await expect(page.locator('details.source-details').first()).toBeHidden();
       await expect(page.locator('.source-card .source-meta').first()).toBeHidden();
       await expect(page).toHaveScreenshot(`knowledge-sources-collapsed-${viewport.name}.png`, {
         fullPage: !viewport.mobile,
         animations: 'disabled'
       });
+      await page.locator('details.source-card > summary').first().click();
+      await expect(page.locator('.source-card .markdown strong').filter({ hasText: 'evidence visible' }).first()).toBeVisible();
+      await expect(page.locator('details.source-details').first()).toContainText('Evidence, metadata, and full text');
       await page.locator('details.source-details > summary').click();
       await expect(page.locator('.source-card').first()).toContainText('Sections');
       await expect(page.locator('.source-card').first()).toContainText('Review flow');
@@ -655,7 +701,7 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Review notes' })).toBeVisible();
     });
 
-    test('uses suggested questions, grounded ask, runs, and artefacts as explicit selectors', async ({ page }) => {
+    test('uses suggested questions, grounded ask, research, and reports as explicit selectors', async ({ page }) => {
       const api = await mockKnowledgeApis(page);
       await page.goto('/knowledge');
       await expectKnowledgeReady(page);
@@ -670,58 +716,124 @@ for (const viewport of [
       await expect(page.getByRole('textbox', { name: 'Question' })).toHaveValue(
         'What does this space show about source?'
       );
-      await expect(page.getByText('All 1 source selected')).toBeVisible();
+      await expect(page.getByRole('tabpanel', { name: 'Ask' }).locator('details.source-picker > summary')).toHaveText(
+        'All 1 source selected'
+      );
       await page.getByRole('button', { name: 'Ask', exact: true }).click();
       await expect(page.getByRole('article', { name: 'Grounded answer' })).toContainText('[S1]');
       await expect(page.getByRole('article', { name: 'Grounded answer' }).getByRole('heading', { name: 'Evidence review' })).toBeVisible();
       await expect(page.locator('[aria-label="Grounded answer"] .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
+      await page.getByRole('article', { name: 'Grounded answer' }).getByRole('link', { name: 'S1' }).first().click();
+      await expect(page.getByRole('tab', { name: /Sources/ })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.locator('#knowledge-source-ksrc_20260428_120000_33333333')).toHaveAttribute('open', '');
 
-      await page.getByRole('tab', { name: /Research Runs/ }).click();
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Final answer');
-      await expect(page.locator('[aria-label="Research run final answer"]').getByRole('heading', { name: 'Evidence review' })).toBeVisible();
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Stop reason');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 1');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 2');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('external evidence review source transparency');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('hybrid retrieval');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Review flow');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('covered');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('rejected');
+      await page.getByRole('tab', { name: /Research/ }).click();
+      const selectedResearch = page.getByRole('article', { name: 'Selected research' });
+      const finalAnswer = page.locator('[aria-label="Research final answer"]');
+      const researchPlan = page.locator('[aria-label="Research plan"]');
+      const researchEvidence = page.locator('[aria-label="Research evidence"]');
+      const researchCoverage = page.locator('[aria-label="Research coverage"]');
+      const sourceCandidates = page.locator('[aria-label="Discovered source candidates"]');
+      const researchEvents = page.locator('[aria-label="Research events"]');
+      await expect(selectedResearch).toContainText('Final answer');
+      await expect(finalAnswer).toHaveAttribute('open', '');
+      await expect(finalAnswer.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      await expect(page.locator('[aria-label="Research key findings"]')).not.toHaveAttribute('open', '');
+      await expect(researchPlan).not.toHaveAttribute('open', '');
+      await expect(researchEvidence).not.toHaveAttribute('open', '');
+      await expect(researchCoverage).not.toHaveAttribute('open', '');
+      await expect(sourceCandidates).not.toHaveAttribute('open', '');
+      await expect(researchEvents).not.toHaveAttribute('open', '');
+      await expect(selectedResearch).toContainText('Stop reason');
+      await expect(selectedResearch).toContainText('Loop 1');
+      await expect(selectedResearch).toContainText('Loop 2');
       await expectNoVisualArtifacts(page);
+      await expectNoHorizontalOverflow(page, [
+        '.tabs',
+        '#knowledge-panel-runs',
+        '[aria-label="Selected research"]',
+        '[aria-label="Research final answer"]'
+      ]);
       await expectNoAxeViolations(page);
       if (viewport.mobile) {
-        await page.locator('[aria-label="Research run final answer"]').scrollIntoViewIfNeeded();
+        await page.locator('[aria-label="Research final answer"]').scrollIntoViewIfNeeded();
       }
       await expect(page).toHaveScreenshot(`knowledge-research-run-${viewport.name}.png`, {
         fullPage: !viewport.mobile,
         animations: 'disabled',
         maxDiffPixels: 100
       });
+      await researchPlan.locator('summary').click();
+      await expect(researchPlan.getByText('evidence visible generated claims')).toBeVisible();
+      const loops = page.locator('[aria-label="Research loops"] details');
+      await expect(loops).toHaveCount(2);
+      await loops.first().locator('summary').click();
+      await expect(loops.first().getByText('external evidence review source transparency')).toBeVisible();
+      await researchEvidence.locator('summary').click();
+      await expect(researchEvidence.getByText('hybrid retrieval')).toBeVisible();
+      await expect(researchEvidence.getByText('Review flow')).toBeVisible();
+      await researchCoverage.locator('summary').click();
+      await expect(researchCoverage.getByText('covered')).toBeVisible();
+      await sourceCandidates.locator('summary').click();
+      await expect(sourceCandidates.getByText('rejected')).toBeVisible();
+      await expect(sourceCandidates.getByText(longResearchToken)).toBeVisible();
+      await researchEvents.locator('summary').click();
+      await expect(researchEvents.getByText('indexed sources')).toBeVisible();
+      await expectNoHorizontalOverflow(page, [
+        '#knowledge-panel-runs',
+        '[aria-label="Selected research"]',
+        '[aria-label="Research plan"]',
+        '[aria-label="Research evidence"]',
+        '[aria-label="Discovered source candidates"]'
+      ]);
 
-      await page.locator('#knowledge-panel-runs').getByLabel('Objective').fill('Compare evidence review');
-      await expect(page.getByLabel('Search internet and import sources')).toBeChecked();
-      await page.getByRole('button', { name: 'Start run' }).click();
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText(
+      await page.locator('#knowledge-panel-runs').getByLabel('Question or research goal').fill('Compare evidence review');
+      await expect(page.getByLabel('Search web and academic sources')).toBeChecked();
+      await page.getByRole('button', { name: 'Start research' }).click();
+      await expect(page.getByRole('article', { name: 'Selected research' })).toContainText(
         'Compare evidence review'
       );
       expect(api.researchRunRequests).toHaveLength(1);
       expect(api.researchRunRequests[0]).toMatchObject({
         objective: 'Compare evidence review',
-        depth: 'standard',
         mode: 'research',
         discover_sources: true,
         source_ids: [knowledgeSource.id]
       });
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Queued');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 1');
-      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('example.com');
+      await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Queued');
+      await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Loop 1');
+      const queuedCandidates = page.locator('[aria-label="Discovered source candidates"]');
+      await openDetailsIfClosed(queuedCandidates);
+      await expect(queuedCandidates.getByText('example.com')).toBeVisible();
       await expectNoVisualArtifacts(page);
 
-      await page.getByRole('tab', { name: /Artefacts/ }).click();
+      await page.getByRole('tab', { name: /Reports/ }).click();
       await page.getByRole('button', { name: /How should evidence be reviewed/ }).first().click();
-      await expect(page.getByRole('tab', { name: /Artefacts/ })).toHaveAttribute('aria-selected', 'true');
-      await expect(page.getByRole('article', { name: 'Selected artefact' })).toContainText('[S1]');
-      await expect(page.getByRole('article', { name: 'Selected artefact' }).getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
+      const selectedReport = page.getByRole('article', { name: 'Selected artefact' });
+      await expect(selectedReport).toContainText('[S1]');
+      await expect(page.locator('[aria-label="Report answer"]')).toHaveAttribute('open', '');
+      await expect(page.locator('[aria-label="Report key findings"]')).not.toHaveAttribute('open', '');
+      await expect(page.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
+      await expect(page.locator('[aria-label="Report gaps"]')).not.toHaveAttribute('open', '');
+      await expect(selectedReport.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      await expectNoHorizontalOverflow(page, [
+        '#knowledge-panel-artefacts',
+        '[aria-label="Selected artefact"]',
+        '[aria-label="Report answer"]'
+      ]);
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      if (viewport.mobile) {
+        await page.locator('[aria-label="Report answer"]').scrollIntoViewIfNeeded();
+      }
+      await expect(page).toHaveScreenshot(`knowledge-report-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled',
+        maxDiffPixels: 100
+      });
+      await page.locator('[aria-label="Report evidence"] summary').click();
+      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow')).toBeVisible();
     });
 
     test('renames spaces and deletes sources or spaces through explicit confirmations', async ({ page }) => {
@@ -749,6 +861,7 @@ for (const viewport of [
         )
       ).toBeVisible();
 
+      await page.locator('details.source-card > summary').first().click();
       await page.getByRole('button', { name: 'Delete source Source transparency notes' }).click();
       const deleteSourcePanel = page.getByRole('region', {
         name: 'Delete source Source transparency notes confirmation'

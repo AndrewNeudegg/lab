@@ -879,24 +879,29 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
       .click();
     await expect(page.getByText('workflow started')).toBeVisible();
   } else if (route === '/knowledge') {
-    await page.getByPlaceholder('Search spaces').fill('Research');
-    await page.getByRole('link', { name: /Research synthesis/ }).click();
+    const knowledgeNoticeScope = mobile ? page.getByLabel('Knowledge Space detail') : page.getByLabel('Knowledge Space list');
+    if (mobile) {
+      await expect(page.getByLabel('Knowledge Space mobile controls')).toBeVisible();
+    } else {
+      await page.getByPlaceholder('Search spaces').fill('Research');
+      await page.getByRole('link', { name: /Research synthesis/ }).click();
+    }
     await page.getByRole('tab', { name: 'Sources' }).click();
     await page.locator('details.add-source > summary').click();
     await page.getByLabel('Source title').fill('Review notes');
     await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
     await page.locator('.source-form button[type="submit"]').click();
-    await expect(page.getByText('Source indexed')).toBeVisible();
+    await expect(knowledgeNoticeScope.getByText('Source indexed')).toBeVisible();
     await page.getByRole('tab', { name: 'Ask' }).click();
     await page.getByRole('textbox', { name: 'Question' }).fill('How should evidence be reviewed?');
     await page.getByRole('button', { name: 'Ask', exact: true }).click();
-    await expect(page.getByText('Grounded answer created.')).toBeVisible();
+    await expect(knowledgeNoticeScope.getByText('Grounded answer created.')).toBeVisible();
     await expect(page.locator('[aria-label="Answer evidence"]')).toContainText('[S1]');
-    await page.getByRole('tab', { name: /Research Runs/ }).click();
-    await page.locator('#knowledge-panel-runs').getByLabel('Objective').fill('Compare evidence handling');
-    await page.getByRole('button', { name: 'Start run' }).click();
-    await expect(page.getByText('Research run completed.')).toBeVisible();
-    await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Compare evidence handling');
+    await page.getByRole('tab', { name: /Research/ }).click();
+    await page.locator('#knowledge-panel-runs').getByLabel('Question or research goal').fill('Compare evidence handling');
+    await page.getByRole('button', { name: 'Start research' }).click();
+    await expect(knowledgeNoticeScope.getByText('Research completed.')).toBeVisible();
+    await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Compare evidence handling');
   } else if (route.startsWith('/docs')) {
     if (mobile) {
       const docsNavigationToggle = page.getByRole('button', { name: 'Expand docs navigation' });

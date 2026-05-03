@@ -89,9 +89,9 @@ export const panelLabel = (panel: KnowledgePanel) => {
     case 'ask':
       return 'Ask';
     case 'runs':
-      return 'Research Runs';
+      return 'Research';
     case 'artefacts':
-      return 'Artefacts';
+      return 'Reports';
     default:
       return 'Sources';
   }

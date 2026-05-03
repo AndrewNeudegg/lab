@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf16"
 )
 
@@ -228,7 +229,10 @@ func ExtractFetchedText(ctx context.Context, body []byte, contentType string, op
 func extractPDFText(ctx context.Context, body []byte, options PDFOCROptions) (string, string, error) {
 	content, err := extractEmbeddedPDFText(body)
 	if err == nil && content != "" {
-		return content, "pdf", nil
+		if pdfExtractedTextUsable(content) {
+			return content, "pdf", nil
+		}
+		err = fmt.Errorf("extract PDF text: embedded text was not readable enough for indexing")
 	}
 	if options.Disabled {
 		if err != nil {
@@ -244,6 +248,38 @@ func extractPDFText(ctx context.Context, body []byte, options PDFOCROptions) (st
 		return "", "", ocrErr
 	}
 	return ocrText, "pdf+ocr", nil
+}
+
+func pdfExtractedTextUsable(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	total := 0
+	informative := 0
+	bad := 0
+	for _, char := range value {
+		if unicode.IsSpace(char) {
+			continue
+		}
+		total++
+		if unicode.IsLetter(char) || unicode.IsNumber(char) {
+			informative++
+		}
+		if char == unicode.ReplacementChar || unicode.In(char, unicode.Co) || (unicode.IsControl(char) && !unicode.IsSpace(char)) {
+			bad++
+		}
+	}
+	if total == 0 || informative == 0 {
+		return false
+	}
+	if bad > 0 && bad*5 >= total {
+		return false
+	}
+	if total >= 40 && informative*4 < total {
+		return false
+	}
+	return true
 }
 
 func extractEmbeddedPDFText(body []byte) (string, error) {

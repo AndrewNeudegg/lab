@@ -6556,6 +6556,13 @@ func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
 			"reliability_notes":["Fetched online source."]
 		}`,
 		`{
+			"decision":"accept",
+			"relevance_score":88,
+			"reason":"The source directly covers evidence review and citations.",
+			"coverage":["Markdown report","evidence review citations"],
+			"follow_up_queries":[]
+		}`,
+		`{
 			"answer":"The imported source says evidence review should preserve citations [S1].",
 			"key_findings":["[S1] Citations remain attached to generated claims."],
 			"gaps":[]
@@ -6582,7 +6589,6 @@ func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
 		Depth:           "standard",
 		Mode:            "research",
 		DiscoverSources: true,
-		MaxSources:      2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -6613,17 +6619,17 @@ func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
 	if len(loaded.Sources) != 1 || loaded.Sources[0].URI != "https://example.com/evidence-review" || loaded.Sources[0].Ingestion.State != knowledgestore.SourceStatusReady {
 		t.Fatalf("sources = %#v, want imported analysed online source", loaded.Sources)
 	}
-	if len(completed.Candidates) != 1 || completed.Candidates[0].Status != "imported" || completed.Candidates[0].SourceID == "" {
-		t.Fatalf("candidates = %#v, want imported candidate with source id", completed.Candidates)
+	if len(completed.Candidates) != 1 || completed.Candidates[0].Status != "accepted" || completed.Candidates[0].SourceID == "" || completed.Candidates[0].RelevanceScore == 0 {
+		t.Fatalf("candidates = %#v, want accepted candidate with source id and relevance", completed.Candidates)
 	}
 	if completed.WorkspacePath == "" || completed.ReportID == "" || completed.SourcesExamined != 1 || completed.EvidenceCount == 0 {
 		t.Fatalf("completed run = %#v, want workspace, report, source, and evidence metadata", completed)
 	}
-	if research.provider != "searxng" || !research.fetch || research.maxSources != 2 {
-		t.Fatalf("research request provider=%q fetch=%v maxSources=%d, want explicit searxng fetch max 2", research.provider, research.fetch, research.maxSources)
+	if research.provider != "searxng" || !research.fetch {
+		t.Fatalf("research request provider=%q fetch=%v, want explicit fetched SearXNG discovery", research.provider, research.fetch)
 	}
-	if len(provider.requests) != 3 {
-		t.Fatalf("model requests = %d, want plan, source analysis, and report", len(provider.requests))
+	if len(provider.requests) != 4 {
+		t.Fatalf("model requests = %d, want plan, source analysis, source evaluation, and report", len(provider.requests))
 	}
 }
 
@@ -7127,11 +7133,10 @@ func (s *internetResearchStub) Run(_ context.Context, raw json.RawMessage) (json
 }
 
 type knowledgeInternetResearchStub struct {
-	query      string
-	depth      string
-	provider   string
-	maxSources int
-	fetch      bool
+	query    string
+	depth    string
+	provider string
+	fetch    bool
 }
 
 func (knowledgeInternetResearchStub) Name() string        { return "internet.research" }
@@ -7142,17 +7147,15 @@ func (knowledgeInternetResearchStub) Schema() json.RawMessage {
 func (knowledgeInternetResearchStub) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (s *knowledgeInternetResearchStub) Run(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	var req struct {
-		Query      string `json:"query"`
-		Depth      string `json:"depth"`
-		Provider   string `json:"provider"`
-		MaxSources int    `json:"max_sources"`
-		Fetch      bool   `json:"fetch"`
+		Query    string `json:"query"`
+		Depth    string `json:"depth"`
+		Provider string `json:"provider"`
+		Fetch    bool   `json:"fetch"`
 	}
 	_ = json.Unmarshal(raw, &req)
 	s.query = req.Query
 	s.depth = req.Depth
 	s.provider = req.Provider
-	s.maxSources = req.MaxSources
 	s.fetch = req.Fetch
 	return json.Marshal(map[string]any{
 		"query":           req.Query,

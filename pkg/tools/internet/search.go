@@ -3,6 +3,7 @@ package internet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -12,10 +13,12 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
 	"github.com/andrewneudegg/lab/pkg/tool"
 )
 
@@ -29,6 +32,8 @@ const (
 	defaultUserAgent            = "Mozilla/5.0 (compatible; homelabd/1.0; +https://github.com/andrewneudegg/lab)"
 	maxSearXNGInstancesPerQuery = 6
 	searxNGDiscoveryTTL         = 6 * time.Hour
+	maxResearchCandidates       = 64
+	httpRetryAttempts           = 4
 )
 
 type Base struct {
@@ -319,16 +324,11 @@ func (t SearchTool) getSearXNG(ctx context.Context, endpoint, query string, page
 	}
 	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.8")
 	httpReq.Header.Set("User-Agent", t.base.userAgent())
-	resp, err := t.base.httpClient().Do(httpReq)
+	result, err := t.base.doReadRequestWithRetry(ctx, httpReq, 2<<20)
 	if err != nil {
 		return nil, 0, "", err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return nil, resp.StatusCode, resp.Header.Get("Content-Type"), err
-	}
-	return body, resp.StatusCode, resp.Header.Get("Content-Type"), nil
+	return result.Body, result.StatusCode, result.ContentType, nil
 }
 
 func (t SearchTool) searchDuckDuckGo(ctx context.Context, query string, limit int) (json.RawMessage, error) {
@@ -547,10 +547,10 @@ type ResearchTool struct {
 
 func (ResearchTool) Name() string { return "internet.research" }
 func (ResearchTool) Description() string {
-	return "Run a bounded multi-query research fan-out: plan subqueries, search web and/or academic sources, fetch top pages, deduplicate evidence, and return a source bundle for the LLM to synthesize."
+	return "Run a multi-query research fan-out: plan subqueries, search web and/or academic sources, fetch public pages, deduplicate evidence, and return a source bundle for the LLM to evaluate and synthesize."
 }
 func (ResearchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"queries":{"type":"array","items":{"type":"string"},"description":"optional explicit fan-out search queries; when present these replace generated subqueries"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"]},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web fan-out searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"},"max_searches":{"type":"integer","minimum":1,"maximum":8},"max_sources":{"type":"integer","minimum":1,"maximum":20},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
+	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"queries":{"type":"array","items":{"type":"string"},"description":"optional explicit fan-out search queries; when present these replace generated subqueries"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"]},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web fan-out searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"},"max_searches":{"type":"integer","minimum":1,"maximum":8},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
 }
 func (ResearchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -563,7 +563,6 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 		TimeRange      string   `json:"time_range"`
 		Language       string   `json:"language"`
 		MaxSearches    int      `json:"max_searches"`
-		MaxSources     int      `json:"max_sources"`
 		Fetch          *bool    `json:"fetch"`
 		TrustedDomains []string `json:"trusted_domains"`
 	}
@@ -588,12 +587,9 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 	if depth != "quick" && depth != "standard" && depth != "deep" {
 		return nil, fmt.Errorf("depth must be quick, standard, or deep")
 	}
-	maxSearches, maxSources, fetchPages := researchDefaults(depth)
+	maxSearches, fetchPages := researchDefaults(depth)
 	if req.MaxSearches > 0 {
 		maxSearches = minInt(req.MaxSearches, 8)
-	}
-	if req.MaxSources > 0 {
-		maxSources = minInt(req.MaxSources, 20)
 	}
 	if req.Fetch != nil {
 		fetchPages = *req.Fetch
@@ -605,10 +601,10 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 	}
 	search := SearchTool{base: t.base}
 	options := webSearchOptions{Provider: req.Provider, TimeRange: req.TimeRange, Language: req.Language}
-	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options, maxSources)
+	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options, maxResearchCandidates)
 	sources := candidates
-	if len(sources) > maxSources {
-		sources = sources[:maxSources]
+	if len(sources) > maxResearchCandidates {
+		sources = sources[:maxResearchCandidates]
 	}
 	if fetchPages {
 		t.fetchResearchSources(ctx, sources, fetchCharsForDepth(depth))
@@ -667,7 +663,7 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 		err     string
 	}
 	results := make(chan searchResult, len(jobs))
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, 2)
 	var wg sync.WaitGroup
 	for _, job := range jobs {
 		job := job
@@ -726,7 +722,7 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 
 func (t ResearchTool) fetchResearchSources(ctx context.Context, sources []*ResearchSource, maxChars int) {
 	fetcher := FetchTool{base: t.base}
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
 	for _, source := range sources {
 		if source.URL == "" || !safePublicURL(source.URL) {
@@ -781,7 +777,12 @@ func researchSourcesFromSearchRaw(query, kind string, raw json.RawMessage) []*Re
 	provider := firstNonEmpty(out.Provider, out.Source)
 	sources := make([]*ResearchSource, 0, len(out.Results))
 	for _, result := range out.Results {
-		rawURL := stringFromMap(result, "url", "pdf_url")
+		rawURL := stringFromMap(result, "url")
+		if kind == "academic" {
+			rawURL = firstNonEmpty(stringFromMap(result, "pdf_url"), rawURL)
+		} else if rawURL == "" {
+			rawURL = stringFromMap(result, "pdf_url")
+		}
 		title := stringFromMap(result, "title", "display_name")
 		snippet := stringFromMap(result, "snippet", "text", "content")
 		year := intFromAny(result["year"])
@@ -802,14 +803,14 @@ func researchSourcesFromSearchRaw(query, kind string, raw json.RawMessage) []*Re
 	return sources
 }
 
-func researchDefaults(depth string) (int, int, bool) {
+func researchDefaults(depth string) (int, bool) {
 	switch depth {
 	case "quick":
-		return 2, 4, false
+		return 2, false
 	case "deep":
-		return 8, 16, true
+		return 8, true
 	default:
-		return 4, 8, true
+		return 4, true
 	}
 }
 
@@ -1011,49 +1012,56 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.8")
 	httpReq.Header.Set("User-Agent", t.base.userAgent())
 
-	resp, err := t.base.httpClient().Do(httpReq)
+	fetched, err := t.base.doReadRequestWithRetry(ctx, httpReq, 5<<20)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("page fetch failed: %s", resp.Status)
+	if fetched.StatusCode < 200 || fetched.StatusCode >= 300 {
+		return nil, fmt.Errorf("page fetch failed: %s", fetched.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return nil, err
-	}
-	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	body := fetched.Body
+	contentType := strings.ToLower(fetched.ContentType)
 	if contentType == "" {
 		contentType = strings.ToLower(http.DetectContentType(body))
 	}
 	title := ""
 	text := ""
+	extractor := ""
 	switch {
+	case strings.Contains(contentType, "pdf") || looksLikePDFBytes(body):
+		extractedTitle, extractedText, extractedBy, err := knowledgestore.ExtractFetchedText(body, contentType)
+		if err != nil {
+			return nil, err
+		}
+		title = extractedTitle
+		text = extractedText
+		extractor = extractedBy
 	case strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml+xml"):
 		title = extractTitle(string(body))
 		text = htmlToText(string(body))
+		extractor = "html"
 	case strings.HasPrefix(contentType, "text/") ||
 		strings.Contains(contentType, "json") ||
 		strings.Contains(contentType, "xml"):
 		text = compactWhitespace(string(body))
+		extractor = "plain-text"
 	default:
-		text = fmt.Sprintf("Unsupported content type for text extraction: %s", firstNonEmpty(contentType, "unknown"))
+		return nil, fmt.Errorf("unsupported content type for text extraction: %s", firstNonEmpty(contentType, "unknown"))
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("page fetch did not contain extractable text")
 	}
 	truncated := false
 	if len(text) > maxChars {
 		text = strings.TrimSpace(text[:maxChars])
 		truncated = true
 	}
-	finalURL := rawURL
-	if resp.Request != nil && resp.Request.URL != nil {
-		finalURL = resp.Request.URL.String()
-	}
 	return json.Marshal(map[string]any{
 		"url":          rawURL,
-		"final_url":    finalURL,
-		"status":       resp.Status,
+		"final_url":    fetched.FinalURL,
+		"status":       fetched.Status,
 		"content_type": contentType,
+		"extractor":    extractor,
 		"title":        title,
 		"text":         text,
 		"truncated":    truncated,
@@ -1179,6 +1187,14 @@ type searxNGDiscoveryCache struct {
 
 var globalSearXNGDiscoveryCache searxNGDiscoveryCache
 
+type httpReadResult struct {
+	Body        []byte
+	StatusCode  int
+	Status      string
+	ContentType string
+	FinalURL    string
+}
+
 func (b Base) httpClient() *http.Client {
 	if b.Client != nil {
 		return b.Client
@@ -1188,6 +1204,54 @@ func (b Base) httpClient() *http.Client {
 		timeout = defaultTimeout
 	}
 	return &http.Client{Timeout: timeout}
+}
+
+func (b Base) doReadRequestWithRetry(ctx context.Context, req *http.Request, maxBytes int64) (httpReadResult, error) {
+	if maxBytes <= 0 {
+		maxBytes = 2 << 20
+	}
+	var last httpReadResult
+	for attempt := 0; attempt < httpRetryAttempts; attempt++ {
+		attemptReq := req.Clone(ctx)
+		resp, err := b.httpClient().Do(attemptReq)
+		if err != nil {
+			if attempt+1 < httpRetryAttempts && retryableHTTPError(err) {
+				if err := waitHTTPRetry(ctx, "", attempt); err != nil {
+					return httpReadResult{}, err
+				}
+				continue
+			}
+			return httpReadResult{}, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		_ = resp.Body.Close()
+		result := httpReadResult{
+			Body:        body,
+			StatusCode:  resp.StatusCode,
+			Status:      resp.Status,
+			ContentType: resp.Header.Get("Content-Type"),
+		}
+		if resp.Request != nil && resp.Request.URL != nil {
+			result.FinalURL = resp.Request.URL.String()
+		} else {
+			result.FinalURL = req.URL.String()
+		}
+		last = result
+		if readErr != nil {
+			return result, readErr
+		}
+		if int64(len(body)) > maxBytes {
+			return result, fmt.Errorf("response exceeds %d byte limit", maxBytes)
+		}
+		if retryableHTTPStatus(resp.StatusCode) && attempt+1 < httpRetryAttempts {
+			if err := waitHTTPRetry(ctx, resp.Header.Get("Retry-After"), attempt); err != nil {
+				return httpReadResult{}, err
+			}
+			continue
+		}
+		return result, nil
+	}
+	return last, nil
 }
 
 func (b Base) webSearchProvider(override string) string {
@@ -1523,6 +1587,59 @@ func htmlToText(raw string) string {
 
 func compactWhitespace(s string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
+func looksLikePDFBytes(body []byte) bool {
+	return len(body) >= 5 && string(body[:5]) == "%PDF-"
+}
+
+func retryableHTTPStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func retryableHTTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func waitHTTPRetry(ctx context.Context, retryAfter string, attempt int) error {
+	delay := retryAfterDelay(retryAfter)
+	if delay <= 0 {
+		delay = time.Duration(150*(1<<attempt)) * time.Millisecond
+	}
+	if delay > 3*time.Second {
+		delay = 3 * time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryAfterDelay(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		return time.Until(at)
+	}
+	return 0
 }
 
 func abstractSnippet(index map[string][]int, maxChars int) string {

@@ -97,6 +97,56 @@ const knowledgeRun = {
       created_at: now
     }
   ],
+  coverage: [
+    {
+      id: 'coverage_01',
+      topic: 'Evidence review report',
+      status: 'covered',
+      source_ids: [knowledgeSource.id],
+      evidence_count: 1,
+      notes: 'One cited evidence chunk covers the report.'
+    }
+  ],
+  source_candidates: [
+    {
+      id: 'candidate_existing',
+      query: 'evidence visible generated claims',
+      kind: 'web',
+      provider: 'searxng',
+      title: 'Source transparency notes',
+      url: 'https://example.com/source-transparency',
+      domain: 'example.com',
+      snippet: 'Evidence should stay visible beside generated claims.',
+      content_type: 'text/html',
+      fetched: true,
+      extraction_state: 'text',
+      extraction_message: 'The source directly supports the run.',
+      word_count: 8,
+      usefulness: 'accept',
+      relevance_score: 91,
+      coverage: ['Evidence review report'],
+      source_id: knowledgeSource.id,
+      status: 'accepted'
+    },
+    {
+      id: 'candidate_rejected',
+      query: 'evidence visible generated claims',
+      kind: 'web',
+      provider: 'searxng',
+      title: 'Unrelated event calendar',
+      url: 'https://example.com/events',
+      domain: 'example.com',
+      snippet: 'Event dates and venue logistics.',
+      content_type: 'text/html',
+      fetched: true,
+      extraction_state: 'text',
+      extraction_message: 'This source is unrelated to evidence review.',
+      word_count: 6,
+      usefulness: 'reject',
+      relevance_score: 3,
+      status: 'rejected'
+    }
+  ],
   workspace_path: 'runs/kspace/krun',
   created_at: now,
   updated_at: now,
@@ -149,7 +199,6 @@ const mockKnowledgeApis = async (page: Page) => {
     depth?: string;
     mode?: string;
     discover_sources?: boolean;
-    max_sources?: number;
     source_ids?: string[];
   }> = [];
 
@@ -259,7 +308,6 @@ const mockKnowledgeApis = async (page: Page) => {
       depth?: string;
       mode?: string;
       discover_sources?: boolean;
-      max_sources?: number;
       source_ids?: string[];
     };
     researchRunRequests.push(body);
@@ -270,7 +318,6 @@ const mockKnowledgeApis = async (page: Page) => {
       depth: body.depth || 'standard',
       status: 'queued',
       discover_sources: Boolean(body.discover_sources),
-      max_sources: body.max_sources,
       source_candidates: body.discover_sources
         ? [
             {
@@ -282,8 +329,16 @@ const mockKnowledgeApis = async (page: Page) => {
               url: 'https://example.com/evidence-review',
               domain: 'example.com',
               snippet: 'Research runs preserve cited evidence for review.',
+              content_type: 'text/html',
+              fetched: true,
+              extraction_state: 'text',
+              extraction_message: 'Queued for source evaluation.',
+              word_count: 12,
+              usefulness: 'accept',
+              relevance_score: 82,
+              coverage: ['Evidence review report'],
               source_id: 'ksrc_discovered',
-              status: 'imported'
+              status: 'accepted'
             }
           ]
         : [],
@@ -431,9 +486,23 @@ for (const viewport of [
       await expect(page.locator('[aria-label="Grounded answer"] .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
 
       await page.getByRole('tab', { name: /Research Runs/ }).click();
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Final answer');
+      await expect(page.locator('[aria-label="Research run final answer"]').getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('covered');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('rejected');
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      if (viewport.mobile) {
+        await page.locator('[aria-label="Research run final answer"]').scrollIntoViewIfNeeded();
+      }
+      await expect(page).toHaveScreenshot(`knowledge-research-run-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled',
+        maxDiffPixels: 100
+      });
+
       await page.locator('#knowledge-panel-runs').getByLabel('Objective').fill('Compare evidence review');
       await expect(page.getByLabel('Search internet and import sources')).toBeChecked();
-      await page.getByLabel('Max sources').fill('6');
       await page.getByRole('button', { name: 'Start run' }).click();
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText(
         'Compare evidence review'
@@ -444,17 +513,11 @@ for (const viewport of [
         depth: 'standard',
         mode: 'research',
         discover_sources: true,
-        max_sources: 6,
         source_ids: [knowledgeSource.id]
       });
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Queued');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('example.com');
       await expectNoVisualArtifacts(page);
-      await expectNoAxeViolations(page);
-      await expect(page).toHaveScreenshot(`knowledge-research-run-${viewport.name}.png`, {
-        fullPage: !viewport.mobile,
-        animations: 'disabled'
-      });
 
       await page.getByRole('tab', { name: /Artefacts/ }).click();
       await page.getByRole('button', { name: /How should evidence be reviewed/ }).first().click();

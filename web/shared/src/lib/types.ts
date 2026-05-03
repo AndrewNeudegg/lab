@@ -557,8 +557,8 @@ export interface HomelabdKnowledgeResearchRun {
   mode: 'research' | 'brief' | 'study' | string;
   plan?: HomelabdKnowledgeResearchPlan;
   discover_sources?: boolean;
-  max_sources?: number;
   source_candidates?: HomelabdKnowledgeSourceCandidate[];
+  coverage?: HomelabdKnowledgeResearchCoverage[];
   source_ids?: string[];
   report_id?: string;
   sources_examined?: number;
@@ -585,9 +585,25 @@ export interface HomelabdKnowledgeSourceCandidate {
   domain?: string;
   snippet?: string;
   content_type?: string;
+  fetched?: boolean;
+  extraction_state?: string;
+  extraction_message?: string;
+  word_count?: number;
+  usefulness?: string;
+  relevance_score?: number;
+  coverage?: string[];
   source_id?: string;
   status: string;
   error?: string;
+}
+
+export interface HomelabdKnowledgeResearchCoverage {
+  id: string;
+  topic: string;
+  status: string;
+  source_ids?: string[];
+  evidence_count?: number;
+  notes?: string;
 }
 
 export interface HomelabdKnowledgeResearchPlan {
@@ -681,7 +697,6 @@ export interface HomelabdCreateKnowledgeResearchRunRequest {
   mode?: 'research' | 'brief' | 'study' | string;
   source_ids?: string[];
   discover_sources?: boolean;
-  max_sources?: number;
 }
 
 export interface HomelabdCreateKnowledgeResearchRunResponse {

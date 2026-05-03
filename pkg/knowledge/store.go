@@ -57,7 +57,7 @@ func (s *Store) Save(space Space) error {
 		normalized.Sources[index].Provenance.SnapshotPath = path
 	}
 	for index := range normalized.ResearchRuns {
-		path, err := s.writeResearchRunWorkspaceLocked(normalized.ID, normalized.ResearchRuns[index])
+		path, err := s.writeResearchRunWorkspaceLocked(normalized.ID, normalized.ResearchRuns[index], normalized.Reports)
 		if err != nil {
 			return err
 		}
@@ -71,7 +71,7 @@ func (s *Store) Save(space Space) error {
 	return os.WriteFile(filepath.Join(s.dir, normalized.ID+".json"), append(b, '\n'), 0o644)
 }
 
-func (s *Store) writeResearchRunWorkspaceLocked(spaceID string, run ResearchRun) (string, error) {
+func (s *Store) writeResearchRunWorkspaceLocked(spaceID string, run ResearchRun, reports []Report) (string, error) {
 	if strings.TrimSpace(run.ID) == "" {
 		return run.WorkspacePath, nil
 	}
@@ -108,8 +108,45 @@ func (s *Store) writeResearchRunWorkspaceLocked(spaceID string, run ResearchRun)
 		if err := os.WriteFile(filepath.Join(fullDir, "sources.json"), append(candidates, '\n'), 0o644); err != nil {
 			return "", err
 		}
+		if err := os.WriteFile(filepath.Join(fullDir, "candidates.json"), append(candidates, '\n'), 0o644); err != nil {
+			return "", err
+		}
+	}
+	if len(run.Coverage) > 0 {
+		coverage, err := json.MarshalIndent(run.Coverage, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(fullDir, "coverage.json"), append(coverage, '\n'), 0o644); err != nil {
+			return "", err
+		}
+	}
+	if report, ok := reportForRun(reports, run); ok {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(fullDir, "report.json"), append(data, '\n'), 0o644); err != nil {
+			return "", err
+		}
+		evidence, err := json.MarshalIndent(report.Evidence, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(fullDir, "evidence.json"), append(evidence, '\n'), 0o644); err != nil {
+			return "", err
+		}
 	}
 	return relative, nil
+}
+
+func reportForRun(reports []Report, run ResearchRun) (Report, bool) {
+	for _, report := range reports {
+		if strings.TrimSpace(run.ReportID) != "" && report.ID == run.ReportID {
+			return report, true
+		}
+	}
+	return Report{}, false
 }
 
 func (s *Store) writeSourceSnapshotLocked(spaceID string, source Source) (string, error) {

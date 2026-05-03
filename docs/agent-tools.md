@@ -200,14 +200,14 @@ For UI work, browser UAT must use the task worktree or remote workdir, not the p
 Internet tools are read-only for local state but they do make outbound network requests.
 
 - `internet.search`: required args: `query`. Optional args: `source`, `provider`, `max_results`, `time_range`, `language`. `source` is `web`, `academic`, or `all`; default is `web`. `provider` is `auto`, `searxng`, `brave`, `tavily`, or `duckduckgo`. `max_results` defaults to 8 and clamps to 20. Academic search uses OpenAlex.
-- `internet.research`: required args: `query`. Optional args: `queries`, `source`, `depth`, `provider`, `time_range`, `language`, `max_searches`, `max_sources`, `fetch`, `trusted_domains`. It plans subqueries, or uses explicit `queries` when provided, searches, deduplicates URLs, optionally fetches top pages, and returns an evidence bundle. `source` defaults to `all`, `depth` defaults to `standard`, `max_searches` clamps to 8, and `max_sources` clamps to 20.
-- `internet.fetch`: required args: `url`. Optional args: `max_chars`. Fetches public HTTP(S) URLs only. Private hosts are rejected. Reads at most 2 MiB from the response and returns extracted text clamped to 500-20,000 characters, default 12,000.
+- `internet.research`: required args: `query`. Optional args: `queries`, `source`, `depth`, `provider`, `time_range`, `language`, `max_searches`, `fetch`, `trusted_domains`. It plans subqueries, or uses explicit `queries` when provided, searches, deduplicates URLs, optionally fetches public pages, and returns a candidate evidence bundle for source evaluation. `source` defaults to `all`, `depth` defaults to `standard`, and `max_searches` clamps to 8.
+- `internet.fetch`: required args: `url`. Optional args: `max_chars`. Fetches public HTTP(S) URLs only. Private hosts are rejected. It retries transient HTTP 429/502/503/504 responses, reads at most 5 MiB from the response, extracts HTML/plain/JSON/XML/PDF text, and returns extracted text clamped to 500-20,000 characters, default 12,000.
 
 Research depth defaults:
 
-- `quick`: two searches, four sources, no page fetch by default, 1,500 characters per source if fetch is forced.
-- `standard`: four searches, eight sources, page fetch enabled, 3,000 characters per fetched source.
-- `deep`: eight searches, sixteen sources, page fetch enabled, 6,000 characters per fetched source.
+- `quick`: two searches, no page fetch by default, 1,500 characters per source if fetch is forced.
+- `standard`: four searches, page fetch enabled, 3,000 characters per fetched source.
+- `deep`: eight searches, page fetch enabled, 6,000 characters per fetched source.
 
 Use `internet.fetch` on promising result URLs before relying on page details, and prefer official, primary, standards, maintainer, or scholarly sources when sources disagree.
 

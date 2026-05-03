@@ -76,6 +76,19 @@ const (
   }
 }`
 
+	sourceEvaluationSchema = `{
+  "type": "object",
+  "required": ["decision", "relevance_score", "reason", "coverage", "follow_up_queries"],
+  "additionalProperties": false,
+  "properties": {
+    "decision": {"type": "string", "enum": ["accept", "reject", "partial"]},
+    "relevance_score": {"type": "integer", "minimum": 0, "maximum": 100},
+    "reason": {"type": "string"},
+    "coverage": {"type": "array", "items": {"type": "string"}},
+    "follow_up_queries": {"type": "array", "items": {"type": "string"}}
+  }
+}`
+
 	researchReportSchema = `{
   "type": "object",
   "required": ["answer", "key_findings", "gaps"],
@@ -233,7 +246,6 @@ func (m LanguageModel) PlanResearch(ctx context.Context, space Space, req Create
 			"depth":            req.Depth,
 			"mode":             req.Mode,
 			"discover_sources": req.DiscoverSources,
-			"max_sources":      req.MaxSources,
 			"space":            corpusSpaceBrief(space),
 			"sources":          corpusSourceBriefs(selectedSources(space.Sources, req.SourceIDs)),
 		})},
@@ -242,6 +254,54 @@ func (m LanguageModel) PlanResearch(ctx context.Context, space Space, req Create
 		return ResearchPlan{}, llm.CompletionResponse{}, err
 	}
 	return normalizeResearchPlan(plan), resp, nil
+}
+
+func (m LanguageModel) EvaluateSourceForRun(ctx context.Context, source Source, run ResearchRun, candidate SourceCandidate, now time.Time) (SourceEvaluation, llm.CompletionResponse, error) {
+	if err := m.configured(); err != nil {
+		return SourceEvaluation{}, llm.CompletionResponse{}, err
+	}
+	source, err := NormalizeSource(source)
+	if err != nil {
+		return SourceEvaluation{}, llm.CompletionResponse{}, err
+	}
+	run = normalizeResearchRun(run)
+	var output SourceEvaluation
+	resp, err := m.completeJSON(ctx, "knowledge_source_evaluation", sourceEvaluationSchema, 1200, []llm.Message{
+		{Role: "system", Content: strings.Join([]string{
+			"You decide whether a fetched source belongs in a research corpus for a specific run.",
+			"Return exactly one JSON object matching the schema.",
+			"Accept sources that materially help answer the objective or cover a planned output.",
+			"Use partial when the source is relevant but narrow, incomplete, or needs stronger corroboration.",
+			"Reject unreadable, unrelated, mostly navigation, or low-information sources.",
+			"Do not invent facts beyond the source summary, claims, provenance, and excerpt.",
+		}, "\n")},
+		{Role: "user", Content: "Run and source:\n" + mustJSON(map[string]any{
+			"run": map[string]any{
+				"objective": run.Objective,
+				"question":  firstNonEmpty(run.Question, run.Objective),
+				"scope":     run.Scope,
+				"plan":      run.Plan,
+			},
+			"candidate": candidate,
+			"source": map[string]any{
+				"id":          source.ID,
+				"title":       source.Title,
+				"uri":         firstNonEmpty(source.Provenance.CanonicalURI, source.Provenance.URI, source.URI),
+				"summary":     source.Summary,
+				"key_terms":   source.KeyTerms,
+				"claims":      source.Claims,
+				"entities":    source.Entities,
+				"reliability": source.Reliability,
+				"word_count":  source.WordCount,
+				"excerpt":     boundedText(source.Content, 8000),
+			},
+			"evaluated_at": now,
+		})},
+	}, &output)
+	if err != nil {
+		return SourceEvaluation{}, llm.CompletionResponse{}, err
+	}
+	return normalizeSourceEvaluation(output), resp, nil
 }
 
 func (m LanguageModel) SynthesizeReport(ctx context.Context, space Space, run ResearchRun, evidence []Evidence, reportID string, now time.Time) (Report, error) {
@@ -262,7 +322,9 @@ func (m LanguageModel) SynthesizeReport(ctx context.Context, space Space, run Re
 			"You write source-grounded research reports for a corpus.",
 			"Return exactly one JSON object matching the schema.",
 			"Use Markdown in the answer field.",
-			"Use only the provided evidence. Cite evidence labels inline.",
+			"Answer the research question directly before discussing process.",
+			"Use source summaries to decide which sources matter, and use evidence excerpts for citations.",
+			"Use only the provided sources, coverage, and evidence. Cite evidence labels inline.",
 			"Identify contradictions, uncertainty, and missing source coverage in gaps.",
 		}, "\n")},
 		{Role: "user", Content: "Research run:\n" + mustJSON(map[string]any{
@@ -272,7 +334,9 @@ func (m LanguageModel) SynthesizeReport(ctx context.Context, space Space, run Re
 			"depth":     run.Depth,
 			"mode":      run.Mode,
 			"plan":      run.Plan,
+			"coverage":  run.Coverage,
 			"space":     corpusSpaceBrief(space),
+			"sources":   corpusSourceBriefs(selectedSources(space.Sources, run.SourceIDs)),
 			"evidence":  evidencePrompt(evidence),
 		})},
 	}, &output)
@@ -403,6 +467,25 @@ func evidencePrompt(evidence []Evidence) []map[string]any {
 		})
 	}
 	return out
+}
+
+func normalizeSourceEvaluation(input SourceEvaluation) SourceEvaluation {
+	input.Decision = strings.ToLower(strings.TrimSpace(input.Decision))
+	switch input.Decision {
+	case "accept", "partial", "reject":
+	default:
+		input.Decision = "reject"
+	}
+	if input.RelevanceScore < 0 {
+		input.RelevanceScore = 0
+	}
+	if input.RelevanceScore > 100 {
+		input.RelevanceScore = 100
+	}
+	input.Reason = strings.TrimSpace(input.Reason)
+	input.Coverage = compactStrings(input.Coverage, 12)
+	input.FollowUpQueries = compactStrings(input.FollowUpQueries, 8)
+	return input
 }
 
 func mustJSON(value any) string {

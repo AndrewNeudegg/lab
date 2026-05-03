@@ -1,6 +1,8 @@
 package internet
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"io"
@@ -133,6 +135,46 @@ func TestSearchToolUsesSearXNGByDefaultAndAggregatesInstances(t *testing.T) {
 	}
 	if len(result.Instances) != 2 || len(result.Answers) != 1 || len(result.Suggestions) != 1 {
 		t.Fatalf("expected instance and answer metadata, got %+v", result)
+	}
+}
+
+func TestSearchToolRetriesSearXNGRateLimit(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Status:     "429 Too Many Requests",
+				Header:     http.Header{"Retry-After": []string{"0"}, "Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"results":[
+				{"title":"Recovered result","url":"https://example.com/recovered","content":"Search recovered after retry."}
+			]}`)),
+		}, nil
+	})}
+
+	raw, err := SearchTool{base: Base{SearXNGInstances: []string{"https://retry.example/"}, Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"retry search","provider":"searxng"}`))
+	if err != nil {
+		t.Fatalf("run retry search: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want one retry after 429", attempts)
+	}
+	var result struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal retry result: %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0]["title"] != "Recovered result" {
+		t.Fatalf("unexpected retry result: %+v", result.Results)
 	}
 }
 
@@ -317,7 +359,7 @@ func TestResearchToolFansOutSearchesAndFetchesSources(t *testing.T) {
 		}
 	})}
 
-	raw, err := ResearchTool{base: Base{Endpoint: "https://search.example/", AcademicEndpoint: "https://academic.example/works", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"agent research","source":"all","depth":"standard","max_searches":2,"max_sources":3}`))
+	raw, err := ResearchTool{base: Base{Endpoint: "https://search.example/", AcademicEndpoint: "https://academic.example/works", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"agent research","source":"all","depth":"standard","max_searches":2}`))
 	if err != nil {
 		t.Fatalf("run research: %v", err)
 	}
@@ -358,7 +400,7 @@ func TestResearchToolUsesExplicitQueriesWithoutGeneratedSuffixes(t *testing.T) {
 		}, nil
 	})}
 
-	raw, err := ResearchTool{base: Base{Endpoint: "https://search.example/", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"cheese research","queries":["fresh cheese families","aged hard cheese types","fresh cheese families"],"source":"web","max_searches":2,"max_sources":4,"fetch":false}`))
+	raw, err := ResearchTool{base: Base{Endpoint: "https://search.example/", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"cheese research","queries":["fresh cheese families","aged hard cheese types","fresh cheese families"],"source":"web","max_searches":2,"fetch":false}`))
 	if err != nil {
 		t.Fatalf("run research: %v", err)
 	}
@@ -451,6 +493,52 @@ func TestFetchToolExtractsHTMLText(t *testing.T) {
 	}
 }
 
+func TestFetchToolExtractsPDFText(t *testing.T) {
+	pdf := testPDFWithText(t, "PDF cheese taxonomy evidence")
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+			Request:    r,
+			Body:       io.NopCloser(bytes.NewReader(pdf)),
+		}, nil
+	})}
+
+	raw, err := FetchTool{base: Base{Client: client}}.Run(context.Background(), json.RawMessage(`{"url":"https://example.com/cheese.pdf","max_chars":2000}`))
+	if err != nil {
+		t.Fatalf("fetch pdf: %v", err)
+	}
+	var result struct {
+		Text        string `json:"text"`
+		ContentType string `json:"content_type"`
+		Extractor   string `json:"extractor"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal pdf result: %v", err)
+	}
+	if result.ContentType != "application/pdf" || result.Extractor != "pdf" || !strings.Contains(result.Text, "PDF cheese taxonomy evidence") {
+		t.Fatalf("unexpected pdf extraction: %+v", result)
+	}
+}
+
+func TestFetchToolFailsUnreadablePDFInsteadOfReturningPlaceholderText(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+			Request:    r,
+			Body:       io.NopCloser(strings.NewReader("%PDF-1.7\n% scanned image only\n")),
+		}, nil
+	})}
+
+	_, err := FetchTool{base: Base{Client: client}}.Run(context.Background(), json.RawMessage(`{"url":"https://example.com/scanned.pdf"}`))
+	if err == nil || !strings.Contains(err.Error(), "extractable text") && !strings.Contains(err.Error(), "no text operators") {
+		t.Fatalf("error = %v, want explicit unreadable PDF extraction failure", err)
+	}
+}
+
 func TestFetchToolRejectsNonHTTPURL(t *testing.T) {
 	_, err := FetchTool{}.Run(context.Background(), json.RawMessage(`{"url":"file:///etc/passwd"}`))
 	if err == nil {
@@ -475,4 +563,17 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+func testPDFWithText(t *testing.T, text string) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := zlib.NewWriter(&compressed)
+	_, _ = writer.Write([]byte("BT /F1 12 Tf (" + text + ") Tj ET"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	body := append([]byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\n"), compressed.Bytes()...)
+	body = append(body, []byte("\nendstream\n%%EOF")...)
+	return body
 }

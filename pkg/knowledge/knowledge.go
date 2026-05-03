@@ -198,8 +198,8 @@ type ResearchRun struct {
 	Mode            string             `json:"mode"`
 	Plan            ResearchPlan       `json:"plan,omitempty"`
 	DiscoverSources bool               `json:"discover_sources,omitempty"`
-	MaxSources      int                `json:"max_sources,omitempty"`
 	Candidates      []SourceCandidate  `json:"source_candidates,omitempty"`
+	Coverage        []ResearchCoverage `json:"coverage,omitempty"`
 	SourceIDs       []string           `json:"source_ids,omitempty"`
 	ReportID        string             `json:"report_id,omitempty"`
 	SourcesExamined int                `json:"sources_examined,omitempty"`
@@ -224,19 +224,43 @@ type ResearchPlan struct {
 	ExpectedOutputs     []string `json:"expected_outputs,omitempty"`
 }
 
+type ResearchCoverage struct {
+	ID            string   `json:"id"`
+	Topic         string   `json:"topic"`
+	Status        string   `json:"status"`
+	SourceIDs     []string `json:"source_ids,omitempty"`
+	EvidenceCount int      `json:"evidence_count,omitempty"`
+	Notes         string   `json:"notes,omitempty"`
+}
+
+type SourceEvaluation struct {
+	Decision        string   `json:"decision"`
+	RelevanceScore  int      `json:"relevance_score"`
+	Reason          string   `json:"reason"`
+	Coverage        []string `json:"coverage,omitempty"`
+	FollowUpQueries []string `json:"follow_up_queries,omitempty"`
+}
+
 type SourceCandidate struct {
-	ID          string `json:"id"`
-	Query       string `json:"query,omitempty"`
-	Kind        string `json:"kind,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	Title       string `json:"title"`
-	URL         string `json:"url,omitempty"`
-	Domain      string `json:"domain,omitempty"`
-	Snippet     string `json:"snippet,omitempty"`
-	ContentType string `json:"content_type,omitempty"`
-	SourceID    string `json:"source_id,omitempty"`
-	Status      string `json:"status"`
-	Error       string `json:"error,omitempty"`
+	ID                string   `json:"id"`
+	Query             string   `json:"query,omitempty"`
+	Kind              string   `json:"kind,omitempty"`
+	Provider          string   `json:"provider,omitempty"`
+	Title             string   `json:"title"`
+	URL               string   `json:"url,omitempty"`
+	Domain            string   `json:"domain,omitempty"`
+	Snippet           string   `json:"snippet,omitempty"`
+	ContentType       string   `json:"content_type,omitempty"`
+	Fetched           bool     `json:"fetched,omitempty"`
+	ExtractionState   string   `json:"extraction_state,omitempty"`
+	ExtractionMessage string   `json:"extraction_message,omitempty"`
+	WordCount         int      `json:"word_count,omitempty"`
+	Usefulness        string   `json:"usefulness,omitempty"`
+	RelevanceScore    int      `json:"relevance_score,omitempty"`
+	Coverage          []string `json:"coverage,omitempty"`
+	SourceID          string   `json:"source_id,omitempty"`
+	Status            string   `json:"status"`
+	Error             string   `json:"error,omitempty"`
 }
 
 type ResearchRunEvent struct {
@@ -274,7 +298,6 @@ type CreateResearchRunRequest struct {
 	Mode            string   `json:"mode,omitempty"`
 	SourceIDs       []string `json:"source_ids,omitempty"`
 	DiscoverSources bool     `json:"discover_sources,omitempty"`
-	MaxSources      int      `json:"max_sources,omitempty"`
 }
 
 var wordPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9']*`)
@@ -524,13 +547,8 @@ func normalizeResearchRun(run ResearchRun) ResearchRun {
 	run.Question = strings.TrimSpace(run.Question)
 	run.Mode = normalizeReportMode(run.Mode)
 	run.Plan = normalizeResearchPlan(run.Plan)
-	if run.MaxSources < 0 {
-		run.MaxSources = 0
-	}
-	if run.MaxSources > 20 {
-		run.MaxSources = 20
-	}
 	run.Candidates = normalizeSourceCandidates(run.Candidates)
+	run.Coverage = normalizeResearchCoverage(run.Coverage)
 	run.ReportID = strings.TrimSpace(run.ReportID)
 	run.Provider = strings.TrimSpace(run.Provider)
 	run.Model = strings.TrimSpace(run.Model)
@@ -676,6 +694,19 @@ func normalizeSourceCandidates(candidates []SourceCandidate) []SourceCandidate {
 		candidate.Domain = strings.TrimSpace(candidate.Domain)
 		candidate.Snippet = strings.TrimSpace(candidate.Snippet)
 		candidate.ContentType = strings.TrimSpace(candidate.ContentType)
+		candidate.ExtractionState = strings.ToLower(strings.TrimSpace(candidate.ExtractionState))
+		candidate.ExtractionMessage = strings.TrimSpace(candidate.ExtractionMessage)
+		if candidate.WordCount < 0 {
+			candidate.WordCount = 0
+		}
+		candidate.Usefulness = strings.ToLower(strings.TrimSpace(candidate.Usefulness))
+		if candidate.RelevanceScore < 0 {
+			candidate.RelevanceScore = 0
+		}
+		if candidate.RelevanceScore > 100 {
+			candidate.RelevanceScore = 100
+		}
+		candidate.Coverage = compactStrings(candidate.Coverage, 12)
 		candidate.SourceID = strings.TrimSpace(candidate.SourceID)
 		candidate.Status = strings.ToLower(strings.TrimSpace(candidate.Status))
 		if candidate.Status == "" {
@@ -685,7 +716,34 @@ func normalizeSourceCandidates(candidates []SourceCandidate) []SourceCandidate {
 		if candidate.Title != "" || candidate.URL != "" || candidate.Snippet != "" {
 			out = append(out, candidate)
 		}
-		if len(out) >= 50 {
+		if len(out) >= 100 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeResearchCoverage(items []ResearchCoverage) []ResearchCoverage {
+	out := make([]ResearchCoverage, 0, len(items))
+	for index, item := range items {
+		item.ID = strings.TrimSpace(item.ID)
+		if item.ID == "" {
+			item.ID = fmt.Sprintf("coverage_%02d", index+1)
+		}
+		item.Topic = strings.TrimSpace(item.Topic)
+		item.Status = strings.ToLower(strings.TrimSpace(item.Status))
+		if item.Status == "" {
+			item.Status = "planned"
+		}
+		item.SourceIDs = compactStrings(item.SourceIDs, 30)
+		if item.EvidenceCount < 0 {
+			item.EvidenceCount = 0
+		}
+		item.Notes = strings.TrimSpace(item.Notes)
+		if item.Topic != "" {
+			out = append(out, item)
+		}
+		if len(out) >= 24 {
 			break
 		}
 	}
@@ -720,7 +778,7 @@ type evidenceCandidate struct {
 	score  int
 }
 
-func rankEvidence(sources []Source, queryTerms []string, mode string) []Evidence {
+func rankEvidence(sources []Source, queryTerms []string, mode string, limit int) []Evidence {
 	var candidates []evidenceCandidate
 	for _, source := range sources {
 		sourceCandidates := 0
@@ -760,9 +818,11 @@ func rankEvidence(sources []Source, queryTerms []string, mode string) []Evidence
 		}
 		return candidates[i].score > candidates[j].score
 	})
-	limit := 6
-	if mode == ReportModeBrief {
-		limit = 4
+	if limit <= 0 {
+		limit = 8
+		if mode == ReportModeBrief {
+			limit = 4
+		}
 	}
 	if len(candidates) < limit {
 		limit = len(candidates)
@@ -784,6 +844,115 @@ func rankEvidence(sources []Source, queryTerms []string, mode string) []Evidence
 		})
 	}
 	return evidence
+}
+
+func ResearchEvidence(space Space, run ResearchRun, limit int) ([]Evidence, error) {
+	normalized, err := NormalizeSpace(space)
+	if err != nil {
+		return nil, err
+	}
+	run = normalizeResearchRun(run)
+	if limit <= 0 {
+		limit = 40
+	}
+	if limit > 80 {
+		limit = 80
+	}
+	sources := selectedSources(normalized.Sources, run.SourceIDs)
+	queries := []string{run.Objective, run.Question, run.Plan.RewrittenObjective}
+	queries = append(queries, run.Plan.SearchQueries...)
+	queries = append(queries, run.Plan.ExpectedOutputs...)
+	queries = compactStrings(queries, 24)
+	if len(queries) == 0 {
+		queries = compactStrings([]string{normalized.Objective, normalized.Title}, 2)
+	}
+	seen := map[string]bool{}
+	var evidence []Evidence
+	appendEvidence := func(items []Evidence) {
+		for _, item := range items {
+			key := item.SourceID + "|" + item.ChunkID + "|" + item.Excerpt
+			if strings.TrimSpace(key) == "||" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			evidence = append(evidence, item)
+			if len(evidence) >= limit {
+				return
+			}
+		}
+	}
+	perQueryLimit := 5
+	if run.Mode == ReportModeBrief {
+		perQueryLimit = 3
+	}
+	for _, query := range queries {
+		terms := topTerms(query, 12)
+		if len(terms) == 0 {
+			continue
+		}
+		appendEvidence(rankEvidence(sources, terms, run.Mode, perQueryLimit))
+		if len(evidence) >= limit {
+			break
+		}
+	}
+	if len(evidence) < limit {
+		appendEvidence(rankEvidence(sources, topTerms(strings.Join(queries, " "), 18), run.Mode, limit-len(evidence)))
+	}
+	return relabelEvidence(evidence), nil
+}
+
+func BuildResearchCoverage(run ResearchRun, evidence []Evidence) []ResearchCoverage {
+	run = normalizeResearchRun(run)
+	topics := append([]string{}, run.Plan.ExpectedOutputs...)
+	topics = append(topics, run.Plan.SearchQueries...)
+	topics = compactStrings(topics, 18)
+	if len(topics) == 0 {
+		topics = compactStrings([]string{firstNonEmpty(run.Question, run.Objective, run.Plan.RewrittenObjective)}, 1)
+	}
+	out := make([]ResearchCoverage, 0, len(topics))
+	for index, topic := range topics {
+		terms := topTerms(topic, 10)
+		sourceIDs := map[string]bool{}
+		count := 0
+		for _, item := range evidence {
+			if score, _ := scoreText(item.Excerpt+" "+item.SourceTitle+" "+strings.Join(item.Terms, " "), terms); score > 0 {
+				count++
+				if item.SourceID != "" {
+					sourceIDs[item.SourceID] = true
+				}
+			}
+		}
+		ids := make([]string, 0, len(sourceIDs))
+		for sourceID := range sourceIDs {
+			ids = append(ids, sourceID)
+		}
+		sort.Strings(ids)
+		status := "gap"
+		notes := "No cited evidence matched this planned research topic."
+		if count > 0 {
+			status = "covered"
+			notes = fmt.Sprintf("%d cited evidence chunk%s matched this topic.", count, plural(count))
+		}
+		out = append(out, ResearchCoverage{
+			ID:            fmt.Sprintf("coverage_%02d", index+1),
+			Topic:         topic,
+			Status:        status,
+			SourceIDs:     ids,
+			EvidenceCount: count,
+			Notes:         notes,
+		})
+	}
+	return normalizeResearchCoverage(out)
+}
+
+func relabelEvidence(evidence []Evidence) []Evidence {
+	out := make([]Evidence, 0, len(evidence))
+	for index, item := range evidence {
+		item.ID = fmt.Sprintf("evidence_%02d", index+1)
+		item.CitationLabel = fmt.Sprintf("S%d", index+1)
+		out = append(out, item)
+	}
+	return out
 }
 
 func findingsFromEvidence(evidence []Evidence, mode string) []string {
@@ -848,6 +1017,13 @@ func buildAnswer(question string, sources []Source, evidence []Evidence, finding
 		builder.WriteString(finding)
 	}
 	return builder.String()
+}
+
+func plural(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func scoreText(text string, queryTerms []string) (int, []string) {

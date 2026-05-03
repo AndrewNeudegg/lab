@@ -240,7 +240,6 @@ func (o *Orchestrator) StartKnowledgeResearchRun(ctx context.Context, spaceID st
 		Mode:            req.Mode,
 		SourceIDs:       req.SourceIDs,
 		DiscoverSources: req.DiscoverSources,
-		MaxSources:      req.MaxSources,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		Events: []knowledgestore.ResearchRunEvent{
@@ -287,13 +286,13 @@ func (o *Orchestrator) executeKnowledgeResearchRun(ctx context.Context, store kn
 		Mode:            run.Mode,
 		SourceIDs:       run.SourceIDs,
 		DiscoverSources: run.DiscoverSources,
-		MaxSources:      run.MaxSources,
 	})
 	if err != nil {
 		o.failKnowledgeResearchRun(ctx, store, spaceID, run, err)
 		return
 	}
 	run.Plan = plan
+	run.Coverage = knowledgestore.BuildResearchCoverage(run, nil)
 	run.Provider = knowledgeResponseProvider(planResp.Provider, o.provider)
 	run.Model = knowledgeResponseModel(planResp.Model, o.model)
 	run.Usage = addKnowledgeUsage(run.Usage, knowledgeUsage(planResp.Usage))
@@ -316,22 +315,14 @@ func (o *Orchestrator) executeKnowledgeResearchRun(ctx context.Context, store kn
 		o.log().Error("failed to save knowledge research retrieval state", "space_id", spaceID, "run_id", runID, "error", err)
 		return
 	}
-	query, err := knowledgeRunRetrievalQuery(run)
-	if err != nil {
-		o.failKnowledgeResearchRun(ctx, store, spaceID, run, err)
-		return
-	}
-	queryResult, err := knowledgestore.QuerySpace(space, knowledgestore.QueryRequest{
-		Query:     query,
-		SourceIDs: effectiveKnowledgeRunSourceIDs(run),
-		Limit:     12,
-	}, now)
+	queryResult, err := knowledgestore.ResearchEvidence(space, run, knowledgeEvidenceLimitForDepth(run.Depth))
 	if err != nil {
 		o.failKnowledgeResearchRun(ctx, store, spaceID, run, err)
 		return
 	}
 	run.SourcesExamined = countKnowledgeSources(space, run.SourceIDs)
-	run.EvidenceCount = len(queryResult.Evidence)
+	run.EvidenceCount = len(queryResult)
+	run.Coverage = knowledgestore.BuildResearchCoverage(run, queryResult)
 	now = time.Now().UTC()
 	run = updateKnowledgeRun(run, knowledgestore.ResearchRunStatusReading, "reading", "Reading retrieved evidence before synthesis.", now)
 	if err := saveKnowledgeRun(store, space, run, now); err != nil {
@@ -344,7 +335,7 @@ func (o *Orchestrator) executeKnowledgeResearchRun(ctx context.Context, store kn
 		o.log().Error("failed to save knowledge research synthesis state", "space_id", spaceID, "run_id", runID, "error", err)
 		return
 	}
-	report, err := model.SynthesizeReport(ctx, space, run, queryResult.Evidence, id.New("kreport"), now)
+	report, err := model.SynthesizeReport(ctx, space, run, queryResult, id.New("kreport"), now)
 	if err != nil {
 		o.failKnowledgeResearchRun(ctx, store, spaceID, run, err)
 		return
@@ -406,6 +397,7 @@ type knowledgeResearchSource struct {
 	ContentType string `json:"content_type"`
 	PageTitle   string `json:"page_title"`
 	Text        string `json:"text"`
+	Truncated   bool   `json:"truncated"`
 }
 
 func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowledgestore.Repository, space knowledgestore.Space, run knowledgestore.ResearchRun) (knowledgestore.Space, knowledgestore.ResearchRun, error) {
@@ -416,11 +408,6 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 	if query == "" {
 		return space, run, errors.New("research discovery query is required")
 	}
-	maxSources := run.MaxSources
-	if maxSources <= 0 {
-		maxSources = knowledgeMaxSourcesForDepth(run.Depth)
-		run.MaxSources = maxSources
-	}
 	maxSearches := knowledgeMaxSearchesForDepth(run.Depth)
 	queries := knowledgeDiscoveryQueries(run, query, maxSearches)
 	toolInput := map[string]any{
@@ -428,7 +415,6 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		"source":       "web",
 		"depth":        run.Depth,
 		"provider":     "searxng",
-		"max_sources":  maxSources,
 		"max_searches": maxSearches,
 		"fetch":        true,
 	}
@@ -458,6 +444,8 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		if candidate.FetchError != "" {
 			candidateState.Status = "failed"
 			candidateState.Error = candidate.FetchError
+			candidateState.ExtractionState = "failed"
+			candidateState.ExtractionMessage = candidate.FetchError
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
 				return space, run, err
@@ -467,6 +455,19 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		if strings.TrimSpace(candidate.Text) == "" {
 			candidateState.Status = "skipped"
 			candidateState.Error = "candidate did not include fetched text"
+			candidateState.ExtractionState = "failed"
+			candidateState.ExtractionMessage = candidateState.Error
+			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
+				return space, run, err
+			}
+			continue
+		}
+		if knowledgeExtractionFailedText(candidate.Text) {
+			candidateState.Status = "failed"
+			candidateState.Error = strings.TrimSpace(candidate.Text)
+			candidateState.ExtractionState = "failed"
+			candidateState.ExtractionMessage = candidateState.Error
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
 				return space, run, err
@@ -500,7 +501,41 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		if err != nil {
 			candidateState.Status = "failed"
 			candidateState.Error = err.Error()
+			candidateState.ExtractionState = firstNonEmptyString(candidateState.ExtractionState, "text")
 			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
+				return space, run, err
+			}
+			continue
+		}
+		candidateState.WordCount = analyzed.WordCount
+		candidateState.ExtractionState = "text"
+		if candidate.Truncated {
+			candidateState.ExtractionMessage = "Fetched text was truncated for model analysis."
+		} else {
+			candidateState.ExtractionMessage = "Fetched text extracted for model analysis."
+		}
+		evaluation, evalResp, err := o.knowledgeModel().EvaluateSourceForRun(ctx, analyzed, run, candidateState, now)
+		if err != nil {
+			candidateState.Status = "failed"
+			candidateState.Error = err.Error()
+			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
+				return space, run, err
+			}
+			continue
+		}
+		run.Provider = firstNonEmptyString(run.Provider, knowledgeResponseProvider(evalResp.Provider, o.provider))
+		run.Model = firstNonEmptyString(run.Model, knowledgeResponseModel(evalResp.Model, o.model))
+		run.Usage = addKnowledgeUsage(run.Usage, knowledgeUsage(evalResp.Usage))
+		candidateState.Usefulness = evaluation.Decision
+		candidateState.RelevanceScore = evaluation.RelevanceScore
+		candidateState.Coverage = evaluation.Coverage
+		candidateState.ExtractionMessage = firstNonEmptyString(evaluation.Reason, candidateState.ExtractionMessage)
+		if evaluation.Decision == "reject" {
+			candidateState.Status = "rejected"
+			run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
+			run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "discovery", Message: "Rejected source as not useful for this run: " + analyzed.Title, CreatedAt: now})
 			if err := saveKnowledgeRun(store, space, run, time.Now().UTC()); err != nil {
 				return space, run, err
 			}
@@ -510,7 +545,7 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		if err != nil {
 			return space, run, err
 		}
-		candidateState.Status = "imported"
+		candidateState.Status = "accepted"
 		candidateState.SourceID = analyzed.ID
 		run.Candidates = appendOrReplaceKnowledgeCandidate(run.Candidates, candidateState)
 		run.SourceIDs = appendUniqueStrings(run.SourceIDs, analyzed.ID)
@@ -695,30 +730,46 @@ func knowledgeMaxSearchesForDepth(depth string) int {
 	}
 }
 
-func knowledgeMaxSourcesForDepth(depth string) int {
+func knowledgeEvidenceLimitForDepth(depth string) int {
 	switch strings.ToLower(strings.TrimSpace(depth)) {
 	case "quick":
-		return 4
+		return 16
 	case "deep":
-		return 12
+		return 48
 	default:
-		return 8
+		return 32
 	}
+}
+
+func knowledgeExtractionFailedText(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(lower, "unsupported content type for text extraction:") ||
+		strings.Contains(lower, "did not contain extractable text") ||
+		strings.Contains(lower, "no text operators found")
 }
 
 func knowledgeCandidateFromResearchSource(source knowledgeResearchSource, index int) knowledgestore.SourceCandidate {
 	title := firstNonEmptyString(source.PageTitle, source.Title, source.URL)
+	extractionState := ""
+	if source.Fetched {
+		extractionState = "text"
+		if strings.Contains(strings.ToLower(source.ContentType), "pdf") {
+			extractionState = "pdf_text"
+		}
+	}
 	return knowledgestore.SourceCandidate{
-		ID:          id.New(fmt.Sprintf("kcand_%02d", index+1)),
-		Query:       strings.TrimSpace(source.Query),
-		Kind:        strings.TrimSpace(source.Kind),
-		Provider:    strings.TrimSpace(source.Provider),
-		Title:       strings.TrimSpace(title),
-		URL:         strings.TrimSpace(source.URL),
-		Domain:      strings.TrimSpace(source.Domain),
-		Snippet:     strings.TrimSpace(source.Snippet),
-		ContentType: strings.TrimSpace(source.ContentType),
-		Status:      "candidate",
+		ID:              id.New(fmt.Sprintf("kcand_%02d", index+1)),
+		Query:           strings.TrimSpace(source.Query),
+		Kind:            strings.TrimSpace(source.Kind),
+		Provider:        strings.TrimSpace(source.Provider),
+		Title:           strings.TrimSpace(title),
+		URL:             strings.TrimSpace(source.URL),
+		Domain:          strings.TrimSpace(source.Domain),
+		Snippet:         strings.TrimSpace(source.Snippet),
+		ContentType:     strings.TrimSpace(source.ContentType),
+		Fetched:         source.Fetched,
+		ExtractionState: extractionState,
+		Status:          "candidate",
 	}
 }
 

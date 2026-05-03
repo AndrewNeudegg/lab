@@ -226,7 +226,14 @@ func TestStoreWritesResearchRunWorkspace(t *testing.T) {
 		Status:          ResearchRunStatusDiscovering,
 		Mode:            ReportModeResearch,
 		DiscoverSources: true,
-		MaxSources:      3,
+		Coverage: []ResearchCoverage{{
+			ID:            "coverage_one",
+			Topic:         "Cheese taxonomy",
+			Status:        "covered",
+			SourceIDs:     []string{"ksrc_one"},
+			EvidenceCount: 1,
+			Notes:         "One cited source covers the topic.",
+		}},
 		Candidates: []SourceCandidate{{
 			ID:     "candidate_one",
 			Title:  "Evidence source",
@@ -237,6 +244,31 @@ func TestStoreWritesResearchRunWorkspace(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	space, err = AddResearchRun(space, run, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Report{
+		ID:       "kreport_workspace",
+		RunID:    run.ID,
+		Question: "Discover online evidence",
+		Mode:     ReportModeResearch,
+		Answer:   "The run produced a final answer [S1].",
+		Evidence: []Evidence{{
+			ID:            "evidence_one",
+			SourceID:      "ksrc_one",
+			SourceTitle:   "Evidence source",
+			CitationLabel: "S1",
+			Excerpt:       "Evidence source text.",
+			Score:         3,
+		}},
+		CreatedAt: now,
+	}
+	space, err = AddReport(space, report, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ReportID = report.ID
 	space, err = AddResearchRun(space, run, now)
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +284,7 @@ func TestStoreWritesResearchRunWorkspace(t *testing.T) {
 		t.Fatalf("run = %#v, want workspace path", loaded.ResearchRuns[0])
 	}
 	workspace := filepath.Join(root, loaded.ResearchRuns[0].WorkspacePath)
-	for _, name := range []string{"state.json", "events.jsonl", "sources.json"} {
+	for _, name := range []string{"state.json", "events.jsonl", "sources.json", "candidates.json", "coverage.json", "report.json", "evidence.json"} {
 		if _, err := os.Stat(filepath.Join(workspace, name)); err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}

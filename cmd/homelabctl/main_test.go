@@ -230,7 +230,7 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 		},
 		{
 			name:       "knowledge research run",
-			args:       []string{"knowledge", "research-run", "kspace_123", "--depth", "deep", "--scope", "public web", "--mode", "research", "--discover", "--max-sources", "6", "--source", "ksrc_1", "Compare", "sources"},
+			args:       []string{"knowledge", "research-run", "kspace_123", "--depth", "deep", "--scope", "public web", "--mode", "research", "--discover", "--source", "ksrc_1", "Compare", "sources"},
 			wantMethod: http.MethodPost,
 			wantPath:   "/knowledge/spaces/kspace_123/research-runs",
 			wantBody: map[string]any{
@@ -239,7 +239,6 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 				"scope":            "public web",
 				"mode":             "research",
 				"discover_sources": true,
-				"max_sources":      float64(6),
 				"source_ids":       []any{"ksrc_1"},
 			},
 		},

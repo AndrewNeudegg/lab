@@ -361,6 +361,19 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 			"page_title":   "Brie cheese profile",
 			"text":         "Brie is a soft-ripened cheese with a bloomy rind, creamy interior, mild aroma, and high moisture.",
 		},
+		{
+			"query":        "online cheese types and properties",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Conference calendar",
+			"url":          "https://example.com/conference-calendar",
+			"domain":       "example.com",
+			"snippet":      "Events, sponsorships, and venue logistics.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Conference calendar",
+			"text":         "The annual conference calendar lists event dates, sponsor packages, venue logistics, and registration deadlines.",
+		},
 	}}
 	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{
 		`{
@@ -379,12 +392,41 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 			"reliability_notes":["Fetched online source."]
 		}`,
 		`{
+			"decision":"accept",
+			"relevance_score":86,
+			"reason":"Cheddar is one cheese type and helps answer the taxonomy question.",
+			"coverage":["Cited cheese property report","cheddar brie cheese properties"],
+			"follow_up_queries":[]
+		}`,
+		`{
 			"summary":"Brie is a soft-ripened cheese with a bloomy rind and creamy interior.",
 			"key_terms":["brie","soft-ripened","bloomy rind"],
 			"questions":["What properties does brie have?"],
 			"claims":[{"id":"claim_brie","text":"Brie has a bloomy rind and creamy interior.","importance":"high"}],
 			"entities":[{"name":"Brie","type":"cheese","description":"Soft-ripened cheese"}],
 			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"decision":"accept",
+			"relevance_score":88,
+			"reason":"Brie is a soft-ripened cheese type and complements the cheddar source.",
+			"coverage":["Cited cheese property report","cheddar brie cheese properties"],
+			"follow_up_queries":[]
+		}`,
+		`{
+			"summary":"The source is an event calendar covering dates, sponsors, venues, and registration.",
+			"key_terms":["conference","events","sponsors"],
+			"questions":["What event logistics are listed?"],
+			"claims":[{"id":"claim_event","text":"The page lists conference logistics.","importance":"low"}],
+			"entities":[{"name":"Conference calendar","type":"event listing","description":"Events page"}],
+			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"decision":"reject",
+			"relevance_score":5,
+			"reason":"The source does not cover cheese types, properties, or taxonomy.",
+			"coverage":[],
+			"follow_up_queries":["cheese taxonomy rind moisture milk source"]
 		}`,
 		`{
 			"answer":"The run imported online evidence for cheddar and brie. Cheddar is hard and aged [S1], while brie is soft-ripened with a bloomy rind [S2].",
@@ -404,7 +446,7 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 	}
 
 	runPath := "/knowledge/spaces/" + createBody.Space.ID + "/research-runs"
-	ran := requestJSON(t, mux, http.MethodPost, runPath, `{"objective":"Search online for types of cheese and their properties","depth":"quick","discover_sources":true,"max_sources":2}`, "", http.StatusCreated)
+	ran := requestJSON(t, mux, http.MethodPost, runPath, `{"objective":"Search online for types of cheese and their properties","depth":"quick","discover_sources":true}`, "", http.StatusCreated)
 	var runBody struct {
 		Space knowledgestore.Space       `json:"space"`
 		Run   knowledgestore.ResearchRun `json:"run"`
@@ -412,8 +454,8 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
 		t.Fatal(err)
 	}
-	if runBody.Run.Status != knowledgestore.ResearchRunStatusQueued || !runBody.Run.DiscoverSources || runBody.Run.MaxSources != 2 {
-		t.Fatalf("initial run = %#v, want queued discovery run with max sources", runBody.Run)
+	if runBody.Run.Status != knowledgestore.ResearchRunStatusQueued || !runBody.Run.DiscoverSources {
+		t.Fatalf("initial run = %#v, want queued discovery run without a source cap", runBody.Run)
 	}
 
 	completedSpace, completedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
@@ -423,8 +465,8 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 	if len(completedSpace.Sources) != 2 {
 		t.Fatalf("sources = %#v, want two imported online cheese sources", completedSpace.Sources)
 	}
-	if len(completedRun.Candidates) != 2 || completedRun.Candidates[0].Status != "imported" || completedRun.Candidates[1].Status != "imported" {
-		t.Fatalf("candidates = %#v, want two imported candidates", completedRun.Candidates)
+	if len(completedRun.Candidates) != 3 || completedRun.Candidates[0].Status != "accepted" || completedRun.Candidates[1].Status != "accepted" || completedRun.Candidates[2].Status != "rejected" {
+		t.Fatalf("candidates = %#v, want accepted cheese candidates and rejected unrelated candidate", completedRun.Candidates)
 	}
 	if completedRun.ReportID == "" || completedRun.EvidenceCount == 0 || completedRun.SourcesExamined != 2 || completedRun.WorkspacePath == "" {
 		t.Fatalf("completed run = %#v, want report, evidence, imported source count, and workspace", completedRun)
@@ -445,7 +487,7 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 		t.Fatalf("internet research calls = %#v, want one call", calls)
 	}
 	call := calls[0]
-	if call.Provider != "searxng" || !call.Fetch || call.MaxSources != 2 || call.MaxSearches != 2 || call.Depth != "quick" || call.Source != "web" {
+	if call.Provider != "searxng" || !call.Fetch || call.MaxSearches != 2 || call.Depth != "quick" || call.Source != "web" {
 		t.Fatalf("internet research call = %#v, want explicit fetched SearXNG cheese discovery", call)
 	}
 	if len(call.Queries) != 1 || call.Queries[0] != "cheddar brie cheese properties" {
@@ -485,7 +527,7 @@ func TestKnowledgeResearchRunDiscoveryFailureIsVisibleOverAPI(t *testing.T) {
 	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
 		t.Fatal(err)
 	}
-	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"Search online for cheese taxonomy","discover_sources":true,"max_sources":1}`, "", http.StatusCreated)
+	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"Search online for cheese taxonomy","discover_sources":true}`, "", http.StatusCreated)
 	var runBody struct {
 		Run knowledgestore.ResearchRun `json:"run"`
 	}
@@ -1231,7 +1273,6 @@ type controlInternetResearchCall struct {
 	Depth       string   `json:"depth"`
 	Provider    string   `json:"provider"`
 	MaxSearches int      `json:"max_searches"`
-	MaxSources  int      `json:"max_sources"`
 	Fetch       bool     `json:"fetch"`
 }
 

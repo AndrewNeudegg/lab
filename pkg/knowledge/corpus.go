@@ -27,10 +27,7 @@ func QuerySpace(space Space, req QueryRequest, now time.Time) (QueryResult, erro
 	if len(queryTerms) == 0 {
 		queryTerms = normalized.Insight.KeyTerms
 	}
-	evidence := rankEvidence(selectedSources(normalized.Sources, req.SourceIDs), queryTerms, ReportModeResearch)
-	if len(evidence) > limit {
-		evidence = evidence[:limit]
-	}
+	evidence := rankEvidence(selectedSources(normalized.Sources, req.SourceIDs), queryTerms, ReportModeResearch, limit)
 	return QueryResult{
 		Query:     query,
 		Terms:     queryTerms,

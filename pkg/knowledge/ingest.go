@@ -148,7 +148,7 @@ func (f HTTPFetcher) Fetch(ctx context.Context, uri string) (FetchedSource, erro
 		return FetchedSource{}, fmt.Errorf("source exceeds %d byte fetch limit", maxFetchedBytes)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
-	title, content, extractor, err := extractFetchedText(body, contentType)
+	title, content, extractor, err := ExtractFetchedText(body, contentType)
 	if err != nil {
 		return FetchedSource{}, err
 	}
@@ -175,7 +175,7 @@ var (
 	pdfStreamPattern = regexp.MustCompile(`(?s)stream\r?\n(.*?)\r?\nendstream`)
 )
 
-func extractFetchedText(body []byte, contentType string) (string, string, string, error) {
+func ExtractFetchedText(body []byte, contentType string) (string, string, string, error) {
 	if strings.Contains(contentType, "pdf") || looksLikePDF(body) {
 		content, err := extractPDFText(body)
 		if err != nil {

@@ -10,8 +10,23 @@ const knowledgeSource = {
   id: 'ksrc_20260428_120000_33333333',
   title: 'Source transparency notes',
   kind: 'text',
-  content:
-    '## Review flow\n\nSource-grounded reports should keep **evidence visible** beside generated claims.\n\n```mermaid\nflowchart LR\n  Source --> Evidence\n  Evidence --> Claim\n```',
+  content: `## Review flow
+
+Source-grounded reports should keep **evidence visible** beside generated claims.
+
+\`\`\`mermaid
+flowchart LR
+  Source --> Evidence
+  Evidence --> Claim
+\`\`\`
+
+\`\`\`
+${longResearchToken}${longResearchToken}
+\`\`\`
+
+| Identifier |
+| --- |
+| ${longResearchToken}${longResearchToken} |`,
   summary: 'Source-grounded reports should keep **evidence visible** beside generated claims.',
   key_terms: ['source', 'evidence', 'reports'],
   questions: ['What does this source show about evidence?'],
@@ -683,6 +698,20 @@ for (const viewport of [
       await expect(page.getByLabel('Source title')).toBeHidden();
 
       await expectNoVisualArtifacts(page);
+      await expectNoHorizontalOverflow(page, [
+        '#knowledge-panel-sources',
+        '.source-list-section',
+        '.source-card',
+        '.source-card-body',
+        '.source-details',
+        '.source-content',
+        '.source-body',
+        '.source-body .markdown',
+        '.source-body .markdown pre',
+        '.source-body .markdown pre code',
+        '.source-body .markdown table',
+        '.source-body .mermaid-diagram'
+      ]);
       await expectNoAxeViolations(page);
       await expect(page).toHaveScreenshot(`knowledge-ui-quality-${viewport.name}.png`, {
         fullPage: !viewport.mobile,

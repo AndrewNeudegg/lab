@@ -2239,6 +2239,8 @@
     margin: 0;
     color: var(--text, #172033);
     background: var(--bg, #eef2f7);
+    overflow-x: hidden;
+    overscroll-behavior-x: none;
     font-family:
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
@@ -2290,6 +2292,7 @@
     min-height: 100dvh;
     background: var(--bg, #eef2f7);
     overflow-x: clip;
+    overscroll-behavior-x: none;
   }
 
   .knowledge-page {
@@ -2299,6 +2302,7 @@
     min-width: 0;
     max-width: 100%;
     overflow-x: clip;
+    overscroll-behavior-x: none;
   }
 
   .space-list {
@@ -2317,6 +2321,7 @@
     padding: 1.2rem;
     background: var(--bg, #eef2f7);
     overflow-x: clip;
+    overscroll-behavior-x: none;
   }
 
   .space-header,
@@ -2907,6 +2912,9 @@
 
   .source-list-section {
     min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
   }
 
   .form-grid {
@@ -2950,6 +2958,7 @@
   .source-card-collapsible {
     padding: 0;
     overflow: hidden;
+    overscroll-behavior-x: none;
     scroll-margin-top: 5rem;
   }
 
@@ -2989,6 +2998,8 @@
 
   .source-card-body {
     min-width: 0;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
     padding: 0 0.9rem 0.9rem;
     border-top: 1px solid var(--border-soft, #dbe3ef);
   }
@@ -3066,12 +3077,27 @@
   .markdown-block :global(.markdown pre),
   .markdown-block :global(.markdown table) {
     max-width: 100%;
-    overflow-x: auto;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
   }
 
   .markdown-block :global(.markdown pre) {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .markdown-block :global(.markdown pre code) {
+    min-width: 0;
+    width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .markdown-block :global(.markdown table) {
+    display: table;
+    table-layout: fixed;
+    width: 100%;
   }
 
   .markdown-block :global(a[href^="#knowledge-source-"]) {
@@ -3133,6 +3159,9 @@
 
   .source-details {
     margin-top: 0.75rem;
+    max-width: 100%;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 8px;
     background: var(--bg, #eef2f7);
@@ -3147,6 +3176,10 @@
   .source-details-body {
     display: grid;
     gap: 0.65rem;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
     padding: 0 0.7rem 0.7rem;
   }
 
@@ -3156,6 +3189,9 @@
 
   .source-content {
     margin-top: 0.75rem;
+    max-width: 100%;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 8px;
     background: var(--bg, #eef2f7);
@@ -3172,6 +3208,10 @@
   }
 
   .source-body {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
     padding: 0 0.7rem 0.7rem;
   }
 

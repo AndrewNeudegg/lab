@@ -802,6 +802,8 @@ for (const viewport of [
       });
       await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Queued');
       await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Loop 1');
+      await expect(page.getByRole('button', { name: /Compare evidence review/ })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: /Track evidence review patterns/ })).toHaveCount(1);
       const queuedCandidates = page.locator('[aria-label="Discovered source candidates"]');
       await openDetailsIfClosed(queuedCandidates);
       await expect(queuedCandidates.getByText('example.com')).toBeVisible();

@@ -10,6 +10,7 @@ import {
   panelItemCount,
   researchRunStatusLabel,
   researchRunStatusTone,
+  researchRunsExceptSelected,
   selectKnowledgeSpace,
   spaceSourceCount,
   spaceWordCount,
@@ -117,6 +118,34 @@ describe('knowledge view model', () => {
     expect(sourceSelectionSummary(0, 2)).toBe('No sources selected');
     expect(sourceSelectionSummary(1, 2)).toBe('1/2 sources selected');
     expect(sourceSelectionSummary(2, 2)).toBe('All 2 sources selected');
+  });
+
+  test('removes the selected research run from the stored research list', () => {
+    const item = space('kspace_20260430_abcd1234', 'Research', '2026-04-29T09:00:00Z', {
+      research_runs: [
+        {
+          id: 'run_new',
+          objective: 'Current research',
+          depth: 'standard',
+          status: 'queued',
+          mode: 'research',
+          created_at: '2026-04-29T09:00:00Z',
+          updated_at: '2026-04-29T09:00:00Z'
+        },
+        {
+          id: 'run_old',
+          objective: 'Previous research',
+          depth: 'standard',
+          status: 'completed',
+          mode: 'research',
+          created_at: '2026-04-28T09:00:00Z',
+          updated_at: '2026-04-28T09:00:00Z'
+        }
+      ]
+    });
+
+    expect(researchRunsExceptSelected(item, item.research_runs?.[0]).map((run) => run.id)).toEqual(['run_old']);
+    expect(researchRunsExceptSelected(item, undefined).map((run) => run.id)).toEqual(['run_new', 'run_old']);
   });
 
   test('builds plain previews from Markdown artefacts without Mermaid source text', () => {

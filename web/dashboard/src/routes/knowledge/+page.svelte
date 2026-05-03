@@ -26,6 +26,7 @@
     panelItemCount,
     researchRunStatusLabel,
     researchRunStatusTone,
+    researchRunsExceptSelected,
     selectKnowledgeSpace,
     spaceSourceCount,
     spaceWordCount,
@@ -93,6 +94,7 @@
   let latestSelectedReport: HomelabdKnowledgeReport | undefined;
   let latestSelectedRun: HomelabdKnowledgeResearchRun | undefined;
   let selectedRunReport: HomelabdKnowledgeReport | undefined;
+  let storedResearchRuns: HomelabdKnowledgeResearchRun[] = [];
   let totalSourceCount = 0;
   let selectedSourceCount = 0;
   let selectedSourceSummary = '';
@@ -114,6 +116,7 @@
   $: latestSelectedReport = activeReport || latestReport(selectedSpace);
   $: latestSelectedRun = activeRun || latestResearchRun(selectedSpace);
   $: selectedRunReport = reportForRun(selectedSpace, latestSelectedRun);
+  $: storedResearchRuns = researchRunsExceptSelected(selectedSpace, latestSelectedRun);
   $: totalSourceCount = selectedSpace?.sources?.length || 0;
   $: selectedSourceCount = selectedSourceIds.length;
   $: selectedSourceSummary = sourceSelectionSummary(selectedSourceCount, totalSourceCount);
@@ -2044,9 +2047,9 @@
                 <p class="empty">No research is stored.</p>
               {/if}
 
-              {#if selectedSpace.research_runs?.length}
+              {#if storedResearchRuns.length}
                 <div class="reports-list" aria-label="Stored research">
-                  {#each selectedSpace.research_runs as run (run.id)}
+                  {#each storedResearchRuns as run (run.id)}
                     <button type="button" class="report-row" on:click={() => selectRun(run)}>
                       <header>
                         <div>

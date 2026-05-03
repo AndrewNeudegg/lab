@@ -276,6 +276,43 @@ const mockKnowledgeApis = async (page: Page) => {
   await page.route(/\/api\/knowledge\/spaces$/, async (route) => {
     await route.fulfill({ json: { spaces: knowledgeSpaces } });
   });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+$/, async (route) => {
+    const url = new URL(route.request().url());
+    const spaceId = decodeURIComponent(url.pathname.split('/').at(-1) || '');
+    const method = route.request().method();
+    const space = knowledgeSpaces.find((item) => item.id === spaceId);
+    if (!space && method !== 'DELETE') {
+      await route.fulfill({ status: 404, json: { error: 'space not found' } });
+      return;
+    }
+    if (method === 'GET') {
+      await route.fulfill({ json: space });
+      return;
+    }
+    if (method === 'PATCH') {
+      const body = route.request().postDataJSON() as {
+        title?: string;
+        objective?: string;
+        description?: string;
+      };
+      const updated = {
+        ...space!,
+        title: body.title ?? space!.title,
+        objective: body.objective ?? space!.objective,
+        description: body.description ?? space!.description,
+        updated_at: now
+      };
+      knowledgeSpaces = knowledgeSpaces.map((item) => (item.id === spaceId ? updated : item));
+      await route.fulfill({ json: { space: updated, reply: 'Knowledge Space updated' } });
+      return;
+    }
+    if (method === 'DELETE') {
+      knowledgeSpaces = knowledgeSpaces.filter((item) => item.id !== spaceId);
+      await route.fulfill({ json: { space_id: spaceId, reply: 'Knowledge Space deleted' } });
+      return;
+    }
+    await route.fulfill({ status: 405, json: { error: 'method not allowed' } });
+  });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/sources$/, async (route) => {
     const body = route.request().postDataJSON() as { title?: string; kind?: string; content?: string; uri?: string };
     const source = {
@@ -316,6 +353,35 @@ const mockKnowledgeApis = async (page: Page) => {
     };
     knowledgeSpaces = [updated];
     await route.fulfill({ status: 201, json: { space: updated, source, reply: 'Source analysed' } });
+  });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/sources\/[^/]+$/, async (route) => {
+    const url = new URL(route.request().url());
+    const parts = url.pathname.split('/');
+    const spaceId = decodeURIComponent(parts.at(-3) || '');
+    const sourceId = decodeURIComponent(parts.at(-1) || '');
+    if (route.request().method() !== 'DELETE') {
+      await route.fulfill({ status: 405, json: { error: 'method not allowed' } });
+      return;
+    }
+    const current = knowledgeSpaces.find((item) => item.id === spaceId);
+    if (!current) {
+      await route.fulfill({ status: 404, json: { error: 'space not found' } });
+      return;
+    }
+    const sources = (current.sources || []).filter((source) => source.id !== sourceId);
+    const updated = {
+      ...current,
+      sources,
+      insight: {
+        ...current.insight,
+        source_count: sources.length,
+        word_count: sources.reduce((total, source) => total + (source.word_count || 0), 0),
+        updated_at: now
+      },
+      updated_at: now
+    };
+    knowledgeSpaces = knowledgeSpaces.map((item) => (item.id === spaceId ? updated : item));
+    await route.fulfill({ json: { space: updated, source_id: sourceId, reply: 'Source deleted' } });
   });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research$/, async (route) => {
     const body = route.request().postDataJSON() as { question?: string; mode?: string };
@@ -616,6 +682,54 @@ for (const viewport of [
       await expect(page.getByRole('tab', { name: /Artefacts/ })).toHaveAttribute('aria-selected', 'true');
       await expect(page.getByRole('article', { name: 'Selected artefact' })).toContainText('[S1]');
       await expect(page.getByRole('article', { name: 'Selected artefact' }).getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+    });
+
+    test('renames spaces and deletes sources or spaces through explicit confirmations', async ({ page }) => {
+      await mockKnowledgeApis(page);
+      await page.goto('/knowledge');
+      await expectKnowledgeReady(page);
+
+      await page.getByRole('link', { name: /Research synthesis/ }).click();
+      if (viewport.mobile) {
+        await expect(page.getByLabel('Space', { exact: true })).toBeVisible();
+      }
+
+      await page.getByRole('button', { name: 'Rename' }).click();
+      const editSpace = page.getByRole('region', { name: 'Edit Knowledge Space' });
+      await expect(editSpace).toBeVisible();
+      await editSpace.getByLabel('Space title').fill('Research corpus');
+      await editSpace.getByLabel('Objective').fill('Keep source-grounded research easy to manage.');
+      await page.getByRole('button', { name: 'Save changes' }).click();
+      await expect(page.getByRole('heading', { name: 'Research corpus' })).toBeVisible();
+      await expect(page.getByText('Knowledge Space updated')).toBeVisible();
+
+      await page.getByRole('button', { name: 'Delete source Source transparency notes' }).click();
+      await expect(page.getByRole('region', { name: 'Delete source Source transparency notes confirmation' })).toBeVisible();
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      await expect(page).toHaveScreenshot(`knowledge-delete-source-confirm-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled',
+        maxDiffPixels: 100
+      });
+      await page.getByRole('region', { name: 'Delete source Source transparency notes confirmation' }).getByRole('button', { name: 'Delete source' }).click();
+      await expect(page.getByText('Source deleted')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Source transparency notes' })).toHaveCount(0);
+      await expect(page.getByText('No sources have been analysed. Add text or a URL before asking questions.')).toBeVisible();
+
+      await page.getByRole('button', { name: 'Delete space' }).click();
+      await expect(page.getByRole('region', { name: 'Delete Knowledge Space confirmation' })).toContainText('Research corpus');
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      await expect(page).toHaveScreenshot(`knowledge-delete-space-confirm-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled',
+        maxDiffPixels: 100
+      });
+      await page.getByRole('region', { name: 'Delete Knowledge Space confirmation' }).getByRole('button', { name: 'Delete space' }).click();
+      await expect(page.getByText('Knowledge Space deleted')).toBeVisible();
+      await expect(page.getByText('No Knowledge Space selected')).toBeVisible();
+      await expect(page.getByText('No Knowledge Spaces yet.')).toBeVisible();
     });
 
     test('keeps filtered empty states recoverable', async ({ page }) => {

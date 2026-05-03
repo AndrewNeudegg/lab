@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -353,6 +354,53 @@ func TestStorePersistsProcessedSpace(t *testing.T) {
 	}
 	if loaded.Sources[0].Provenance.SnapshotPath == "" {
 		t.Fatalf("loaded source = %#v, want filesystem snapshot path", loaded.Sources[0])
+	}
+}
+
+func TestStoreDeletesSpacesAndSourceArtifacts(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	root := filepath.Join(t.TempDir(), "knowledge")
+	store := NewStore(root)
+	space := modelBackedTestSpace(t, now)
+	if err := store.Save(space); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(space.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath := filepath.Join(root, loaded.Sources[0].Provenance.SnapshotPath)
+	if _, err := os.Stat(snapshotPath); err != nil {
+		t.Fatalf("snapshot missing before delete: %v", err)
+	}
+	if err := store.DeleteSourceArtifacts(loaded.ID, loaded.Sources[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(snapshotPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("snapshot stat after source delete = %v, want not exist", err)
+	}
+
+	if err := store.Save(space); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "runs", space.ID, "krun_one"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "runs", space.ID, "krun_one", "state.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(space.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(root, space.ID+".json"),
+		filepath.Join(root, "snapshots", space.ID),
+		filepath.Join(root, "indexes", space.ID),
+		filepath.Join(root, "runs", space.ID),
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s stat after space delete = %v, want not exist", path, err)
+		}
 	}
 }
 

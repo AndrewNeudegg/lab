@@ -17,6 +17,8 @@ import type {
   HomelabdCreateKnowledgeResearchRunResponse,
   HomelabdCreateKnowledgeSpaceRequest,
   HomelabdCreateKnowledgeSpaceResponse,
+  HomelabdDeleteKnowledgeSourceResponse,
+  HomelabdDeleteKnowledgeSpaceResponse,
   HomelabdCreateWorkflowRequest,
   HomelabdAddKnowledgeSourceRequest,
   HomelabdAddKnowledgeSourceResponse,
@@ -37,6 +39,8 @@ import type {
   HomelabdTaskRetryRequest,
   HomelabdTaskRunsResponse,
   HomelabdTasksResponse,
+  HomelabdUpdateKnowledgeSpaceRequest,
+  HomelabdUpdateKnowledgeSpaceResponse,
   HomelabdUpdateSettingsRequest,
   HomelabdWorkflow,
   HomelabdWorkflowActionResponse,
@@ -225,6 +229,27 @@ export const createHomelabdClient = (
         fetcher
       });
     },
+    updateKnowledgeSpace(spaceId: string, request: HomelabdUpdateKnowledgeSpaceRequest) {
+      return apiFetch<HomelabdUpdateKnowledgeSpaceResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'PATCH',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    deleteKnowledgeSpace(spaceId: string) {
+      return apiFetch<HomelabdDeleteKnowledgeSpaceResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'DELETE'
+        }
+      );
+    },
     addKnowledgeSource(spaceId: string, request: HomelabdAddKnowledgeSourceRequest) {
       return apiFetch<HomelabdAddKnowledgeSourceResponse>(
         `/knowledge/spaces/${encodeURIComponent(spaceId)}/sources`,
@@ -233,6 +258,16 @@ export const createHomelabdClient = (
           fetcher,
           method: 'POST',
           body: JSON.stringify(request)
+        }
+      );
+    },
+    deleteKnowledgeSource(spaceId: string, sourceId: string) {
+      return apiFetch<HomelabdDeleteKnowledgeSourceResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}/sources/${encodeURIComponent(sourceId)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'DELETE'
         }
       );
     },

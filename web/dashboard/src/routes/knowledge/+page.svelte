@@ -51,6 +51,9 @@
   let asking = false;
   let creatingRun = false;
   let querying = false;
+  let updatingSpace = false;
+  let deletingSpace = false;
+  let deletingSourceId = '';
   let error = '';
   let notice = '';
   let lastRefresh = '';
@@ -59,10 +62,16 @@
   let detailEl: HTMLElement | undefined;
   let createSpaceOpen = false;
   let addSourceOpen = false;
+  let editingSpace = false;
+  let confirmDeleteSpace = false;
+  let confirmDeleteSourceId = '';
 
   let titleDraft = '';
   let objectiveDraft = '';
   let descriptionDraft = '';
+  let editTitleDraft = '';
+  let editObjectiveDraft = '';
+  let editDescriptionDraft = '';
   let sourceTitleDraft = '';
   let sourceKindDraft = 'text';
   let sourceURIDraft = '';
@@ -129,6 +138,9 @@
     activeReport = undefined;
     activeAskResult = undefined;
     activeRun = undefined;
+    editingSpace = false;
+    confirmDeleteSpace = false;
+    confirmDeleteSourceId = '';
     selectedSourceIds = (selectedSpace.sources || []).map((source) => source.id);
     addSourceOpen = !(selectedSpace.sources?.length);
   }
@@ -195,6 +207,13 @@
     void goto(next, { keepFocus: true, noScroll: true, replaceState });
   };
 
+  const navigateToKnowledgeRoot = (replaceState = false) => {
+    if (!browser || currentRoutePath() === '/knowledge') {
+      return;
+    }
+    void goto('/knowledge', { keepFocus: true, noScroll: true, replaceState });
+  };
+
   const isCompactKnowledgeViewport = () =>
     typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
 
@@ -224,6 +243,13 @@
     selectedSpaceId = spaceId;
     navigateToSpace(spaceId);
     revealDetailIfCompact();
+  };
+
+  const handleMobileSpaceSelect = (event: Event) => {
+    const target = event.currentTarget as HTMLSelectElement;
+    if (target.value) {
+      selectSpace(target.value);
+    }
   };
 
   const handleSpaceRowClick = (event: MouseEvent, spaceId: string) => {
@@ -320,6 +346,86 @@
     }
   };
 
+  const beginEditSpace = () => {
+    if (!selectedSpace) {
+      return;
+    }
+    editTitleDraft = selectedSpace.title || '';
+    editObjectiveDraft = selectedSpace.objective || '';
+    editDescriptionDraft = selectedSpace.description || '';
+    editingSpace = true;
+    confirmDeleteSpace = false;
+    confirmDeleteSourceId = '';
+    revealDetailIfCompact();
+  };
+
+  const cancelEditSpace = () => {
+    editingSpace = false;
+    editTitleDraft = '';
+    editObjectiveDraft = '';
+    editDescriptionDraft = '';
+  };
+
+  const saveSpace = async () => {
+    if (!selectedSpace || updatingSpace || !editTitleDraft.trim()) {
+      return;
+    }
+    updatingSpace = true;
+    error = '';
+    notice = '';
+    try {
+      const response = await client.updateKnowledgeSpace(selectedSpace.id, {
+        title: editTitleDraft.trim(),
+        objective: editObjectiveDraft.trim(),
+        description: editDescriptionDraft.trim()
+      });
+      updateSpace(response.space);
+      editingSpace = false;
+      notice = response.reply || 'Knowledge Space updated.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to update Knowledge Space.';
+    } finally {
+      updatingSpace = false;
+    }
+  };
+
+  const deleteSelectedSpace = async () => {
+    if (!selectedSpace || deletingSpace) {
+      return;
+    }
+    const deletedId = selectedSpace.id;
+    deletingSpace = true;
+    error = '';
+    notice = '';
+    try {
+      const response = await client.deleteKnowledgeSpace(deletedId);
+      const remaining = spaces
+        .filter((space) => space.id !== deletedId)
+        .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+      spaces = remaining;
+      const nextSpaceId = remaining[0]?.id || '';
+      selectedSpaceId = nextSpaceId;
+      lastSelectedSpaceId = '';
+      editingSpace = false;
+      confirmDeleteSpace = false;
+      activeReport = undefined;
+      activeAskResult = undefined;
+      activeRun = undefined;
+      selectedSourceIds = [];
+      if (nextSpaceId) {
+        navigateToSpace(nextSpaceId, true);
+      } else {
+        navigateToKnowledgeRoot(true);
+        createSpaceOpen = true;
+      }
+      notice = response.reply || 'Knowledge Space deleted.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to delete Knowledge Space.';
+    } finally {
+      deletingSpace = false;
+    }
+  };
+
   const addSource = async () => {
     if (!selectedSpace || addingSource || !sourceReady) {
       return;
@@ -346,6 +452,26 @@
       error = err instanceof Error ? err.message : 'Unable to add source.';
     } finally {
       addingSource = false;
+    }
+  };
+
+  const deleteSource = async (sourceId: string) => {
+    if (!selectedSpace || deletingSourceId) {
+      return;
+    }
+    deletingSourceId = sourceId;
+    error = '';
+    notice = '';
+    try {
+      const response = await client.deleteKnowledgeSource(selectedSpace.id, sourceId);
+      updateSpace(response.space);
+      selectedSourceIds = selectedSourceIds.filter((id) => id !== sourceId);
+      confirmDeleteSourceId = '';
+      notice = response.reply || 'Source deleted.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to delete source.';
+    } finally {
+      deletingSourceId = '';
     }
   };
 
@@ -620,6 +746,15 @@
 
     <section class="space-detail" aria-label="Knowledge Space detail" bind:this={detailEl}>
       {#if selectedSpace}
+        <div class="mobile-space-switcher" aria-label="Selected Knowledge Space">
+          <label for="knowledge-space-switcher">Space</label>
+          <select id="knowledge-space-switcher" bind:value={selectedSpaceId} on:change={handleMobileSpaceSelect}>
+            {#each spaces as space (space.id)}
+              <option value={space.id}>{space.title}</option>
+            {/each}
+          </select>
+        </div>
+
         <header class="detail-header">
           <div>
             <span class="eyebrow">{compactKnowledgeID(selectedSpace.id)}</span>
@@ -631,8 +766,66 @@
           <div class="detail-actions" aria-label="Knowledge Space actions">
             <span>{plural(spaceSourceCount(selectedSpace), 'source')}</span>
             <span>{plural(spaceWordCount(selectedSpace), 'word')}</span>
+            <button type="button" class="text-action" on:click={beginEditSpace}>
+              Rename
+            </button>
+            <button
+              type="button"
+              class="danger-action"
+              aria-expanded={confirmDeleteSpace}
+              on:click={() => {
+                confirmDeleteSpace = true;
+                editingSpace = false;
+                confirmDeleteSourceId = '';
+              }}
+            >
+              Delete space
+            </button>
           </div>
         </header>
+
+        {#if editingSpace}
+          <section class="management-panel" aria-label="Edit Knowledge Space">
+            <form class="edit-space-form" on:submit|preventDefault={() => void saveSpace()}>
+              <div class="form-grid space-edit-grid">
+                <label for="edit-space-title">Space title</label>
+                <input id="edit-space-title" bind:value={editTitleDraft} autocomplete="off" />
+
+                <label for="edit-space-objective">Objective</label>
+                <textarea id="edit-space-objective" bind:value={editObjectiveDraft} rows="3"></textarea>
+
+                <label for="edit-space-description">Description</label>
+                <textarea id="edit-space-description" bind:value={editDescriptionDraft} rows="2"></textarea>
+              </div>
+              <div class="form-footer">
+                <span>{editTitleDraft.trim() ? 'Ready to save' : 'Title required'}</span>
+                <div class="button-row">
+                  <button type="button" class="text-action" on:click={cancelEditSpace}>Cancel</button>
+                  <button type="submit" disabled={updatingSpace || !editTitleDraft.trim()}>
+                    {updatingSpace ? 'Saving' : 'Save changes'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </section>
+        {/if}
+
+        {#if confirmDeleteSpace}
+          <section class="danger-panel" aria-label="Delete Knowledge Space confirmation">
+            <div>
+              <strong>Delete {selectedSpace.title}?</strong>
+              <p>This removes the active corpus, source snapshots, retrieval index, and run workspaces for this space.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" class="text-action" on:click={() => (confirmDeleteSpace = false)}>
+                Cancel
+              </button>
+              <button type="button" class="danger-action solid" disabled={deletingSpace} on:click={() => void deleteSelectedSpace()}>
+                {deletingSpace ? 'Deleting' : 'Delete space'}
+              </button>
+            </div>
+          </section>
+        {/if}
 
         <div class="insight-bar" aria-label="Knowledge Space insight">
           <div class="insight-card">
@@ -708,8 +901,41 @@
                         <div class="source-state">
                           <span class={`status-pill ${sourceStatusTone(source)}`}>{sourceStatusLabel(source)}</span>
                           <strong>{source.word_count} words</strong>
+                          <button
+                            type="button"
+                            class="danger-action compact"
+                            aria-expanded={confirmDeleteSourceId === source.id}
+                            aria-label={`Delete source ${source.title}`}
+                            on:click={() => {
+                              confirmDeleteSourceId = source.id;
+                              confirmDeleteSpace = false;
+                            }}
+                          >
+                            Delete
+                          </button>
                         </div>
                       </header>
+                      {#if confirmDeleteSourceId === source.id}
+                        <section class="danger-panel source-delete-panel" aria-label={`Delete source ${source.title} confirmation`}>
+                          <div>
+                            <strong>Delete {source.title}?</strong>
+                            <p>This removes the source from the active corpus and retrieval index. Saved reports remain as historical artefacts.</p>
+                          </div>
+                          <div class="button-row">
+                            <button type="button" class="text-action" on:click={() => (confirmDeleteSourceId = '')}>
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              class="danger-action solid"
+                              disabled={deletingSourceId === source.id}
+                              on:click={() => void deleteSource(source.id)}
+                            >
+                              {deletingSourceId === source.id ? 'Deleting' : 'Delete source'}
+                            </button>
+                          </div>
+                        </section>
+                      {/if}
                       {#if source.summary}
                         <div class="markdown-block compact">
                           <Markdown content={source.summary} />
@@ -1914,6 +2140,76 @@
     font-weight: 800;
   }
 
+  .danger-action {
+    width: fit-content;
+    min-height: 2.35rem;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--danger, #dc2626) 55%, var(--border, #cbd5e1));
+    background: var(--panel, #ffffff);
+    color: var(--danger, #dc2626);
+    font-weight: 800;
+  }
+
+  .danger-action.solid {
+    border-color: var(--danger, #dc2626);
+    background: var(--danger, #dc2626);
+    color: #ffffff;
+  }
+
+  .danger-action.compact {
+    min-height: 2rem;
+    padding: 0.3rem 0.55rem;
+    font-size: 0.82rem;
+  }
+
+  .button-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+
+  .mobile-space-switcher {
+    display: none;
+  }
+
+  .management-panel,
+  .danger-panel {
+    min-width: 0;
+    margin-top: 0.8rem;
+    padding: 0.85rem;
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+  }
+
+  .management-panel {
+    border: 1px solid var(--border-soft, #dbe3ef);
+  }
+
+  .danger-panel {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.9rem;
+    border: 1px solid color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border, #cbd5e1));
+  }
+
+  .danger-panel strong {
+    color: var(--text-strong, #0f172a);
+    overflow-wrap: anywhere;
+  }
+
+  .danger-panel p {
+    margin-top: 0.3rem;
+    color: var(--knowledge-muted, #475569);
+    line-height: 1.45;
+  }
+
+  .source-delete-panel {
+    margin-bottom: 0.75rem;
+  }
+
   .rows,
   .source-list,
   .reports-list,
@@ -2083,6 +2379,16 @@
 
   .form-grid label[for='source-uri'],
   .form-grid input#source-uri {
+    grid-column: 1 / -1;
+  }
+
+  .space-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .space-edit-grid label,
+  .space-edit-grid input,
+  .space-edit-grid textarea {
     grid-column: 1 / -1;
   }
 
@@ -2682,6 +2988,21 @@
       padding: 0.8rem;
     }
 
+    .space-list .rows {
+      max-height: 14rem;
+      overflow: auto;
+    }
+
+    .mobile-space-switcher {
+      display: grid;
+      gap: 0.35rem;
+      margin-bottom: 0.8rem;
+      padding: 0.75rem;
+      border: 1px solid var(--border-soft, #dbe3ef);
+      border-radius: 8px;
+      background: var(--panel, #ffffff);
+    }
+
     .space-header,
     .detail-header,
     .form-footer,
@@ -2690,6 +3011,31 @@
     .report-row header {
       align-items: flex-start;
       flex-direction: column;
+    }
+
+    .detail-actions,
+    .button-row,
+    .danger-panel {
+      width: 100%;
+    }
+
+    .detail-actions {
+      justify-content: flex-start;
+    }
+
+    .detail-actions .text-action,
+    .detail-actions .danger-action {
+      flex: 1 1 10rem;
+    }
+
+    .button-row,
+    .danger-panel {
+      flex-direction: column;
+    }
+
+    .button-row button,
+    .danger-panel button {
+      width: 100%;
     }
 
     .space-header button,
@@ -2711,18 +3057,21 @@
       grid-column: 1;
     }
 
-    .detail-actions {
-      justify-content: flex-start;
-    }
-
     .tabs {
+      position: sticky;
+      top: 4.1rem;
+      z-index: 6;
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.45rem;
+      margin: 0 -0.1rem;
+      padding: 0.45rem 0.1rem;
       overflow-x: visible;
+      background: var(--bg, #eef2f7);
     }
 
     .tabs button {
-      justify-content: center;
+      justify-content: space-between;
       min-width: 0;
       padding: 0.45rem 0.35rem;
     }

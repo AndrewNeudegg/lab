@@ -412,11 +412,16 @@ describe('homelabd client', () => {
     });
     await client.listKnowledgeSpaces();
     await client.getKnowledgeSpace('kspace_1');
+    await client.updateKnowledgeSpace('kspace_1', {
+      title: 'Research corpus',
+      objective: 'Manage sources'
+    });
     await client.addKnowledgeSource('kspace_1', {
       title: 'Source',
       kind: 'text',
       content: 'source text'
     });
+    await client.deleteKnowledgeSource('kspace_1', 'ksrc_1');
     await client.researchKnowledgeSpace('kspace_1', {
       question: 'What matters?',
       mode: 'research',
@@ -436,41 +441,49 @@ describe('homelabd client', () => {
       depth: 'standard',
       source_ids: ['ksrc_1']
     });
+    await client.deleteKnowledgeSpace('kspace_1');
 
     expect(requests.map((request) => `${request.init?.method || 'GET'} ${request.url}`)).toEqual([
       'POST http://homelabd/knowledge/spaces',
       'GET http://homelabd/knowledge/spaces',
       'GET http://homelabd/knowledge/spaces/kspace_1',
+      'PATCH http://homelabd/knowledge/spaces/kspace_1',
       'POST http://homelabd/knowledge/spaces/kspace_1/sources',
+      'DELETE http://homelabd/knowledge/spaces/kspace_1/sources/ksrc_1',
       'POST http://homelabd/knowledge/spaces/kspace_1/research',
       'POST http://homelabd/knowledge/spaces/kspace_1/query',
       'POST http://homelabd/knowledge/spaces/kspace_1/ask',
-      'POST http://homelabd/knowledge/spaces/kspace_1/research-runs'
+      'POST http://homelabd/knowledge/spaces/kspace_1/research-runs',
+      'DELETE http://homelabd/knowledge/spaces/kspace_1'
     ]);
     expect(requests[0].body).toEqual({
       title: 'Research',
       objective: 'Understand source-grounded answers'
     });
     expect(requests[3].body).toEqual({
+      title: 'Research corpus',
+      objective: 'Manage sources'
+    });
+    expect(requests[4].body).toEqual({
       title: 'Source',
       kind: 'text',
       content: 'source text'
     });
-    expect(requests[4].body).toEqual({
+    expect(requests[6].body).toEqual({
       question: 'What matters?',
       mode: 'research',
       source_ids: ['ksrc_1']
     });
-    expect(requests[5].body).toEqual({
+    expect(requests[7].body).toEqual({
       query: 'evidence',
       limit: 4,
       source_ids: ['ksrc_1']
     });
-    expect(requests[6].body).toEqual({
+    expect(requests[8].body).toEqual({
       question: 'What matters?',
       source_ids: ['ksrc_1']
     });
-    expect(requests[7].body).toEqual({
+    expect(requests[9].body).toEqual({
       objective: 'Compare sources',
       depth: 'standard',
       source_ids: ['ksrc_1']

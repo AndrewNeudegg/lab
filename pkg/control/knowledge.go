@@ -59,6 +59,29 @@ func (s *Server) handleKnowledgeSpace(rw http.ResponseWriter, req *http.Request)
 		writeJSON(rw, http.StatusOK, space)
 		return
 	}
+	if len(parts) == 1 && req.Method == http.MethodPatch {
+		var in knowledgestore.UpdateSpaceRequest
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		space, reply, err := s.Orchestrator.UpdateKnowledgeSpace(req.Context(), spaceID, in)
+		if err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"space": space, "reply": reply})
+		return
+	}
+	if len(parts) == 1 && req.Method == http.MethodDelete {
+		reply, err := s.Orchestrator.DeleteKnowledgeSpace(req.Context(), spaceID)
+		if err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"space_id": spaceID, "reply": reply})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "sources" && req.Method == http.MethodPost {
 		var in knowledgestore.AddSourceRequest
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
@@ -71,6 +94,15 @@ func (s *Server) handleKnowledgeSpace(rw http.ResponseWriter, req *http.Request)
 			return
 		}
 		writeJSON(rw, http.StatusCreated, map[string]any{"space": space, "source": source, "reply": reply})
+		return
+	}
+	if len(parts) == 3 && parts[1] == "sources" && req.Method == http.MethodDelete {
+		space, reply, err := s.Orchestrator.DeleteKnowledgeSource(req.Context(), spaceID, parts[2])
+		if err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"space": space, "source_id": parts[2], "reply": reply})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "research" && req.Method == http.MethodPost {

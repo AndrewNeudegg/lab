@@ -32,6 +32,7 @@ flowchart LR
 ## Behaviour
 
 - A space stores a title, optional objective, processed sources, aggregate key terms, suggested questions, research runs, and recent reports.
+- Operators can rename a space, edit its objective and description, delete a source from the active corpus, or delete an entire space. Deleting a source removes it from active retrieval and deletes its source snapshot; saved reports remain historical artefacts. Deleting a space removes its JSON record, source snapshots, retrieval index, and per-run workspaces.
 - Adding a text, note, file, email export, connected-resource export, URL, or PDF URL stores a static source snapshot and provenance. URL ingestion extracts HTML, plain text, JSON/XML-like text, or PDF text server-side.
 - Every ready source has ingestion state, provenance, content hash, snapshot path, word count, source sections, retrieval chunks, semantic chunk terms, and model-produced summary, key terms, questions, claims, entities, and reliability notes.
 - Source analysis, grounded answers, report generation, and research planning require the configured `homelabd` language model provider. If the provider fails, the operation records or returns that failure instead of fabricating deterministic content.
@@ -41,7 +42,7 @@ flowchart LR
 - PDF URLs with embedded text are indexed directly. Image-only or scanned PDF pages are rasterised with `pdftoppm` and recognised with `tesseract` when Knowledge OCR is enabled; missing OCR commands or unreadable pages fail explicitly and are not stored as placeholder text.
 - Source snapshots are written under `data/knowledge/snapshots/<space_id>/`. The filesystem-backed retrieval index is written to `data/knowledge/indexes/<space_id>/chunks.json` with chunk IDs, source IDs, section headings, lexical terms, semantic terms, content hashes, and provenance pointers.
 - Completed run workspaces under `data/knowledge/runs/<space_id>/<run_id>/` include `state.json`, `events.jsonl`, candidate source JSON, `loops.json`, and, when available, `coverage.json`, `evidence.json`, and `report.json`.
-- The dashboard renders Markdown and Mermaid diagrams in objectives, source summaries, source content, answers, cited evidence, research run events, gaps, and saved artefacts.
+- The dashboard renders Markdown and Mermaid diagrams in objectives, source summaries, source content, answers, cited evidence, research run events, gaps, and saved artefacts. Desktop keeps the space list and selected detail side by side; mobile adds a selected-space switcher, compact scrollable space list, sticky panel tabs, inline rename, and explicit delete confirmations for spaces and sources.
 - The dashboard page is `/knowledge`; direct links use `/knowledge?space=<space_id>`.
 
 ## Operator CLI
@@ -50,12 +51,15 @@ Use `homelabctl knowledge` for repeatable Knowledge Space setup and inspection i
 
 ```bash
 go run ./cmd/homelabctl knowledge create --objective "Collect source-grounded examples" "Example space"
+go run ./cmd/homelabctl knowledge update kspace_123 --title "Example corpus" --objective "Collect cited examples"
 go run ./cmd/homelabctl knowledge source add kspace_123 --file docs/knowledge-space.md "Knowledge Space docs"
 go run ./cmd/homelabctl knowledge source add kspace_123 --url https://example.com/research
+go run ./cmd/homelabctl knowledge source delete kspace_123 ksrc_123
 go run ./cmd/homelabctl knowledge query kspace_123 --limit 5 "evidence handling"
 go run ./cmd/homelabctl knowledge ask kspace_123 "How should operators use this space?"
 go run ./cmd/homelabctl knowledge research-run kspace_123 --depth standard --scope "stored sources" "Create a source-grounded briefing"
 go run ./cmd/homelabctl knowledge research-run kspace_123 --discover --depth deep "Research current source-grounded evidence patterns"
+go run ./cmd/homelabctl knowledge delete kspace_123
 ```
 
 The CLI mirrors the dashboard flow: create a space, add text/file/URL sources, query or ask the corpus, then start a research run against stored, selected, and optionally discovered online sources. See `docs/homelabctl.md#knowledge-space-commands` for the full command reference.
@@ -85,7 +89,10 @@ Knowledge PDF OCR is configured under `knowledge.ocr` in `config.json`. It is en
 - `GET /knowledge/spaces`: list spaces. An empty store returns `{"spaces":[]}` and the dashboard shows the empty state.
 - `POST /knowledge/spaces`: create a space with `title`, optional `objective`, and optional `description`.
 - `GET /knowledge/spaces/{space_id}`: load one space.
+- `PATCH /knowledge/spaces/{space_id}`: update a space title, objective, or description.
+- `DELETE /knowledge/spaces/{space_id}`: delete the space record, source snapshots, retrieval index, and run workspaces.
 - `POST /knowledge/spaces/{space_id}/sources`: add, snapshot, and analyse a source with `title`, optional `kind`, optional `uri`, and optional `content`. URL sources may omit `content` when `uri` is fetchable. Non-URL sources need source text.
+- `DELETE /knowledge/spaces/{space_id}/sources/{source_id}`: delete a source from the active corpus and remove its snapshot. Historical reports are not rewritten.
 - `POST /knowledge/spaces/{space_id}/query`: hybrid-search indexed source chunks with `query`, optional `limit`, and optional `source_ids`. Evidence includes source section, source summary, retrieval method, lexical score, semantic score, and total score.
 - `POST /knowledge/spaces/{space_id}/ask`: answer a grounded question with `question`, optional `limit`, and optional `source_ids`. The response includes evidence trace metadata, model provenance, and usage.
 - `POST /knowledge/spaces/{space_id}/research`: create an immediate model-backed report with `question`, optional `mode` (`research`, `brief`, or `study`), and optional `source_ids`.

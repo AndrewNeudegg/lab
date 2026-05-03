@@ -295,7 +295,7 @@ func parseOnOff(value string) (bool, error) {
 
 func (c cli) knowledge(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl knowledge <list|show|create|source|query|ask|research|research-run>")
+		return fmt.Errorf("usage: homelabctl knowledge <list|show|create|update|delete|source|query|ask|research|research-run>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -311,6 +311,10 @@ func (c cli) knowledge(args []string) error {
 		return c.do(http.MethodGet, path("knowledge", "spaces", args[1]), nil)
 	case "create", "new":
 		return c.knowledgeCreate(args[1:])
+	case "update", "edit", "rename":
+		return c.knowledgeUpdate(args[1:])
+	case "delete", "remove", "rm":
+		return c.knowledgeDelete(args[1:])
 	case "source", "sources":
 		return c.knowledgeSource(args[1:])
 	case "add-source", "add":
@@ -354,13 +358,54 @@ func (c cli) knowledgeCreate(args []string) error {
 	return c.do(http.MethodPost, "/knowledge/spaces", body)
 }
 
+func (c cli) knowledgeUpdate(args []string) error {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("usage: homelabctl knowledge update <space_id> [--title TITLE] [--objective TEXT] [--description TEXT]")
+	}
+	spaceID := args[0]
+	flags := flag.NewFlagSet("knowledge update", flag.ContinueOnError)
+	flags.SetOutput(c.err)
+	title := flags.String("title", "", "space title")
+	objective := flags.String("objective", "", "space objective")
+	description := flags.String("description", "", "space description")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if len(flags.Args()) > 0 && strings.TrimSpace(*title) == "" {
+		*title = strings.TrimSpace(strings.Join(flags.Args(), " "))
+	}
+	body := map[string]any{}
+	if value := strings.TrimSpace(*title); value != "" {
+		body["title"] = value
+	}
+	if value := strings.TrimSpace(*objective); value != "" {
+		body["objective"] = value
+	}
+	if value := strings.TrimSpace(*description); value != "" {
+		body["description"] = value
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("usage: homelabctl knowledge update <space_id> [--title TITLE] [--objective TEXT] [--description TEXT]")
+	}
+	return c.do(http.MethodPatch, path("knowledge", "spaces", spaceID), body)
+}
+
+func (c cli) knowledgeDelete(args []string) error {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("usage: homelabctl knowledge delete <space_id>")
+	}
+	return c.do(http.MethodDelete, path("knowledge", "spaces", args[0]), nil)
+}
+
 func (c cli) knowledgeSource(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl knowledge source <add>")
+		return fmt.Errorf("usage: homelabctl knowledge source <add|delete>")
 	}
 	switch commandWord(args[0]) {
 	case "add", "create":
 		return c.knowledgeSourceAdd(args[1:])
+	case "delete", "remove", "rm":
+		return c.knowledgeSourceDelete(args[1:])
 	default:
 		return fmt.Errorf("unknown knowledge source command %q", args[0])
 	}
@@ -428,6 +473,13 @@ func (c cli) knowledgeSourceAdd(args []string) error {
 		body["uri"] = sourceURI
 	}
 	return c.do(http.MethodPost, path("knowledge", "spaces", spaceID, "sources"), body)
+}
+
+func (c cli) knowledgeSourceDelete(args []string) error {
+	if len(args) != 2 || strings.TrimSpace(args[0]) == "" || strings.TrimSpace(args[1]) == "" {
+		return fmt.Errorf("usage: homelabctl knowledge source delete <space_id> <source_id>")
+	}
+	return c.do(http.MethodDelete, path("knowledge", "spaces", args[0], "sources", args[1]), nil)
 }
 
 func readKnowledgeSourceContent(in io.Reader, filePath string) (string, error) {
@@ -1301,7 +1353,10 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] knowledge list
   homelabctl [-addr http://127.0.0.1:18080] knowledge show <space_id>
   homelabctl [-addr http://127.0.0.1:18080] knowledge create [--objective TEXT] [--description TEXT] [--created-by NAME] <title>
+  homelabctl [-addr http://127.0.0.1:18080] knowledge update <space_id> [--title TITLE] [--objective TEXT] [--description TEXT]
+  homelabctl [-addr http://127.0.0.1:18080] knowledge delete <space_id>
   homelabctl [-addr http://127.0.0.1:18080] knowledge source add <space_id> [--kind text|url|file|note|email|mcp] [--url URL|--uri URI] [--file PATH|--content TEXT] [title]
+  homelabctl [-addr http://127.0.0.1:18080] knowledge source delete <space_id> <source_id>
   homelabctl [-addr http://127.0.0.1:18080] knowledge query <space_id> [--limit N] [--source SOURCE_ID]... <query>
   homelabctl [-addr http://127.0.0.1:18080] knowledge ask <space_id> [--limit N] [--source SOURCE_ID]... <question>
   homelabctl [-addr http://127.0.0.1:18080] knowledge research <space_id> [--mode research|brief|study] [--source SOURCE_ID]... <question>

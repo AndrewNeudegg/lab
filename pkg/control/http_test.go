@@ -720,6 +720,71 @@ func TestKnowledgeSpaceListEndpointReturnsEmptyArray(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSpaceManagementEndpointsUpdateAndDeleteCorpusObjects(t *testing.T) {
+	server := newKnowledgeHTTPTestServer(t, &scriptedControlProvider{contents: []string{
+		`{
+			"summary":"Managed source summary.",
+			"key_terms":["managed","source"],
+			"questions":["How is the source managed?"],
+			"claims":[{"id":"claim_managed","text":"The source is managed in the corpus.","importance":"medium"}],
+			"entities":[{"name":"Managed source","type":"note","description":"Corpus source"}],
+			"reliability_notes":["Operator-provided text source."]
+		}`,
+	}})
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Manage me","objective":"Original"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := requestJSON(t, mux, http.MethodPatch, "/knowledge/spaces/"+createBody.Space.ID, `{"title":"Managed corpus","objective":"Updated objective","description":"Updated description"}`, "", http.StatusOK)
+	var updateBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(updated.Body).Decode(&updateBody); err != nil {
+		t.Fatal(err)
+	}
+	if updateBody.Space.Title != "Managed corpus" || updateBody.Space.Objective != "Updated objective" || updateBody.Space.Description != "Updated description" {
+		t.Fatalf("updated space = %#v, want edited title, objective, and description", updateBody.Space)
+	}
+
+	added := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/sources", `{"title":"Managed source","kind":"note","content":"Managed source text belongs to the active corpus."}`, "", http.StatusCreated)
+	var sourceBody struct {
+		Space  knowledgestore.Space  `json:"space"`
+		Source knowledgestore.Source `json:"source"`
+	}
+	if err := json.NewDecoder(added.Body).Decode(&sourceBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(sourceBody.Space.Sources) != 1 || sourceBody.Space.Insight.SourceCount != 1 {
+		t.Fatalf("source body = %#v, want one active source", sourceBody)
+	}
+
+	deletedSource := requestJSON(t, mux, http.MethodDelete, "/knowledge/spaces/"+createBody.Space.ID+"/sources/"+sourceBody.Source.ID, "", "", http.StatusOK)
+	var deleteSourceBody struct {
+		Space    knowledgestore.Space `json:"space"`
+		SourceID string               `json:"source_id"`
+	}
+	if err := json.NewDecoder(deletedSource.Body).Decode(&deleteSourceBody); err != nil {
+		t.Fatal(err)
+	}
+	if deleteSourceBody.SourceID != sourceBody.Source.ID || len(deleteSourceBody.Space.Sources) != 0 || deleteSourceBody.Space.Insight.SourceCount != 0 {
+		t.Fatalf("delete source body = %#v, want source removed from active corpus and insight", deleteSourceBody)
+	}
+
+	requestJSON(t, mux, http.MethodDelete, "/knowledge/spaces/"+createBody.Space.ID, "", "", http.StatusOK)
+	listed := requestJSON(t, mux, http.MethodGet, "/knowledge/spaces", "", "", http.StatusOK)
+	if strings.Contains(listed.Body.String(), createBody.Space.ID) {
+		t.Fatalf("list body = %s, want deleted space absent", listed.Body.String())
+	}
+	requestJSON(t, mux, http.MethodGet, "/knowledge/spaces/"+createBody.Space.ID, "", "", http.StatusNotFound)
+}
+
 func TestTaskRunsEndpointListsExternalArtifacts(t *testing.T) {
 	server, _, cfg := newHTTPTestServer(t)
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "runs"), 0o755); err != nil {

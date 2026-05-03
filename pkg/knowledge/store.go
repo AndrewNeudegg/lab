@@ -14,6 +14,8 @@ type Repository interface {
 	Save(space Space) error
 	Load(id string) (Space, error)
 	List() ([]Space, error)
+	Delete(id string) error
+	DeleteSourceArtifacts(spaceID, sourceID string) error
 }
 
 type Store struct {
@@ -244,4 +246,50 @@ func (s *Store) List() ([]Space, error) {
 		spaces = append(spaces, space)
 	}
 	return spaces, nil
+}
+
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("knowledge space id is required")
+	}
+	if strings.ContainsAny(id, `/\`) {
+		return errors.New("knowledge space id must not contain path separators")
+	}
+	if err := os.Remove(filepath.Join(s.dir, id+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, relative := range []string{
+		filepath.Join("snapshots", id),
+		filepath.Join("indexes", id),
+		filepath.Join("runs", id),
+	} {
+		if err := os.RemoveAll(filepath.Join(s.dir, relative)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) DeleteSourceArtifacts(spaceID, sourceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	spaceID = strings.TrimSpace(spaceID)
+	sourceID = strings.TrimSpace(sourceID)
+	if spaceID == "" {
+		return errors.New("knowledge space id is required")
+	}
+	if sourceID == "" {
+		return errors.New("knowledge source id is required")
+	}
+	if strings.ContainsAny(spaceID, `/\`) || strings.ContainsAny(sourceID, `/\`) {
+		return errors.New("knowledge ids must not contain path separators")
+	}
+	path := filepath.Join(s.dir, "snapshots", spaceID, sourceID+".txt")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }

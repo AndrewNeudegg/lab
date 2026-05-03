@@ -688,6 +688,22 @@ export interface HomelabdCreateKnowledgeSpaceResponse {
   reply: string;
 }
 
+export interface HomelabdUpdateKnowledgeSpaceRequest {
+  title?: string;
+  description?: string;
+  objective?: string;
+}
+
+export interface HomelabdUpdateKnowledgeSpaceResponse {
+  space: HomelabdKnowledgeSpace;
+  reply: string;
+}
+
+export interface HomelabdDeleteKnowledgeSpaceResponse {
+  space_id: string;
+  reply: string;
+}
+
 export interface HomelabdAddKnowledgeSourceRequest {
   title: string;
   kind?: string;
@@ -698,6 +714,12 @@ export interface HomelabdAddKnowledgeSourceRequest {
 export interface HomelabdAddKnowledgeSourceResponse {
   space: HomelabdKnowledgeSpace;
   source: HomelabdKnowledgeSource;
+  reply: string;
+}
+
+export interface HomelabdDeleteKnowledgeSourceResponse {
+  space: HomelabdKnowledgeSpace;
+  source_id: string;
   reply: string;
 }
 
@@ -971,10 +993,19 @@ export interface HomelabdClient {
   ): Promise<HomelabdCreateKnowledgeSpaceResponse>;
   listKnowledgeSpaces(): Promise<HomelabdKnowledgeSpacesResponse>;
   getKnowledgeSpace(spaceId: string): Promise<HomelabdKnowledgeSpace>;
+  updateKnowledgeSpace(
+    spaceId: string,
+    request: HomelabdUpdateKnowledgeSpaceRequest
+  ): Promise<HomelabdUpdateKnowledgeSpaceResponse>;
+  deleteKnowledgeSpace(spaceId: string): Promise<HomelabdDeleteKnowledgeSpaceResponse>;
   addKnowledgeSource(
     spaceId: string,
     request: HomelabdAddKnowledgeSourceRequest
   ): Promise<HomelabdAddKnowledgeSourceResponse>;
+  deleteKnowledgeSource(
+    spaceId: string,
+    sourceId: string
+  ): Promise<HomelabdDeleteKnowledgeSourceResponse>;
   researchKnowledgeSpace(
     spaceId: string,
     request: HomelabdResearchKnowledgeSpaceRequest

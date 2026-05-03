@@ -174,6 +174,22 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			},
 		},
 		{
+			name:       "knowledge update",
+			args:       []string{"knowledge", "update", "kspace_123", "--title", "Cheese corpus", "--objective", "Compare cheese sources"},
+			wantMethod: http.MethodPatch,
+			wantPath:   "/knowledge/spaces/kspace_123",
+			wantBody: map[string]any{
+				"title":     "Cheese corpus",
+				"objective": "Compare cheese sources",
+			},
+		},
+		{
+			name:       "knowledge delete",
+			args:       []string{"knowledge", "delete", "kspace_123"},
+			wantMethod: http.MethodDelete,
+			wantPath:   "/knowledge/spaces/kspace_123",
+		},
+		{
 			name:       "knowledge source content",
 			args:       []string{"knowledge", "source", "add", "kspace_123", "--kind", "note", "--uri", "manual", "--content", "Curated source text", "Curated", "note"},
 			wantMethod: http.MethodPost,
@@ -195,6 +211,12 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 				"kind":  "url",
 				"uri":   "https://example.com/research",
 			},
+		},
+		{
+			name:       "knowledge source delete",
+			args:       []string{"knowledge", "source", "delete", "kspace_123", "ksrc_123"},
+			wantMethod: http.MethodDelete,
+			wantPath:   "/knowledge/spaces/kspace_123/sources/ksrc_123",
 		},
 		{
 			name:       "knowledge query",

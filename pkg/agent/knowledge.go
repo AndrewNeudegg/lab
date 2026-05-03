@@ -81,6 +81,43 @@ func (o *Orchestrator) LoadKnowledgeSpace(spaceID string) (knowledgestore.Space,
 	return store.Load(spaceID)
 }
 
+func (o *Orchestrator) UpdateKnowledgeSpace(ctx context.Context, spaceID string, req knowledgestore.UpdateSpaceRequest) (knowledgestore.Space, string, error) {
+	store, err := o.knowledgeStore()
+	if err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	space, err := store.Load(spaceID)
+	if err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	updated, err := knowledgestore.UpdateSpace(space, req, time.Now().UTC())
+	if err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	if err := store.Save(updated); err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	updated, _ = store.Load(updated.ID)
+	o.appendKnowledgeEvent(ctx, "knowledge.space.updated", updated, map[string]any{"title": updated.Title})
+	return updated, "Knowledge Space updated: " + updated.Title, nil
+}
+
+func (o *Orchestrator) DeleteKnowledgeSpace(ctx context.Context, spaceID string) (string, error) {
+	store, err := o.knowledgeStore()
+	if err != nil {
+		return "", err
+	}
+	space, err := store.Load(spaceID)
+	if err != nil {
+		return "", err
+	}
+	if err := store.Delete(space.ID); err != nil {
+		return "", err
+	}
+	o.appendKnowledgeEvent(ctx, "knowledge.space.deleted", space, map[string]any{"title": space.Title})
+	return "Knowledge Space deleted: " + space.Title, nil
+}
+
 func (o *Orchestrator) AddKnowledgeSource(ctx context.Context, spaceID string, req knowledgestore.AddSourceRequest) (knowledgestore.Space, knowledgestore.Source, string, error) {
 	store, err := o.knowledgeStore()
 	if err != nil {
@@ -116,6 +153,30 @@ func (o *Orchestrator) AddKnowledgeSource(ctx context.Context, spaceID string, r
 		return space, source, "Source ingestion failed: " + source.Title, nil
 	}
 	return space, source, "Source analysed: " + source.Title, nil
+}
+
+func (o *Orchestrator) DeleteKnowledgeSource(ctx context.Context, spaceID, sourceID string) (knowledgestore.Space, string, error) {
+	store, err := o.knowledgeStore()
+	if err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	space, err := store.Load(spaceID)
+	if err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	updated, source, err := knowledgestore.RemoveSource(space, sourceID, time.Now().UTC())
+	if err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	if err := store.Save(updated); err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	if err := store.DeleteSourceArtifacts(updated.ID, source.ID); err != nil {
+		return knowledgestore.Space{}, "", err
+	}
+	updated, _ = store.Load(updated.ID)
+	o.appendKnowledgeEvent(ctx, "knowledge.source.deleted", updated, map[string]any{"source_id": source.ID, "title": source.Title})
+	return updated, "Source deleted: " + source.Title, nil
 }
 
 func (o *Orchestrator) ResearchKnowledgeSpace(ctx context.Context, spaceID string, req knowledgestore.ResearchRequest) (knowledgestore.Space, knowledgestore.Report, string, error) {

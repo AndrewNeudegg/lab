@@ -360,6 +360,12 @@ type CreateSpaceRequest struct {
 	CreatedBy   string `json:"created_by,omitempty"`
 }
 
+type UpdateSpaceRequest struct {
+	Title       *string `json:"title,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Objective   *string `json:"objective,omitempty"`
+}
+
 type AddSourceRequest struct {
 	Title   string `json:"title"`
 	Kind    string `json:"kind,omitempty"`
@@ -411,6 +417,31 @@ func NewSpace(req CreateSpaceRequest, spaceID string, now time.Time) (Space, err
 		UpdatedAt:   now,
 	}
 	return NormalizeSpace(space)
+}
+
+func UpdateSpace(space Space, req UpdateSpaceRequest, now time.Time) (Space, error) {
+	normalized, err := NormalizeSpace(space)
+	if err != nil {
+		return Space{}, err
+	}
+	changed := false
+	if req.Title != nil {
+		normalized.Title = strings.TrimSpace(*req.Title)
+		changed = true
+	}
+	if req.Description != nil {
+		normalized.Description = strings.TrimSpace(*req.Description)
+		changed = true
+	}
+	if req.Objective != nil {
+		normalized.Objective = strings.TrimSpace(*req.Objective)
+		changed = true
+	}
+	if !changed {
+		return Space{}, errors.New("knowledge space update is empty")
+	}
+	normalized.UpdatedAt = now
+	return NormalizeSpace(normalized)
 }
 
 func NormalizeSpace(space Space) (Space, error) {
@@ -526,6 +557,33 @@ func AddSource(space Space, source Source, now time.Time) (Space, error) {
 	normalized.UpdatedAt = now
 	normalized.Insight = BuildSpaceInsight(normalized.Sources, now)
 	return normalized, nil
+}
+
+func RemoveSource(space Space, sourceID string, now time.Time) (Space, Source, error) {
+	normalized, err := NormalizeSpace(space)
+	if err != nil {
+		return Space{}, Source{}, err
+	}
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return Space{}, Source{}, errors.New("knowledge source id is required")
+	}
+	next := make([]Source, 0, len(normalized.Sources))
+	var removed Source
+	for _, source := range normalized.Sources {
+		if source.ID == sourceID {
+			removed = source
+			continue
+		}
+		next = append(next, source)
+	}
+	if removed.ID == "" {
+		return Space{}, Source{}, fmt.Errorf("knowledge source %s not found", sourceID)
+	}
+	normalized.Sources = next
+	normalized.UpdatedAt = now
+	normalized.Insight = BuildSpaceInsight(normalized.Sources, now)
+	return normalized, removed, nil
 }
 
 func AddReport(space Space, report Report, now time.Time) (Space, error) {

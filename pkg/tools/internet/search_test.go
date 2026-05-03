@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
 )
 
 func TestSearchToolReturnsLimitedResults(t *testing.T) {
@@ -533,7 +535,7 @@ func TestFetchToolFailsUnreadablePDFInsteadOfReturningPlaceholderText(t *testing
 		}, nil
 	})}
 
-	_, err := FetchTool{base: Base{Client: client}}.Run(context.Background(), json.RawMessage(`{"url":"https://example.com/scanned.pdf"}`))
+	_, err := FetchTool{base: Base{Client: client, Extraction: knowledgestore.TextExtractionOptions{PDFOCR: knowledgestore.PDFOCROptions{Disabled: true}}}}.Run(context.Background(), json.RawMessage(`{"url":"https://example.com/scanned.pdf"}`))
 	if err == nil || !strings.Contains(err.Error(), "extractable text") && !strings.Contains(err.Error(), "no text operators") {
 		t.Fatalf("error = %v, want explicit unreadable PDF extraction failure", err)
 	}

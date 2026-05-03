@@ -106,13 +106,56 @@ func TestExtractPDFTextReadsCompressedTextStream(t *testing.T) {
 	body := append([]byte("<< /Filter /FlateDecode >>\nstream\n"), compressed.Bytes()...)
 	body = append(body, []byte("\nendstream")...)
 
-	text, err := extractPDFText(body)
+	text, err := extractEmbeddedPDFText(body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(text, "Evidence labels stay visible") {
 		t.Fatalf("text = %q, want extracted PDF literal string", text)
 	}
+}
+
+func TestExtractPDFTextUsesOCRWhenEmbeddedTextIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	pdftoppm := writeExecutable(t, filepath.Join(dir, "pdftoppm"), `#!/bin/sh
+prefix="${9}"
+printf 'fake image' > "${prefix}-1.png"
+`)
+	tesseract := writeExecutable(t, filepath.Join(dir, "tesseract"), `#!/bin/sh
+printf 'OCR cheese taxonomy evidence'
+`)
+
+	_, text, extractor, err := ExtractFetchedText(context.Background(), []byte("%PDF-1.7\n% scanned image only\n"), "application/pdf", TextExtractionOptions{
+		PDFOCR: PDFOCROptions{
+			PDFToPPMCommand:  pdftoppm,
+			TesseractCommand: tesseract,
+			MaxPages:         1,
+			Timeout:          time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extractor != "pdf+ocr" || !strings.Contains(text, "OCR cheese taxonomy evidence") {
+		t.Fatalf("extractor = %q text = %q, want OCR text", extractor, text)
+	}
+}
+
+func TestExtractPDFTextReportsMissingOCRDependency(t *testing.T) {
+	_, _, _, err := ExtractFetchedText(context.Background(), []byte("%PDF-1.7\n% scanned image only\n"), "application/pdf", TextExtractionOptions{
+		PDFOCR: PDFOCROptions{PDFToPPMCommand: "homelabd-missing-pdftoppm"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "PDF OCR unavailable") {
+		t.Fatalf("err = %v, want OCR dependency error", err)
+	}
+}
+
+func writeExecutable(t *testing.T, path string, content string) string {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestAskUsesModelOverRetrievedEvidence(t *testing.T) {

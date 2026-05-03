@@ -174,7 +174,7 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 	if err := shelltools.Register(registry, shelltools.Base{Timeout: timeout}); err != nil {
 		return runtimeServices{}, err
 	}
-	if err := internettools.Register(registry, internettools.Base{}); err != nil {
+	if err := internettools.Register(registry, internettools.Base{Extraction: knowledgestore.TextExtractionOptionsFromConfig(cfg.Knowledge)}); err != nil {
 		return runtimeServices{}, err
 	}
 	if err := healthdtools.Register(registry, healthdtools.Base{Addr: cfg.Healthd.Addr}); err != nil {

@@ -71,6 +71,17 @@
       }
     ]
   },
+  "knowledge": {
+    "ocr": {
+      "enabled": true,
+      "pdftoppm_command": "pdftoppm",
+      "tesseract_command": "tesseract",
+      "language": "eng",
+      "dpi": 200,
+      "max_pages": 25,
+      "timeout_seconds": 600
+    }
+  },
   "healthd": {
     "addr": "127.0.0.1:18081",
     "enabled": true,

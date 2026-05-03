@@ -19,6 +19,31 @@ func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultKnowledgeOCREnabled(t *testing.T) {
+	cfg := Default()
+	if cfg.Knowledge.OCR.Enabled == nil || !*cfg.Knowledge.OCR.Enabled {
+		t.Fatalf("knowledge OCR enabled = %#v, want enabled", cfg.Knowledge.OCR.Enabled)
+	}
+	if cfg.Knowledge.OCR.PDFToPPMCommand != "pdftoppm" || cfg.Knowledge.OCR.TesseractCommand != "tesseract" {
+		t.Fatalf("knowledge OCR commands = %#v, want pdftoppm and tesseract", cfg.Knowledge.OCR)
+	}
+	if cfg.Knowledge.OCR.Language != "eng" || cfg.Knowledge.OCR.DPI == 0 || cfg.Knowledge.OCR.MaxPages == 0 || cfg.Knowledge.OCR.TimeoutSeconds == 0 {
+		t.Fatalf("knowledge OCR defaults = %#v, want complete OCR settings", cfg.Knowledge.OCR)
+	}
+}
+
+func TestWithDefaultsPreservesDisabledKnowledgeOCR(t *testing.T) {
+	disabled := false
+	cfg := Config{Knowledge: KnowledgeConfig{OCR: KnowledgeOCRConfig{Enabled: &disabled, PDFToPPMCommand: "custom-pdftoppm"}}}
+	got := cfg.WithDefaults()
+	if got.Knowledge.OCR.Enabled == nil || *got.Knowledge.OCR.Enabled {
+		t.Fatalf("knowledge OCR enabled = %#v, want disabled preserved", got.Knowledge.OCR.Enabled)
+	}
+	if got.Knowledge.OCR.PDFToPPMCommand != "custom-pdftoppm" || got.Knowledge.OCR.TesseractCommand != "tesseract" {
+		t.Fatalf("knowledge OCR commands = %#v, want custom pdftoppm and default tesseract", got.Knowledge.OCR)
+	}
+}
+
 func TestDefaultExternalAgentsUseFiveHourTimeout(t *testing.T) {
 	const want = 5 * 60 * 60
 	if DefaultExternalAgentTimeoutSeconds != want {

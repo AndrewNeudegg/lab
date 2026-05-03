@@ -36,6 +36,10 @@ func (o *Orchestrator) knowledgeModel() knowledgestore.LanguageModel {
 	return knowledgestore.NewLanguageModel(o.provider, o.model)
 }
 
+func (o *Orchestrator) knowledgeFetcher() knowledgestore.HTTPFetcher {
+	return knowledgestore.HTTPFetcher{Extraction: knowledgestore.TextExtractionOptionsFromConfig(o.cfg.Knowledge)}
+}
+
 func (o *Orchestrator) CreateKnowledgeSpace(ctx context.Context, req knowledgestore.CreateSpaceRequest) (knowledgestore.Space, string, error) {
 	store, err := o.knowledgeStore()
 	if err != nil {
@@ -87,7 +91,7 @@ func (o *Orchestrator) AddKnowledgeSource(ctx context.Context, spaceID string, r
 		return knowledgestore.Space{}, knowledgestore.Source{}, "", err
 	}
 	now := time.Now().UTC()
-	source, err := knowledgestore.BuildSource(ctx, req, id.New("ksrc"), now, nil)
+	source, err := knowledgestore.BuildSource(ctx, req, id.New("ksrc"), now, o.knowledgeFetcher())
 	if err != nil {
 		return knowledgestore.Space{}, knowledgestore.Source{}, "", err
 	}

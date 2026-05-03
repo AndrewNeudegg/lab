@@ -50,6 +50,7 @@ type Base struct {
 	Timeout             time.Duration
 	UserAgent           string
 	Client              *http.Client
+	Extraction          knowledgestore.TextExtractionOptions
 }
 
 var defaultSearXNGInstances = []string{
@@ -1029,7 +1030,7 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 	extractor := ""
 	switch {
 	case strings.Contains(contentType, "pdf") || looksLikePDFBytes(body):
-		extractedTitle, extractedText, extractedBy, err := knowledgestore.ExtractFetchedText(body, contentType)
+		extractedTitle, extractedText, extractedBy, err := knowledgestore.ExtractFetchedText(ctx, body, contentType, t.base.Extraction)
 		if err != nil {
 			return nil, err
 		}

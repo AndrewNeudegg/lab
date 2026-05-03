@@ -10,7 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +24,9 @@ import (
 const (
 	defaultFetchTimeout = 15 * time.Second
 	maxFetchedBytes     = 5 << 20
+	defaultPDFOCRDPI    = 200
+	defaultPDFOCRPages  = 25
+	defaultPDFOCRTime   = 10 * time.Minute
 )
 
 type Fetcher interface {
@@ -38,9 +45,24 @@ type FetchedSource struct {
 }
 
 type HTTPFetcher struct {
-	Client    *http.Client
-	UserAgent string
-	Timeout   time.Duration
+	Client     *http.Client
+	UserAgent  string
+	Timeout    time.Duration
+	Extraction TextExtractionOptions
+}
+
+type TextExtractionOptions struct {
+	PDFOCR PDFOCROptions
+}
+
+type PDFOCROptions struct {
+	Disabled         bool
+	PDFToPPMCommand  string
+	TesseractCommand string
+	Language         string
+	DPI              int
+	MaxPages         int
+	Timeout          time.Duration
 }
 
 func BuildSource(ctx context.Context, req AddSourceRequest, sourceID string, now time.Time, fetcher Fetcher) (Source, error) {
@@ -148,7 +170,7 @@ func (f HTTPFetcher) Fetch(ctx context.Context, uri string) (FetchedSource, erro
 		return FetchedSource{}, fmt.Errorf("source exceeds %d byte fetch limit", maxFetchedBytes)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
-	title, content, extractor, err := ExtractFetchedText(body, contentType)
+	title, content, extractor, err := ExtractFetchedText(ctx, body, contentType, f.Extraction)
 	if err != nil {
 		return FetchedSource{}, err
 	}
@@ -175,16 +197,13 @@ var (
 	pdfStreamPattern = regexp.MustCompile(`(?s)stream\r?\n(.*?)\r?\nendstream`)
 )
 
-func ExtractFetchedText(body []byte, contentType string) (string, string, string, error) {
+func ExtractFetchedText(ctx context.Context, body []byte, contentType string, options TextExtractionOptions) (string, string, string, error) {
 	if strings.Contains(contentType, "pdf") || looksLikePDF(body) {
-		content, err := extractPDFText(body)
+		content, extractor, err := extractPDFText(ctx, body, options.PDFOCR)
 		if err != nil {
 			return "", "", "", err
 		}
-		if content == "" {
-			return "", "", "", fmt.Errorf("PDF source did not contain extractable text")
-		}
-		return "", content, "pdf", nil
+		return "", content, extractor, nil
 	}
 	raw := string(body)
 	if strings.Contains(contentType, "html") || looksLikeHTMLContent(raw) {
@@ -204,7 +223,28 @@ func ExtractFetchedText(body []byte, contentType string) (string, string, string
 	return "", "", "", fmt.Errorf("unsupported content type %q", contentType)
 }
 
-func extractPDFText(body []byte) (string, error) {
+func extractPDFText(ctx context.Context, body []byte, options PDFOCROptions) (string, string, error) {
+	content, err := extractEmbeddedPDFText(body)
+	if err == nil && content != "" {
+		return content, "pdf", nil
+	}
+	if options.Disabled {
+		if err != nil {
+			return "", "", err
+		}
+		return "", "", fmt.Errorf("PDF source did not contain extractable text")
+	}
+	ocrText, ocrErr := extractPDFTextWithOCR(ctx, body, options)
+	if ocrErr != nil {
+		if err != nil {
+			return "", "", fmt.Errorf("%v; %v", err, ocrErr)
+		}
+		return "", "", ocrErr
+	}
+	return ocrText, "pdf+ocr", nil
+}
+
+func extractEmbeddedPDFText(body []byte) (string, error) {
 	var builder strings.Builder
 	streams := pdfStreamPattern.FindAllSubmatchIndex(body, -1)
 	for _, match := range streams {
@@ -237,6 +277,127 @@ func extractPDFText(body []byte) (string, error) {
 		return "", fmt.Errorf("extract PDF text: no text operators found")
 	}
 	return content, nil
+}
+
+func extractPDFTextWithOCR(ctx context.Context, body []byte, options PDFOCROptions) (string, error) {
+	options = normalizedPDFOCROptions(options)
+	pdftoppm, err := exec.LookPath(options.PDFToPPMCommand)
+	if err != nil {
+		return "", fmt.Errorf("PDF OCR unavailable: %s not found in PATH", options.PDFToPPMCommand)
+	}
+	tesseract, err := exec.LookPath(options.TesseractCommand)
+	if err != nil {
+		return "", fmt.Errorf("PDF OCR unavailable: %s not found in PATH", options.TesseractCommand)
+	}
+	workDir, err := os.MkdirTemp("", "homelabd-pdf-ocr-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(workDir)
+	pdfPath := filepath.Join(workDir, "source.pdf")
+	if err := os.WriteFile(pdfPath, body, 0o600); err != nil {
+		return "", err
+	}
+	ocrCtx := ctx
+	cancel := func() {}
+	if options.Timeout > 0 {
+		ocrCtx, cancel = context.WithTimeout(ctx, options.Timeout)
+	}
+	defer cancel()
+	prefix := filepath.Join(workDir, "page")
+	args := []string{
+		"-r", strconv.Itoa(options.DPI),
+		"-png",
+		"-f", "1",
+		"-l", strconv.Itoa(options.MaxPages),
+		pdfPath,
+		prefix,
+	}
+	if output, err := runExtractionCommand(ocrCtx, pdftoppm, args...); err != nil {
+		return "", fmt.Errorf("PDF OCR rasterisation failed: %s", commandErrorMessage(err, output))
+	}
+	images, err := filepath.Glob(prefix + "-*.png")
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(images)
+	if len(images) == 0 {
+		return "", fmt.Errorf("PDF OCR rasterisation produced no page images")
+	}
+	var builder strings.Builder
+	for _, image := range images {
+		args := []string{image, "stdout", "-l", options.Language, "--dpi", strconv.Itoa(options.DPI)}
+		output, err := runExtractionCommand(ocrCtx, tesseract, args...)
+		if err != nil {
+			return "", fmt.Errorf("PDF OCR recognition failed: %s", commandErrorMessage(err, output))
+		}
+		if builder.Len()+len(output.Stdout) > maxFetchedBytes {
+			return "", fmt.Errorf("PDF OCR text exceeds %d byte limit", maxFetchedBytes)
+		}
+		builder.WriteByte(' ')
+		builder.Write(output.Stdout)
+	}
+	text := cleanExtractedText(builder.String())
+	if text == "" {
+		return "", fmt.Errorf("PDF OCR completed but no text was recognised")
+	}
+	return text, nil
+}
+
+func normalizedPDFOCROptions(options PDFOCROptions) PDFOCROptions {
+	if strings.TrimSpace(options.PDFToPPMCommand) == "" {
+		options.PDFToPPMCommand = "pdftoppm"
+	}
+	if strings.TrimSpace(options.TesseractCommand) == "" {
+		options.TesseractCommand = "tesseract"
+	}
+	if strings.TrimSpace(options.Language) == "" {
+		options.Language = "eng"
+	}
+	if options.DPI <= 0 {
+		options.DPI = defaultPDFOCRDPI
+	}
+	if options.MaxPages <= 0 {
+		options.MaxPages = defaultPDFOCRPages
+	}
+	if options.Timeout <= 0 {
+		options.Timeout = defaultPDFOCRTime
+	}
+	return options
+}
+
+type extractionCommandOutput struct {
+	Stdout []byte
+	Stderr []byte
+}
+
+func runExtractionCommand(ctx context.Context, name string, args ...string) (extractionCommandOutput, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	output := extractionCommandOutput{Stdout: bytes.TrimSpace(stdout.Bytes()), Stderr: bytes.TrimSpace(stderr.Bytes())}
+	if ctx.Err() != nil {
+		return output, ctx.Err()
+	}
+	return output, err
+}
+
+func commandErrorMessage(err error, output extractionCommandOutput) string {
+	var parts []string
+	if len(output.Stdout) > 0 {
+		parts = append(parts, string(output.Stdout))
+	}
+	if len(output.Stderr) > 0 {
+		parts = append(parts, string(output.Stderr))
+	}
+	message := strings.TrimSpace(strings.Join(parts, "\n"))
+	if message == "" {
+		message = err.Error()
+	}
+	return message
 }
 
 func inflatePDFStream(stream []byte) ([]byte, error) {

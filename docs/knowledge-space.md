@@ -35,7 +35,7 @@ flowchart LR
 - Querying the corpus is source-bound lexical retrieval over stored chunks. Asking the corpus ranks matching chunks, sends them to the configured model, and returns an answer with evidence labels, key findings, gaps, model, and token usage.
 - Starting a research run records a durable queued run with objective, scope, depth, source selection, optional online discovery, lifecycle events, model plan, coverage, evidence counts, model provenance, candidate source state, workspace path, and a linked report artefact when synthesis completes. Runs advance asynchronously through queued, planning, discovering, retrieving, reading, synthesising, reviewing, completed, or failed states.
 - When `discover_sources` is enabled, the run sends the model-planned search queries to the registered `internet.research` tool with fetched web pages. It analyses each readable source, asks the model whether it is useful for the run, imports accepted or partial candidates as URL sources, records rejected candidates, retrieves broader evidence from the selected corpus, and synthesises over source summaries plus cited chunks. Search, fetch, extraction, model, and import failures stay visible on the run; the executor does not substitute fabricated source content.
-- PDF URLs with extractable text are fetched and indexed like other URL sources. Scanned PDFs that need OCR fail explicitly until an OCR extractor is configured; they are not stored as placeholder text.
+- PDF URLs with embedded text are indexed directly. Image-only or scanned PDF pages are rasterised with `pdftoppm` and recognised with `tesseract` when Knowledge OCR is enabled; missing OCR commands or unreadable pages fail explicitly and are not stored as placeholder text.
 - Completed run workspaces under `data/knowledge/runs/<space_id>/<run_id>/` include `state.json`, `events.jsonl`, candidate source JSON, and, when available, `coverage.json`, `evidence.json`, and `report.json`.
 - The dashboard renders Markdown and Mermaid diagrams in objectives, source summaries, source content, answers, cited evidence, research run events, gaps, and saved artefacts.
 - The dashboard page is `/knowledge`; direct links use `/knowledge?space=<space_id>`.
@@ -55,6 +55,26 @@ go run ./cmd/homelabctl knowledge research-run kspace_123 --discover --depth dee
 ```
 
 The CLI mirrors the dashboard flow: create a space, add text/file/URL sources, query or ask the corpus, then start a research run against stored, selected, and optionally discovered online sources. See `docs/homelabctl.md#knowledge-space-commands` for the full command reference.
+
+## PDF OCR Configuration
+
+Knowledge PDF OCR is configured under `knowledge.ocr` in `config.json`. It is enabled by default and expects `pdftoppm` from Poppler plus `tesseract` on the supervised `homelabd` `PATH`; the Nix dev shell includes both tools. Tune `language`, `dpi`, `max_pages`, and `timeout_seconds` for the documents you expect to ingest:
+
+```json
+{
+  "knowledge": {
+    "ocr": {
+      "enabled": true,
+      "pdftoppm_command": "pdftoppm",
+      "tesseract_command": "tesseract",
+      "language": "eng",
+      "dpi": 200,
+      "max_pages": 25,
+      "timeout_seconds": 600
+    }
+  }
+}
+```
 
 ## HTTP API
 

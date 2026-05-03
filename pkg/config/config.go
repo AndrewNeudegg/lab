@@ -21,6 +21,7 @@ type Config struct {
 	HTTP            HTTPConfig                     `json:"http"`
 	ControlPlane    ControlPlaneConfig             `json:"control_plane"`
 	RemoteAgent     RemoteAgentConfig              `json:"remote_agent"`
+	Knowledge       KnowledgeConfig                `json:"knowledge"`
 	Healthd         HealthdConfig                  `json:"healthd"`
 	Supervisord     SupervisordConfig              `json:"supervisord"`
 	ExternalAgents  map[string]ExternalAgentConfig `json:"external_agents"`
@@ -81,6 +82,20 @@ type RemoteAgentWorkdirConfig struct {
 	ID    string `json:"id,omitempty"`
 	Path  string `json:"path"`
 	Label string `json:"label,omitempty"`
+}
+
+type KnowledgeConfig struct {
+	OCR KnowledgeOCRConfig `json:"ocr"`
+}
+
+type KnowledgeOCRConfig struct {
+	Enabled          *bool  `json:"enabled,omitempty"`
+	PDFToPPMCommand  string `json:"pdftoppm_command,omitempty"`
+	TesseractCommand string `json:"tesseract_command,omitempty"`
+	Language         string `json:"language,omitempty"`
+	DPI              int    `json:"dpi,omitempty"`
+	MaxPages         int    `json:"max_pages,omitempty"`
+	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
 }
 
 type HealthdConfig struct {
@@ -254,6 +269,17 @@ func Default() Config {
 			Backend:                  "codex",
 			HeartbeatIntervalSeconds: 10,
 			PollIntervalSeconds:      5,
+		},
+		Knowledge: KnowledgeConfig{
+			OCR: KnowledgeOCRConfig{
+				Enabled:          boolPtr(true),
+				PDFToPPMCommand:  "pdftoppm",
+				TesseractCommand: "tesseract",
+				Language:         "eng",
+				DPI:              200,
+				MaxPages:         25,
+				TimeoutSeconds:   600,
+			},
 		},
 		Healthd: HealthdConfig{
 			Addr:                            "127.0.0.1:18081",
@@ -465,6 +491,27 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.RemoteAgent.PollIntervalSeconds == 0 {
 		c.RemoteAgent.PollIntervalSeconds = d.RemoteAgent.PollIntervalSeconds
+	}
+	if c.Knowledge.OCR.Enabled == nil {
+		c.Knowledge.OCR.Enabled = d.Knowledge.OCR.Enabled
+	}
+	if c.Knowledge.OCR.PDFToPPMCommand == "" {
+		c.Knowledge.OCR.PDFToPPMCommand = d.Knowledge.OCR.PDFToPPMCommand
+	}
+	if c.Knowledge.OCR.TesseractCommand == "" {
+		c.Knowledge.OCR.TesseractCommand = d.Knowledge.OCR.TesseractCommand
+	}
+	if c.Knowledge.OCR.Language == "" {
+		c.Knowledge.OCR.Language = d.Knowledge.OCR.Language
+	}
+	if c.Knowledge.OCR.DPI == 0 {
+		c.Knowledge.OCR.DPI = d.Knowledge.OCR.DPI
+	}
+	if c.Knowledge.OCR.MaxPages == 0 {
+		c.Knowledge.OCR.MaxPages = d.Knowledge.OCR.MaxPages
+	}
+	if c.Knowledge.OCR.TimeoutSeconds == 0 {
+		c.Knowledge.OCR.TimeoutSeconds = d.Knowledge.OCR.TimeoutSeconds
 	}
 	if c.Healthd.Enabled == nil {
 		c.Healthd.Enabled = d.Healthd.Enabled

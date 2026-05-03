@@ -53,6 +53,8 @@
           pkgs.git
           pkgs.bun
           pkgs.chromium
+          pkgs.poppler-utils
+          pkgs.tesseract
           pkgs.xvfb-run
           pkgs.podman
           pkgs.podman-compose

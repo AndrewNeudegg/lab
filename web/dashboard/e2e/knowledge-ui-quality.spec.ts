@@ -604,11 +604,31 @@ for (const viewport of [
       await page.goto('/knowledge');
       await expectKnowledgeReady(page);
 
-      await page.getByRole('link', { name: /Research synthesis/ }).click();
+      if (viewport.mobile) {
+        await expect(page.locator('.space-list')).toBeHidden();
+        await expect(page.getByLabel('Knowledge Space mobile controls')).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Sync Knowledge Spaces' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Browse Knowledge Spaces' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Create Knowledge Space' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'More Knowledge Space options' })).toBeVisible();
+        await page.getByRole('button', { name: 'Browse Knowledge Spaces' }).click();
+        await expect(page.getByRole('region', { name: 'Browse Knowledge Spaces' })).toBeVisible();
+        await expect(page.getByRole('searchbox', { name: 'Search Knowledge Space' })).toBeVisible();
+        await page.getByRole('button', { name: 'Hide Knowledge Space browser' }).click();
+      } else {
+        await page.getByRole('link', { name: /Research synthesis/ }).click();
+      }
       await expect(page.getByRole('heading', { name: 'Research synthesis' })).toBeInViewport();
       await expect(page.getByRole('heading', { name: 'Processed sources' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Source transparency notes' })).toBeVisible();
       await expect(page.locator('.source-card .markdown strong').filter({ hasText: 'evidence visible' }).first()).toBeVisible();
+      await expect(page.locator('details.source-details').first()).toContainText('Evidence, metadata, and full text');
+      await expect(page.locator('.source-card .source-meta').first()).toBeHidden();
+      await expect(page).toHaveScreenshot(`knowledge-sources-collapsed-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled'
+      });
+      await page.locator('details.source-details > summary').click();
       await expect(page.locator('.source-card').first()).toContainText('Sections');
       await expect(page.locator('.source-card').first()).toContainText('Review flow');
       await page.locator('details.source-content > summary').click();
@@ -627,7 +647,11 @@ for (const viewport of [
       await page.getByLabel('Source title').fill('Review notes');
       await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
       await page.locator('.source-form button[type="submit"]').click();
-      await expect(page.getByText('Source analysed')).toBeVisible();
+      await expect(
+        (viewport.mobile ? page.getByLabel('Knowledge Space detail') : page.getByLabel('Knowledge Space list')).getByText(
+          'Source analysed'
+        )
+      ).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Review notes' })).toBeVisible();
     });
 
@@ -636,7 +660,11 @@ for (const viewport of [
       await page.goto('/knowledge');
       await expectKnowledgeReady(page);
 
-      await page.getByRole('link', { name: /Research synthesis/ }).click();
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'More Knowledge Space options' }).click();
+      } else {
+        await page.getByRole('link', { name: /Research synthesis/ }).click();
+      }
       await page.getByRole('button', { name: 'What does this space show about source?' }).click();
       await expect(page.getByRole('tab', { name: /Ask/ })).toHaveAttribute('aria-selected', 'true');
       await expect(page.getByRole('textbox', { name: 'Question' })).toHaveValue(
@@ -701,9 +729,11 @@ for (const viewport of [
       await page.goto('/knowledge');
       await expectKnowledgeReady(page);
 
-      await page.getByRole('link', { name: /Research synthesis/ }).click();
       if (viewport.mobile) {
         await expect(page.getByLabel('Space', { exact: true })).toBeVisible();
+        await page.getByRole('button', { name: 'More Knowledge Space options' }).click();
+      } else {
+        await page.getByRole('link', { name: /Research synthesis/ }).click();
       }
 
       await page.getByRole('button', { name: 'Rename' }).click();
@@ -713,7 +743,11 @@ for (const viewport of [
       await editSpace.getByLabel('Objective').fill('Keep source-grounded research easy to manage.');
       await page.getByRole('button', { name: 'Save changes' }).click();
       await expect(page.getByRole('heading', { name: 'Research corpus' })).toBeVisible();
-      await expect(page.getByText('Knowledge Space updated')).toBeVisible();
+      await expect(
+        (viewport.mobile ? page.getByLabel('Knowledge Space detail') : page.getByLabel('Knowledge Space list')).getByText(
+          'Knowledge Space updated'
+        )
+      ).toBeVisible();
 
       await page.getByRole('button', { name: 'Delete source Source transparency notes' }).click();
       const deleteSourcePanel = page.getByRole('region', {
@@ -729,10 +763,17 @@ for (const viewport of [
         maxDiffPixels: 100
       });
       await deleteSourcePanel.getByRole('button', { name: 'Delete source' }).click();
-      await expect(page.getByText('Source deleted')).toBeVisible();
+      await expect(
+        (viewport.mobile ? page.getByLabel('Knowledge Space detail') : page.getByLabel('Knowledge Space list')).getByText(
+          'Source deleted'
+        )
+      ).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Source transparency notes' })).toHaveCount(0);
       await expect(page.getByText('No sources have been analysed. Add text or a URL before asking questions.')).toBeVisible();
 
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'More Knowledge Space options' }).click();
+      }
       await page.getByRole('button', { name: 'Delete space' }).click();
       const deleteSpacePanel = page.getByRole('region', { name: 'Delete Knowledge Space confirmation' });
       await expect(deleteSpacePanel).toContainText('Research corpus');
@@ -745,7 +786,7 @@ for (const viewport of [
         maxDiffPixels: 100
       });
       await deleteSpacePanel.getByRole('button', { name: 'Delete space' }).click();
-      await expect(page.getByText('Knowledge Space deleted')).toBeVisible();
+      await expect(page.getByLabel('Knowledge Space list').getByText('Knowledge Space deleted')).toBeVisible();
       await expect(page.getByText('No Knowledge Space selected')).toBeVisible();
       await expect(page.getByText('No Knowledge Spaces yet.')).toBeVisible();
     });
@@ -755,9 +796,16 @@ for (const viewport of [
       await page.goto('/knowledge');
       await expectKnowledgeReady(page);
 
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'Browse Knowledge Spaces' }).click();
+      }
       const search = page.getByRole('searchbox', { name: 'Search Knowledge Space' });
       await search.fill('missing');
-      await expect(page.getByText('No Knowledge Space matches this search.')).toBeVisible();
+      await expect(
+        (viewport.mobile ? page.getByRole('region', { name: 'Browse Knowledge Spaces' }) : page.getByLabel('Knowledge Space list')).getByText(
+          'No Knowledge Space matches this search.'
+        )
+      ).toBeVisible();
       await page.getByRole('button', { name: 'Clear search', exact: true }).click();
       await expect(search).toHaveValue('');
       await expect(page.getByRole('link', { name: /Research synthesis/ })).toBeVisible();

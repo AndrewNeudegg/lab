@@ -65,6 +65,8 @@
   let editingSpace = false;
   let confirmDeleteSpace = false;
   let confirmDeleteSourceId = '';
+  let mobileSpacesOpen = false;
+  let mobileOptionsOpen = false;
 
   let titleDraft = '';
   let objectiveDraft = '';
@@ -141,6 +143,8 @@
     editingSpace = false;
     confirmDeleteSpace = false;
     confirmDeleteSourceId = '';
+    mobileSpacesOpen = false;
+    mobileOptionsOpen = false;
     selectedSourceIds = (selectedSpace.sources || []).map((source) => source.id);
     addSourceOpen = !(selectedSpace.sources?.length);
   }
@@ -184,6 +188,9 @@
 
   const plural = (count: number, singular: string, pluralLabel = `${singular}s`) =>
     `${count} ${count === 1 ? singular : pluralLabel}`;
+
+  const compactPanelLabel = (panel: KnowledgePanel) =>
+    panel === 'runs' ? 'Runs' : panel === 'artefacts' ? 'Reports' : panelLabel(panel);
 
   const reportForRun = (
     space?: HomelabdKnowledgeSpace,
@@ -356,6 +363,7 @@
     editingSpace = true;
     confirmDeleteSpace = false;
     confirmDeleteSourceId = '';
+    mobileOptionsOpen = false;
     revealDetailIfCompact();
   };
 
@@ -387,6 +395,14 @@
     } finally {
       updatingSpace = false;
     }
+  };
+
+  const beginDeleteSpace = () => {
+    confirmDeleteSpace = true;
+    editingSpace = false;
+    confirmDeleteSourceId = '';
+    mobileOptionsOpen = false;
+    revealDetailIfCompact();
   };
 
   const deleteSelectedSpace = async () => {
@@ -572,9 +588,34 @@
     search = '';
   };
 
+  const toggleMobileSpaces = () => {
+    mobileSpacesOpen = !mobileSpacesOpen;
+    if (mobileSpacesOpen) {
+      mobileOptionsOpen = false;
+    }
+  };
+
+  const toggleMobileOptions = () => {
+    mobileOptionsOpen = !mobileOptionsOpen;
+    if (mobileOptionsOpen) {
+      mobileSpacesOpen = false;
+    }
+  };
+
+  const openMobileCreateSpace = () => {
+    mobileSpacesOpen = true;
+    mobileOptionsOpen = false;
+    createSpaceOpen = true;
+    requestAnimationFrame(() => {
+      document.getElementById('mobile-space-title')?.focus();
+    });
+  };
+
   const useSuggestedQuestion = (question: string) => {
     questionDraft = question;
     activePanel = 'ask';
+    mobileSpacesOpen = false;
+    mobileOptionsOpen = false;
     revealDetailIfCompact();
   };
 
@@ -633,7 +674,7 @@
 <div class="knowledge-shell">
   <Navbar title="Knowledge Space" subtitle="homelabd" current="/knowledge" taskApiBase={apiBase} />
 
-  <main class="knowledge-page" data-ready={ready ? 'true' : 'false'}>
+  <main class="knowledge-page" class:has-selection={!!selectedSpace} data-ready={ready ? 'true' : 'false'}>
     <section class="space-list" aria-label="Knowledge Space list">
       <header class="space-header">
         <div>
@@ -746,14 +787,198 @@
 
     <section class="space-detail" aria-label="Knowledge Space detail" bind:this={detailEl}>
       {#if selectedSpace}
-        <div class="mobile-space-switcher" aria-label="Selected Knowledge Space">
-          <label for="knowledge-space-switcher">Space</label>
-          <select id="knowledge-space-switcher" bind:value={selectedSpaceId} on:change={handleMobileSpaceSelect}>
-            {#each spaces as space (space.id)}
-              <option value={space.id}>{space.title}</option>
-            {/each}
-          </select>
+        <div class="mobile-corpus-bar" aria-label="Knowledge Space mobile controls">
+          <div class="mobile-corpus-primary">
+            <label class="hidden" for="knowledge-space-switcher">Space</label>
+            <select
+              id="knowledge-space-switcher"
+              aria-label="Space"
+              bind:value={selectedSpaceId}
+              on:change={handleMobileSpaceSelect}
+            >
+              {#each spaces as space (space.id)}
+                <option value={space.id}>{space.title}</option>
+              {/each}
+            </select>
+            <button
+              type="button"
+              class="icon-action"
+              disabled={loading}
+              aria-label={loading ? 'Syncing Knowledge Spaces' : 'Sync Knowledge Spaces'}
+              title="Sync"
+              on:click={() => void refreshSpaces()}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M20 12a8 8 0 0 1-13.7 5.7M4 12A8 8 0 0 1 17.7 6.3M7 18H4v-3M17 6h3v3" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="icon-action"
+              aria-expanded={mobileSpacesOpen}
+              aria-controls={mobileSpacesOpen ? 'mobile-space-browser' : undefined}
+              aria-label={mobileSpacesOpen ? 'Hide Knowledge Space browser' : 'Browse Knowledge Spaces'}
+              title="Browse spaces"
+              on:click={toggleMobileSpaces}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="icon-action"
+              aria-label="Create Knowledge Space"
+              title="New space"
+              on:click={openMobileCreateSpace}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="icon-action"
+              aria-expanded={mobileOptionsOpen}
+              aria-controls={mobileOptionsOpen ? 'mobile-space-options' : undefined}
+              aria-label={mobileOptionsOpen ? 'Hide Knowledge Space options' : 'More Knowledge Space options'}
+              title="More"
+              on:click={toggleMobileOptions}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 7.2v.1M12 12v.1M12 16.8v.1" />
+              </svg>
+            </button>
+          </div>
+          <div class="mobile-stat-row" aria-label="Selected Knowledge Space totals">
+            <span>{plural(spaceSourceCount(selectedSpace), 'source')}</span>
+            <span>{plural(spaceWordCount(selectedSpace), 'word')}</span>
+            <span>{plural(selectedSpace.reports?.length || 0, 'report')}</span>
+            {#if lastRefresh}
+              <span>Synced {lastRefresh}</span>
+            {/if}
+          </div>
         </div>
+
+        {#if mobileSpacesOpen}
+          <section id="mobile-space-browser" class="mobile-space-browser" aria-label="Browse Knowledge Spaces">
+            <header>
+              <strong>Spaces</strong>
+              <span>{plural(spaces.length, 'space')} · {plural(totalSpaceSourceCount, 'source')}</span>
+            </header>
+
+            <label class="hidden" for="knowledge-mobile-search">Search Knowledge Space</label>
+            <span class="search-control">
+              <input
+                id="knowledge-mobile-search"
+                class="search"
+                type="search"
+                bind:value={search}
+                placeholder="Search spaces"
+              />
+              {#if search}
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label="Clear search input"
+                  title="Clear search"
+                  on:click={clearSearch}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M6 6l12 12M18 6 6 18" />
+                  </svg>
+                </button>
+              {/if}
+            </span>
+
+            <details class="create-space mobile-create-space" bind:open={createSpaceOpen}>
+              <summary>New space</summary>
+              <form on:submit|preventDefault={() => void createSpace()}>
+                <label for="mobile-space-title">Title</label>
+                <input id="mobile-space-title" bind:value={titleDraft} autocomplete="off" />
+
+                <label for="mobile-space-objective">Objective</label>
+                <textarea id="mobile-space-objective" bind:value={objectiveDraft} rows="3"></textarea>
+
+                <label for="mobile-space-description">Description</label>
+                <textarea id="mobile-space-description" bind:value={descriptionDraft} rows="2"></textarea>
+
+                <div class="form-footer">
+                  <span>{titleDraft.trim() ? 'Ready' : 'Title required'}</span>
+                  <button type="submit" disabled={creating || !titleDraft.trim()}>
+                    {creating ? 'Creating' : 'Create'}
+                  </button>
+                </div>
+              </form>
+            </details>
+
+            <div class="mobile-space-rows" aria-label="Mobile Knowledge Space rows">
+              {#if visibleSpaces.length}
+                {#each visibleSpaces as space (space.id)}
+                  <a
+                    href={knowledgeSpaceURL(space.id)}
+                    class="space-row"
+                    class:selected={selectedSpace?.id === space.id}
+                    aria-current={selectedSpace?.id === space.id ? 'page' : undefined}
+                    on:click={(event) => handleSpaceRowClick(event, space.id)}
+                  >
+                    <span class="dot"></span>
+                    <span>
+                      <strong>{space.title}</strong>
+                      <small>{compactKnowledgeID(space.id)} · {spaceSourceCount(space)} sources</small>
+                    </span>
+                    <em>{plural(spaceWordCount(space), 'word')}</em>
+                  </a>
+                {/each}
+              {:else}
+                <div class="empty">
+                  <p>{search ? 'No Knowledge Space matches this search.' : 'No Knowledge Spaces yet.'}</p>
+                  {#if search}
+                    <button type="button" class="text-action" on:click={clearSearch}>Clear search</button>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          </section>
+        {/if}
+
+        {#if mobileOptionsOpen}
+          <section id="mobile-space-options" class="mobile-space-options" aria-label="Knowledge Space options">
+            <header>
+              <div>
+                <strong>{selectedSpace.title}</strong>
+                <span>{compactKnowledgeID(selectedSpace.id)}</span>
+              </div>
+              <div class="mobile-option-actions">
+                <button type="button" class="text-action" on:click={beginEditSpace}>Rename</button>
+                <button type="button" class="danger-action" on:click={beginDeleteSpace}>Delete space</button>
+              </div>
+            </header>
+            {#if selectedSpace.insight?.key_terms?.length}
+              <div class="chips" aria-label="Mobile Knowledge Space key terms">
+                {#each selectedSpace.insight.key_terms.slice(0, 6) as term}
+                  <span>{term}</span>
+                {/each}
+              </div>
+            {/if}
+            {#if selectedSpace.insight?.suggested_questions?.length}
+              <div class="question-chips" aria-label="Mobile research suggestions">
+                {#each selectedSpace.insight.suggested_questions.slice(0, 3) as question}
+                  <button type="button" on:click={() => useSuggestedQuestion(question)}>
+                    {question}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if error}
+          <p class="notice error mobile-notice" role="alert">{error}</p>
+        {/if}
+        {#if notice}
+          <p class="notice success mobile-notice">{notice}</p>
+        {/if}
 
         <header class="detail-header">
           <div>
@@ -773,11 +998,7 @@
               type="button"
               class="danger-action"
               aria-expanded={confirmDeleteSpace}
-              on:click={() => {
-                confirmDeleteSpace = true;
-                editingSpace = false;
-                confirmDeleteSourceId = '';
-              }}
+              on:click={beginDeleteSpace}
             >
               Delete space
             </button>
@@ -862,6 +1083,7 @@
               id={`knowledge-tab-${panel}`}
               type="button"
               role="tab"
+              aria-label={`${panelLabel(panel)} ${panelItemCount(panel, selectedSpace)}`}
               aria-selected={activePanel === panel}
               aria-controls={`knowledge-panel-${panel}`}
               class:active={activePanel === panel}
@@ -869,7 +1091,8 @@
               on:click={() => (activePanel = panel)}
               on:keydown={(event) => handleTabKeydown(event, panel)}
             >
-              <span>{panelLabel(panel)}</span>
+              <span class="panel-label-full">{panelLabel(panel)}</span>
+              <span class="panel-label-short">{compactPanelLabel(panel)}</span>
               <small>{panelItemCount(panel, selectedSpace)}</small>
             </button>
           {/each}
@@ -903,7 +1126,7 @@
                           <strong>{source.word_count} words</strong>
                           <button
                             type="button"
-                            class="danger-action compact"
+                            class="danger-action compact source-delete-action"
                             aria-expanded={confirmDeleteSourceId === source.id}
                             aria-label={`Delete source ${source.title}`}
                             on:click={() => {
@@ -911,7 +1134,10 @@
                               confirmDeleteSpace = false;
                             }}
                           >
-                            Delete
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                              <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3" />
+                            </svg>
+                            <span>Delete</span>
                           </button>
                         </div>
                       </header>
@@ -941,102 +1167,107 @@
                           <Markdown content={source.summary} />
                         </div>
                       {/if}
-                      {#if source.claims?.length}
-                        <div class="claims-list" aria-label={`${source.title} claims`}>
-                          {#each source.claims.slice(0, 3) as claim}
-                            <section>
-                              <strong>{claim.importance || 'Claim'}</strong>
-                              <div class="markdown-block compact">
-                                <Markdown content={claim.text} />
+                      <details class="source-details">
+                        <summary>Evidence, metadata, and full text</summary>
+                        <div class="source-details-body">
+                          {#if source.claims?.length}
+                            <div class="claims-list" aria-label={`${source.title} claims`}>
+                              {#each source.claims.slice(0, 3) as claim}
+                                <section>
+                                  <strong>{claim.importance || 'Claim'}</strong>
+                                  <div class="markdown-block compact">
+                                    <Markdown content={claim.text} />
+                                  </div>
+                                </section>
+                              {/each}
+                            </div>
+                          {/if}
+                          {#if source.content}
+                            <details class="source-content">
+                              <summary>Source content</summary>
+                              <div class="markdown-block source-body">
+                                <Markdown content={source.content} headingIds />
                               </div>
-                            </section>
-                          {/each}
-                        </div>
-                      {/if}
-                      {#if source.content}
-                        <details class="source-content">
-                          <summary>Source content</summary>
-                          <div class="markdown-block source-body">
-                            <Markdown content={source.content} headingIds />
-                          </div>
-                        </details>
-                      {/if}
-                      {#if source.uri || source.provenance?.canonical_uri || source.provenance?.snapshot_path || source.provenance?.extractor}
-                        <dl class="source-meta">
-                          {#if source.provenance?.canonical_uri || source.uri}
-                            <div>
-                              <dt>Reference</dt>
-                              <dd>{source.provenance?.canonical_uri || source.uri}</dd>
+                            </details>
+                          {/if}
+                          {#if source.uri || source.provenance?.canonical_uri || source.provenance?.snapshot_path || source.provenance?.extractor}
+                            <dl class="source-meta">
+                              {#if source.provenance?.canonical_uri || source.uri}
+                                <div>
+                                  <dt>Reference</dt>
+                                  <dd>{source.provenance?.canonical_uri || source.uri}</dd>
+                                </div>
+                              {/if}
+                              {#if source.provenance?.snapshot_path}
+                                <div>
+                                  <dt>Snapshot</dt>
+                                  <dd>{source.provenance.snapshot_path}</dd>
+                                </div>
+                              {/if}
+                              {#if source.chunks?.length}
+                                <div>
+                                  <dt>Chunks</dt>
+                                  <dd>{source.chunks.length}</dd>
+                                </div>
+                              {/if}
+                              {#if source.sections?.length}
+                                <div>
+                                  <dt>Sections</dt>
+                                  <dd>{source.sections.length}</dd>
+                                </div>
+                              {/if}
+                              {#if source.provenance?.extractor}
+                                <div>
+                                  <dt>Extractor</dt>
+                                  <dd>{source.provenance.extractor}</dd>
+                                </div>
+                              {/if}
+                            </dl>
+                          {/if}
+                          {#if source.ingestion?.error}
+                            <p class="source-error">{source.ingestion.error}</p>
+                          {/if}
+                          {#if source.entities?.length || source.reliability_notes?.length}
+                            <div class="source-analysis">
+                              {#if source.entities?.length}
+                                <div>
+                                  <strong>Entities</strong>
+                                  <p>{source.entities.slice(0, 4).map((entity) => entity.name).join(', ')}</p>
+                                </div>
+                              {/if}
+                              {#if source.reliability_notes?.length}
+                                <div>
+                                  <strong>Reliability</strong>
+                                  <p>{source.reliability_notes.slice(0, 2).join(' ')}</p>
+                                </div>
+                              {/if}
                             </div>
                           {/if}
-                          {#if source.provenance?.snapshot_path}
-                            <div>
-                              <dt>Snapshot</dt>
-                              <dd>{source.provenance.snapshot_path}</dd>
-                            </div>
-                          {/if}
-                          {#if source.chunks?.length}
-                            <div>
-                              <dt>Chunks</dt>
-                              <dd>{source.chunks.length}</dd>
+                          {#if source.key_terms?.length}
+                            <div class="chips" aria-label={`${source.title} key terms`}>
+                              {#each source.key_terms.slice(0, 6) as term}
+                                <span>{term}</span>
+                              {/each}
                             </div>
                           {/if}
                           {#if source.sections?.length}
-                            <div>
-                              <dt>Sections</dt>
-                              <dd>{source.sections.length}</dd>
+                            <div class="chips" aria-label={`${source.title} sections`}>
+                              {#each source.sections.slice(0, 5) as section}
+                                <span>{section.heading}</span>
+                              {/each}
                             </div>
                           {/if}
-                          {#if source.provenance?.extractor}
-                            <div>
-                              <dt>Extractor</dt>
-                              <dd>{source.provenance.extractor}</dd>
-                            </div>
-                          {/if}
-                        </dl>
-                      {/if}
-                      {#if source.ingestion?.error}
-                        <p class="source-error">{source.ingestion.error}</p>
-                      {/if}
-                      {#if source.entities?.length || source.reliability_notes?.length}
-                        <div class="source-analysis">
-                          {#if source.entities?.length}
-                            <div>
-                              <strong>Entities</strong>
-                              <p>{source.entities.slice(0, 4).map((entity) => entity.name).join(', ')}</p>
-                            </div>
-                          {/if}
-                          {#if source.reliability_notes?.length}
-                            <div>
-                              <strong>Reliability</strong>
-                              <p>{source.reliability_notes.slice(0, 2).join(' ')}</p>
+                          {#if source.questions?.length}
+                            <div class="question-chips" aria-label={`${source.title} suggested questions`}>
+                              {#each source.questions.slice(0, 2) as question}
+                                <button type="button" on:click={() => useSuggestedQuestion(question)}>
+                                  {question}
+                                </button>
+                              {/each}
                             </div>
                           {/if}
                         </div>
-                      {/if}
-                      {#if source.key_terms?.length}
-                        <div class="chips" aria-label={`${source.title} key terms`}>
-                          {#each source.key_terms.slice(0, 6) as term}
-                            <span>{term}</span>
-                          {/each}
-                        </div>
-                      {/if}
-                      {#if source.sections?.length}
-                        <div class="chips" aria-label={`${source.title} sections`}>
-                          {#each source.sections.slice(0, 5) as section}
-                            <span>{section.heading}</span>
-                          {/each}
-                        </div>
-                      {/if}
-                      {#if source.questions?.length}
-                        <div class="question-chips" aria-label={`${source.title} suggested questions`}>
-                          {#each source.questions.slice(0, 2) as question}
-                            <button type="button" on:click={() => useSuggestedQuestion(question)}>
-                              {question}
-                            </button>
-                          {/each}
-                        </div>
-                      {/if}
+                      </details>
                     </article>
                   {/each}
                 {:else}
@@ -1957,7 +2188,9 @@
   }
 
   .sync-button svg,
-  .icon-button svg {
+  .icon-button svg,
+  .icon-action svg,
+  .source-delete-action svg {
     width: 1rem;
     height: 1rem;
     fill: none;
@@ -2163,6 +2396,13 @@
     font-size: 0.82rem;
   }
 
+  .source-delete-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+  }
+
   .button-row {
     display: flex;
     flex-wrap: wrap;
@@ -2171,8 +2411,96 @@
     min-width: 0;
   }
 
-  .mobile-space-switcher {
+  .mobile-corpus-bar,
+  .mobile-space-browser,
+  .mobile-space-options,
+  .mobile-notice {
     display: none;
+  }
+
+  .mobile-corpus-primary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(4, 2.35rem);
+    gap: 0.35rem;
+    align-items: center;
+  }
+
+  .icon-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.35rem;
+    min-height: 2.35rem;
+    padding: 0;
+    border: 1px solid var(--border, #cbd5e1);
+    background: var(--panel, #ffffff);
+    color: var(--text, #172033);
+  }
+
+  .icon-action[aria-expanded='true'] {
+    border-color: var(--knowledge-primary-bg, #172554);
+    color: var(--knowledge-primary-bg, #172554);
+    box-shadow: 0 0 0 1px var(--knowledge-primary-bg, #172554);
+  }
+
+  .mobile-stat-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .mobile-stat-row span,
+  .mobile-space-browser header span,
+  .mobile-space-options header span {
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.74rem;
+    font-weight: 800;
+  }
+
+  .mobile-stat-row span {
+    padding: 0.18rem 0.42rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 999px;
+    background: var(--bg, #eef2f7);
+  }
+
+  .mobile-space-browser,
+  .mobile-space-options {
+    gap: 0.65rem;
+    margin-bottom: 0.75rem;
+    padding: 0.7rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+  }
+
+  .mobile-space-browser header,
+  .mobile-space-options header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.65rem;
+    min-width: 0;
+  }
+
+  .mobile-space-browser header strong,
+  .mobile-space-options header strong {
+    color: var(--text-strong, #0f172a);
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-space-rows {
+    display: grid;
+    gap: 0.55rem;
+    max-height: 14rem;
+    overflow: auto;
+  }
+
+  .mobile-option-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
   }
 
   .management-panel,
@@ -2319,6 +2647,10 @@
     min-width: 0;
     overflow-wrap: anywhere;
     white-space: normal;
+  }
+
+  .panel-label-short {
+    display: none;
   }
 
   .tabs button small {
@@ -2493,11 +2825,38 @@
     margin-top: 0.55rem;
   }
 
+  .source-details {
+    margin-top: 0.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--bg, #eef2f7);
+  }
+
+  .source-details > summary {
+    padding: 0.55rem 0.7rem;
+    color: var(--text-strong, #0f172a);
+    font-weight: 800;
+  }
+
+  .source-details-body {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0 0.7rem 0.7rem;
+  }
+
+  .source-details-body > * {
+    margin-top: 0;
+  }
+
   .source-content {
     margin-top: 0.75rem;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 8px;
     background: var(--bg, #eef2f7);
+  }
+
+  .source-details .source-content {
+    background: var(--panel, #ffffff);
   }
 
   .source-content summary {
@@ -2590,6 +2949,10 @@
     overflow-wrap: anywhere;
   }
 
+  .source-details-body > .source-meta {
+    margin: 0;
+  }
+
   .source-list,
   .source-list-section {
     margin-top: 1rem;
@@ -2623,6 +2986,14 @@
     display: grid;
     gap: 0.55rem;
     grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+
+  .source-details-body > .claims-list,
+  .source-details-body > .source-analysis,
+  .source-details-body > .chips,
+  .source-details-body > .question-chips,
+  .source-details-body > .source-content {
+    margin-top: 0;
   }
 
   .run-answer {
@@ -2989,9 +3360,13 @@
       min-height: auto;
     }
 
+    .knowledge-page.has-selection .space-list {
+      display: none;
+    }
+
     .space-list,
     .space-detail {
-      padding: 0.8rem;
+      padding: 0.65rem;
     }
 
     .space-list .rows {
@@ -2999,24 +3374,65 @@
       overflow: auto;
     }
 
-    .mobile-space-switcher {
+    .mobile-corpus-bar {
       display: grid;
-      gap: 0.35rem;
-      margin-bottom: 0.8rem;
-      padding: 0.75rem;
+      gap: 0.5rem;
+      margin-bottom: 0.65rem;
+      padding: 0.55rem;
       border: 1px solid var(--border-soft, #dbe3ef);
       border-radius: 8px;
       background: var(--panel, #ffffff);
     }
 
+    .mobile-space-browser,
+    .mobile-space-options {
+      display: grid;
+    }
+
+    .mobile-space-browser header,
+    .mobile-space-options header {
+      flex-direction: column;
+    }
+
+    .mobile-option-actions {
+      justify-content: flex-start;
+      width: 100%;
+    }
+
+    .mobile-option-actions button {
+      flex: 1 1 8rem;
+    }
+
+    .mobile-notice {
+      display: block;
+      margin-bottom: 0.65rem;
+    }
+
     .space-header,
     .detail-header,
     .form-footer,
-    .source-card header,
     .report-card header,
     .report-row header {
       align-items: flex-start;
       flex-direction: column;
+    }
+
+    .detail-header {
+      gap: 0.45rem;
+      margin-bottom: 0.55rem;
+    }
+
+    .detail-header .eyebrow {
+      display: none;
+    }
+
+    .detail-header h2 {
+      font-size: 1.25rem;
+    }
+
+    .detail-summary {
+      margin-top: 0.22rem;
+      font-size: 0.94rem;
     }
 
     .detail-actions,
@@ -3026,12 +3442,7 @@
     }
 
     .detail-actions {
-      justify-content: flex-start;
-    }
-
-    .detail-actions .text-action,
-    .detail-actions .danger-action {
-      flex: 1 1 10rem;
+      display: none;
     }
 
     .button-row,
@@ -3052,9 +3463,12 @@
     }
 
     .space-metrics,
-    .insight-bar,
     .form-grid {
       grid-template-columns: 1fr;
+    }
+
+    .insight-bar {
+      display: none;
     }
 
     .form-grid label,
@@ -3067,8 +3481,7 @@
       position: sticky;
       top: 4.1rem;
       z-index: 6;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      display: flex;
       gap: 0.45rem;
       margin: 0 -0.1rem;
       padding: 0.45rem 0.1rem;
@@ -3077,9 +3490,76 @@
     }
 
     .tabs button {
-      justify-content: space-between;
+      justify-content: center;
+      flex: 1 1 0;
+      gap: 0.3rem;
       min-width: 0;
-      padding: 0.45rem 0.35rem;
+      padding: 0.42rem 0.35rem;
+    }
+
+    .tabs button small {
+      display: none;
+    }
+
+    .panel-label-full {
+      display: none;
+    }
+
+    .panel-label-short {
+      display: inline;
+    }
+
+    .panel {
+      margin-top: 0.55rem;
+    }
+
+    .panel-title {
+      gap: 0.45rem;
+    }
+
+    .source-list,
+    .source-list-section {
+      margin-top: 0.55rem;
+    }
+
+    .source-card,
+    .report-card,
+    .report-row,
+    .evidence-list section {
+      padding: 0.7rem;
+    }
+
+    .source-card header {
+      align-items: flex-start;
+      flex-direction: row;
+      gap: 0.55rem;
+    }
+
+    .source-state {
+      justify-content: flex-start;
+    }
+
+    .source-delete-action {
+      width: 2rem;
+      min-width: 2rem;
+      padding: 0;
+    }
+
+    .source-delete-action span {
+      display: none;
+    }
+
+    .source-details {
+      margin-top: 0.6rem;
+    }
+
+    .source-details > summary {
+      min-height: 2.25rem;
+      padding: 0.5rem 0.6rem;
+    }
+
+    .source-details-body {
+      padding: 0 0.6rem 0.6rem;
     }
 
     .research-controls select,

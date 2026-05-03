@@ -28,15 +28,30 @@ const knowledgeSource = {
     message: 'Source is indexed and available for retrieval.',
     completed_at: now
   },
+  sections: [
+    {
+      id: 'section_1',
+      source_id: 'ksrc_20260428_120000_33333333',
+      source_title: 'Source transparency notes',
+      index: 0,
+      heading: 'Review flow',
+      text: 'Source-grounded reports should keep evidence visible beside generated claims.',
+      terms: ['source', 'evidence', 'review'],
+      word_count: 8
+    }
+  ],
   chunks: [
     {
       id: 'chunk_1',
       source_id: 'ksrc_20260428_120000_33333333',
       source_title: 'Source transparency notes',
+      section_id: 'section_1',
+      section_title: 'Review flow',
       index: 0,
       citation_label: 'S1.1',
       text: 'Source-grounded reports should keep evidence visible beside generated claims.',
       terms: ['source', 'evidence'],
+      semantic_terms: ['review', 'claim', 'evidence'],
       word_count: 8
     }
   ],
@@ -56,10 +71,16 @@ const knowledgeReport = {
       id: 'evidence_01',
       source_id: knowledgeSource.id,
       source_title: knowledgeSource.title,
+      section_id: 'section_1',
+      section_title: 'Review flow',
       citation_label: 'S1',
       excerpt: 'Source-grounded reports should keep **evidence visible** beside generated claims.',
       terms: ['evidence'],
-      score: 3
+      source_summary: 'Source-grounded reports should keep evidence visible beside generated claims.',
+      retrieval: 'hybrid',
+      lexical_score: 3,
+      semantic_score: 2,
+      score: 18
     }
   ],
   gaps: ['Only stored Knowledge Space sources were used for this report.'],
@@ -510,6 +531,8 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Processed sources' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Source transparency notes' })).toBeVisible();
       await expect(page.locator('.source-card .markdown strong').filter({ hasText: 'evidence visible' }).first()).toBeVisible();
+      await expect(page.locator('.source-card').first()).toContainText('Sections');
+      await expect(page.locator('.source-card').first()).toContainText('Review flow');
       await page.locator('details.source-content > summary').click();
       await expect(page.getByRole('heading', { name: 'Review flow' })).toBeVisible();
       await expect(page.locator('.source-card .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
@@ -554,6 +577,8 @@ for (const viewport of [
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 1');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Loop 2');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('external evidence review source transparency');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('hybrid retrieval');
+      await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('Review flow');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('covered');
       await expect(page.getByRole('article', { name: 'Selected research run' })).toContainText('rejected');
       await expectNoVisualArtifacts(page);

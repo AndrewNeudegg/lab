@@ -516,9 +516,17 @@ func evidencePrompt(evidence []Evidence) []map[string]any {
 			"kind":     item.SourceKind,
 			"uri":      item.SourceURI,
 			"chunk_id": item.ChunkID,
+			"section":  firstNonEmpty(item.SectionTitle, item.SectionID),
 			"excerpt":  boundedText(item.Excerpt, 1400),
 			"terms":    item.Terms,
-			"score":    item.Score,
+			"summary":  boundedText(item.SourceSummary, 600),
+			"retrieval": map[string]any{
+				"method":         item.Retrieval,
+				"lexical_score":  item.LexicalScore,
+				"semantic_score": item.SemanticScore,
+				"score":          item.Score,
+			},
+			"score": item.Score,
 		})
 	}
 	return out

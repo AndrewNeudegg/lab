@@ -441,6 +441,7 @@ export interface HomelabdKnowledgeSource {
   word_count: number;
   provenance?: HomelabdKnowledgeSourceProvenance;
   ingestion?: HomelabdKnowledgeSourceIngestion;
+  sections?: HomelabdKnowledgeSourceSection[];
   chunks?: HomelabdKnowledgeSourceChunk[];
   created_at: string;
   updated_at: string;
@@ -482,8 +483,22 @@ export interface HomelabdKnowledgeSourceChunk {
   id: string;
   source_id: string;
   source_title: string;
+  section_id?: string;
+  section_title?: string;
   index: number;
   citation_label: string;
+  text: string;
+  terms?: string[];
+  semantic_terms?: string[];
+  word_count: number;
+}
+
+export interface HomelabdKnowledgeSourceSection {
+  id: string;
+  source_id: string;
+  source_title: string;
+  index: number;
+  heading: string;
   text: string;
   terms?: string[];
   word_count: number;
@@ -511,9 +526,15 @@ export interface HomelabdKnowledgeEvidence {
   source_kind?: string;
   source_uri?: string;
   chunk_id?: string;
+  section_id?: string;
+  section_title?: string;
   citation_label: string;
   excerpt: string;
   terms?: string[];
+  source_summary?: string;
+  retrieval?: string;
+  lexical_score?: number;
+  semantic_score?: number;
   score: number;
 }
 

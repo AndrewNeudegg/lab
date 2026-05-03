@@ -69,7 +69,7 @@ func BuildSource(ctx context.Context, req AddSourceRequest, sourceID string, now
 	kind := normalizeSourceKind(req.Kind)
 	title := strings.TrimSpace(req.Title)
 	uri := strings.TrimSpace(req.URI)
-	content := cleanWhitespace(req.Content)
+	content := cleanSourceContent(req.Content)
 	source := Source{
 		ID:        strings.TrimSpace(sourceID),
 		Title:     title,
@@ -191,7 +191,10 @@ func (f HTTPFetcher) Fetch(ctx context.Context, uri string) (FetchedSource, erro
 
 var (
 	titlePattern     = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	headingPattern   = regexp.MustCompile(`(?is)<h([1-6])[^>]*>(.*?)</h[1-6]>`)
 	scriptPattern    = regexp.MustCompile(`(?is)<(script|style|noscript|svg)[^>]*>.*?</(script|style|noscript|svg)>`)
+	tableCellPattern = regexp.MustCompile(`(?is)</?(td|th)[^>]*>`)
+	blockTagPattern  = regexp.MustCompile(`(?is)</?(article|aside|blockquote|body|br|dd|div|dl|dt|figcaption|figure|footer|header|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)[^>]*>`)
 	tagPattern       = regexp.MustCompile(`(?is)<[^>]+>`)
 	spacePattern     = regexp.MustCompile(`[ \t\r\f\v]+`)
 	pdfStreamPattern = regexp.MustCompile(`(?s)stream\r?\n(.*?)\r?\nendstream`)
@@ -211,14 +214,13 @@ func ExtractFetchedText(ctx context.Context, body []byte, contentType string, op
 		if match := titlePattern.FindStringSubmatch(raw); len(match) > 1 {
 			title = cleanWhitespace(html.UnescapeString(stripTags(match[1])))
 		}
-		text := scriptPattern.ReplaceAllString(raw, " ")
-		text = stripTags(text)
+		text := htmlToStructuredText(raw)
 		text = html.UnescapeString(text)
-		text = cleanExtractedText(text)
+		text = cleanSourceContent(text)
 		return title, text, "html", nil
 	}
 	if contentType == "" || strings.Contains(contentType, "text/") || strings.Contains(contentType, "json") || strings.Contains(contentType, "xml") {
-		return "", cleanExtractedText(raw), "plain-text", nil
+		return "", cleanSourceContent(raw), "plain-text", nil
 	}
 	return "", "", "", fmt.Errorf("unsupported content type %q", contentType)
 }
@@ -542,6 +544,29 @@ func decodeUTF16BE(data []byte) string {
 
 func stripTags(value string) string {
 	return tagPattern.ReplaceAllString(value, " ")
+}
+
+func htmlToStructuredText(value string) string {
+	value = scriptPattern.ReplaceAllString(value, " ")
+	value = headingPattern.ReplaceAllStringFunc(value, func(match string) string {
+		parts := headingPattern.FindStringSubmatch(match)
+		if len(parts) < 3 {
+			return "\n" + cleanWhitespace(stripTags(match)) + "\n"
+		}
+		level, _ := strconv.Atoi(parts[1])
+		if level <= 0 || level > 6 {
+			level = 2
+		}
+		text := cleanWhitespace(html.UnescapeString(stripTags(parts[2])))
+		if text == "" {
+			return "\n"
+		}
+		return "\n" + strings.Repeat("#", level) + " " + text + "\n"
+	})
+	value = tableCellPattern.ReplaceAllString(value, " | ")
+	value = blockTagPattern.ReplaceAllString(value, "\n")
+	value = stripTags(value)
+	return value
 }
 
 func cleanExtractedText(value string) string {

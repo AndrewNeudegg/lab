@@ -75,6 +75,7 @@ type Source struct {
 	WordCount   int              `json:"word_count"`
 	Provenance  SourceProvenance `json:"provenance,omitempty"`
 	Ingestion   SourceIngestion  `json:"ingestion,omitempty"`
+	Sections    []SourceSection  `json:"sections,omitempty"`
 	Chunks      []SourceChunk    `json:"chunks,omitempty"`
 	CreatedAt   time.Time        `json:"created_at"`
 	UpdatedAt   time.Time        `json:"updated_at"`
@@ -112,14 +113,28 @@ type SourceIngestion struct {
 	CompletedAt time.Time `json:"completed_at,omitempty"`
 }
 
+type SourceSection struct {
+	ID          string   `json:"id"`
+	SourceID    string   `json:"source_id"`
+	SourceTitle string   `json:"source_title"`
+	Index       int      `json:"index"`
+	Heading     string   `json:"heading"`
+	Text        string   `json:"text"`
+	Terms       []string `json:"terms,omitempty"`
+	WordCount   int      `json:"word_count"`
+}
+
 type SourceChunk struct {
 	ID            string   `json:"id"`
 	SourceID      string   `json:"source_id"`
 	SourceTitle   string   `json:"source_title"`
+	SectionID     string   `json:"section_id,omitempty"`
+	SectionTitle  string   `json:"section_title,omitempty"`
 	Index         int      `json:"index"`
 	CitationLabel string   `json:"citation_label"`
 	Text          string   `json:"text"`
 	Terms         []string `json:"terms,omitempty"`
+	SemanticTerms []string `json:"semantic_terms,omitempty"`
 	WordCount     int      `json:"word_count"`
 }
 
@@ -145,9 +160,15 @@ type Evidence struct {
 	SourceKind    string   `json:"source_kind,omitempty"`
 	SourceURI     string   `json:"source_uri,omitempty"`
 	ChunkID       string   `json:"chunk_id,omitempty"`
+	SectionID     string   `json:"section_id,omitempty"`
+	SectionTitle  string   `json:"section_title,omitempty"`
 	CitationLabel string   `json:"citation_label"`
 	Excerpt       string   `json:"excerpt"`
 	Terms         []string `json:"terms,omitempty"`
+	SourceSummary string   `json:"source_summary,omitempty"`
+	Retrieval     string   `json:"retrieval,omitempty"`
+	LexicalScore  int      `json:"lexical_score,omitempty"`
+	SemanticScore int      `json:"semantic_score,omitempty"`
 	Score         int      `json:"score"`
 }
 
@@ -163,6 +184,34 @@ type QueryResult struct {
 	Evidence  []Evidence `json:"evidence"`
 	CreatedAt time.Time  `json:"created_at"`
 }
+
+type RetrievalIndex struct {
+	SpaceID   string                `json:"space_id"`
+	UpdatedAt time.Time             `json:"updated_at"`
+	Chunks    []RetrievalIndexChunk `json:"chunks"`
+}
+
+type RetrievalIndexChunk struct {
+	SourceID      string   `json:"source_id"`
+	SourceTitle   string   `json:"source_title"`
+	SourceKind    string   `json:"source_kind,omitempty"`
+	SourceURI     string   `json:"source_uri,omitempty"`
+	SourceSummary string   `json:"source_summary,omitempty"`
+	SectionID     string   `json:"section_id,omitempty"`
+	SectionTitle  string   `json:"section_title,omitempty"`
+	ChunkID       string   `json:"chunk_id"`
+	CitationLabel string   `json:"citation_label"`
+	TextHash      string   `json:"text_hash"`
+	Terms         []string `json:"terms,omitempty"`
+	SemanticTerms []string `json:"semantic_terms,omitempty"`
+	WordCount     int      `json:"word_count"`
+}
+
+type RetrievalIndexer interface {
+	Build(space Space, now time.Time) (RetrievalIndex, error)
+}
+
+type LocalRetrievalIndexer struct{}
 
 type AskRequest struct {
 	Question  string   `json:"question"`
@@ -406,7 +455,7 @@ func NewSource(req AddSourceRequest, sourceID string, now time.Time) (Source, er
 		Title:     strings.TrimSpace(req.Title),
 		Kind:      normalizeSourceKind(req.Kind),
 		URI:       strings.TrimSpace(req.URI),
-		Content:   cleanWhitespace(req.Content),
+		Content:   cleanSourceContent(req.Content),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -421,7 +470,7 @@ func NormalizeSource(source Source) (Source, error) {
 	source.Title = strings.TrimSpace(source.Title)
 	source.Kind = normalizeSourceKind(source.Kind)
 	source.URI = strings.TrimSpace(source.URI)
-	source.Content = cleanWhitespace(source.Content)
+	source.Content = cleanSourceContent(source.Content)
 	source.Provenance = normalizeSourceProvenance(source.Provenance, source)
 	source.Ingestion = normalizeSourceIngestion(source.Ingestion, source.Content != "")
 	if source.Title == "" {
@@ -449,6 +498,7 @@ func NormalizeSource(source Source) (Source, error) {
 	source.Claims = normalizeSourceClaims(source.Claims)
 	source.Entities = normalizeSourceEntities(source.Entities)
 	source.Reliability = compactStrings(source.Reliability, 8)
+	source.Sections = normalizeSourceSections(source)
 	source.Chunks = normalizeSourceChunks(source)
 	return source, nil
 }
@@ -565,9 +615,19 @@ func normalizeReport(report Report) Report {
 		report.Evidence[index].SourceKind = strings.TrimSpace(report.Evidence[index].SourceKind)
 		report.Evidence[index].SourceURI = strings.TrimSpace(report.Evidence[index].SourceURI)
 		report.Evidence[index].ChunkID = strings.TrimSpace(report.Evidence[index].ChunkID)
+		report.Evidence[index].SectionID = strings.TrimSpace(report.Evidence[index].SectionID)
+		report.Evidence[index].SectionTitle = strings.TrimSpace(report.Evidence[index].SectionTitle)
 		report.Evidence[index].CitationLabel = strings.TrimSpace(report.Evidence[index].CitationLabel)
 		report.Evidence[index].Excerpt = strings.TrimSpace(report.Evidence[index].Excerpt)
 		report.Evidence[index].Terms = compactStrings(report.Evidence[index].Terms, 8)
+		report.Evidence[index].SourceSummary = strings.TrimSpace(report.Evidence[index].SourceSummary)
+		report.Evidence[index].Retrieval = strings.TrimSpace(report.Evidence[index].Retrieval)
+		if report.Evidence[index].LexicalScore < 0 {
+			report.Evidence[index].LexicalScore = 0
+		}
+		if report.Evidence[index].SemanticScore < 0 {
+			report.Evidence[index].SemanticScore = 0
+		}
 	}
 	return report
 }
@@ -838,11 +898,15 @@ func selectedSources(sources []Source, ids []string) []Source {
 }
 
 type evidenceCandidate struct {
-	source Source
-	chunk  SourceChunk
-	text   string
-	terms  []string
-	score  int
+	source        Source
+	chunk         SourceChunk
+	section       SourceSection
+	text          string
+	terms         []string
+	retrieval     string
+	lexicalScore  int
+	semanticScore int
+	score         int
 }
 
 func rankEvidence(sources []Source, queryTerms []string, mode string, limit int) []Evidence {
@@ -853,31 +917,57 @@ func rankEvidence(sources []Source, queryTerms []string, mode string, limit int)
 		if len(chunks) == 0 {
 			chunks = normalizeSourceChunks(source)
 		}
+		sectionByID := map[string]SourceSection{}
+		for _, section := range source.Sections {
+			sectionByID[section.ID] = section
+		}
 		for _, chunk := range chunks {
-			score, matched := scoreText(chunk.Text, queryTerms)
-			if score == 0 {
+			lexicalScore, lexicalTerms := scoreText(chunk.Text, queryTerms)
+			semanticScore, semanticTerms := scoreText(strings.Join(chunk.SemanticTerms, " "), queryTerms)
+			if lexicalScore == 0 && semanticScore == 0 {
 				continue
 			}
+			retrieval := "hybrid"
+			if lexicalScore == 0 {
+				retrieval = "semantic"
+			} else if semanticScore == 0 {
+				retrieval = "lexical"
+			}
+			sourceQuality := sourceRetrievalQuality(source)
+			section := sectionByID[chunk.SectionID]
 			candidates = append(candidates, evidenceCandidate{
-				source: source,
-				chunk:  chunk,
-				text:   chunk.Text,
-				terms:  matched,
-				score:  score,
+				source:        source,
+				chunk:         chunk,
+				section:       section,
+				text:          chunk.Text,
+				terms:         compactStrings(append(lexicalTerms, semanticTerms...), 12),
+				retrieval:     retrieval,
+				lexicalScore:  lexicalScore,
+				semanticScore: semanticScore,
+				score:         lexicalScore*4 + semanticScore*3 + sourceQuality,
 			})
 			sourceCandidates++
 		}
 		if sourceCandidates == 0 && source.Summary != "" && source.Ingestion.State != SourceStatusFailed {
+			semanticScore, matched := scoreText(source.Summary+" "+strings.Join(source.KeyTerms, " "), queryTerms)
+			if semanticScore == 0 {
+				continue
+			}
 			candidates = append(candidates, evidenceCandidate{
-				source: source,
-				text:   source.Summary,
-				terms:  source.KeyTerms,
-				score:  1,
+				source:        source,
+				text:          source.Summary,
+				terms:         compactStrings(append(source.KeyTerms, matched...), 12),
+				retrieval:     "semantic-summary",
+				semanticScore: semanticScore,
+				score:         semanticScore*3 + sourceRetrievalQuality(source),
 			})
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].score == candidates[j].score {
+			if candidates[i].lexicalScore != candidates[j].lexicalScore {
+				return candidates[i].lexicalScore > candidates[j].lexicalScore
+			}
 			if candidates[i].source.Title == candidates[j].source.Title {
 				return candidates[i].text < candidates[j].text
 			}
@@ -904,13 +994,36 @@ func rankEvidence(sources []Source, queryTerms []string, mode string, limit int)
 			SourceKind:    candidate.source.Kind,
 			SourceURI:     firstNonEmpty(candidate.source.Provenance.CanonicalURI, candidate.source.Provenance.URI, candidate.source.URI),
 			ChunkID:       candidate.chunk.ID,
+			SectionID:     candidate.chunk.SectionID,
+			SectionTitle:  firstNonEmpty(candidate.chunk.SectionTitle, candidate.section.Heading),
 			CitationLabel: fmt.Sprintf("S%d", index+1),
 			Excerpt:       shorten(candidate.text, 420),
 			Terms:         candidate.terms,
+			SourceSummary: shorten(candidate.source.Summary, 300),
+			Retrieval:     candidate.retrieval,
+			LexicalScore:  candidate.lexicalScore,
+			SemanticScore: candidate.semanticScore,
 			Score:         candidate.score,
 		})
 	}
 	return evidence
+}
+
+func sourceRetrievalQuality(source Source) int {
+	score := 0
+	if source.Ingestion.State == SourceStatusReady {
+		score++
+	}
+	if source.Summary != "" {
+		score += 2
+	}
+	if len(source.Claims) > 0 {
+		score++
+	}
+	if len(source.Reliability) > 0 {
+		score++
+	}
+	return score
 }
 
 func ResearchEvidence(space Space, run ResearchRun, limit int) ([]Evidence, error) {
@@ -1266,6 +1379,26 @@ func sourceQuestions(terms []string, subject string) []string {
 	return questions
 }
 
+func cleanSourceContent(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	var lines []string
+	blank := false
+	for _, line := range strings.Split(strings.TrimSpace(value), "\n") {
+		line = spacePattern.ReplaceAllString(strings.TrimSpace(line), " ")
+		if line == "" {
+			if !blank && len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			blank = true
+			continue
+		}
+		lines = append(lines, line)
+		blank = false
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func cleanWhitespace(value string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
@@ -1285,6 +1418,16 @@ func compactStrings(values []string, limit int) []string {
 		}
 	}
 	return compact
+}
+
+func containsString(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func firstLine(value string) string {

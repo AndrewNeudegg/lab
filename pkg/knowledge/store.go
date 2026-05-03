@@ -63,6 +63,9 @@ func (s *Store) Save(space Space) error {
 		}
 		normalized.ResearchRuns[index].WorkspacePath = path
 	}
+	if err := s.writeRetrievalIndexLocked(normalized); err != nil {
+		return err
+	}
 	normalized.Insight = BuildSpaceInsight(normalized.Sources, normalized.UpdatedAt)
 	b, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
@@ -168,6 +171,23 @@ func (s *Store) writeSourceSnapshotLocked(spaceID string, source Source) (string
 		return "", err
 	}
 	return relative, os.WriteFile(fullPath, []byte(source.Content+"\n"), 0o644)
+}
+
+func (s *Store) writeRetrievalIndexLocked(space Space) error {
+	index, err := BuildRetrievalIndex(space, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	relative := filepath.Join("indexes", space.ID)
+	fullDir := filepath.Join(s.dir, relative)
+	if err := os.MkdirAll(fullDir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(fullDir, "chunks.json"), append(data, '\n'), 0o644)
 }
 
 func (s *Store) Load(id string) (Space, error) {

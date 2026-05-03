@@ -553,6 +553,19 @@ func TestKnowledgeResearchRunDiscoversOnlineCheeseSourcesOverAPI(t *testing.T) {
 	if !containsResearchEvent(completedRun.Events, "coverage", "Coverage sufficient") {
 		t.Fatalf("events = %#v, want coverage stop event", completedRun.Events)
 	}
+	var completedReport knowledgestore.Report
+	for _, report := range completedSpace.Reports {
+		if report.ID == completedRun.ReportID {
+			completedReport = report
+			break
+		}
+	}
+	if completedReport.ID == "" || len(completedReport.Evidence) == 0 {
+		t.Fatalf("reports = %#v, want completed report evidence", completedSpace.Reports)
+	}
+	if completedReport.Evidence[0].Retrieval == "" || completedReport.Evidence[0].SourceSummary == "" || completedReport.Evidence[0].SectionTitle == "" {
+		t.Fatalf("evidence = %#v, want retrieval trace, source summary, and source section", completedReport.Evidence[0])
+	}
 	for _, source := range completedSpace.Sources {
 		if source.Ingestion.State != knowledgestore.SourceStatusReady || len(source.Claims) == 0 {
 			t.Fatalf("source = %#v, want model-analysed ready source with claims", source)

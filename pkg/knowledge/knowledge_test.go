@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -181,6 +182,61 @@ func TestAskUsesModelOverRetrievedEvidence(t *testing.T) {
 	}
 	if !strings.Contains(answer.Answer, "[S1]") || len(answer.KeyFindings) != 1 || answer.Provider != "scripted" || answer.Model != "test-model" {
 		t.Fatalf("answer = %#v, want model answer with citation and provenance", answer)
+	}
+}
+
+func TestHybridRetrievalUsesSourceSectionsAndSemanticTerms(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	space, err := NewSpace(CreateSpaceRequest{Title: "Cheese corpus"}, "kspace_cheese", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewSource(AddSourceRequest{
+		Title: "Cheese field guide",
+		Content: strings.Join([]string{
+			"# Fresh cheese",
+			"Mozzarella has high moisture and an elastic texture.",
+			"",
+			"# Aged cheese",
+			"Cheddar has a firm texture and sharp flavour after ageing.",
+		}, "\n"),
+	}, "ksrc_cheese", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Summary = "A cheese taxonomy source covering fresh and aged families."
+	source.Claims = []SourceClaim{{ID: "claim_mozzarella", Text: "Mozzarella is a fresh pasta filata cheese.", Importance: "high"}}
+	source.KeyTerms = []string{"cheese", "mozzarella", "fresh", "aged"}
+	source.Ingestion = SourceIngestion{State: SourceStatusReady, Stage: "model_indexed", StartedAt: now, CompletedAt: now}
+	source, err = NormalizeSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	space, err = AddSource(space, source, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	query, err := QuerySpace(space, QueryRequest{Query: "pasta filata mozzarella", Limit: 2}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(query.Evidence) == 0 {
+		t.Fatal("expected hybrid evidence")
+	}
+	first := query.Evidence[0]
+	if first.SectionTitle != "Fresh cheese" || first.Retrieval != "hybrid" || first.SemanticScore == 0 || first.SourceSummary == "" {
+		t.Fatalf("evidence = %#v, want fresh-cheese hybrid retrieval with source summary", first)
+	}
+	if !contains(first.Terms, "pasta") || !contains(first.Terms, "mozzarella") {
+		t.Fatalf("terms = %#v, want lexical and semantic matched terms", first.Terms)
+	}
+	index, err := BuildRetrievalIndex(space, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Chunks) != 2 || index.Chunks[0].SectionTitle == "" || len(index.Chunks[0].SemanticTerms) == 0 {
+		t.Fatalf("index = %#v, want sectioned semantic chunk index", index)
 	}
 }
 
@@ -393,6 +449,17 @@ func TestStoreWritesResearchRunWorkspace(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(workspace, name)); err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}
+	}
+	indexData, err := os.ReadFile(filepath.Join(root, "indexes", loaded.ID, "chunks.json"))
+	if err != nil {
+		t.Fatalf("stat retrieval index: %v", err)
+	}
+	var index RetrievalIndex
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		t.Fatalf("decode retrieval index: %v", err)
+	}
+	if index.SpaceID != loaded.ID || len(index.Chunks) != 0 {
+		t.Fatalf("index = %#v, want empty index for source-free workspace space", index)
 	}
 	state, err := os.ReadFile(filepath.Join(workspace, "state.json"))
 	if err != nil {

@@ -9,6 +9,7 @@
     Markdown,
     Navbar,
     type HomelabdKnowledgeAskResult,
+    type HomelabdKnowledgeEvidence,
     type HomelabdKnowledgeReport,
     type HomelabdKnowledgeResearchRun,
     type HomelabdKnowledgeSpace
@@ -158,6 +159,15 @@
       return value;
     }
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const evidenceTraceLabel = (evidence: HomelabdKnowledgeEvidence) => {
+    const method = evidence.retrieval ? `${evidence.retrieval} retrieval` : 'retrieval';
+    const scores = [
+      evidence.lexical_score !== undefined ? `lexical ${evidence.lexical_score}` : '',
+      evidence.semantic_score !== undefined ? `semantic ${evidence.semantic_score}` : ''
+    ].filter(Boolean);
+    return scores.length ? `${method}; ${scores.join(', ')}` : method;
   };
 
   const plural = (count: number, singular: string, pluralLabel = `${singular}s`) =>
@@ -745,6 +755,12 @@
                               <dd>{source.chunks.length}</dd>
                             </div>
                           {/if}
+                          {#if source.sections?.length}
+                            <div>
+                              <dt>Sections</dt>
+                              <dd>{source.sections.length}</dd>
+                            </div>
+                          {/if}
                           {#if source.provenance?.extractor}
                             <div>
                               <dt>Extractor</dt>
@@ -776,6 +792,13 @@
                         <div class="chips" aria-label={`${source.title} key terms`}>
                           {#each source.key_terms.slice(0, 6) as term}
                             <span>{term}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                      {#if source.sections?.length}
+                        <div class="chips" aria-label={`${source.title} sections`}>
+                          {#each source.sections.slice(0, 5) as section}
+                            <span>{section.heading}</span>
                           {/each}
                         </div>
                       {/if}
@@ -954,6 +977,27 @@
                         <div class="markdown-block evidence-body">
                           <Markdown content={evidence.excerpt} />
                         </div>
+                        <dl class="candidate-meta evidence-trace">
+                          {#if evidence.section_title}
+                            <div>
+                              <dt>Section</dt>
+                              <dd>{evidence.section_title}</dd>
+                            </div>
+                          {/if}
+                          <div>
+                            <dt>Trace</dt>
+                            <dd>{evidenceTraceLabel(evidence)}</dd>
+                          </div>
+                          <div>
+                            <dt>Score</dt>
+                            <dd>{evidence.score}</dd>
+                          </div>
+                        </dl>
+                        {#if evidence.source_summary}
+                          <div class="markdown-block compact">
+                            <Markdown content={evidence.source_summary} />
+                          </div>
+                        {/if}
                         {#if evidence.source_uri}
                           <small>{evidence.source_uri}</small>
                         {/if}
@@ -1128,6 +1172,27 @@
                               <div class="markdown-block evidence-body">
                                 <Markdown content={evidence.excerpt} />
                               </div>
+                              <dl class="candidate-meta evidence-trace">
+                                {#if evidence.section_title}
+                                  <div>
+                                    <dt>Section</dt>
+                                    <dd>{evidence.section_title}</dd>
+                                  </div>
+                                {/if}
+                                <div>
+                                  <dt>Trace</dt>
+                                  <dd>{evidenceTraceLabel(evidence)}</dd>
+                                </div>
+                                <div>
+                                  <dt>Score</dt>
+                                  <dd>{evidence.score}</dd>
+                                </div>
+                              </dl>
+                              {#if evidence.source_summary}
+                                <div class="markdown-block compact">
+                                  <Markdown content={evidence.source_summary} />
+                                </div>
+                              {/if}
                               {#if evidence.source_uri}
                                 <small>{evidence.source_uri}</small>
                               {/if}
@@ -1448,6 +1513,27 @@
                         <div class="markdown-block evidence-body">
                           <Markdown content={evidence.excerpt} />
                         </div>
+                        <dl class="candidate-meta evidence-trace">
+                          {#if evidence.section_title}
+                            <div>
+                              <dt>Section</dt>
+                              <dd>{evidence.section_title}</dd>
+                            </div>
+                          {/if}
+                          <div>
+                            <dt>Trace</dt>
+                            <dd>{evidenceTraceLabel(evidence)}</dd>
+                          </div>
+                          <div>
+                            <dt>Score</dt>
+                            <dd>{evidence.score}</dd>
+                          </div>
+                        </dl>
+                        {#if evidence.source_summary}
+                          <div class="markdown-block compact">
+                            <Markdown content={evidence.source_summary} />
+                          </div>
+                        {/if}
                       </section>
                     {/each}
                   </div>
@@ -2494,6 +2580,11 @@
     margin: 0.12rem 0 0;
     color: var(--text, #172033);
     overflow-wrap: anywhere;
+  }
+
+  .evidence-trace {
+    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+    padding-top: 0.1rem;
   }
 
   .source-candidates a,

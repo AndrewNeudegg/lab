@@ -433,20 +433,36 @@ const mockKnowledgeApis = async (page: Page) => {
   });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/ask$/, async (route) => {
     const body = route.request().postDataJSON() as { question?: string };
+    const report = {
+      ...knowledgeReport,
+      id: 'kreport_ask',
+      question: body.question || knowledgeReport.question,
+      mode: 'ask',
+      created_at: now
+    };
+    const current = knowledgeSpaces[0];
+    const updated = {
+      ...current,
+      reports: [report, ...(current.reports || [])],
+      updated_at: now
+    };
+    knowledgeSpaces = [updated];
     await route.fulfill({
       json: {
+        space: updated,
         result: {
-          question: body.question || knowledgeReport.question,
-          answer: knowledgeReport.answer,
-          key_findings: knowledgeReport.key_findings,
-          evidence: knowledgeReport.evidence,
-          gaps: knowledgeReport.gaps,
-          provider: 'openai',
-          model: 'gpt-5.2',
-          usage: { input_tokens: 210, output_tokens: 70, total_tokens: 280 },
-          created_at: now
+          question: report.question,
+          answer: report.answer,
+          key_findings: report.key_findings,
+          evidence: report.evidence,
+          gaps: report.gaps,
+          provider: report.provider,
+          model: report.model,
+          usage: report.usage,
+          created_at: report.created_at
         },
-        reply: 'Grounded answer created.'
+        report,
+        reply: 'Grounded answer saved.'
       }
     });
   });
@@ -730,6 +746,44 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Review notes' })).toBeVisible();
     });
 
+    test('turns critical prompts into explicit research actions', async ({ page }) => {
+      const api = await mockKnowledgeApis(page);
+      await page.goto('/knowledge');
+      await expectKnowledgeReady(page);
+
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'More Knowledge Space options' }).click();
+      } else {
+        await page.getByRole('link', { name: /Research synthesis/ }).click();
+      }
+
+      const suggestions = page.getByRole('list', {
+        name: viewport.mobile ? 'Mobile research suggestions' : 'Research suggestions'
+      });
+      await expect(suggestions).toContainText('What does this space show about source?');
+      await suggestions
+        .getByRole('button', { name: /Research this: What does this space show about source/ })
+        .click();
+
+      await expect(page.getByRole('tab', { name: /Research/ })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('article', { name: 'Selected research' })).toContainText(
+        'What does this space show about source?'
+      );
+      expect(api.researchRunRequests).toHaveLength(1);
+      expect(api.researchRunRequests[0]).toMatchObject({
+        objective: 'What does this space show about source?',
+        mode: 'research',
+        discover_sources: true,
+        source_ids: [knowledgeSource.id]
+      });
+      await expectNoHorizontalOverflow(page, [
+        '#knowledge-panel-runs',
+        '[aria-label="Selected research"]',
+        '[aria-label="Previous research"]'
+      ]);
+      await expectNoAxeViolations(page);
+    });
+
     test('uses suggested questions, grounded ask, research, and reports as explicit selectors', async ({ page }) => {
       const api = await mockKnowledgeApis(page);
       await page.goto('/knowledge');
@@ -740,11 +794,19 @@ for (const viewport of [
       } else {
         await page.getByRole('link', { name: /Research synthesis/ }).click();
       }
-      await page.getByRole('button', { name: 'What does this space show about source?' }).click();
+      const suggestions = page.getByRole('list', {
+        name: viewport.mobile ? 'Mobile research suggestions' : 'Research suggestions'
+      });
+      await expect(suggestions).toContainText('What does this space show about source?');
+      await expect(
+        suggestions.getByRole('button', { name: /Research this: What does this space show about source/ })
+      ).toBeVisible();
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'Hide Knowledge Space options' }).click();
+      }
+      await page.getByRole('tab', { name: /Ask/ }).click();
       await expect(page.getByRole('tab', { name: /Ask/ })).toHaveAttribute('aria-selected', 'true');
-      await expect(page.getByRole('textbox', { name: 'Question' })).toHaveValue(
-        'What does this space show about source?'
-      );
+      await page.getByRole('textbox', { name: 'Question' }).fill('What does this space show about source?');
       await expect(page.getByRole('tabpanel', { name: 'Ask' }).locator('details.source-picker > summary')).toHaveText(
         'All 1 source selected'
       );
@@ -752,6 +814,16 @@ for (const viewport of [
       await expect(page.getByRole('article', { name: 'Grounded answer' })).toContainText('[S1]');
       await expect(page.getByRole('article', { name: 'Grounded answer' }).getByRole('heading', { name: 'Evidence review' })).toBeVisible();
       await expect(page.locator('[aria-label="Grounded answer"] .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
+      await expect(page.getByRole('tab', { name: /Reports/ })).toContainText('2');
+      await expect(page.locator('[aria-label="Answer key findings"]')).not.toHaveAttribute('open', '');
+      await expect(page.locator('[aria-label="Answer evidence"]')).not.toHaveAttribute('open', '');
+      await expect(page.locator('[aria-label="Answer gaps"]')).not.toHaveAttribute('open', '');
+      await page.locator('[aria-label="Answer evidence"] summary').click();
+      await expect(page.locator('[aria-label="Answer evidence"]').getByText('Review flow')).toBeVisible();
+      await page.locator('[aria-label="Answer gaps"] summary').click();
+      await expect(
+        page.locator('[aria-label="Answer gaps"]').getByRole('button', { name: /Research this: Only stored Knowledge Space sources/ })
+      ).toBeVisible();
       await page.getByRole('article', { name: 'Grounded answer' }).getByRole('link', { name: 'S1' }).first().click();
       await expect(page.getByRole('tab', { name: /Sources/ })).toHaveAttribute('aria-selected', 'true');
       await expect(page.locator('#knowledge-source-ksrc_20260428_120000_33333333')).toHaveAttribute('open', '');

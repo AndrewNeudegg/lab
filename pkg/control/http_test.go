@@ -301,13 +301,18 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	askPath := "/knowledge/spaces/" + createBody.Space.ID + "/ask"
 	asked := requestJSON(t, mux, http.MethodPost, askPath, `{"question":"How do reviewers use evidence?"}`, "", http.StatusOK)
 	var askBody struct {
+		Space  knowledgestore.Space     `json:"space"`
 		Result knowledgestore.AskResult `json:"result"`
+		Report knowledgestore.Report    `json:"report"`
 	}
 	if err := json.NewDecoder(asked.Body).Decode(&askBody); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(askBody.Result.Answer, "[S1]") {
 		t.Fatalf("ask body = %#v, want cited answer", askBody)
+	}
+	if askBody.Report.ID == "" || askBody.Report.Mode != knowledgestore.ReportModeAsk || len(askBody.Space.Reports) != 2 {
+		t.Fatalf("ask body = %#v, want persisted ask report", askBody)
 	}
 
 	runPath := "/knowledge/spaces/" + createBody.Space.ID + "/research-runs"
@@ -324,7 +329,7 @@ func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 		t.Fatalf("run body = %#v, want queued async run without immediate report", runBody)
 	}
 	completedSpace, completedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
-	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted || completedRun.ReportID == "" || len(completedSpace.Reports) != 2 {
+	if completedRun.Status != knowledgestore.ResearchRunStatusCompleted || completedRun.ReportID == "" || len(completedSpace.Reports) != 3 {
 		t.Fatalf("run = %#v space = %#v, want completed run and stored report", completedRun, completedSpace)
 	}
 

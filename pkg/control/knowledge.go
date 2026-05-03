@@ -139,12 +139,12 @@ func (s *Server) handleKnowledgeSpace(rw http.ResponseWriter, req *http.Request)
 			writeError(rw, http.StatusBadRequest, err.Error())
 			return
 		}
-		result, reply, err := s.Orchestrator.AskKnowledgeSpace(req.Context(), spaceID, in)
+		space, result, report, reply, err := s.Orchestrator.AskKnowledgeSpace(req.Context(), spaceID, in)
 		if err != nil {
 			writeError(rw, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(rw, http.StatusOK, map[string]any{"result": result, "reply": reply})
+		writeJSON(rw, http.StatusOK, map[string]any{"space": space, "result": result, "report": report, "reply": reply})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "research-runs" && req.Method == http.MethodPost {

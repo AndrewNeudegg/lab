@@ -32,6 +32,11 @@ export const latestReport = (space?: HomelabdKnowledgeSpace): HomelabdKnowledgeR
 export const latestResearchRun = (space?: HomelabdKnowledgeSpace): HomelabdKnowledgeResearchRun | undefined =>
   [...(space?.research_runs || [])].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
 
+export const latestAskReport = (space?: HomelabdKnowledgeSpace): HomelabdKnowledgeReport | undefined =>
+  [...(space?.reports || [])]
+    .filter((report) => report.mode === 'ask')
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
+
 export const researchRunsExceptSelected = (
   space?: HomelabdKnowledgeSpace,
   selectedRun?: HomelabdKnowledgeResearchRun

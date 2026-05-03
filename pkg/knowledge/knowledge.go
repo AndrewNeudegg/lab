@@ -21,6 +21,7 @@ const (
 	ReportModeResearch = "research"
 	ReportModeBrief    = "brief"
 	ReportModeStudy    = "study"
+	ReportModeAsk      = "ask"
 
 	SourceStatusReady      = "ready"
 	SourceStatusFailed     = "failed"
@@ -775,6 +776,8 @@ func normalizeReportMode(mode string) string {
 		return ReportModeBrief
 	case "study", "questions":
 		return ReportModeStudy
+	case "ask", "answer", "grounded_answer":
+		return ReportModeAsk
 	default:
 		return ReportModeResearch
 	}

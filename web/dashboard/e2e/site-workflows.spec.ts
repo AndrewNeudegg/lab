@@ -559,16 +559,33 @@ const mockDashboardApis = async (page: Page) => {
   });
   await page.route(/\/api\/knowledge\/spaces\/[^/]+\/ask$/, async (route) => {
     const body = route.request().postDataJSON() as { question?: string };
+    const report = {
+      ...knowledgeReport,
+      id: 'kreport_ask',
+      question: body.question || knowledgeReport.question,
+      mode: 'ask',
+      created_at: now
+    };
+    const current = knowledgeSpaces[0];
+    const updated = {
+      ...current,
+      reports: [report, ...(current.reports || [])],
+      updated_at: now
+    };
+    knowledgeSpaces = [updated, ...knowledgeSpaces.slice(1)];
     await route.fulfill({
       json: {
+        space: updated,
         result: {
-          question: body.question || knowledgeReport.question,
-          answer: knowledgeReport.answer,
-          evidence: knowledgeReport.evidence,
-          gaps: knowledgeReport.gaps,
-          created_at: now
+          question: report.question,
+          answer: report.answer,
+          key_findings: report.key_findings,
+          evidence: report.evidence,
+          gaps: report.gaps,
+          created_at: report.created_at
         },
-        reply: 'Grounded answer created.'
+        report,
+        reply: 'Grounded answer saved.'
       }
     });
   });
@@ -895,7 +912,9 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('tab', { name: 'Ask' }).click();
     await page.getByRole('textbox', { name: 'Question' }).fill('How should evidence be reviewed?');
     await page.getByRole('button', { name: 'Ask', exact: true }).click();
-    await expect(knowledgeNoticeScope.getByText('Grounded answer created.')).toBeVisible();
+    await expect(knowledgeNoticeScope.getByText('Grounded answer saved.')).toBeVisible();
+    await expect(page.locator('[aria-label="Answer evidence"]')).not.toHaveAttribute('open', '');
+    await page.locator('[aria-label="Answer evidence"] summary').click();
     await expect(page.locator('[aria-label="Answer evidence"]')).toContainText('[S1]');
     await page.getByRole('tab', { name: /Research/ }).click();
     await page.locator('#knowledge-panel-runs').getByLabel('Question or research goal').fill('Compare evidence handling');

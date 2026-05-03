@@ -248,14 +248,14 @@ func (o *Orchestrator) QueryKnowledgeSpace(ctx context.Context, spaceID string, 
 	return result, "Corpus query completed.", nil
 }
 
-func (o *Orchestrator) AskKnowledgeSpace(ctx context.Context, spaceID string, req knowledgestore.AskRequest) (knowledgestore.AskResult, string, error) {
+func (o *Orchestrator) AskKnowledgeSpace(ctx context.Context, spaceID string, req knowledgestore.AskRequest) (knowledgestore.Space, knowledgestore.AskResult, knowledgestore.Report, string, error) {
 	store, err := o.knowledgeStore()
 	if err != nil {
-		return knowledgestore.AskResult{}, "", err
+		return knowledgestore.Space{}, knowledgestore.AskResult{}, knowledgestore.Report{}, "", err
 	}
 	space, err := store.Load(spaceID)
 	if err != nil {
-		return knowledgestore.AskResult{}, "", err
+		return knowledgestore.Space{}, knowledgestore.AskResult{}, knowledgestore.Report{}, "", err
 	}
 	now := time.Now().UTC()
 	query, err := knowledgestore.QuerySpace(space, knowledgestore.QueryRequest{
@@ -264,14 +264,38 @@ func (o *Orchestrator) AskKnowledgeSpace(ctx context.Context, spaceID string, re
 		Limit:     req.Limit,
 	}, now)
 	if err != nil {
-		return knowledgestore.AskResult{}, "", err
+		return knowledgestore.Space{}, knowledgestore.AskResult{}, knowledgestore.Report{}, "", err
 	}
 	result, err := o.knowledgeModel().AnswerQuestion(ctx, space, req, query.Evidence, now)
 	if err != nil {
-		return knowledgestore.AskResult{}, "", err
+		return knowledgestore.Space{}, knowledgestore.AskResult{}, knowledgestore.Report{}, "", err
 	}
-	o.appendKnowledgeEvent(ctx, "knowledge.ask.created", space, map[string]any{"question": result.Question, "evidence": len(result.Evidence)})
-	return result, "Grounded answer created.", nil
+	report := knowledgestore.Report{
+		ID:          id.New("kreport"),
+		Question:    result.Question,
+		Mode:        knowledgestore.ReportModeAsk,
+		Answer:      result.Answer,
+		KeyFindings: result.KeyFindings,
+		Evidence:    result.Evidence,
+		Gaps:        result.Gaps,
+		Provider:    result.Provider,
+		Model:       result.Model,
+		Usage:       result.Usage,
+		CreatedAt:   result.CreatedAt,
+	}
+	space, err = knowledgestore.AddReport(space, report, time.Now().UTC())
+	if err != nil {
+		return knowledgestore.Space{}, knowledgestore.AskResult{}, knowledgestore.Report{}, "", err
+	}
+	if err := store.Save(space); err != nil {
+		return knowledgestore.Space{}, knowledgestore.AskResult{}, knowledgestore.Report{}, "", err
+	}
+	space, _ = store.Load(space.ID)
+	if len(space.Reports) > 0 {
+		report = space.Reports[0]
+	}
+	o.appendKnowledgeEvent(ctx, "knowledge.ask.created", space, map[string]any{"question": result.Question, "report_id": report.ID, "evidence": len(result.Evidence)})
+	return space, result, report, "Grounded answer saved.", nil
 }
 
 func (o *Orchestrator) StartKnowledgeResearchRun(ctx context.Context, spaceID string, req knowledgestore.CreateResearchRunRequest) (knowledgestore.Space, knowledgestore.ResearchRun, knowledgestore.Report, string, error) {

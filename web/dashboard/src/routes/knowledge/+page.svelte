@@ -3,6 +3,7 @@
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
+  import ResearchPromptList from './ResearchPromptList.svelte';
   import {
     createHomelabdClient,
     knowledgeSpaceURL,
@@ -19,6 +20,7 @@
     filterKnowledgeSpaces,
     knowledgeMarkdownPreview,
     knowledgeSpacesFromResponse,
+    latestAskReport,
     latestReport,
     latestResearchRun,
     modelProvenanceLabel,
@@ -92,8 +94,10 @@
   let visibleSpaces: HomelabdKnowledgeSpace[] = [];
   let selectedSpace: HomelabdKnowledgeSpace | undefined;
   let latestSelectedReport: HomelabdKnowledgeReport | undefined;
+  let latestSelectedAskReport: HomelabdKnowledgeReport | undefined;
   let latestSelectedRun: HomelabdKnowledgeResearchRun | undefined;
   let selectedRunReport: HomelabdKnowledgeReport | undefined;
+  let displayedAskResult: HomelabdKnowledgeAskResult | undefined;
   let storedResearchRuns: HomelabdKnowledgeResearchRun[] = [];
   let totalSourceCount = 0;
   let selectedSourceCount = 0;
@@ -114,6 +118,8 @@
   );
   $: selectedSpace = spaces.find((space) => space.id === selectedSpaceId);
   $: latestSelectedReport = activeReport || latestReport(selectedSpace);
+  $: latestSelectedAskReport = latestAskReport(selectedSpace);
+  $: displayedAskResult = activeAskResult || askResultFromReport(latestSelectedAskReport);
   $: latestSelectedRun = activeRun || latestResearchRun(selectedSpace);
   $: selectedRunReport = reportForRun(selectedSpace, latestSelectedRun);
   $: storedResearchRuns = researchRunsExceptSelected(selectedSpace, latestSelectedRun);
@@ -266,6 +272,23 @@
       return undefined;
     }
     return (space.reports || []).find((report) => report.id === run.report_id);
+  };
+
+  const askResultFromReport = (report?: HomelabdKnowledgeReport): HomelabdKnowledgeAskResult | undefined => {
+    if (!report) {
+      return undefined;
+    }
+    return {
+      question: report.question,
+      answer: report.answer,
+      key_findings: report.key_findings,
+      evidence: report.evidence,
+      gaps: report.gaps,
+      provider: report.provider,
+      model: report.model,
+      usage: report.usage,
+      created_at: report.created_at
+    };
   };
 
   const navigateToSpace = (spaceId: string, replaceState = false) => {
@@ -570,8 +593,10 @@
         source_ids: selectedSourceIds.length ? selectedSourceIds : undefined
       });
       activeAskResult = response.result;
+      activeReport = response.report;
+      updateSpace(response.space);
       activePanel = 'ask';
-      notice = response.reply || 'Grounded answer created.';
+      notice = response.reply || 'Grounded answer saved.';
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to ask Knowledge Space.';
     } finally {
@@ -608,19 +633,28 @@
     }
   };
 
-  const createResearchRun = async () => {
-    if (!selectedSpace || creatingRun || !canStartResearchRun) {
+  const startResearchRun = async (
+    objective: string,
+    discoverSources = discoverSourcesDraft,
+    mode = researchModeDraft
+  ) => {
+    const trimmedObjective = objective.trim();
+    if (!selectedSpace || creatingRun || !trimmedObjective || (!discoverSources && !selectedSourceIds.length)) {
       return;
     }
+    runObjectiveDraft = trimmedObjective;
+    discoverSourcesDraft = discoverSources;
+    researchModeDraft = mode;
+    activePanel = 'runs';
     creatingRun = true;
     error = '';
     notice = '';
     try {
       const response = await client.createKnowledgeResearchRun(selectedSpace.id, {
-        objective: runObjectiveDraft.trim(),
-        mode: researchModeDraft,
+        objective: trimmedObjective,
+        mode,
         source_ids: selectedSourceIds.length ? selectedSourceIds : undefined,
-        discover_sources: discoverSourcesDraft || undefined
+        discover_sources: discoverSources || undefined
       });
       activeRun = response.run;
       activeReport = response.report;
@@ -632,6 +666,20 @@
     } finally {
       creatingRun = false;
     }
+  };
+
+  const createResearchRun = async () => {
+    if (!canStartResearchRun) {
+      return;
+    }
+    await startResearchRun(runObjectiveDraft, discoverSourcesDraft, researchModeDraft);
+  };
+
+  const researchPrompt = (prompt: string) => {
+    mobileSpacesOpen = false;
+    mobileOptionsOpen = false;
+    revealDetailIfCompact();
+    void startResearchRun(prompt, true, 'research');
   };
 
   const toggleSourceSelection = (sourceId: string) => {
@@ -673,14 +721,6 @@
     requestAnimationFrame(() => {
       document.getElementById('mobile-space-title')?.focus();
     });
-  };
-
-  const useSuggestedQuestion = (question: string) => {
-    questionDraft = question;
-    activePanel = 'ask';
-    mobileSpacesOpen = false;
-    mobileOptionsOpen = false;
-    revealDetailIfCompact();
   };
 
   const selectReport = (report: HomelabdKnowledgeReport) => {
@@ -1028,13 +1068,12 @@
               </div>
             {/if}
             {#if selectedSpace.insight?.suggested_questions?.length}
-              <div class="question-chips" aria-label="Mobile research suggestions">
-                {#each selectedSpace.insight.suggested_questions.slice(0, 3) as question}
-                  <button type="button" on:click={() => useSuggestedQuestion(question)}>
-                    {question}
-                  </button>
-                {/each}
-              </div>
+              <ResearchPromptList
+                items={selectedSpace.insight.suggested_questions.slice(0, 3)}
+                label="Mobile research suggestions"
+                disabled={creatingRun}
+                onResearch={researchPrompt}
+              />
             {/if}
           </section>
         {/if}
@@ -1130,13 +1169,12 @@
           <div class="insight-card">
             <span>Suggested questions</span>
             {#if selectedSpace.insight?.suggested_questions?.length}
-              <div class="question-chips" aria-label="Research suggestions">
-                {#each selectedSpace.insight.suggested_questions.slice(0, 3) as question}
-                  <button type="button" on:click={() => useSuggestedQuestion(question)}>
-                    {question}
-                  </button>
-                {/each}
-              </div>
+              <ResearchPromptList
+                items={selectedSpace.insight.suggested_questions.slice(0, 3)}
+                label="Research suggestions"
+                disabled={creatingRun}
+                onResearch={researchPrompt}
+              />
             {:else}
               <strong>No suggestions yet</strong>
             {/if}
@@ -1331,13 +1369,12 @@
                             </div>
                           {/if}
                           {#if source.questions?.length}
-                            <div class="question-chips" aria-label={`${source.title} suggested questions`}>
-                              {#each source.questions.slice(0, 2) as question}
-                                <button type="button" on:click={() => useSuggestedQuestion(question)}>
-                                  {question}
-                                </button>
-                              {/each}
-                            </div>
+                            <ResearchPromptList
+                              items={source.questions.slice(0, 2)}
+                              label={`${source.title} suggested questions`}
+                              disabled={creatingRun}
+                              onResearch={researchPrompt}
+                            />
                           {/if}
                         </div>
                       </details>
@@ -1465,92 +1502,133 @@
               </div>
             </form>
 
-            {#if activeAskResult}
+            {#if displayedAskResult}
               <article class="report-card" aria-label="Grounded answer">
                 <header>
                   <div>
                     <span>Answer</span>
-                    <h3>{activeAskResult.question}</h3>
+                    <h3>{displayedAskResult.question}</h3>
                   </div>
-                  <strong>{compactTime(activeAskResult.created_at)}</strong>
+                  <strong>{compactTime(displayedAskResult.created_at)}</strong>
                 </header>
-                <div class="markdown-block answer-body">
-                  <Markdown content={citationLinkedMarkdown(activeAskResult.answer, activeAskResult.evidence)} headingIds />
-                </div>
-                {#if activeAskResult.key_findings?.length}
-                  <div class="claims-list" aria-label="Answer key findings">
-                    {#each activeAskResult.key_findings as finding}
-                      <section>
-                        <strong>Finding</strong>
-                        <div class="markdown-block compact">
-                          <Markdown content={citationLinkedMarkdown(finding, activeAskResult.evidence)} />
-                        </div>
-                      </section>
-                    {/each}
+                <details class="knowledge-disclosure ask-answer" aria-label="Ask answer" open>
+                  <summary>
+                    <span>
+                      <strong>Answer</strong>
+                      <span>{displayedAskResult.evidence?.length || 0} citations</span>
+                    </span>
+                  </summary>
+                  <div class="disclosure-body">
+                    <div class="markdown-block answer-body">
+                      <Markdown content={citationLinkedMarkdown(displayedAskResult.answer, displayedAskResult.evidence)} headingIds />
+                    </div>
                   </div>
+                </details>
+                {#if displayedAskResult.key_findings?.length}
+                  <details class="knowledge-disclosure" aria-label="Answer key findings">
+                    <summary>
+                      <span>
+                        <strong>Key findings</strong>
+                        <span>{displayedAskResult.key_findings.length}</span>
+                      </span>
+                    </summary>
+                    <div class="disclosure-body">
+                      <div class="claims-list">
+                        {#each displayedAskResult.key_findings as finding}
+                          <section>
+                            <strong>Finding</strong>
+                            <div class="markdown-block compact">
+                              <Markdown content={citationLinkedMarkdown(finding, displayedAskResult.evidence)} />
+                            </div>
+                          </section>
+                        {/each}
+                      </div>
+                    </div>
+                  </details>
                 {/if}
-                {#if modelProvenanceLabel(activeAskResult.provider, activeAskResult.model) || activeAskResult.usage?.total_tokens}
+                {#if modelProvenanceLabel(displayedAskResult.provider, displayedAskResult.model) || displayedAskResult.usage?.total_tokens}
                   <dl class="source-meta">
-                    {#if modelProvenanceLabel(activeAskResult.provider, activeAskResult.model)}
+                    {#if modelProvenanceLabel(displayedAskResult.provider, displayedAskResult.model)}
                       <div>
                         <dt>Model</dt>
-                        <dd>{modelProvenanceLabel(activeAskResult.provider, activeAskResult.model)}</dd>
+                        <dd>{modelProvenanceLabel(displayedAskResult.provider, displayedAskResult.model)}</dd>
                       </div>
                     {/if}
-                    {#if activeAskResult.usage?.total_tokens}
+                    {#if displayedAskResult.usage?.total_tokens}
                       <div>
                         <dt>Tokens</dt>
-                        <dd>{activeAskResult.usage.total_tokens}</dd>
+                        <dd>{displayedAskResult.usage.total_tokens}</dd>
                       </div>
                     {/if}
                   </dl>
                 {/if}
-                {#if activeAskResult.evidence?.length}
-                  <div class="evidence-list" aria-label="Answer evidence">
-                    {#each activeAskResult.evidence as evidence (evidence.id)}
-                      <section>
-                        {#if sourceAnchorHref(evidence.source_id)}
-                          <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
-                        {:else}
-                          <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
-                        {/if}
-                        <div class="markdown-block evidence-body">
-                          <Markdown content={evidence.excerpt} />
-                        </div>
-                        <dl class="candidate-meta evidence-trace">
-                          {#if evidence.section_title}
-                            <div>
-                              <dt>Section</dt>
-                              <dd>{evidence.section_title}</dd>
+                {#if displayedAskResult.evidence?.length}
+                  <details class="knowledge-disclosure" aria-label="Answer evidence">
+                    <summary>
+                      <span>
+                        <strong>Evidence</strong>
+                        <span>{displayedAskResult.evidence.length} cited chunks</span>
+                      </span>
+                    </summary>
+                    <div class="disclosure-body">
+                      <div class="evidence-list">
+                        {#each displayedAskResult.evidence as evidence (evidence.id)}
+                          <section>
+                            {#if sourceAnchorHref(evidence.source_id)}
+                              <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
+                            {:else}
+                              <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
+                            {/if}
+                            <div class="markdown-block evidence-body">
+                              <Markdown content={evidence.excerpt} />
                             </div>
-                          {/if}
-                          <div>
-                            <dt>Trace</dt>
-                            <dd>{evidenceTraceLabel(evidence)}</dd>
-                          </div>
-                          <div>
-                            <dt>Score</dt>
-                            <dd>{evidence.score}</dd>
-                          </div>
-                        </dl>
-                        {#if evidence.source_summary}
-                          <div class="markdown-block compact">
-                            <Markdown content={evidence.source_summary} />
-                          </div>
-                        {/if}
-                        {#if evidence.source_uri}
-                          <small>{evidence.source_uri}</small>
-                        {/if}
-                      </section>
-                    {/each}
-                  </div>
+                            <dl class="candidate-meta evidence-trace">
+                              {#if evidence.section_title}
+                                <div>
+                                  <dt>Section</dt>
+                                  <dd>{evidence.section_title}</dd>
+                                </div>
+                              {/if}
+                              <div>
+                                <dt>Trace</dt>
+                                <dd>{evidenceTraceLabel(evidence)}</dd>
+                              </div>
+                              <div>
+                                <dt>Score</dt>
+                                <dd>{evidence.score}</dd>
+                              </div>
+                            </dl>
+                            {#if evidence.source_summary}
+                              <div class="markdown-block compact">
+                                <Markdown content={evidence.source_summary} />
+                              </div>
+                            {/if}
+                            {#if evidence.source_uri}
+                              <small>{evidence.source_uri}</small>
+                            {/if}
+                          </section>
+                        {/each}
+                      </div>
+                    </div>
+                  </details>
                 {/if}
-                {#if activeAskResult.gaps?.length}
-                  <div class="gaps">
-                    {#each activeAskResult.gaps as gap}
-                      <div class="gap-pill"><Markdown content={gap} /></div>
-                    {/each}
-                  </div>
+                {#if displayedAskResult.gaps?.length}
+                  <details class="knowledge-disclosure" aria-label="Answer gaps">
+                    <summary>
+                      <span>
+                        <strong>Gaps</strong>
+                        <span>{displayedAskResult.gaps.length}</span>
+                      </span>
+                    </summary>
+                    <div class="disclosure-body">
+                      <ResearchPromptList
+                        items={displayedAskResult.gaps}
+                        label="Answer gap research prompts"
+                        disabled={creatingRun}
+                        onResearch={researchPrompt}
+                      />
+                    </div>
+                  </details>
                 {/if}
               </article>
             {:else}
@@ -1709,11 +1787,12 @@
                               </span>
                             </summary>
                             <div class="disclosure-body">
-                              <div class="gaps">
-                                {#each selectedRunReport.gaps as gap}
-                                  <div class="gap-pill"><Markdown content={gap} /></div>
-                                {/each}
-                              </div>
+                              <ResearchPromptList
+                                items={selectedRunReport.gaps}
+                                label="Research gap prompts"
+                                disabled={creatingRun}
+                                onResearch={researchPrompt}
+                              />
                             </div>
                           </details>
                         {/if}
@@ -1879,11 +1958,12 @@
                               </div>
                             {/if}
                             {#if loop.gaps?.length}
-                              <div class="gaps" aria-label={`Loop ${loop.index} gaps`}>
-                                {#each loop.gaps as gap}
-                                  <div class="gap-pill"><Markdown content={gap} /></div>
-                                {/each}
-                              </div>
+                              <ResearchPromptList
+                                items={loop.gaps}
+                                label={`Loop ${loop.index} gap prompts`}
+                                disabled={creatingRun}
+                                onResearch={researchPrompt}
+                              />
                             {/if}
                             {#if loop.follow_up_queries?.length}
                               <div class="loop-subsection">
@@ -2198,11 +2278,12 @@
                       </span>
                     </summary>
                     <div class="disclosure-body">
-                      <div class="gaps">
-                        {#each latestSelectedReport.gaps as gap}
-                          <div class="gap-pill"><Markdown content={gap} /></div>
-                        {/each}
-                      </div>
+                      <ResearchPromptList
+                        items={latestSelectedReport.gaps}
+                        label="Report gap prompts"
+                        disabled={creatingRun}
+                        onResearch={researchPrompt}
+                      />
                     </div>
                   </details>
                 {/if}
@@ -2765,8 +2846,7 @@
   .research-loops,
   .run-coverage,
   .claims-list,
-  .evidence-list,
-  .gaps {
+  .evidence-list {
     display: grid;
     gap: 0.7rem;
   }
@@ -3340,7 +3420,6 @@
   .source-details-body > .claims-list,
   .source-details-body > .source-analysis,
   .source-details-body > .chips,
-  .source-details-body > .question-chips,
   .source-details-body > .source-content {
     margin-top: 0;
   }
@@ -3464,23 +3543,19 @@
   .disclosure-body > .markdown-block,
   .disclosure-body > .claims-list,
   .disclosure-body > .evidence-list,
-  .disclosure-body > .gaps,
   .disclosure-body > .chips,
   .disclosure-body > .candidate-meta {
     margin-top: 0;
   }
 
-  .chips,
-  .gaps,
-  .question-chips {
+  .chips {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
     margin-top: 0.65rem;
   }
 
-  .chips span,
-  .gap-pill {
+  .chips span {
     max-width: 100%;
     padding: 0.3rem 0.5rem;
     border: 1px solid var(--border-soft, #dbe3ef);
@@ -3489,30 +3564,6 @@
     background: var(--bg, #eef2f7);
     font-size: 0.82rem;
     font-weight: 700;
-    overflow-wrap: anywhere;
-  }
-
-  .gap-pill :global(.markdown) {
-    color: inherit;
-    font-size: inherit;
-    line-height: 1.35;
-  }
-
-  .gap-pill :global(.markdown p) {
-    margin: 0;
-    color: inherit;
-  }
-
-  .question-chips button {
-    max-width: 100%;
-    min-height: 2.25rem;
-    padding: 0.35rem 0.55rem;
-    border: 1px solid var(--border-soft, #dbe3ef);
-    border-radius: 8px;
-    color: var(--text, #172033);
-    background: var(--bg, #eef2f7);
-    font-weight: 750;
-    text-align: left;
     overflow-wrap: anywhere;
   }
 

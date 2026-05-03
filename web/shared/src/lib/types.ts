@@ -508,7 +508,7 @@ export interface HomelabdKnowledgeReport {
   id: string;
   run_id?: string;
   question: string;
-  mode: 'research' | 'brief' | 'study' | string;
+  mode: 'research' | 'brief' | 'study' | 'ask' | string;
   answer: string;
   key_findings?: string[];
   evidence?: HomelabdKnowledgeEvidence[];
@@ -753,7 +753,9 @@ export interface HomelabdAskKnowledgeSpaceRequest {
 }
 
 export interface HomelabdAskKnowledgeSpaceResponse {
+  space: HomelabdKnowledgeSpace;
   result: HomelabdKnowledgeAskResult;
+  report: HomelabdKnowledgeReport;
   reply: string;
 }
 

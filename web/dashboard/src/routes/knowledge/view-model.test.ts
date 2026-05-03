@@ -5,6 +5,7 @@ import {
   filterKnowledgeSpaces,
   knowledgeMarkdownPreview,
   knowledgeSpacesFromResponse,
+  latestAskReport,
   latestReport,
   modelProvenanceLabel,
   panelItemCount,
@@ -81,7 +82,8 @@ describe('knowledge view model', () => {
       insight: { source_count: 2, word_count: 42 },
       reports: [
         { id: 'r1', question: 'old', mode: 'brief', answer: 'old', created_at: '2026-04-28T09:00:00Z' },
-        { id: 'r2', question: 'new', mode: 'research', answer: 'new', created_at: '2026-04-29T09:00:00Z' }
+        { id: 'r2', question: 'new', mode: 'research', answer: 'new', created_at: '2026-04-29T09:00:00Z' },
+        { id: 'r3', question: 'ask', mode: 'ask', answer: 'ask', created_at: '2026-04-28T12:00:00Z' }
       ]
     });
 
@@ -89,6 +91,7 @@ describe('knowledge view model', () => {
     expect(spaceSourceCount(item)).toBe(2);
     expect(spaceWordCount(item)).toBe(42);
     expect(latestReport(item)?.id).toBe('r2');
+    expect(latestAskReport(item)?.id).toBe('r3');
   });
 
   test('summarises panel counts and selected research sources', () => {

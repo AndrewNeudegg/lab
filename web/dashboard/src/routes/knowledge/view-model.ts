@@ -5,7 +5,7 @@ import type {
   HomelabdKnowledgeSpace
 } from '@homelab/shared';
 
-export type KnowledgePanel = 'sources' | 'ask' | 'runs' | 'artefacts';
+export type KnowledgePanel = 'sources' | 'runs' | 'artefacts';
 
 type KnowledgeSpacesResponseLike = {
   spaces?: HomelabdKnowledgeSpace[] | null;
@@ -99,8 +99,6 @@ export const selectKnowledgeSpace = (
 
 export const panelLabel = (panel: KnowledgePanel) => {
   switch (panel) {
-    case 'ask':
-      return 'Ask';
     case 'runs':
       return 'Research';
     case 'artefacts':
@@ -112,8 +110,6 @@ export const panelLabel = (panel: KnowledgePanel) => {
 
 export const panelItemCount = (panel: KnowledgePanel, space?: HomelabdKnowledgeSpace) => {
   switch (panel) {
-    case 'ask':
-      return spaceSourceCount(space);
     case 'runs':
       return space?.research_runs?.length || 0;
     case 'artefacts':

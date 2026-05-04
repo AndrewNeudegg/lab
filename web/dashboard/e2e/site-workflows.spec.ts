@@ -909,14 +909,21 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByLabel('Source text').fill('Evidence should stay visible when teams review generated claims.');
     await page.locator('.source-form button[type="submit"]').click();
     await expect(knowledgeNoticeScope.getByText('Source indexed')).toBeVisible();
-    await page.getByRole('tab', { name: 'Ask' }).click();
-    await page.getByRole('textbox', { name: 'Question' }).fill('How should evidence be reviewed?');
-    await page.getByRole('button', { name: 'Ask', exact: true }).click();
-    await expect(knowledgeNoticeScope.getByText('Grounded answer saved.')).toBeVisible();
-    await expect(page.locator('[aria-label="Answer evidence"]')).not.toHaveAttribute('open', '');
-    await page.locator('[aria-label="Answer evidence"] summary').click();
-    await expect(page.locator('[aria-label="Answer evidence"]')).toContainText('[S1]');
     await page.getByRole('tab', { name: /Research/ }).click();
+    await page.getByRole('group', { name: 'Research action' }).getByLabel('Ask a question').check();
+    await page.getByRole('textbox', { name: 'Question' }).fill('How should evidence be reviewed?');
+    await page.getByRole('button', { name: 'Ask question' }).click();
+    await expect(knowledgeNoticeScope.getByText('Grounded answer saved.')).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
+    await page.locator('[aria-label="Report evidence"] summary').click();
+    await expect(page.locator('[aria-label="Report evidence"]')).toContainText('[S1]');
+    await page.getByRole('tab', { name: /Research/ }).click();
+    const newResearch = page.locator('[aria-label="New research"]');
+    if ((await newResearch.getAttribute('open')) === null) {
+      await newResearch.locator(':scope > summary').click();
+    }
+    await page.getByRole('group', { name: 'Research action' }).getByLabel('Run research').check();
     await page.locator('#knowledge-panel-runs').getByLabel('Question or research goal').fill('Compare evidence handling');
     await page.getByRole('button', { name: 'Start research' }).click();
     await expect(knowledgeNoticeScope.getByText('Research completed.')).toBeVisible();

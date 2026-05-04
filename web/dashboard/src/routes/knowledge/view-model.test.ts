@@ -114,7 +114,6 @@ describe('knowledge view model', () => {
     });
 
     expect(panelItemCount('sources', item)).toBe(2);
-    expect(panelItemCount('ask', item)).toBe(2);
     expect(panelItemCount('runs', item)).toBe(1);
     expect(panelItemCount('artefacts', item)).toBe(1);
     expect(sourceSelectionSummary(0, 0)).toBe('No sources available');

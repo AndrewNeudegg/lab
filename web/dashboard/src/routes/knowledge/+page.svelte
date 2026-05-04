@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import ResearchPromptList from './ResearchPromptList.svelte';
   import {
     createHomelabdClient,
@@ -20,15 +20,12 @@
     filterKnowledgeSpaces,
     knowledgeMarkdownPreview,
     knowledgeSpacesFromResponse,
-    latestAskReport,
     latestReport,
-    latestResearchRun,
     modelProvenanceLabel,
     panelLabel,
     panelItemCount,
     researchRunStatusLabel,
     researchRunStatusTone,
-    researchRunsExceptSelected,
     selectKnowledgeSpace,
     spaceSourceCount,
     spaceWordCount,
@@ -40,11 +37,12 @@
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
-  const panels: KnowledgePanel[] = ['sources', 'ask', 'runs', 'artefacts'];
+  const panels: KnowledgePanel[] = ['sources', 'runs', 'artefacts'];
 
   let spaces: HomelabdKnowledgeSpace[] = [];
   let selectedSpaceId = '';
   let lastAppliedRouteSpaceId = '';
+  let lastAppliedAnchorId = '';
   let lastSelectedSpaceId = '';
   let activePanel: KnowledgePanel = 'sources';
   let search = '';
@@ -70,6 +68,7 @@
   let confirmDeleteSourceId = '';
   let mobileSpacesOpen = false;
   let mobileOptionsOpen = false;
+  let researchFormOpen = true;
 
   let titleDraft = '';
   let objectiveDraft = '';
@@ -83,7 +82,9 @@
   let sourceContentDraft = '';
   let corpusQueryDraft = '';
   let questionDraft = '';
+  let researchActionDraft = 'research';
   let researchModeDraft = 'research';
+  let researchDepthDraft = 'standard';
   let runObjectiveDraft = '';
   let discoverSourcesDraft = true;
   let activeReport: HomelabdKnowledgeReport | undefined;
@@ -94,11 +95,9 @@
   let visibleSpaces: HomelabdKnowledgeSpace[] = [];
   let selectedSpace: HomelabdKnowledgeSpace | undefined;
   let latestSelectedReport: HomelabdKnowledgeReport | undefined;
-  let latestSelectedAskReport: HomelabdKnowledgeReport | undefined;
   let latestSelectedRun: HomelabdKnowledgeResearchRun | undefined;
   let selectedRunReport: HomelabdKnowledgeReport | undefined;
   let displayedAskResult: HomelabdKnowledgeAskResult | undefined;
-  let storedResearchRuns: HomelabdKnowledgeResearchRun[] = [];
   let totalSourceCount = 0;
   let selectedSourceCount = 0;
   let selectedSourceSummary = '';
@@ -108,6 +107,7 @@
   let totalSpaceSourceCount = 0;
   let sourceReady = false;
   let sourceReferenceAccepted = false;
+  let canSubmitKnowledgeAction = false;
 
   $: visibleSpaces = filterKnowledgeSpaces(spaces, search);
   $: selectedSpaceId = selectKnowledgeSpace(
@@ -118,11 +118,9 @@
   );
   $: selectedSpace = spaces.find((space) => space.id === selectedSpaceId);
   $: latestSelectedReport = activeReport || latestReport(selectedSpace);
-  $: latestSelectedAskReport = latestAskReport(selectedSpace);
-  $: displayedAskResult = activeAskResult || askResultFromReport(latestSelectedAskReport);
-  $: latestSelectedRun = activeRun || latestResearchRun(selectedSpace);
+  $: displayedAskResult = activeAskResult;
+  $: latestSelectedRun = activeRun;
   $: selectedRunReport = reportForRun(selectedSpace, latestSelectedRun);
-  $: storedResearchRuns = researchRunsExceptSelected(selectedSpace, latestSelectedRun);
   $: totalSourceCount = selectedSpace?.sources?.length || 0;
   $: selectedSourceCount = selectedSourceIds.length;
   $: selectedSourceSummary = sourceSelectionSummary(selectedSourceCount, totalSourceCount);
@@ -130,6 +128,12 @@
     ? `${selectedSourceSummary}; web and academic discovery will gather and evaluate sources`
     : selectedSourceSummary;
   $: canStartResearchRun = !!runObjectiveDraft.trim() && (discoverSourcesDraft || selectedSourceIds.length > 0);
+  $: canSubmitKnowledgeAction =
+    researchActionDraft === 'ask'
+      ? !!questionDraft.trim() && selectedSourceIds.length > 0
+      : researchActionDraft === 'search'
+        ? !!corpusQueryDraft.trim() && selectedSourceIds.length > 0
+        : canStartResearchRun;
   $: totalReportCount = spaces.reduce((total, space) => total + (space.reports?.length || 0), 0);
   $: totalSpaceSourceCount = spaces.reduce((total, space) => total + spaceSourceCount(space), 0);
   $: sourceReferenceAccepted = sourceKindDraft.trim() === 'url';
@@ -143,6 +147,12 @@
       activeRun = refreshedRun;
     }
   }
+  $: if (activeReport && selectedSpace?.reports?.length) {
+    const refreshedReport = selectedSpace.reports.find((report) => report.id === activeReport?.id);
+    if (refreshedReport && refreshedReport !== activeReport) {
+      activeReport = refreshedReport;
+    }
+  }
   $: if (selectedSpace && selectedSpace.id !== lastSelectedSpaceId) {
     lastSelectedSpaceId = selectedSpace.id;
     activeReport = undefined;
@@ -154,6 +164,7 @@
     mobileSpacesOpen = false;
     mobileOptionsOpen = false;
     highlightedSourceId = '';
+    researchFormOpen = !(selectedSpace.research_runs?.length);
     selectedSourceIds = (selectedSpace.sources || []).map((source) => source.id);
     addSourceOpen = !(selectedSpace.sources?.length);
   }
@@ -167,6 +178,8 @@
 
   const currentRoutePath = () =>
     browser ? `${$page.url.pathname}${$page.url.search}${$page.url.hash}` : '';
+
+  const currentRouteHash = () => (browser ? $page.url.hash.replace(/^#/, '') : '');
 
   const syncTimeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -198,17 +211,122 @@
   const plural = (count: number, singular: string, pluralLabel = `${singular}s`) =>
     `${count} ${count === 1 ? singular : pluralLabel}`;
 
-  const compactPanelLabel = (panel: KnowledgePanel) =>
-    panel === 'runs' ? 'Research' : panel === 'artefacts' ? 'Reports' : panelLabel(panel);
+  const compactPanelLabel = (panel: KnowledgePanel) => (panel === 'artefacts' ? 'Reports' : panelLabel(panel));
 
-  const sourceAnchorId = (sourceId = '') =>
-    `knowledge-source-${sourceId.trim().replace(/[^A-Za-z0-9_-]+/g, '-') || 'source'}`;
+  const anchorPart = (value = '') => value.trim().replace(/[^A-Za-z0-9_-]+/g, '-') || 'item';
+
+  const knowledgeAnchorId = (...parts: string[]) => `knowledge-${parts.map(anchorPart).join('-')}`;
+
+  const panelAnchorId = (panel: KnowledgePanel) => knowledgeAnchorId('panel', panel);
+
+  const panelFromAnchor = (anchorId: string): KnowledgePanel | undefined => {
+    const panel = anchorId.replace(/^knowledge-panel-/, '') as KnowledgePanel;
+    return panels.includes(panel) ? panel : undefined;
+  };
+
+  const sourceAnchorId = (sourceId = '') => knowledgeAnchorId('source', sourceId || 'source');
+
+  const reportAnchorId = (reportId = '') => knowledgeAnchorId('report', reportId || 'report');
+
+  const runAnchorId = (runId = '') => knowledgeAnchorId('research', runId || 'run');
+
+  const evidenceAnchorId = (ownerId = '', evidenceId = '') =>
+    knowledgeAnchorId('reference', ownerId || 'owner', evidenceId || 'evidence');
+
+  const reportGapAnchorId = (reportId = '', index = 0) =>
+    knowledgeAnchorId('gap', reportId || 'report', `${index + 1}`);
+
+  const runLoopAnchorId = (runId = '', loopId = '') => knowledgeAnchorId('loop', runId || 'run', loopId || 'loop');
+
+  const runLoopGapAnchorId = (runId = '', loopId = '', index = 0) =>
+    knowledgeAnchorId('gap', runId || 'run', loopId || 'loop', `${index + 1}`);
+
+  const runCoverageAnchorId = (runId = '', coverageId = '') =>
+    knowledgeAnchorId('coverage', runId || 'run', coverageId || 'coverage');
+
+  const runCandidateAnchorId = (runId = '', candidateId = '') =>
+    knowledgeAnchorId('candidate', runId || 'run', candidateId || 'candidate');
+
+  const runEventAnchorId = (runId = '', eventId = '') => knowledgeAnchorId('event', runId || 'run', eventId || 'event');
+
+  const sourceQuestionAnchorId = (sourceId = '', index = 0) =>
+    knowledgeAnchorId('question', sourceId || 'source', `${index + 1}`);
+
+  const spaceQuestionAnchorId = (spaceId = '', index = 0) =>
+    knowledgeAnchorId('question', spaceId || 'space', `${index + 1}`);
+
+  const knowledgeHashHref = (anchorId = '') =>
+    selectedSpace?.id && anchorId ? `${knowledgeSpaceURL(selectedSpace.id)}#${anchorId}` : `#${anchorId}`;
+
+  const promptItem = (anchorId: string, text: string) => ({
+    id: anchorId,
+    href: knowledgeHashHref(anchorId),
+    text
+  });
 
   const sourceForAnchor = (anchorId: string) =>
     (selectedSpace?.sources || []).find((source) => sourceAnchorId(source.id) === anchorId);
 
   const sourceAnchorHref = (sourceId = '') =>
-    (selectedSpace?.sources || []).some((source) => source.id === sourceId) ? `#${sourceAnchorId(sourceId)}` : '';
+    (selectedSpace?.sources || []).some((source) => source.id === sourceId) ? knowledgeHashHref(sourceAnchorId(sourceId)) : '';
+
+  const reportHref = (report?: HomelabdKnowledgeReport) => (report ? knowledgeHashHref(reportAnchorId(report.id)) : '#');
+
+  const runHref = (run?: HomelabdKnowledgeResearchRun) => (run ? knowledgeHashHref(runAnchorId(run.id)) : '#');
+
+  const knowledgeLinkAnchorId = (link: HTMLAnchorElement) => {
+    const href = link.getAttribute('href') || '';
+    if (href.startsWith('#')) {
+      return href.slice(1);
+    }
+    try {
+      return new URL(link.href).hash.replace(/^#/, '');
+    } catch {
+      return '';
+    }
+  };
+
+  const shouldHandlePlainClick = (event: MouseEvent) =>
+    !event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+
+  const focusKnowledgeTarget = (target: HTMLElement) => {
+    const focusTarget = target.matches('a, button, summary, input, textarea, select, [tabindex]')
+      ? target
+      : target.querySelector<HTMLElement>('a, button, summary, [tabindex]');
+    (focusTarget || target).focus({ preventScroll: true });
+  };
+
+  const scrollKnowledgeAnchorIntoView = (anchorId: string) => {
+    requestAnimationFrame(() => {
+      const target = document.getElementById(anchorId);
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      if (target instanceof HTMLDetailsElement) {
+        target.open = true;
+      }
+      let parent = target.parentElement;
+      while (parent) {
+        if (parent instanceof HTMLDetailsElement) {
+          parent.open = true;
+        }
+        parent = parent.parentElement;
+      }
+      target.scrollIntoView({ block: 'start' });
+      focusKnowledgeTarget(target);
+    });
+  };
+
+  const pushKnowledgeHash = (anchorId: string, replaceState = false) => {
+    if (!browser || !selectedSpace?.id || !anchorId) {
+      return;
+    }
+    const next = knowledgeHashHref(anchorId);
+    if (currentRoutePath() === next) {
+      return;
+    }
+    void goto(next, { keepFocus: true, noScroll: true, replaceState });
+  };
 
   const openSourceFromAnchor = (anchorId: string) => {
     const source = sourceForAnchor(anchorId);
@@ -217,32 +335,166 @@
     }
     activePanel = 'sources';
     highlightedSourceId = source.id;
-    requestAnimationFrame(() => {
-      const target = document.getElementById(anchorId);
-      if (target instanceof HTMLDetailsElement) {
-        target.open = true;
+    scrollKnowledgeAnchorIntoView(anchorId);
+  };
+
+  const openPanelFromAnchor = (anchorId: string) => {
+    const panel = panelFromAnchor(anchorId);
+    if (!panel) {
+      return false;
+    }
+    activePanel = panel;
+    return true;
+  };
+
+  const openReportFromAnchor = (anchorId: string) => {
+    const report = (selectedSpace?.reports || []).find((item) => reportAnchorId(item.id) === anchorId);
+    if (!report) {
+      return false;
+    }
+    activeReport = report;
+    activePanel = 'artefacts';
+    scrollKnowledgeAnchorIntoView(anchorId);
+    return true;
+  };
+
+  const openRunFromAnchor = (anchorId: string) => {
+    const run = (selectedSpace?.research_runs || []).find((item) => runAnchorId(item.id) === anchorId);
+    if (!run) {
+      return false;
+    }
+    activeRun = run;
+    activePanel = 'runs';
+    scrollKnowledgeAnchorIntoView(anchorId);
+    return true;
+  };
+
+  const openReferenceFromAnchor = (anchorId: string) => {
+    for (const report of selectedSpace?.reports || []) {
+      if ((report.evidence || []).some((evidence) => evidenceAnchorId(report.id, evidence.id) === anchorId)) {
+        activeReport = report;
+        activePanel = 'artefacts';
+        scrollKnowledgeAnchorIntoView(anchorId);
+        return true;
       }
-      target?.scrollIntoView({ block: 'start' });
-      const summary = target?.querySelector('summary.source-summary');
-      if (summary instanceof HTMLElement) {
-        summary.focus({ preventScroll: true });
+    }
+    for (const run of selectedSpace?.research_runs || []) {
+      if ((reportForRun(selectedSpace, run)?.evidence || []).some((evidence) => evidenceAnchorId(run.id, evidence.id) === anchorId)) {
+        activeRun = run;
+        activePanel = 'runs';
+        scrollKnowledgeAnchorIntoView(anchorId);
+        return true;
       }
-    });
+    }
+    return false;
+  };
+
+  const openPromptFromAnchor = (anchorId: string) => {
+    const source = (selectedSpace?.sources || []).find((item) =>
+      (item.questions || []).some((_, index) => sourceQuestionAnchorId(item.id, index) === anchorId)
+    );
+    if (source) {
+      activePanel = 'sources';
+      highlightedSourceId = source.id;
+      scrollKnowledgeAnchorIntoView(anchorId);
+      return true;
+    }
+    if ((selectedSpace?.insight?.suggested_questions || []).some((_, index) => spaceQuestionAnchorId(selectedSpace?.id, index) === anchorId)) {
+      mobileOptionsOpen = true;
+      scrollKnowledgeAnchorIntoView(anchorId);
+      return true;
+    }
+    for (const run of selectedSpace?.research_runs || []) {
+      for (const loop of run.research_loops || []) {
+        if ((loop.gaps || []).some((_, index) => runLoopGapAnchorId(run.id, loop.id, index) === anchorId)) {
+          activeRun = run;
+          activePanel = 'runs';
+          scrollKnowledgeAnchorIntoView(anchorId);
+          return true;
+        }
+      }
+    }
+    for (const report of selectedSpace?.reports || []) {
+      if ((report.gaps || []).some((_, index) => reportGapAnchorId(report.id, index) === anchorId)) {
+        activeReport = report;
+        activePanel = 'artefacts';
+        scrollKnowledgeAnchorIntoView(anchorId);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const openResearchDetailFromAnchor = (anchorId: string) => {
+    for (const run of selectedSpace?.research_runs || []) {
+      const runMatches =
+        (run.research_loops || []).some((loop) => runLoopAnchorId(run.id, loop.id) === anchorId) ||
+        (run.coverage || []).some((coverage) => runCoverageAnchorId(run.id, coverage.id) === anchorId) ||
+        (run.source_candidates || []).some((candidate) => runCandidateAnchorId(run.id, candidate.id) === anchorId) ||
+        (run.events || []).some((event) => runEventAnchorId(run.id, event.id) === anchorId);
+      if (runMatches) {
+        activeRun = run;
+        activePanel = 'runs';
+        scrollKnowledgeAnchorIntoView(anchorId);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const openKnowledgeAnchor = (anchorId: string) => {
+    if (!anchorId.startsWith('knowledge-')) {
+      return false;
+    }
+    if (anchorId.startsWith('knowledge-panel-')) {
+      return openPanelFromAnchor(anchorId);
+    }
+    if (anchorId.startsWith('knowledge-source-')) {
+      openSourceFromAnchor(anchorId);
+      return true;
+    }
+    if (anchorId.startsWith('knowledge-report-')) {
+      return openReportFromAnchor(anchorId);
+    }
+    if (anchorId.startsWith('knowledge-research-')) {
+      return openRunFromAnchor(anchorId);
+    }
+    if (anchorId.startsWith('knowledge-reference-')) {
+      return openReferenceFromAnchor(anchorId);
+    }
+    if (anchorId.startsWith('knowledge-question-') || anchorId.startsWith('knowledge-gap-')) {
+      return openPromptFromAnchor(anchorId);
+    }
+    return openResearchDetailFromAnchor(anchorId);
+  };
+
+  const applyKnowledgeAnchor = (anchorId: string, force = false) => {
+    if (!anchorId || (!force && anchorId === lastAppliedAnchorId)) {
+      return false;
+    }
+    const applied = openKnowledgeAnchor(anchorId);
+    if (applied) {
+      lastAppliedAnchorId = anchorId;
+    }
+    return applied;
   };
 
   const handleKnowledgeCitationClick = (event: MouseEvent) => {
+    if (!shouldHandlePlainClick(event)) {
+      return;
+    }
     const link = event.target instanceof Element
-      ? event.target.closest('a[href^="#knowledge-source-"]')
+      ? event.target.closest('a[href*="#knowledge-"]')
       : null;
     if (!(link instanceof HTMLAnchorElement)) {
       return;
     }
-    const anchorId = link.hash.replace(/^#/, '');
-    if (!anchorId || !sourceForAnchor(anchorId)) {
+    const anchorId = knowledgeLinkAnchorId(link);
+    if (!anchorId || !applyKnowledgeAnchor(anchorId, true)) {
       return;
     }
     event.preventDefault();
-    openSourceFromAnchor(anchorId);
+    pushKnowledgeHash(anchorId);
   };
 
   const citationLinkedMarkdown = (content = '', evidence: HomelabdKnowledgeEvidence[] = []) => {
@@ -272,23 +524,6 @@
       return undefined;
     }
     return (space.reports || []).find((report) => report.id === run.report_id);
-  };
-
-  const askResultFromReport = (report?: HomelabdKnowledgeReport): HomelabdKnowledgeAskResult | undefined => {
-    if (!report) {
-      return undefined;
-    }
-    return {
-      question: report.question,
-      answer: report.answer,
-      key_findings: report.key_findings,
-      evidence: report.evidence,
-      gaps: report.gaps,
-      provider: report.provider,
-      model: report.model,
-      usage: report.usage,
-      created_at: report.created_at
-    };
   };
 
   const navigateToSpace = (spaceId: string, replaceState = false) => {
@@ -372,11 +607,16 @@
       return;
     }
     const spaceId = to.url.searchParams.get('space') || '';
-    if (!spaceId || spaceId === selectedSpaceId) {
-      return;
+    if (spaceId && spaceId !== selectedSpaceId) {
+      applyRouteSpaceSelection(spaceId);
+      lastAppliedRouteSpaceId = spaceId;
     }
-    applyRouteSpaceSelection(spaceId);
-    lastAppliedRouteSpaceId = spaceId;
+    const anchorId = to.url.hash.replace(/^#/, '');
+    if (anchorId) {
+      requestAnimationFrame(() => applyKnowledgeAnchor(anchorId, true));
+    } else {
+      lastAppliedAnchorId = '';
+    }
   });
 
   const updateSpace = (space: HomelabdKnowledgeSpace) => {
@@ -385,7 +625,9 @@
       ? spaces.map((item) => (item.id === space.id ? space : item))
       : [space, ...spaces];
     selectedSpaceId = space.id;
-    navigateToSpace(space.id);
+    if (currentRouteSpaceId() !== space.id) {
+      navigateToSpace(space.id);
+    }
   };
 
   const refreshSpaces = async () => {
@@ -406,6 +648,13 @@
       }
       if (!spaces.length) {
         createSpaceOpen = true;
+      }
+      await tick();
+      const anchorId = currentRouteHash();
+      if (anchorId) {
+        applyKnowledgeAnchor(anchorId);
+      } else {
+        lastAppliedAnchorId = '';
       }
       lastRefresh = syncTimeLabel();
     } catch (err) {
@@ -592,10 +841,14 @@
         question: questionDraft.trim(),
         source_ids: selectedSourceIds.length ? selectedSourceIds : undefined
       });
-      activeAskResult = response.result;
+      activeAskResult = undefined;
       activeReport = response.report;
       updateSpace(response.space);
-      activePanel = 'ask';
+      activePanel = 'artefacts';
+      await tick();
+      if (response.report) {
+        pushKnowledgeHash(reportAnchorId(response.report.id), true);
+      }
       notice = response.reply || 'Grounded answer saved.';
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to ask Knowledge Space.';
@@ -624,7 +877,7 @@
         gaps: response.result.evidence.length ? [] : ['No stored source chunks matched this query.'],
         created_at: response.result.created_at
       };
-      activePanel = 'ask';
+      activePanel = 'runs';
       notice = response.reply || 'Corpus query completed.';
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to query corpus.';
@@ -636,7 +889,8 @@
   const startResearchRun = async (
     objective: string,
     discoverSources = discoverSourcesDraft,
-    mode = researchModeDraft
+    mode = researchModeDraft,
+    depth = researchDepthDraft
   ) => {
     const trimmedObjective = objective.trim();
     if (!selectedSpace || creatingRun || !trimmedObjective || (!discoverSources && !selectedSourceIds.length)) {
@@ -645,6 +899,7 @@
     runObjectiveDraft = trimmedObjective;
     discoverSourcesDraft = discoverSources;
     researchModeDraft = mode;
+    researchDepthDraft = depth;
     activePanel = 'runs';
     creatingRun = true;
     error = '';
@@ -653,6 +908,7 @@
       const response = await client.createKnowledgeResearchRun(selectedSpace.id, {
         objective: trimmedObjective,
         mode,
+        depth,
         source_ids: selectedSourceIds.length ? selectedSourceIds : undefined,
         discover_sources: discoverSources || undefined
       });
@@ -660,6 +916,9 @@
       activeReport = response.report;
       updateSpace(response.space);
       activePanel = 'runs';
+      await tick();
+      pushKnowledgeHash(runAnchorId(response.run.id), true);
+      researchFormOpen = false;
       notice = response.report ? 'Research completed.' : 'Research queued.';
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to create research run.';
@@ -672,7 +931,22 @@
     if (!canStartResearchRun) {
       return;
     }
-    await startResearchRun(runObjectiveDraft, discoverSourcesDraft, researchModeDraft);
+    await startResearchRun(runObjectiveDraft, discoverSourcesDraft, researchModeDraft, researchDepthDraft);
+  };
+
+  const submitKnowledgeAction = async () => {
+    if (!canSubmitKnowledgeAction) {
+      return;
+    }
+    if (researchActionDraft === 'ask') {
+      await askKnowledge();
+      return;
+    }
+    if (researchActionDraft === 'search') {
+      await queryCorpus();
+      return;
+    }
+    await createResearchRun();
   };
 
   const researchPrompt = (prompt: string) => {
@@ -723,23 +997,61 @@
     });
   };
 
-  const selectReport = (report: HomelabdKnowledgeReport) => {
+  const selectReport = (report: HomelabdKnowledgeReport, updateHash = true) => {
     activeReport = report;
     activePanel = 'artefacts';
+    if (updateHash) {
+      pushKnowledgeHash(reportAnchorId(report.id));
+    }
     revealDetailIfCompact();
   };
 
-  const selectRun = (run: HomelabdKnowledgeResearchRun) => {
+  const selectRun = (run: HomelabdKnowledgeResearchRun, updateHash = true) => {
     activeRun = run;
     activePanel = 'runs';
+    if (updateHash) {
+      pushKnowledgeHash(runAnchorId(run.id));
+    }
     revealDetailIfCompact();
+  };
+
+  const clearSelectedRun = (updateHash = true) => {
+    activeRun = undefined;
+    activePanel = 'runs';
+    if (updateHash) {
+      pushKnowledgeHash(panelAnchorId('runs'), true);
+    }
+    revealDetailIfCompact();
+  };
+
+  const selectPanel = (panel: KnowledgePanel, updateHash = true) => {
+    activePanel = panel;
+    if (updateHash) {
+      pushKnowledgeHash(panelAnchorId(panel));
+    }
+  };
+
+  const handleReportRowClick = (event: MouseEvent, report: HomelabdKnowledgeReport) => {
+    if (!shouldHandlePlainClick(event)) {
+      return;
+    }
+    event.preventDefault();
+    selectReport(report);
+  };
+
+  const handleRunRowClick = (event: MouseEvent, run: HomelabdKnowledgeResearchRun) => {
+    if (!shouldHandlePlainClick(event)) {
+      return;
+    }
+    event.preventDefault();
+    selectRun(run);
   };
 
   const handleTabKeydown = (event: KeyboardEvent, panel: KnowledgePanel) => {
     const index = panels.indexOf(panel);
     const nextPanel = (nextIndex: number) => {
       const panelId = panels[(nextIndex + panels.length) % panels.length];
-      activePanel = panelId;
+      selectPanel(panelId);
       requestAnimationFrame(() => document.getElementById(`knowledge-tab-${panelId}`)?.focus());
     };
     if (event.key === 'ArrowRight') {
@@ -763,11 +1075,11 @@
       void refreshSpaces();
     }, 10000);
     window.addEventListener('popstate', handleKnowledgePopState);
-    document.addEventListener('click', handleKnowledgeCitationClick);
+    document.addEventListener('click', handleKnowledgeCitationClick, true);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener('popstate', handleKnowledgePopState);
-      document.removeEventListener('click', handleKnowledgeCitationClick);
+      document.removeEventListener('click', handleKnowledgeCitationClick, true);
     };
   });
 </script>
@@ -780,7 +1092,53 @@
 <div class="knowledge-shell">
   <Navbar title="Knowledge Space" subtitle="homelabd" current="/knowledge" taskApiBase={apiBase} />
 
-  <main class="knowledge-page" class:has-selection={!!selectedSpace} data-ready={ready ? 'true' : 'false'}>
+  <main
+    class="knowledge-page"
+    class:has-selection={!!selectedSpace}
+    class:loading-state={!ready && loading}
+    data-ready={ready ? 'true' : 'false'}
+  >
+    {#if !ready && loading}
+      <section class="knowledge-loading-state" aria-label="Loading Knowledge Space" aria-busy="true">
+        <header class="loading-topline">
+          <div>
+            <span class="eyebrow">Knowledge Space</span>
+            <h1>Loading research corpus</h1>
+            <p>Syncing spaces, sources, reports, and research records.</p>
+          </div>
+          <span class="status-pill active">Syncing</span>
+        </header>
+
+        <div class="loading-mobile-toolbar" aria-hidden="true">
+          <span class="loading-control wide"></span>
+          <span class="loading-control"></span>
+          <span class="loading-control"></span>
+          <span class="loading-control"></span>
+        </div>
+
+        <div class="loading-tabs" aria-hidden="true">
+          <span class="active">Sources</span>
+          <span>Research</span>
+          <span>Reports</span>
+        </div>
+
+        <div class="loading-grid">
+          <section class="loading-card" aria-hidden="true">
+            <span class="loading-label"></span>
+            <span class="loading-title"></span>
+            <span class="loading-bar large"></span>
+            <span class="loading-bar"></span>
+            <span class="loading-bar short"></span>
+          </section>
+          <section class="loading-card compact" aria-hidden="true">
+            <span class="loading-label"></span>
+            <span class="loading-row"></span>
+            <span class="loading-row"></span>
+            <span class="loading-row short"></span>
+          </section>
+        </div>
+      </section>
+    {:else}
     <section class="space-list" aria-label="Knowledge Space list">
       <header class="space-header">
         <div>
@@ -1069,7 +1427,9 @@
             {/if}
             {#if selectedSpace.insight?.suggested_questions?.length}
               <ResearchPromptList
-                items={selectedSpace.insight.suggested_questions.slice(0, 3)}
+                items={selectedSpace.insight.suggested_questions
+                  .slice(0, 3)
+                  .map((question, index) => promptItem(spaceQuestionAnchorId(selectedSpace.id, index), question))}
                 label="Mobile research suggestions"
                 disabled={creatingRun}
                 onResearch={researchPrompt}
@@ -1170,7 +1530,9 @@
             <span>Suggested questions</span>
             {#if selectedSpace.insight?.suggested_questions?.length}
               <ResearchPromptList
-                items={selectedSpace.insight.suggested_questions.slice(0, 3)}
+                items={selectedSpace.insight.suggested_questions
+                  .slice(0, 3)
+                  .map((question, index) => promptItem(spaceQuestionAnchorId(selectedSpace.id, index), question))}
                 label="Research suggestions"
                 disabled={creatingRun}
                 onResearch={researchPrompt}
@@ -1189,10 +1551,10 @@
               role="tab"
               aria-label={`${panelLabel(panel)} ${panelItemCount(panel, selectedSpace)}`}
               aria-selected={activePanel === panel}
-              aria-controls={`knowledge-panel-${panel}`}
+              aria-controls={panelAnchorId(panel)}
               class:active={activePanel === panel}
               tabindex={activePanel === panel ? 0 : -1}
-              on:click={() => (activePanel = panel)}
+              on:click={() => selectPanel(panel)}
               on:keydown={(event) => handleTabKeydown(event, panel)}
             >
               <span class="panel-label-full">{panelLabel(panel)}</span>
@@ -1370,7 +1732,9 @@
                           {/if}
                           {#if source.questions?.length}
                             <ResearchPromptList
-                              items={source.questions.slice(0, 2)}
+                              items={source.questions
+                                .slice(0, 2)
+                                .map((question, index) => promptItem(sourceQuestionAnchorId(source.id, index), question))}
                               label={`${source.title} suggested questions`}
                               disabled={creatingRun}
                               onResearch={researchPrompt}
@@ -1436,205 +1800,6 @@
               </form>
             </details>
           </div>
-        {:else if activePanel === 'ask'}
-          <div
-            id="knowledge-panel-ask"
-            class="panel ask-panel"
-            role="tabpanel"
-            aria-labelledby="knowledge-tab-ask"
-          >
-            <form class="research-form" on:submit|preventDefault={() => void askKnowledge()}>
-              <div class="panel-title">
-                <div>
-                  <h3>Ask stored sources</h3>
-                  <p>{selectedSourceSummary}</p>
-                </div>
-              </div>
-
-              <label for="corpus-query">Stored-source search</label>
-              <div class="inline-submit">
-                <input id="corpus-query" bind:value={corpusQueryDraft} autocomplete="off" />
-                <button
-                  type="button"
-                  disabled={querying || !corpusQueryDraft.trim() || !selectedSourceIds.length}
-                  on:click={() => void queryCorpus()}
-                >
-                  {querying ? 'Searching' : 'Search'}
-                </button>
-              </div>
-
-              <label for="research-question">Question</label>
-              <textarea id="research-question" bind:value={questionDraft} rows="3"></textarea>
-
-              {#if selectedSpace.sources?.length}
-                <details class="source-picker">
-                  <summary>{selectedSourceSummary}</summary>
-                  <div class="source-picker-actions">
-                    <button type="button" disabled={!selectedSpace.sources?.length} on:click={selectAllSources}>
-                      Select all
-                    </button>
-                    <button type="button" disabled={!selectedSourceIds.length} on:click={clearSourceSelection}>
-                      Clear
-                    </button>
-                  </div>
-                  <div class="source-select" aria-label="Ask source selection">
-                    {#each selectedSpace.sources as source (source.id)}
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={selectedSourceIds.includes(source.id)}
-                          on:change={() => toggleSourceSelection(source.id)}
-                        />
-                        <span>{source.title}</span>
-                      </label>
-                    {/each}
-                  </div>
-                </details>
-              {/if}
-
-              <div class="research-controls primary-actions">
-                <button
-                  type="submit"
-                  disabled={asking || !questionDraft.trim() || !selectedSourceIds.length}
-                >
-                  {asking ? 'Answering' : 'Ask'}
-                </button>
-              </div>
-            </form>
-
-            {#if displayedAskResult}
-              <article class="report-card" aria-label="Grounded answer">
-                <header>
-                  <div>
-                    <span>Answer</span>
-                    <h3>{displayedAskResult.question}</h3>
-                  </div>
-                  <strong>{compactTime(displayedAskResult.created_at)}</strong>
-                </header>
-                <details class="knowledge-disclosure ask-answer" aria-label="Ask answer" open>
-                  <summary>
-                    <span>
-                      <strong>Answer</strong>
-                      <span>{displayedAskResult.evidence?.length || 0} citations</span>
-                    </span>
-                  </summary>
-                  <div class="disclosure-body">
-                    <div class="markdown-block answer-body">
-                      <Markdown content={citationLinkedMarkdown(displayedAskResult.answer, displayedAskResult.evidence)} headingIds />
-                    </div>
-                  </div>
-                </details>
-                {#if displayedAskResult.key_findings?.length}
-                  <details class="knowledge-disclosure" aria-label="Answer key findings">
-                    <summary>
-                      <span>
-                        <strong>Key findings</strong>
-                        <span>{displayedAskResult.key_findings.length}</span>
-                      </span>
-                    </summary>
-                    <div class="disclosure-body">
-                      <div class="claims-list">
-                        {#each displayedAskResult.key_findings as finding}
-                          <section>
-                            <strong>Finding</strong>
-                            <div class="markdown-block compact">
-                              <Markdown content={citationLinkedMarkdown(finding, displayedAskResult.evidence)} />
-                            </div>
-                          </section>
-                        {/each}
-                      </div>
-                    </div>
-                  </details>
-                {/if}
-                {#if modelProvenanceLabel(displayedAskResult.provider, displayedAskResult.model) || displayedAskResult.usage?.total_tokens}
-                  <dl class="source-meta">
-                    {#if modelProvenanceLabel(displayedAskResult.provider, displayedAskResult.model)}
-                      <div>
-                        <dt>Model</dt>
-                        <dd>{modelProvenanceLabel(displayedAskResult.provider, displayedAskResult.model)}</dd>
-                      </div>
-                    {/if}
-                    {#if displayedAskResult.usage?.total_tokens}
-                      <div>
-                        <dt>Tokens</dt>
-                        <dd>{displayedAskResult.usage.total_tokens}</dd>
-                      </div>
-                    {/if}
-                  </dl>
-                {/if}
-                {#if displayedAskResult.evidence?.length}
-                  <details class="knowledge-disclosure" aria-label="Answer evidence">
-                    <summary>
-                      <span>
-                        <strong>Evidence</strong>
-                        <span>{displayedAskResult.evidence.length} cited chunks</span>
-                      </span>
-                    </summary>
-                    <div class="disclosure-body">
-                      <div class="evidence-list">
-                        {#each displayedAskResult.evidence as evidence (evidence.id)}
-                          <section>
-                            {#if sourceAnchorHref(evidence.source_id)}
-                              <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
-                            {:else}
-                              <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
-                            {/if}
-                            <div class="markdown-block evidence-body">
-                              <Markdown content={evidence.excerpt} />
-                            </div>
-                            <dl class="candidate-meta evidence-trace">
-                              {#if evidence.section_title}
-                                <div>
-                                  <dt>Section</dt>
-                                  <dd>{evidence.section_title}</dd>
-                                </div>
-                              {/if}
-                              <div>
-                                <dt>Trace</dt>
-                                <dd>{evidenceTraceLabel(evidence)}</dd>
-                              </div>
-                              <div>
-                                <dt>Score</dt>
-                                <dd>{evidence.score}</dd>
-                              </div>
-                            </dl>
-                            {#if evidence.source_summary}
-                              <div class="markdown-block compact">
-                                <Markdown content={evidence.source_summary} />
-                              </div>
-                            {/if}
-                            {#if evidence.source_uri}
-                              <small>{evidence.source_uri}</small>
-                            {/if}
-                          </section>
-                        {/each}
-                      </div>
-                    </div>
-                  </details>
-                {/if}
-                {#if displayedAskResult.gaps?.length}
-                  <details class="knowledge-disclosure" aria-label="Answer gaps">
-                    <summary>
-                      <span>
-                        <strong>Gaps</strong>
-                        <span>{displayedAskResult.gaps.length}</span>
-                      </span>
-                    </summary>
-                    <div class="disclosure-body">
-                      <ResearchPromptList
-                        items={displayedAskResult.gaps}
-                        label="Answer gap research prompts"
-                        disabled={creatingRun}
-                        onResearch={researchPrompt}
-                      />
-                    </div>
-                  </details>
-                {/if}
-              </article>
-            {:else}
-              <p class="empty">Ask a question or search the corpus to inspect cited chunks.</p>
-            {/if}
-          </div>
         {:else if activePanel === 'runs'}
           <div
             id="knowledge-panel-runs"
@@ -1642,72 +1807,268 @@
             role="tabpanel"
             aria-labelledby="knowledge-tab-runs"
           >
-            <form class="research-form" on:submit|preventDefault={() => void createResearchRun()}>
-              <div class="panel-title">
-                <div>
-                  <h3>Research</h3>
-                  <p>{researchRunSourceSummary}</p>
-                </div>
-              </div>
-
-              <label for="run-objective">Question or research goal</label>
-              <textarea id="run-objective" bind:value={runObjectiveDraft} rows="3"></textarea>
-
-              <div class="research-controls">
-                <label for="research-mode">Output</label>
-                <select id="research-mode" bind:value={researchModeDraft}>
-                  <option value="research">Research report</option>
-                  <option value="brief">Brief</option>
-                  <option value="study">Study guide</option>
-                </select>
-                <label class="inline-check">
-                  <input type="checkbox" bind:checked={discoverSourcesDraft} />
-                  <span>Search web and academic sources</span>
-                </label>
-                <button
-                  type="submit"
-                  disabled={creatingRun || !canStartResearchRun}
-                >
-                  {creatingRun ? 'Starting' : 'Start research'}
-                </button>
-              </div>
-
-              {#if selectedSpace.sources?.length}
-                <details class="source-picker">
-                  <summary>{selectedSourceSummary}</summary>
-                  <div class="source-picker-actions">
-                    <button type="button" disabled={!selectedSpace.sources?.length} on:click={selectAllSources}>
-                      Select all
-                    </button>
-                    <button type="button" disabled={!selectedSourceIds.length} on:click={clearSourceSelection}>
-                      Clear
-                    </button>
+            {#if !latestSelectedRun}
+            <div class="research-sidebar">
+              <details class="new-research-panel" aria-label="New research" bind:open={researchFormOpen}>
+                <summary>
+                  <span>
+                    <strong>New Knowledge work</strong>
+                    <span>{researchRunSourceSummary}</span>
+                  </span>
+                </summary>
+                <form class="research-form" on:submit|preventDefault={() => void submitKnowledgeAction()}>
+                  <div class="panel-title">
+                    <div>
+                      <h3>Research action</h3>
+                      <p>{researchRunSourceSummary}</p>
+                    </div>
                   </div>
-                  <div class="source-select" aria-label="Research source selection">
-                    {#each selectedSpace.sources as source (source.id)}
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={selectedSourceIds.includes(source.id)}
-                          on:change={() => toggleSourceSelection(source.id)}
-                        />
-                        <span>{source.title}</span>
+
+                  <fieldset class="choice-group compact" aria-label="Research action">
+                    <legend>Action</legend>
+                    <label class:checked={researchActionDraft === 'ask'}>
+                      <input type="radio" name="research-action" value="ask" bind:group={researchActionDraft} />
+                      <span>
+                        <strong>Ask a question</strong>
+                        <small>Answer from selected stored sources and save the result as a report.</small>
+                      </span>
+                    </label>
+                    <label class:checked={researchActionDraft === 'research'}>
+                      <input type="radio" name="research-action" value="research" bind:group={researchActionDraft} />
+                      <span>
+                        <strong>Run research</strong>
+                        <small>Create a durable research run that can gather sources online.</small>
+                      </span>
+                    </label>
+                    <label class:checked={researchActionDraft === 'search'}>
+                      <input type="radio" name="research-action" value="search" bind:group={researchActionDraft} />
+                      <span>
+                        <strong>Search corpus</strong>
+                        <small>Retrieve matching chunks from selected stored sources.</small>
+                      </span>
+                    </label>
+                  </fieldset>
+
+                  {#if researchActionDraft === 'search'}
+                    <label for="corpus-query">Stored-source search</label>
+                    <input id="corpus-query" bind:value={corpusQueryDraft} autocomplete="off" />
+                  {:else if researchActionDraft === 'ask'}
+                    <label for="research-question">Question</label>
+                    <textarea id="research-question" bind:value={questionDraft} rows="3"></textarea>
+                  {:else}
+                    <label for="run-objective">Question or research goal</label>
+                    <textarea id="run-objective" bind:value={runObjectiveDraft} rows="3"></textarea>
+                  {/if}
+
+                  {#if researchActionDraft === 'research'}
+                    <fieldset class="choice-group" aria-label="Research effort">
+                      <legend>Research effort</legend>
+                      <label class:checked={researchDepthDraft === 'quick'}>
+                        <input type="radio" name="research-depth" value="quick" bind:group={researchDepthDraft} />
+                        <span>
+                          <strong>Quick</strong>
+                          <small>Fast scan of the selected corpus and a small discovery pass.</small>
+                        </span>
                       </label>
-                    {/each}
-                  </div>
-                </details>
-              {/if}
-            </form>
+                      <label class:checked={researchDepthDraft === 'standard'}>
+                        <input type="radio" name="research-depth" value="standard" bind:group={researchDepthDraft} />
+                        <span>
+                          <strong>Standard</strong>
+                          <small>Balanced source gathering, reading, and synthesis.</small>
+                        </span>
+                      </label>
+                      <label class:checked={researchDepthDraft === 'deep'}>
+                        <input type="radio" name="research-depth" value="deep" bind:group={researchDepthDraft} />
+                        <span>
+                          <strong>Deep</strong>
+                          <small>More searches, broader evidence review, and longer synthesis.</small>
+                        </span>
+                      </label>
+                    </fieldset>
 
-            <div class="runs-list" aria-label="Research">
-              {#if latestSelectedRun}
-                <article class="report-card" aria-label="Selected research">
+                    <fieldset class="choice-group compact" aria-label="Research output">
+                      <legend>Output</legend>
+                      <label class:checked={researchModeDraft === 'research'}>
+                        <input type="radio" name="research-output" value="research" bind:group={researchModeDraft} />
+                        <span>
+                          <strong>Report</strong>
+                          <small>Full answer with evidence and gaps.</small>
+                        </span>
+                      </label>
+                      <label class:checked={researchModeDraft === 'brief'}>
+                        <input type="radio" name="research-output" value="brief" bind:group={researchModeDraft} />
+                        <span>
+                          <strong>Brief</strong>
+                          <small>Shorter synthesis for review.</small>
+                        </span>
+                      </label>
+                      <label class:checked={researchModeDraft === 'study'}>
+                        <input type="radio" name="research-output" value="study" bind:group={researchModeDraft} />
+                        <span>
+                          <strong>Study</strong>
+                          <small>Questions and learning-oriented notes.</small>
+                        </span>
+                      </label>
+                    </fieldset>
+                  {/if}
+
+                  <div class="research-controls">
+                    {#if researchActionDraft === 'research'}
+                      <label class="inline-check">
+                        <input type="checkbox" bind:checked={discoverSourcesDraft} />
+                        <span>Search web and academic sources</span>
+                      </label>
+                    {/if}
+                    <button
+                      type="submit"
+                      disabled={creatingRun || asking || querying || !canSubmitKnowledgeAction}
+                    >
+                      {researchActionDraft === 'ask'
+                        ? asking ? 'Answering' : 'Ask question'
+                        : researchActionDraft === 'search'
+                          ? querying ? 'Searching' : 'Search corpus'
+                          : creatingRun ? 'Starting' : 'Start research'}
+                    </button>
+                  </div>
+
+                  {#if selectedSpace.sources?.length}
+                    <details class="source-picker">
+                      <summary>{selectedSourceSummary}</summary>
+                      <div class="source-picker-actions">
+                        <button type="button" disabled={!selectedSpace.sources?.length} on:click={selectAllSources}>
+                          Select all
+                        </button>
+                        <button type="button" disabled={!selectedSourceIds.length} on:click={clearSourceSelection}>
+                          Clear
+                        </button>
+                      </div>
+                      <div class="source-select" aria-label="Research source selection">
+                        {#each selectedSpace.sources as source (source.id)}
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={selectedSourceIds.includes(source.id)}
+                              on:change={() => toggleSourceSelection(source.id)}
+                            />
+                            <span>{source.title}</span>
+                          </label>
+                        {/each}
+                      </div>
+                    </details>
+                  {/if}
+                </form>
+              </details>
+
+              {#if displayedAskResult && researchActionDraft === 'search'}
+                <article class="report-card corpus-result-card" aria-label="Corpus search result">
                   <header>
                     <div>
+                      <span>Search result</span>
+                      <h3>{displayedAskResult.question}</h3>
+                    </div>
+                    <strong>{compactTime(displayedAskResult.created_at)}</strong>
+                  </header>
+                  <details class="knowledge-disclosure" aria-label="Corpus search evidence" open>
+                    <summary>
+                      <span>
+                        <strong>Evidence</strong>
+                        <span>{displayedAskResult.evidence?.length || 0} chunks</span>
+                      </span>
+                    </summary>
+                    <div class="disclosure-body">
+                      <div class="evidence-list">
+                        {#each displayedAskResult.evidence || [] as evidence (evidence.id)}
+                          <section id={evidenceAnchorId('search', evidence.id)}>
+                            <div class="evidence-heading">
+                              {#if sourceAnchorHref(evidence.source_id)}
+                                <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
+                              {:else}
+                                <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
+                              {/if}
+                            </div>
+                            <div class="markdown-block evidence-body">
+                              <Markdown content={evidence.excerpt} />
+                            </div>
+                          </section>
+                        {/each}
+                      </div>
+                    </div>
+                  </details>
+                </article>
+              {/if}
+
+              <section class="record-inventory" aria-label="Research records">
+                <header>
+                  <div>
+                    <h3>Research records</h3>
+                    <p>{plural(selectedSpace.research_runs?.length || 0, 'run')}</p>
+                  </div>
+                </header>
+                <div class="record-table" aria-label="Research table">
+                  {#if selectedSpace.research_runs?.length}
+                    {#each selectedSpace.research_runs as run (run.id)}
+                      <a
+                        id={`${runAnchorId(run.id)}-row`}
+                        class="record-row research-record-row"
+                        href={runHref(run)}
+                        on:click={(event) => handleRunRowClick(event, run)}
+                      >
+                        <span
+                          class={`record-status-dot ${researchRunStatusTone(run)}`}
+                          class:pulse={researchRunStatusTone(run) === 'active'}
+                          aria-hidden="true"
+                        ></span>
+                        <span class="record-row-main">
+                          <strong>{run.objective}</strong>
+                          <small>
+                            {researchRunStatusLabel(run)} · {run.depth || 'standard'} · {run.discover_sources ? 'web and academic' : 'stored corpus'}
+                          </small>
+                        </span>
+                        <span class="record-row-meta">
+                          <strong>{run.evidence_count || 0}</strong>
+                          <small>evidence</small>
+                        </span>
+                        <span class="record-row-time">{compactTime(run.created_at)}</span>
+                      </a>
+                    {/each}
+                  {:else}
+                    <p class="empty">No research runs yet.</p>
+                  {/if}
+                </div>
+              </section>
+            </div>
+            {/if}
+
+            {#if latestSelectedRun}
+            <div class="runs-list" aria-label="Research">
+                <article id={runAnchorId(latestSelectedRun.id)} class="report-card" aria-label="Selected research">
+                  <header>
+                    <div>
+                      <button
+                        type="button"
+                        class="back-to-records"
+                        aria-label="Back to research records"
+                        on:click={() => clearSelectedRun()}
+                      >
+                        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                          <path d="M12.5 4.5 7 10l5.5 5.5" />
+                        </svg>
+                        <span>Back to research</span>
+                      </button>
                       <span class={`status-pill ${researchRunStatusTone(latestSelectedRun)}`}>{researchRunStatusLabel(latestSelectedRun)}</span>
                       <h3>{latestSelectedRun.objective}</h3>
                     </div>
-                    <strong>{compactTime(latestSelectedRun.created_at)}</strong>
+                    <span class="header-link-group">
+                      <strong>{compactTime(latestSelectedRun.created_at)}</strong>
+                      <a
+                        class="permalink"
+                        href={runHref(latestSelectedRun)}
+                        aria-label={`Link to research ${latestSelectedRun.objective}`}
+                        title="Link to research"
+                      >
+                        #
+                      </a>
+                    </span>
                   </header>
                   <dl class="source-meta">
                     <div>
@@ -1750,9 +2111,13 @@
                         </span>
                       </summary>
                       <div class="disclosure-body">
-                        <button type="button" class="text-action" on:click={() => selectReport(selectedRunReport!)}>
-                          Open artefact
-                        </button>
+                        <a
+                          class="text-action"
+                          href={reportHref(selectedRunReport)}
+                          on:click={(event) => handleReportRowClick(event, selectedRunReport!)}
+                        >
+                          Open report
+                        </a>
                         <div class="markdown-block answer-body">
                           <Markdown content={citationLinkedMarkdown(selectedRunReport.answer, selectedRunReport.evidence)} headingIds />
                         </div>
@@ -1788,7 +2153,9 @@
                             </summary>
                             <div class="disclosure-body">
                               <ResearchPromptList
-                                items={selectedRunReport.gaps}
+                                items={selectedRunReport.gaps.map((gap, index) =>
+                                  promptItem(reportGapAnchorId(selectedRunReport.id, index), gap)
+                                )}
                                 label="Research gap prompts"
                                 disabled={creatingRun}
                                 onResearch={researchPrompt}
@@ -1807,12 +2174,22 @@
                             <div class="disclosure-body">
                               <div class="evidence-list">
                                 {#each selectedRunReport.evidence.slice(0, 8) as evidence (evidence.id)}
-                                  <section>
-                                    {#if sourceAnchorHref(evidence.source_id)}
-                                      <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
-                                    {:else}
-                                      <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
-                                    {/if}
+                                  <section id={evidenceAnchorId(latestSelectedRun.id, evidence.id)}>
+                                    <div class="evidence-heading">
+                                      {#if sourceAnchorHref(evidence.source_id)}
+                                        <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
+                                      {:else}
+                                        <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
+                                      {/if}
+                                      <a
+                                        class="permalink"
+                                        href={knowledgeHashHref(evidenceAnchorId(latestSelectedRun.id, evidence.id))}
+                                        aria-label={`Link to research reference ${evidence.citation_label}`}
+                                        title="Link to reference"
+                                      >
+                                        #
+                                      </a>
+                                    </div>
                                     <div class="markdown-block evidence-body">
                                       <Markdown content={evidence.excerpt} />
                                     </div>
@@ -1906,7 +2283,7 @@
                   {#if latestSelectedRun.research_loops?.length}
                     <div class="research-loops" aria-label="Research loops">
                       {#each latestSelectedRun.research_loops as loop (loop.id)}
-                        <details class="knowledge-disclosure">
+                        <details id={runLoopAnchorId(latestSelectedRun.id, loop.id)} class="knowledge-disclosure">
                           <summary>
                             <span>
                               <strong>Loop {loop.index}</strong>
@@ -1959,7 +2336,9 @@
                             {/if}
                             {#if loop.gaps?.length}
                               <ResearchPromptList
-                                items={loop.gaps}
+                                items={loop.gaps.map((gap, index) =>
+                                  promptItem(runLoopGapAnchorId(latestSelectedRun.id, loop.id, index), gap)
+                                )}
                                 label={`Loop ${loop.index} gap prompts`}
                                 disabled={creatingRun}
                                 onResearch={researchPrompt}
@@ -1990,7 +2369,7 @@
                       </summary>
                       <div class="disclosure-body">
                         {#each latestSelectedRun.coverage as item (item.id)}
-                          <section>
+                          <section id={runCoverageAnchorId(latestSelectedRun.id, item.id)}>
                             <header>
                               <strong>{item.topic}</strong>
                               <span class={`candidate-status ${item.status}`}>{item.status}</span>
@@ -2016,7 +2395,7 @@
                       </summary>
                       <div class="disclosure-body">
                         {#each latestSelectedRun.source_candidates as candidate (candidate.id)}
-                          <section>
+                          <section id={runCandidateAnchorId(latestSelectedRun.id, candidate.id)}>
                             <header>
                               <strong>{candidate.title || candidate.url}</strong>
                               <span class={`candidate-status ${candidate.status}`}>{candidate.status}</span>
@@ -2112,7 +2491,7 @@
                       </summary>
                       <div class="disclosure-body">
                         {#each latestSelectedRun.events as event (event.id)}
-                          <section>
+                          <section id={runEventAnchorId(latestSelectedRun.id, event.id)}>
                             <strong>{event.stage}</strong>
                             <div class="markdown-block compact">
                               <Markdown content={event.message} />
@@ -2123,53 +2502,35 @@
                     </details>
                   {/if}
                 </article>
-              {:else}
-                <p class="empty">No research is stored.</p>
-              {/if}
-
-              {#if storedResearchRuns.length}
-                <details class="knowledge-disclosure previous-research" aria-label="Previous research">
-                  <summary>
-                    <span>
-                      <strong>Previous research</strong>
-                      <span>{plural(storedResearchRuns.length, 'older run')}</span>
-                    </span>
-                  </summary>
-                  <div class="disclosure-body">
-                    <div class="reports-list" aria-label="Stored research">
-                      {#each storedResearchRuns as run (run.id)}
-                        <button type="button" class="report-row" on:click={() => selectRun(run)}>
-                          <header>
-                            <div>
-                              <span class={`status-pill ${researchRunStatusTone(run)}`}>{researchRunStatusLabel(run)}</span>
-                              <h3>{run.objective}</h3>
-                            </div>
-                            <strong>{compactTime(run.created_at)}</strong>
-                          </header>
-                          <p>{run.evidence_count || 0} cited evidence chunks</p>
-                        </button>
-                      {/each}
-                    </div>
-                  </div>
-                </details>
-              {/if}
             </div>
+            {/if}
           </div>
         {:else}
           <div
             id="knowledge-panel-artefacts"
-            class="panel"
+            class="panel reports-panel"
             role="tabpanel"
             aria-labelledby="knowledge-tab-artefacts"
           >
+            <div class="record-workspace reports-workspace">
             {#if latestSelectedReport}
-              <article class="report-card" aria-label="Selected artefact">
+              <article id={reportAnchorId(latestSelectedReport.id)} class="report-card record-detail" aria-label="Selected report">
                 <header>
                   <div>
                     <span>{latestSelectedReport.mode}</span>
                     <h3>{latestSelectedReport.question}</h3>
                   </div>
-                  <strong>{compactTime(latestSelectedReport.created_at)}</strong>
+                  <span class="header-link-group">
+                    <strong>{compactTime(latestSelectedReport.created_at)}</strong>
+                    <a
+                      class="permalink"
+                      href={reportHref(latestSelectedReport)}
+                      aria-label={`Link to report ${latestSelectedReport.question}`}
+                      title="Link to report"
+                    >
+                      #
+                    </a>
+                  </span>
                 </header>
                 <details class="knowledge-disclosure report-answer" aria-label="Report answer" open>
                   <summary>
@@ -2233,12 +2594,22 @@
                     <div class="disclosure-body">
                       <div class="evidence-list">
                         {#each latestSelectedReport.evidence as evidence (evidence.id)}
-                          <section>
-                            {#if sourceAnchorHref(evidence.source_id)}
-                              <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
-                            {:else}
-                              <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
-                            {/if}
+                          <section id={evidenceAnchorId(latestSelectedReport.id, evidence.id)}>
+                            <div class="evidence-heading">
+                              {#if sourceAnchorHref(evidence.source_id)}
+                                <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
+                              {:else}
+                                <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
+                              {/if}
+                              <a
+                                class="permalink"
+                                href={knowledgeHashHref(evidenceAnchorId(latestSelectedReport.id, evidence.id))}
+                                aria-label={`Link to report reference ${evidence.citation_label}`}
+                                title="Link to reference"
+                              >
+                                #
+                              </a>
+                            </div>
                             <div class="markdown-block evidence-body">
                               <Markdown content={evidence.excerpt} />
                             </div>
@@ -2279,7 +2650,9 @@
                     </summary>
                     <div class="disclosure-body">
                       <ResearchPromptList
-                        items={latestSelectedReport.gaps}
+                        items={latestSelectedReport.gaps.map((gap, index) =>
+                          promptItem(reportGapAnchorId(latestSelectedReport.id, index), gap)
+                        )}
                         label="Report gap prompts"
                         disabled={creatingRun}
                         onResearch={researchPrompt}
@@ -2289,23 +2662,41 @@
                 {/if}
               </article>
             {/if}
-            <div class="reports-list" aria-label="Knowledge Space artefacts">
-              {#if selectedSpace.reports?.length}
-                {#each selectedSpace.reports as report (report.id)}
-                  <button type="button" class="report-row" on:click={() => selectReport(report)}>
-                    <header>
-                      <div>
-                        <span>{report.mode}</span>
-                        <h3>{report.question}</h3>
-                      </div>
-                      <strong>{compactTime(report.created_at)}</strong>
-                    </header>
-                    <p>{knowledgeMarkdownPreview(report.key_findings?.[0] || report.answer)}</p>
-                  </button>
-                {/each}
-              {:else}
-                <p class="empty">No reports are stored.</p>
-              {/if}
+            <div class="record-inventory reports-list" aria-label="Knowledge Space reports">
+              <header>
+                <div>
+                  <h3>Report records</h3>
+                  <p>{plural(selectedSpace.reports?.length || 0, 'report')}</p>
+                </div>
+              </header>
+              <div class="record-table" aria-label="Reports table">
+                {#if selectedSpace.reports?.length}
+                  {#each selectedSpace.reports as report (report.id)}
+                    <a
+                      id={`${reportAnchorId(report.id)}-row`}
+                      class="record-row"
+                      class:active={latestSelectedReport?.id === report.id}
+                      href={reportHref(report)}
+                      aria-current={latestSelectedReport?.id === report.id ? 'true' : undefined}
+                      on:click={(event) => handleReportRowClick(event, report)}
+                    >
+                      <span class="record-row-main">
+                        <span class="record-type">{report.mode}</span>
+                        <strong>{report.question}</strong>
+                        <small>{knowledgeMarkdownPreview(report.key_findings?.[0] || report.answer, 96)}</small>
+                      </span>
+                      <span class="record-row-meta">
+                        <strong>{report.evidence?.length || 0}</strong>
+                        <small>citations</small>
+                      </span>
+                      <span class="record-row-time">{compactTime(report.created_at)}</span>
+                    </a>
+                  {/each}
+                {:else}
+                  <p class="empty">No reports are stored.</p>
+                {/if}
+              </div>
+            </div>
             </div>
           </div>
         {/if}
@@ -2316,6 +2707,7 @@
         </div>
       {/if}
     </section>
+    {/if}
   </main>
 </div>
 
@@ -2396,6 +2788,137 @@
     overscroll-behavior-x: none;
   }
 
+  .knowledge-page.loading-state {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    padding: 1rem;
+  }
+
+  .knowledge-loading-state {
+    display: grid;
+    gap: 0.9rem;
+    width: min(100%, 72rem);
+    min-width: 0;
+    margin: 0 auto;
+  }
+
+  .loading-topline,
+  .loading-card {
+    min-width: 0;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+  }
+
+  .loading-topline {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  .loading-topline h1 {
+    color: var(--text-strong, #0f172a);
+    font-size: 1.45rem;
+    line-height: 1.15;
+  }
+
+  .loading-topline p {
+    margin-top: 0.35rem;
+    color: var(--knowledge-muted, #475569);
+  }
+
+  .loading-topline .status-pill {
+    align-self: flex-start;
+    width: fit-content;
+  }
+
+  .loading-mobile-toolbar {
+    display: none;
+  }
+
+  .loading-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .loading-tabs span,
+  .loading-control {
+    min-height: 2.35rem;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+  }
+
+  .loading-tabs span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.45rem 0.9rem;
+    color: var(--text, #172033);
+    font-weight: 800;
+  }
+
+  .loading-tabs span.active {
+    border-color: var(--knowledge-primary-bg, #172554);
+    background: var(--knowledge-primary-bg, #172554);
+    color: var(--knowledge-primary-text, #ffffff);
+  }
+
+  .loading-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.75fr);
+    gap: 0.9rem;
+    min-width: 0;
+  }
+
+  .loading-card {
+    display: grid;
+    gap: 0.7rem;
+    padding: 1rem;
+  }
+
+  .loading-label,
+  .loading-title,
+  .loading-bar,
+  .loading-row {
+    display: block;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--border, #cbd5e1) 72%, var(--panel, #ffffff));
+  }
+
+  .loading-label {
+    width: 8rem;
+    height: 0.75rem;
+  }
+
+  .loading-title {
+    width: min(100%, 24rem);
+    height: 1.25rem;
+  }
+
+  .loading-bar {
+    width: min(100%, 34rem);
+    height: 0.85rem;
+  }
+
+  .loading-bar.large {
+    width: min(100%, 42rem);
+  }
+
+  .loading-bar.short,
+  .loading-row.short {
+    width: min(62%, 18rem);
+  }
+
+  .loading-row {
+    width: 100%;
+    height: 2.1rem;
+    border-radius: 8px;
+  }
+
   .space-list {
     display: flex;
     flex-direction: column;
@@ -2420,7 +2943,8 @@
   .form-footer,
   .research-controls,
   .report-card header,
-  .report-row header,
+  .record-inventory header,
+  .header-link-group,
   .detail-actions {
     display: flex;
     align-items: center;
@@ -2431,8 +2955,13 @@
   .detail-header,
   .form-footer,
   .report-card header,
-  .report-row header {
+  .record-inventory header {
     justify-content: space-between;
+  }
+
+  .header-link-group {
+    flex: 0 0 auto;
+    justify-content: flex-end;
   }
 
   .space-header h1 {
@@ -2444,7 +2973,6 @@
   .space-header span,
   .panel-title p,
   .source-card p,
-  .report-row p,
   .empty,
   .empty-detail p {
     color: var(--knowledge-muted, #475569);
@@ -2538,7 +3066,6 @@
   .insight-bar span,
   .eyebrow,
   .report-card header span,
-  .report-row header span,
   .form-footer span {
     color: var(--knowledge-muted, #475569);
     font-size: 0.78rem;
@@ -2658,6 +3185,9 @@
   }
 
   .text-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: fit-content;
     min-height: 2.35rem;
     padding: 0.4rem 0.75rem;
@@ -2665,6 +3195,31 @@
     border: 1px solid var(--knowledge-primary-bg, #172554);
     background: var(--panel, #ffffff);
     font-weight: 800;
+    text-decoration: none;
+  }
+
+  .permalink {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 1.75rem;
+    min-width: 1.75rem;
+    height: 1.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 999px;
+    color: var(--knowledge-muted, #475569);
+    background: var(--panel, #ffffff);
+    font-size: 0.78rem;
+    font-weight: 850;
+    text-decoration: none;
+  }
+
+  .permalink:hover,
+  .permalink:focus-visible {
+    border-color: var(--primary, #2563eb);
+    box-shadow: 0 0 0 1px var(--primary, #2563eb);
+    color: var(--primary, #2563eb);
   }
 
   .danger-action {
@@ -3034,7 +3589,7 @@
 
   .source-card,
   .report-card,
-  .report-row,
+  .record-row,
   .evidence-list section {
     min-width: 0;
     max-width: 100%;
@@ -3043,6 +3598,14 @@
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 8px;
     background: var(--panel, #ffffff);
+  }
+
+  .report-card,
+  .record-row,
+  .evidence-list section,
+  .source-candidates section,
+  .run-events section {
+    scroll-margin-top: 8rem;
   }
 
   .source-card-collapsible {
@@ -3106,18 +3669,22 @@
     margin-top: 0;
   }
 
-  .report-row {
+  .record-row {
     width: 100%;
     color: inherit;
     text-align: left;
   }
 
   .report-card,
-  .report-row,
+  .record-workspace,
+  .record-inventory,
+  .record-table,
+  .record-row,
+  .record-row-main,
+  .record-row-meta,
   .source-card,
   .source-card-body,
   .source-summary,
-  .ask-panel,
   .run-panel,
   .research-panel,
   .sources-panel,
@@ -3129,15 +3696,16 @@
     max-width: 100%;
   }
 
-  .report-row:hover,
-  .report-row:focus-visible {
+  .record-row:hover,
+  .record-row:focus-visible,
+  .record-row.active {
     border-color: var(--primary, #2563eb);
     box-shadow: 0 0 0 1px var(--primary, #2563eb);
   }
 
   .source-card h3,
   .report-card h3,
-  .report-row h3 {
+  .record-row strong {
     color: var(--text-strong, #0f172a);
     font-size: 1rem;
     line-height: 1.25;
@@ -3146,10 +3714,204 @@
 
   .source-card p,
   .source-analysis p,
-  .report-row p {
+  .record-row small {
     margin-top: 0.55rem;
     line-height: 1.5;
     overflow-wrap: anywhere;
+  }
+
+  .record-workspace {
+    display: grid;
+    grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .reports-workspace .record-inventory {
+    order: 1;
+  }
+
+  .reports-workspace .record-detail {
+    order: 2;
+  }
+
+  .research-sidebar,
+  .record-inventory,
+  .record-table,
+  .record-row-main {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .research-sidebar .record-inventory {
+    order: 3;
+  }
+
+  .new-research-panel {
+    order: 1;
+    min-width: 0;
+    max-width: 100%;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+    overflow: hidden;
+  }
+
+  .corpus-result-card {
+    order: 2;
+  }
+
+  .new-research-panel > summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.7rem;
+    color: var(--text-strong, #0f172a);
+    font-weight: 850;
+    list-style: none;
+  }
+
+  .new-research-panel > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .new-research-panel > summary::before {
+    content: '';
+    width: 0;
+    height: 0;
+    border-top: 0.32rem solid transparent;
+    border-bottom: 0.32rem solid transparent;
+    border-left: 0.42rem solid currentColor;
+    transition: transform 120ms ease;
+  }
+
+  .new-research-panel[open] > summary::before {
+    transform: rotate(90deg);
+  }
+
+  .new-research-panel > summary > span {
+    display: grid;
+    gap: 0.1rem;
+    min-width: 0;
+  }
+
+  .new-research-panel > summary span span {
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.78rem;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+  }
+
+  .new-research-panel .research-form {
+    padding: 0 0.7rem 0.7rem;
+  }
+
+  .record-inventory {
+    padding: 0.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--panel, #ffffff) 72%, var(--bg, #eef2f7));
+  }
+
+  .record-inventory h3 {
+    color: var(--text-strong, #0f172a);
+    font-size: 1rem;
+  }
+
+  .record-inventory p {
+    color: var(--knowledge-muted, #475569);
+    font-weight: 750;
+  }
+
+  .record-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(4rem, auto) auto;
+    align-items: center;
+    gap: 0.65rem;
+    text-decoration: none;
+  }
+
+  .research-record-row {
+    grid-template-columns: auto minmax(0, 1fr) minmax(4rem, auto) auto;
+  }
+
+  .record-status-dot {
+    --dot-ring: color-mix(in srgb, var(--knowledge-muted, #475569) 20%, transparent);
+    display: inline-block;
+    position: relative;
+    width: 0.72rem;
+    height: 0.72rem;
+    border-radius: 999px;
+    background: var(--knowledge-muted, #475569);
+    box-shadow: 0 0 0 3px var(--dot-ring);
+  }
+
+  .record-status-dot.success {
+    --dot-ring: color-mix(in srgb, var(--success, #16a34a) 20%, transparent);
+    background: var(--success, #16a34a);
+  }
+
+  .record-status-dot.active {
+    --dot-ring: color-mix(in srgb, var(--primary, #2563eb) 20%, transparent);
+    background: var(--primary, #2563eb);
+  }
+
+  .record-status-dot.danger {
+    --dot-ring: color-mix(in srgb, var(--danger, #dc2626) 20%, transparent);
+    background: var(--danger, #dc2626);
+  }
+
+  .record-status-dot.pulse {
+    animation: knowledge-activity-ring 2.4s ease-in-out infinite;
+  }
+
+  @keyframes knowledge-activity-ring {
+    0%,
+    100% {
+      box-shadow: 0 0 0 3px var(--dot-ring);
+    }
+    50% {
+      box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary, #2563eb) 10%, transparent);
+    }
+  }
+
+  .record-row-main {
+    gap: 0.25rem;
+  }
+
+  .record-row-main small,
+  .record-row-time,
+  .record-row-meta small {
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
+
+  .record-row-main small {
+    margin-top: 0;
+  }
+
+  .record-row-meta {
+    display: grid;
+    justify-items: end;
+    gap: 0.1rem;
+  }
+
+  .record-row-meta strong {
+    font-size: 0.95rem;
+  }
+
+  .record-type {
+    width: fit-content;
+    padding: 0.18rem 0.42rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 999px;
+    color: var(--knowledge-muted, #475569);
+    background: var(--bg, #eef2f7);
+    font-size: 0.72rem;
+    font-weight: 850;
+    text-transform: uppercase;
   }
 
   .detail-summary,
@@ -3247,6 +4009,19 @@
     margin-top: 0.55rem;
   }
 
+  .evidence-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+
+  .evidence-heading strong,
+  .evidence-heading .source-reference-link {
+    min-width: 0;
+  }
+
   .source-details {
     margin-top: 0.75rem;
     max-width: 100%;
@@ -3329,31 +4104,31 @@
   }
 
   .report-card header .status-pill,
-  .report-row header .status-pill {
+  .record-row .status-pill {
     color: var(--knowledge-muted, #475569);
     font-size: 0.76rem;
     text-transform: none;
   }
 
   .report-card header .status-pill.success,
-  .report-row header .status-pill.success {
+  .record-row .status-pill.success {
     border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
     color: #166534;
   }
 
   .report-card header .status-pill.danger,
-  .report-row header .status-pill.danger,
+  .record-row .status-pill.danger,
   .source-error {
     color: var(--danger, #dc2626);
   }
 
   .report-card header .status-pill.danger,
-  .report-row header .status-pill.danger {
+  .record-row .status-pill.danger {
     border-color: color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border, #cbd5e1));
   }
 
   .report-card header .status-pill.active,
-  .report-row header .status-pill.active {
+  .record-row .status-pill.active {
     border-color: color-mix(in srgb, var(--primary, #2563eb) 35%, var(--border, #cbd5e1));
     color: var(--primary, #2563eb);
   }
@@ -3567,8 +4342,6 @@
     overflow-wrap: anywhere;
   }
 
-  .ask-panel,
-  .run-panel,
   .research-panel {
     display: grid;
     grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
@@ -3576,23 +4349,106 @@
     align-items: start;
   }
 
-  .inline-submit {
+  .run-panel {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.55rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
   }
 
-  .inline-submit button {
-    min-height: 2.5rem;
-    padding: 0.45rem 0.8rem;
+  .back-to-records {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: fit-content;
+    min-height: 2rem;
+    margin-bottom: 0.55rem;
+    padding: 0.3rem 0.55rem;
     border: 1px solid var(--border, #cbd5e1);
     background: var(--panel, #ffffff);
-    color: var(--text, #172033);
-    font-weight: 800;
+    color: var(--knowledge-primary-bg, #172554);
+    font-size: 0.82rem;
+    font-weight: 850;
+  }
+
+  .back-to-records svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .research-controls {
     flex-wrap: wrap;
+  }
+
+  .choice-group {
+    display: grid;
+    gap: 0.45rem;
+    min-width: 0;
+    margin: 0;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+  }
+
+  .choice-group legend {
+    padding: 0 0.2rem;
+    color: var(--text-strong, #0f172a);
+    font-size: 0.86rem;
+    font-weight: 850;
+  }
+
+  .choice-group label {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.5rem;
+    align-items: flex-start;
+    min-width: 0;
+    padding: 0.5rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--bg, #eef2f7);
+  }
+
+  .choice-group label.checked {
+    border-color: var(--primary, #2563eb);
+    box-shadow: 0 0 0 1px var(--primary, #2563eb);
+    background: color-mix(in srgb, var(--primary, #2563eb) 7%, var(--panel, #ffffff));
+  }
+
+  .choice-group input {
+    width: 1rem;
+    height: 1rem;
+    margin-top: 0.1rem;
+  }
+
+  .choice-group span {
+    display: grid;
+    gap: 0.12rem;
+    min-width: 0;
+  }
+
+  .choice-group strong {
+    color: var(--text-strong, #0f172a);
+  }
+
+  .choice-group small {
+    color: var(--knowledge-muted, #475569);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .choice-group.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .choice-group.compact legend {
+    grid-column: 1 / -1;
   }
 
   .primary-actions {
@@ -3601,11 +4457,6 @@
 
   .research-controls label {
     min-width: 100%;
-  }
-
-  .research-controls select {
-    width: auto;
-    min-width: 9rem;
   }
 
   .inline-check {
@@ -3867,10 +4718,10 @@
 
   @media (max-width: 1080px) {
     .knowledge-page,
-    .ask-panel,
     .run-panel,
     .research-panel,
-    .sources-panel {
+    .sources-panel,
+    .record-workspace {
       grid-template-columns: 1fr;
     }
 
@@ -3883,6 +4734,61 @@
   @media (max-width: 760px) {
     .knowledge-page {
       min-height: auto;
+    }
+
+    .knowledge-page.loading-state {
+      min-height: calc(100dvh - 4.15rem);
+      padding: 0.65rem;
+    }
+
+    .loading-topline {
+      align-items: flex-start;
+      flex-direction: column;
+      padding: 0.8rem;
+    }
+
+    .loading-topline h1 {
+      font-size: 1.2rem;
+    }
+
+    .loading-topline .status-pill {
+      display: none;
+    }
+
+    .loading-mobile-toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) repeat(3, 2.35rem);
+      gap: 0.35rem;
+      padding: 0.55rem;
+      border: 1px solid var(--border-soft, #dbe3ef);
+      border-radius: 8px;
+      background: var(--panel, #ffffff);
+    }
+
+    .loading-control.wide {
+      width: 100%;
+    }
+
+    .loading-tabs {
+      position: static;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.35rem;
+      margin: 0;
+      padding: 0;
+      background: transparent;
+    }
+
+    .loading-tabs span {
+      min-width: 0;
+      padding: 0.42rem 0.3rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .loading-grid {
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .knowledge-page.has-selection .space-list {
@@ -3937,7 +4843,7 @@
     .detail-header,
     .form-footer,
     .report-card header,
-    .report-row header {
+    .record-inventory header {
       align-items: flex-start;
       flex-direction: column;
     }
@@ -3952,12 +4858,11 @@
     }
 
     .detail-header h2 {
-      font-size: 1.25rem;
+      font-size: 1.08rem;
     }
 
     .detail-summary {
-      margin-top: 0.22rem;
-      font-size: 0.94rem;
+      display: none;
     }
 
     .detail-actions,
@@ -3982,7 +4887,6 @@
 
     .space-header button,
     .form-footer button,
-    .inline-submit button,
     .research-controls button {
       width: 100%;
     }
@@ -4004,7 +4908,7 @@
 
     .tabs {
       position: sticky;
-      top: 4.1rem;
+      top: 4rem;
       z-index: 6;
       display: flex;
       gap: 0.45rem;
@@ -4012,6 +4916,7 @@
       padding: 0.45rem 0.1rem;
       overflow-x: clip;
       background: var(--bg, #eef2f7);
+      box-shadow: 0 -0.75rem 0 0 var(--bg, #eef2f7);
     }
 
     .tabs button {
@@ -4038,6 +4943,16 @@
       margin-top: 0.55rem;
     }
 
+    .run-panel .runs-list,
+    .reports-workspace .record-detail {
+      order: 1;
+    }
+
+    .run-panel .research-sidebar,
+    .reports-workspace .record-inventory {
+      order: 2;
+    }
+
     .panel-title {
       gap: 0.45rem;
     }
@@ -4049,9 +4964,28 @@
 
     .source-card,
     .report-card,
-    .report-row,
+    .record-row,
     .evidence-list section {
       padding: 0.7rem;
+    }
+
+    .record-inventory {
+      padding: 0.65rem;
+    }
+
+    .record-row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.45rem;
+    }
+
+    .record-row-meta,
+    .record-row-time {
+      justify-items: start;
+      text-align: left;
+    }
+
+    .choice-group.compact {
+      grid-template-columns: 1fr;
     }
 
     .source-summary {
@@ -4095,13 +5029,9 @@
       padding: 0 0.6rem 0.6rem;
     }
 
-    .research-controls select,
     .inline-check {
       width: 100%;
     }
 
-    .inline-submit {
-      grid-template-columns: 1fr;
-    }
   }
 </style>

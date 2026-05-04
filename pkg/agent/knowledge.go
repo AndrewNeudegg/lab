@@ -354,6 +354,66 @@ func (o *Orchestrator) StartKnowledgeResearchRun(ctx context.Context, spaceID st
 	return space, run, knowledgestore.Report{}, "Research run queued.", nil
 }
 
+func (o *Orchestrator) ResumeKnowledgeResearchRun(ctx context.Context, spaceID, runID string) (knowledgestore.Space, knowledgestore.ResearchRun, knowledgestore.Report, string, error) {
+	store, err := o.knowledgeStore()
+	if err != nil {
+		return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", err
+	}
+	space, run, err := loadKnowledgeRun(store, spaceID, runID)
+	if err != nil {
+		return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", err
+	}
+	if run.Status != knowledgestore.ResearchRunStatusFailed {
+		return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", fmt.Errorf("knowledge research run %s is %s, not failed", run.ID, run.Status)
+	}
+	now := time.Now().UTC()
+	if report, ok := knowledgeReportForRun(space, run); ok {
+		run.Status = knowledgestore.ResearchRunStatusCompleted
+		run.Error = ""
+		run.UpdatedAt = now
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "resumed", Message: "Failed research run completed from its existing report artefact.", CreatedAt: now})
+		space, err = knowledgestore.AddResearchRun(space, run, now)
+		if err != nil {
+			return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", err
+		}
+		if err := store.Save(space); err != nil {
+			return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", err
+		}
+		space, _ = store.Load(spaceID)
+		o.appendKnowledgeEvent(ctx, "knowledge.research_run.resumed", space, map[string]any{"run_id": run.ID, "status": run.Status})
+		return space, run, report, "Research run completed from existing report.", nil
+	}
+	resumeStatus, resumeMessage := knowledgeFailedRunResumeStatus(space, run)
+	run.Status = resumeStatus
+	run.Error = ""
+	run.FinishedAt = time.Time{}
+	run.SourcesExamined = countKnowledgeSources(space, run.SourceIDs)
+	run.UpdatedAt = now
+	if run.StartedAt.IsZero() {
+		run.StartedAt = now
+	}
+	run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "resumed", Message: resumeMessage, CreatedAt: now})
+	space, err = knowledgestore.AddResearchRun(space, run, now)
+	if err != nil {
+		return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", err
+	}
+	if err := store.Save(space); err != nil {
+		return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", err
+	}
+	space, run, err = loadKnowledgeRun(store, spaceID, runID)
+	if err != nil {
+		return knowledgestore.Space{}, knowledgestore.ResearchRun{}, knowledgestore.Report{}, "", err
+	}
+	o.appendKnowledgeEvent(ctx, "knowledge.research_run.resumed", space, map[string]any{"run_id": run.ID, "status": run.Status})
+	if !o.startKnowledgeResearchRunWorker(store, space.ID, run.ID) {
+		return space, run, knowledgestore.Report{}, "Research run is already active.", nil
+	}
+	return space, run, knowledgestore.Report{}, "Research run resumed.", nil
+}
+
 func (o *Orchestrator) RecoverKnowledgeResearchRuns(ctx context.Context) (int, error) {
 	store, err := o.knowledgeStore()
 	if err != nil {
@@ -1086,6 +1146,32 @@ func knowledgeReportExists(space knowledgestore.Space, reportID string) bool {
 		}
 	}
 	return false
+}
+
+func knowledgeReportForRun(space knowledgestore.Space, run knowledgestore.ResearchRun) (knowledgestore.Report, bool) {
+	reportID := strings.TrimSpace(run.ReportID)
+	if reportID == "" {
+		return knowledgestore.Report{}, false
+	}
+	for _, report := range space.Reports {
+		if report.ID == reportID {
+			return report, true
+		}
+	}
+	return knowledgestore.Report{}, false
+}
+
+func knowledgeFailedRunResumeStatus(space knowledgestore.Space, run knowledgestore.ResearchRun) (string, string) {
+	if !knowledgeRunHasPlan(run) {
+		return knowledgestore.ResearchRunStatusQueued, "Failed research run resumed from planning because no saved research plan exists."
+	}
+	if countKnowledgeSources(space, run.SourceIDs) > 0 || run.EvidenceCount > 0 {
+		return knowledgestore.ResearchRunStatusRetrieving, "Failed research run resumed from saved sources and evidence."
+	}
+	if run.DiscoverSources {
+		return knowledgestore.ResearchRunStatusDiscovering, "Failed research run resumed from online discovery."
+	}
+	return knowledgestore.ResearchRunStatusRetrieving, "Failed research run resumed from stored corpus retrieval."
 }
 
 func knowledgeRunRetrievalQuery(run knowledgestore.ResearchRun) (string, error) {

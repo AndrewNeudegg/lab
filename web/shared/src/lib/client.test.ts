@@ -441,6 +441,7 @@ describe('homelabd client', () => {
       depth: 'standard',
       source_ids: ['ksrc_1']
     });
+    await client.resumeKnowledgeResearchRun('kspace_1', 'krun_1');
     await client.deleteKnowledgeSpace('kspace_1');
 
     expect(requests.map((request) => `${request.init?.method || 'GET'} ${request.url}`)).toEqual([
@@ -454,6 +455,7 @@ describe('homelabd client', () => {
       'POST http://homelabd/knowledge/spaces/kspace_1/query',
       'POST http://homelabd/knowledge/spaces/kspace_1/ask',
       'POST http://homelabd/knowledge/spaces/kspace_1/research-runs',
+      'POST http://homelabd/knowledge/spaces/kspace_1/research-runs/krun_1/resume',
       'DELETE http://homelabd/knowledge/spaces/kspace_1'
     ]);
     expect(requests[0].body).toEqual({

@@ -264,6 +264,12 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 				"source_ids":       []any{"ksrc_1"},
 			},
 		},
+		{
+			name:       "knowledge research run resume",
+			args:       []string{"knowledge", "research-run", "resume", "kspace_123", "krun_123"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/knowledge/spaces/kspace_123/research-runs/krun_123/resume",
+		},
 	}
 
 	for _, tt := range tests {

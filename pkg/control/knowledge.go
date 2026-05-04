@@ -165,5 +165,18 @@ func (s *Server) handleKnowledgeSpace(rw http.ResponseWriter, req *http.Request)
 		writeJSON(rw, http.StatusCreated, out)
 		return
 	}
+	if len(parts) == 4 && parts[1] == "research-runs" && parts[3] == "resume" && req.Method == http.MethodPost {
+		space, run, report, reply, err := s.Orchestrator.ResumeKnowledgeResearchRun(req.Context(), spaceID, parts[2])
+		if err != nil {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		out := map[string]any{"space": space, "run": run, "reply": reply}
+		if report.ID != "" {
+			out["report"] = report
+		}
+		writeJSON(rw, http.StatusOK, out)
+		return
+	}
 	writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 }

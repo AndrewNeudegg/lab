@@ -16,6 +16,7 @@
     type HomelabdKnowledgeSpace
   } from '@homelab/shared';
   import {
+    canResumeResearchRun,
     compactKnowledgeID,
     filterKnowledgeSpaces,
     knowledgeMarkdownPreview,
@@ -55,6 +56,7 @@
   let updatingSpace = false;
   let deletingSpace = false;
   let deletingSourceId = '';
+  let resumingRunId = '';
   let error = '';
   let notice = '';
   let lastRefresh = '';
@@ -932,6 +934,29 @@
       return;
     }
     await startResearchRun(runObjectiveDraft, discoverSourcesDraft, researchModeDraft, researchDepthDraft);
+  };
+
+  const resumeResearchRun = async (run: HomelabdKnowledgeResearchRun) => {
+    if (!selectedSpace || resumingRunId || !canResumeResearchRun(run)) {
+      return;
+    }
+    resumingRunId = run.id;
+    error = '';
+    notice = '';
+    try {
+      const response = await client.resumeKnowledgeResearchRun(selectedSpace.id, run.id);
+      activeRun = response.run;
+      activeReport = response.report;
+      updateSpace(response.space);
+      activePanel = 'runs';
+      await tick();
+      pushKnowledgeHash(runAnchorId(response.run.id), true);
+      notice = response.reply || 'Research run resumed.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unable to resume research run.';
+    } finally {
+      resumingRunId = '';
+    }
   };
 
   const submitKnowledgeAction = async () => {
@@ -2007,29 +2032,45 @@
                 <div class="record-table" aria-label="Research table">
                   {#if selectedSpace.research_runs?.length}
                     {#each selectedSpace.research_runs as run (run.id)}
-                      <a
-                        id={`${runAnchorId(run.id)}-row`}
-                        class="record-row research-record-row"
-                        href={runHref(run)}
-                        on:click={(event) => handleRunRowClick(event, run)}
-                      >
-                        <span
-                          class={`record-status-dot ${researchRunStatusTone(run)}`}
-                          class:pulse={researchRunStatusTone(run) === 'active'}
-                          aria-hidden="true"
-                        ></span>
-                        <span class="record-row-main">
-                          <strong>{run.objective}</strong>
-                          <small>
-                            {researchRunStatusLabel(run)} · {run.depth || 'standard'} · {run.discover_sources ? 'web and academic' : 'stored corpus'}
-                          </small>
-                        </span>
-                        <span class="record-row-meta">
-                          <strong>{run.evidence_count || 0}</strong>
-                          <small>evidence</small>
-                        </span>
-                        <span class="record-row-time">{compactTime(run.created_at)}</span>
-                      </a>
+                      <div class="record-row-wrap">
+                        <a
+                          id={`${runAnchorId(run.id)}-row`}
+                          class="record-row research-record-row"
+                          href={runHref(run)}
+                          on:click={(event) => handleRunRowClick(event, run)}
+                        >
+                          <span
+                            class={`record-status-dot ${researchRunStatusTone(run)}`}
+                            class:pulse={researchRunStatusTone(run) === 'active'}
+                            aria-hidden="true"
+                          ></span>
+                          <span class="record-row-main">
+                            <strong>{run.objective}</strong>
+                            <small>
+                              {researchRunStatusLabel(run)} · {run.depth || 'standard'} · {run.discover_sources ? 'web and academic' : 'stored corpus'}
+                            </small>
+                          </span>
+                          <span class="record-row-meta">
+                            <strong>{run.evidence_count || 0}</strong>
+                            <small>evidence</small>
+                          </span>
+                          <span class="record-row-time">{compactTime(run.created_at)}</span>
+                        </a>
+                        {#if canResumeResearchRun(run)}
+                          <button
+                            type="button"
+                            class="run-resume-action"
+                            disabled={!!resumingRunId}
+                            aria-label={`Resume failed research ${run.objective}`}
+                            title="Resume failed research"
+                            on:click={() => void resumeResearchRun(run)}
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                              <path d="M20 12a8 8 0 0 1-13.7 5.7M4 12A8 8 0 0 1 17.7 6.3M7 18H4v-3M17 6h3v3" />
+                            </svg>
+                          </button>
+                        {/if}
+                      </div>
                     {/each}
                   {:else}
                     <p class="empty">No research runs yet.</p>
@@ -2055,7 +2096,23 @@
                         </svg>
                         <span>Back to research</span>
                       </button>
-                      <span class={`status-pill ${researchRunStatusTone(latestSelectedRun)}`}>{researchRunStatusLabel(latestSelectedRun)}</span>
+                      <span class="run-status-actions">
+                        <span class={`status-pill ${researchRunStatusTone(latestSelectedRun)}`}>{researchRunStatusLabel(latestSelectedRun)}</span>
+                        {#if canResumeResearchRun(latestSelectedRun)}
+                          <button
+                            type="button"
+                            class="run-resume-action inline"
+                            disabled={!!resumingRunId}
+                            aria-label={`Resume failed research ${latestSelectedRun.objective}`}
+                            title="Resume failed research"
+                            on:click={() => void resumeResearchRun(latestSelectedRun)}
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                              <path d="M20 12a8 8 0 0 1-13.7 5.7M4 12A8 8 0 0 1 17.7 6.3M7 18H4v-3M17 6h3v3" />
+                            </svg>
+                          </button>
+                        {/if}
+                      </span>
                       <h3>{latestSelectedRun.objective}</h3>
                     </div>
                     <span class="header-link-group">
@@ -3012,6 +3069,7 @@
   .sync-button svg,
   .icon-button svg,
   .icon-action svg,
+  .run-resume-action svg,
   .source-delete-action svg {
     width: 1rem;
     height: 1rem;
@@ -3675,10 +3733,20 @@
     text-align: left;
   }
 
+  .record-row-wrap,
+  .run-status-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .report-card,
   .record-workspace,
   .record-inventory,
   .record-table,
+  .record-row-wrap,
   .record-row,
   .record-row-main,
   .record-row-meta,
@@ -3832,6 +3900,11 @@
     text-decoration: none;
   }
 
+  .record-row-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .research-record-row {
     grid-template-columns: auto minmax(0, 1fr) minmax(4rem, auto) auto;
   }
@@ -3864,6 +3937,32 @@
 
   .record-status-dot.pulse {
     animation: knowledge-activity-ring 2.4s ease-in-out infinite;
+  }
+
+  .run-resume-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    min-width: 2.2rem;
+    min-height: 2.2rem;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border, #cbd5e1));
+    border-radius: 999px;
+    background: var(--panel, #ffffff);
+    color: var(--danger, #dc2626);
+  }
+
+  .run-resume-action:hover,
+  .run-resume-action:focus-visible {
+    border-color: var(--danger, #dc2626);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger, #dc2626) 18%, transparent);
+  }
+
+  .run-resume-action.inline {
+    width: 1.85rem;
+    min-width: 1.85rem;
+    min-height: 1.85rem;
   }
 
   @keyframes knowledge-activity-ring {

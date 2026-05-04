@@ -196,6 +196,9 @@ export const researchRunStatusTone = (run?: HomelabdKnowledgeResearchRun) => {
   return 'active';
 };
 
+export const canResumeResearchRun = (run?: HomelabdKnowledgeResearchRun) =>
+  (run?.status || '').trim().toLowerCase() === 'failed';
+
 export const modelProvenanceLabel = (provider?: string, model?: string) => {
   const parts = [provider, model].map((part) => part?.trim()).filter(Boolean);
   return parts.length ? parts.join(' / ') : '';

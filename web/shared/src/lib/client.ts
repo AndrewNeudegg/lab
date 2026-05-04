@@ -32,6 +32,7 @@ import type {
   HomelabdQueryKnowledgeSpaceResponse,
   HomelabdResearchKnowledgeSpaceRequest,
   HomelabdResearchKnowledgeSpaceResponse,
+  HomelabdResumeKnowledgeResearchRunResponse,
   HomelabdSettingsResponse,
   HomelabdTaskActionResponse,
   HomelabdTaskDiffResponse,
@@ -312,6 +313,16 @@ export const createHomelabdClient = (
           fetcher,
           method: 'POST',
           body: JSON.stringify(request)
+        }
+      );
+    },
+    resumeKnowledgeResearchRun(spaceId: string, runId: string) {
+      return apiFetch<HomelabdResumeKnowledgeResearchRunResponse>(
+        `/knowledge/spaces/${encodeURIComponent(spaceId)}/research-runs/${encodeURIComponent(runId)}/resume`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST'
         }
       );
     },

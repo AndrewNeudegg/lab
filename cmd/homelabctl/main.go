@@ -579,6 +579,12 @@ func (c cli) knowledgeAsk(args []string) error {
 }
 
 func (c cli) knowledgeResearchRun(args []string) error {
+	if len(args) > 0 {
+		switch commandWord(args[0]) {
+		case "resume", "retry":
+			return c.knowledgeResearchRunResume(args[1:])
+		}
+	}
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
 		return fmt.Errorf("usage: homelabctl knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--discover] [--source SOURCE_ID]... <objective>")
 	}
@@ -615,6 +621,13 @@ func (c cli) knowledgeResearchRun(args []string) error {
 		body["discover_sources"] = true
 	}
 	return c.do(http.MethodPost, path("knowledge", "spaces", spaceID, "research-runs"), body)
+}
+
+func (c cli) knowledgeResearchRunResume(args []string) error {
+	if len(args) != 2 || strings.TrimSpace(args[0]) == "" || strings.TrimSpace(args[1]) == "" {
+		return fmt.Errorf("usage: homelabctl knowledge research-run resume <space_id> <run_id>")
+	}
+	return c.do(http.MethodPost, path("knowledge", "spaces", args[0], "research-runs", args[1], "resume"), nil)
 }
 
 func (c cli) task(args []string) error {
@@ -1361,6 +1374,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] knowledge ask <space_id> [--limit N] [--source SOURCE_ID]... <question>
   homelabctl [-addr http://127.0.0.1:18080] knowledge research <space_id> [--mode research|brief|study] [--source SOURCE_ID]... <question>
   homelabctl [-addr http://127.0.0.1:18080] knowledge research-run <space_id> [--depth quick|standard|deep] [--scope TEXT] [--mode research|brief|study] [--discover] [--source SOURCE_ID]... <objective>
+  homelabctl [-addr http://127.0.0.1:18080] knowledge research-run resume <space_id> <run_id>
 
   homelabctl [-addr http://127.0.0.1:18080] workflow new <name>: <goal>
   homelabctl [-addr http://127.0.0.1:18080] workflow list

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { HomelabdKnowledgeSpace } from '@homelab/shared';
 import {
+  canResumeResearchRun,
   compactKnowledgeID,
   filterKnowledgeSpaces,
   knowledgeMarkdownPreview,
@@ -166,5 +167,7 @@ describe('knowledge view model', () => {
     expect(researchRunStatusTone({ status: 'synthesizing' } as never)).toBe('active');
     expect(researchRunStatusTone({ status: 'completed' } as never)).toBe('success');
     expect(researchRunStatusTone({ status: 'failed' } as never)).toBe('danger');
+    expect(canResumeResearchRun({ status: 'failed' } as never)).toBe(true);
+    expect(canResumeResearchRun({ status: 'completed' } as never)).toBe(false);
   });
 });

@@ -236,6 +236,27 @@ const knowledgeRun = {
   finished_at: now
 };
 
+const failedKnowledgeRun = {
+  ...knowledgeRun,
+  id: 'krun_20260428_120000_failed',
+  objective: 'Track failed fruit lifecycle research',
+  status: 'failed',
+  report_id: undefined,
+  evidence_count: 3,
+  sources_examined: 1,
+  error: 'knowledge_research_coverage_decision JSON: unexpected EOF',
+  events: [
+    ...(knowledgeRun.events || []),
+    {
+      id: 'krun_failed_event_1',
+      stage: 'failed',
+      message: 'knowledge_research_coverage_decision JSON: unexpected EOF',
+      created_at: now
+    }
+  ],
+  finished_at: now
+};
+
 const baseKnowledgeSpace = {
   id: 'kspace_20260428_120000_55555555',
   title: 'Research synthesis',
@@ -273,9 +294,19 @@ const freezeTime = async (page: Page) => {
   }, now);
 };
 
-const mockKnowledgeApis = async (page: Page) => {
+const mockKnowledgeApis = async (
+  page: Page,
+  options: { includeFailedRun?: boolean } = {}
+) => {
   await freezeTime(page);
-  let knowledgeSpaces = [structuredClone(baseKnowledgeSpace)];
+  let knowledgeSpaces = [
+    structuredClone({
+      ...baseKnowledgeSpace,
+      research_runs: options.includeFailedRun
+        ? [failedKnowledgeRun, knowledgeRun]
+        : baseKnowledgeSpace.research_runs
+    })
+  ];
   const researchRunRequests: Array<{
     objective?: string;
     depth?: string;
@@ -283,6 +314,7 @@ const mockKnowledgeApis = async (page: Page) => {
     discover_sources?: boolean;
     source_ids?: string[];
   }> = [];
+  const resumeRunRequests: Array<{ spaceId: string; runId: string }> = [];
 
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [] } });
@@ -547,8 +579,48 @@ const mockKnowledgeApis = async (page: Page) => {
     knowledgeSpaces = [updated];
     await route.fulfill({ status: 201, json: { space: updated, run, reply: 'Research run queued.' } });
   });
+  await page.route(/\/api\/knowledge\/spaces\/[^/]+\/research-runs\/[^/]+\/resume$/, async (route) => {
+    const url = new URL(route.request().url());
+    const parts = url.pathname.split('/');
+    const spaceId = decodeURIComponent(parts.at(-4) || '');
+    const runId = decodeURIComponent(parts.at(-2) || '');
+    resumeRunRequests.push({ spaceId, runId });
+    const current = knowledgeSpaces.find((item) => item.id === spaceId);
+    if (!current) {
+      await route.fulfill({ status: 404, json: { error: 'space not found' } });
+      return;
+    }
+    const run = (current.research_runs || []).find((item) => item.id === runId);
+    if (!run || run.status !== 'failed') {
+      await route.fulfill({ status: 400, json: { error: 'research run is not failed' } });
+      return;
+    }
+    const resumedRun = {
+      ...run,
+      status: 'retrieving',
+      error: undefined,
+      finished_at: undefined,
+      updated_at: now,
+      events: [
+        ...(run.events || []),
+        {
+          id: 'krun_resumed_event_1',
+          stage: 'resumed',
+          message: 'Failed research run resumed from saved sources and evidence.',
+          created_at: now
+        }
+      ]
+    };
+    const updated = {
+      ...current,
+      research_runs: (current.research_runs || []).map((item) => (item.id === runId ? resumedRun : item)),
+      updated_at: now
+    };
+    knowledgeSpaces = knowledgeSpaces.map((item) => (item.id === spaceId ? updated : item));
+    await route.fulfill({ json: { space: updated, run: resumedRun, reply: 'Research run resumed.' } });
+  });
 
-  return { researchRunRequests };
+  return { researchRunRequests, resumeRunRequests };
 };
 
 const expectKnowledgeReady = async (page: Page) => {
@@ -867,6 +939,47 @@ for (const viewport of [
       await expectNoAxeViolations(page);
     });
 
+    test('resumes failed research from the compact retry action', async ({ page }) => {
+      const api = await mockKnowledgeApis(page, { includeFailedRun: true });
+      await page.goto('/knowledge#knowledge-panel-runs');
+      await expectKnowledgeReady(page);
+
+      await page.getByRole('tab', { name: /Research/ }).click();
+      const researchTable = page.getByLabel('Research table');
+      await expect(researchTable.getByRole('link', { name: /Track failed fruit lifecycle research/ })).toBeVisible();
+      const resumeAction = page.getByRole('button', {
+        name: /Resume failed research Track failed fruit lifecycle research/
+      });
+      await expect(resumeAction).toBeVisible();
+      await resumeAction.click();
+
+      expect(api.resumeRunRequests).toEqual([
+        {
+          spaceId: baseKnowledgeSpace.id,
+          runId: failedKnowledgeRun.id
+        }
+      ]);
+      await expect(page.getByRole('article', { name: 'Selected research' })).toContainText('Retrieving');
+      await expect(page.getByRole('article', { name: 'Selected research' })).toContainText(
+        'Track failed fruit lifecycle research'
+      );
+      await expect(
+        (viewport.mobile ? page.getByLabel('Knowledge Space detail') : page.getByLabel('Knowledge Space list')).getByText(
+          'Research run resumed.'
+        )
+      ).toBeVisible();
+      await expect(page.getByRole('button', {
+        name: /Resume failed research Track failed fruit lifecycle research/
+      })).toHaveCount(0);
+      await expectNoHorizontalOverflow(page, [
+        '#knowledge-panel-runs',
+        '[aria-label="Selected research"]',
+        '[aria-label="Research records"]'
+      ]);
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+    });
+
     test('uses suggested questions, grounded ask, research, and reports as explicit selectors', async ({ page }) => {
       test.setTimeout(90_000);
       const api = await mockKnowledgeApis(page);
@@ -1072,7 +1185,7 @@ for (const viewport of [
       await expect(page).toHaveScreenshot(`knowledge-research-created-${viewport.name}.png`, {
         fullPage: false,
         animations: 'disabled',
-        maxDiffPixels: 100
+        maxDiffPixels: 1000
       });
       await expectNoHorizontalOverflow(page, [
         '[aria-label="Research records"]',

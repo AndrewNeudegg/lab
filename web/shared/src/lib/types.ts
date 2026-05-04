@@ -776,6 +776,13 @@ export interface HomelabdCreateKnowledgeResearchRunResponse {
   reply: string;
 }
 
+export interface HomelabdResumeKnowledgeResearchRunResponse {
+  space: HomelabdKnowledgeSpace;
+  run: HomelabdKnowledgeResearchRun;
+  report?: HomelabdKnowledgeReport;
+  reply: string;
+}
+
 export interface HomelabdTaskRetryRequest {
   backend?: string;
   instruction?: string;
@@ -1024,6 +1031,10 @@ export interface HomelabdClient {
     spaceId: string,
     request: HomelabdCreateKnowledgeResearchRunRequest
   ): Promise<HomelabdCreateKnowledgeResearchRunResponse>;
+  resumeKnowledgeResearchRun(
+    spaceId: string,
+    runId: string
+  ): Promise<HomelabdResumeKnowledgeResearchRunResponse>;
   createWorkflow(request: HomelabdCreateWorkflowRequest): Promise<HomelabdWorkflowActionResponse>;
   listWorkflows(): Promise<HomelabdWorkflowsResponse>;
   getWorkflow(workflowId: string): Promise<HomelabdWorkflow>;

@@ -568,7 +568,7 @@ func (ResearchTool) Description() string {
 	return "Run a multi-query research fan-out: plan subqueries, search web and/or academic sources, fetch public pages, deduplicate evidence, and return a source bundle for the LLM to evaluate and synthesize."
 }
 func (ResearchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"queries":{"type":"array","items":{"type":"string"},"description":"optional explicit fan-out search queries; when present these replace generated subqueries"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"]},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web fan-out searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"},"max_searches":{"type":"integer","minimum":1,"maximum":8},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
+	return schema(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"queries":{"type":"array","items":{"type":"string"},"description":"optional explicit fan-out search queries; when present these replace generated subqueries"},"source":{"type":"string","enum":["web","academic","all"]},"depth":{"type":"string","enum":["quick","standard","deep"]},"provider":{"type":"string","enum":["auto","searxng","brave","tavily","duckduckgo"]},"time_range":{"type":"string","enum":["day","month","year"],"description":"optional SearXNG time range for web fan-out searches"},"language":{"type":"string","description":"optional SearXNG language code such as en or en-US"},"max_searches":{"type":"integer","minimum":1},"fetch":{"type":"boolean"},"trusted_domains":{"type":"array","items":{"type":"string"},"description":"optional preferred domains; adds site: fan-out queries"}}}`)
 }
 func (ResearchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -607,26 +607,25 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 	}
 	maxSearches, fetchPages := researchDefaults(depth)
 	if req.MaxSearches > 0 {
-		maxSearches = minInt(req.MaxSearches, 8)
+		maxSearches = req.MaxSearches
 	}
 	if req.Fetch != nil {
 		fetchPages = *req.Fetch
 	}
 
-	subqueries := compactResearchQueries(req.Queries, maxSearches)
+	queryLimit := maxSearches
+	if len(req.Queries) > 0 && req.MaxSearches <= 0 {
+		queryLimit = 0
+	}
+	subqueries := compactResearchQueries(req.Queries, queryLimit)
 	if len(subqueries) == 0 {
 		subqueries = researchSubqueries(req.Query, source, req.TrustedDomains, maxSearches)
 	}
 	search := SearchTool{base: t.base}
 	options := webSearchOptions{Provider: req.Provider, TimeRange: req.TimeRange, Language: req.Language}
-	candidateLimit := researchCandidateLimitForDepth(depth, source)
-	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options, candidateLimit)
-	sources := candidates
-	if len(sources) > candidateLimit {
-		sources = sources[:candidateLimit]
-	}
+	sources, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options)
 	if fetchPages {
-		t.fetchResearchSources(ctx, sources, fetchCharsForDepth(depth))
+		t.fetchResearchSources(ctx, sources)
 	}
 	return json.Marshal(map[string]any{
 		"query":             req.Query,
@@ -666,7 +665,7 @@ type ResearchSource struct {
 	Extractor   string `json:"extractor,omitempty"`
 }
 
-func (t ResearchTool) collectResearchCandidates(ctx context.Context, search SearchTool, subqueries []string, source string, options webSearchOptions, maxSources int) ([]*ResearchSource, []string) {
+func (t ResearchTool) collectResearchCandidates(ctx context.Context, search SearchTool, subqueries []string, source string, options webSearchOptions) ([]*ResearchSource, []string) {
 	type searchJob struct {
 		query  string
 		source string
@@ -704,9 +703,9 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 			var raw json.RawMessage
 			var err error
 			if job.source == "web" {
-				raw, err = search.searchWeb(ctx, job.query, minInt(maxSources, 20), options)
+				raw, err = search.searchWeb(ctx, job.query, 20, options)
 			} else {
-				raw, err = search.searchAcademic(ctx, job.query, minInt(maxSources, 20))
+				raw, err = search.searchAcademic(ctx, job.query, 20)
 			}
 			if err != nil {
 				results <- searchResult{index: index, err: fmt.Sprintf("%s search for %q failed: %v", job.source, job.query, err)}
@@ -745,7 +744,7 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 	return out, errors
 }
 
-func (t ResearchTool) fetchResearchSources(ctx context.Context, sources []*ResearchSource, maxChars int) {
+func (t ResearchTool) fetchResearchSources(ctx context.Context, sources []*ResearchSource) {
 	fetcher := FetchTool{base: t.base}
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
@@ -764,11 +763,11 @@ func (t ResearchTool) fetchResearchSources(ctx context.Context, sources []*Resea
 				source.FetchError = ctx.Err().Error()
 				return
 			}
-			fetched, err := t.fetchResearchSourceText(ctx, fetcher, source.URL, maxChars)
+			fetched, err := t.fetchResearchSourceText(ctx, fetcher, source.URL)
 			if err != nil {
 				primaryErr := err
 				if source.Kind == "academic" && source.LandingURL != "" && !sameURL(source.URL, source.LandingURL) {
-					landing, landingErr := t.fetchResearchSourceText(ctx, fetcher, source.LandingURL, maxChars)
+					landing, landingErr := t.fetchResearchSourceText(ctx, fetcher, source.LandingURL)
 					if landingErr != nil {
 						source.FetchError = fmt.Sprintf("%v; landing page fetch failed: %v", primaryErr, landingErr)
 						return
@@ -782,7 +781,7 @@ func (t ResearchTool) fetchResearchSources(ctx context.Context, sources []*Resea
 				}
 			}
 			if source.Kind == "academic" && fetched.Extractor == "html" {
-				if linked, linkedURL, linkedErr := t.fetchFirstAcademicPDFLink(ctx, fetcher, fetched.PDFLinks, maxChars); linkedErr == nil {
+				if linked, linkedURL, linkedErr := t.fetchFirstAcademicPDFLink(ctx, fetcher, fetched.PDFLinks); linkedErr == nil {
 					fetched = linked
 					source.URL = linkedURL
 					source.PDFURL = firstNonEmpty(source.PDFURL, linkedURL)
@@ -806,8 +805,8 @@ type researchFetchedText struct {
 	PDFLinks    []string `json:"pdf_links"`
 }
 
-func (t ResearchTool) fetchResearchSourceText(ctx context.Context, fetcher FetchTool, rawURL string, maxChars int) (researchFetchedText, error) {
-	input, _ := json.Marshal(map[string]any{"url": rawURL, "max_chars": maxChars})
+func (t ResearchTool) fetchResearchSourceText(ctx context.Context, fetcher FetchTool, rawURL string) (researchFetchedText, error) {
+	input, _ := json.Marshal(map[string]any{"url": rawURL})
 	raw, err := fetcher.Run(ctx, input)
 	if err != nil {
 		return researchFetchedText{}, err
@@ -819,14 +818,14 @@ func (t ResearchTool) fetchResearchSourceText(ctx context.Context, fetcher Fetch
 	return fetched, nil
 }
 
-func (t ResearchTool) fetchFirstAcademicPDFLink(ctx context.Context, fetcher FetchTool, links []string, maxChars int) (researchFetchedText, string, error) {
+func (t ResearchTool) fetchFirstAcademicPDFLink(ctx context.Context, fetcher FetchTool, links []string) (researchFetchedText, string, error) {
 	var lastErr error
 	for _, link := range links {
 		link = strings.TrimSpace(link)
 		if link == "" || !safePublicURL(link) {
 			continue
 		}
-		fetched, err := t.fetchResearchSourceText(ctx, fetcher, link, maxChars)
+		fetched, err := t.fetchResearchSourceText(ctx, fetcher, link)
 		if err != nil {
 			lastErr = err
 			continue
@@ -904,38 +903,6 @@ func researchDefaults(depth string) (int, bool) {
 	}
 }
 
-func fetchCharsForDepth(depth string) int {
-	switch depth {
-	case "deep":
-		return 50000
-	case "quick":
-		return 8000
-	default:
-		return 25000
-	}
-}
-
-func researchCandidateLimitForDepth(depth, source string) int {
-	academicOnly := strings.EqualFold(strings.TrimSpace(source), "academic")
-	switch depth {
-	case "quick":
-		if academicOnly {
-			return 8
-		}
-		return 10
-	case "deep":
-		if academicOnly {
-			return 24
-		}
-		return 32
-	default:
-		if academicOnly {
-			return 16
-		}
-		return 20
-	}
-}
-
 func researchSubqueries(query, source string, trustedDomains []string, limit int) []string {
 	candidates := []string{
 		query,
@@ -968,7 +935,7 @@ func compactResearchQueries(candidates []string, limit int) []string {
 		}
 		seen[key] = true
 		out = append(out, candidate)
-		if len(out) >= limit {
+		if limit > 0 && len(out) >= limit {
 			break
 		}
 	}
@@ -1096,10 +1063,10 @@ type FetchTool struct {
 
 func (FetchTool) Name() string { return "internet.fetch" }
 func (FetchTool) Description() string {
-	return "Fetch a public HTTP(S) page and return bounded extracted text, title, content type, and final URL."
+	return "Fetch a public HTTP(S) page and return extracted text, title, content type, and final URL. Optional max_chars truncates returned text for callers that explicitly request it."
 }
 func (FetchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["url"],"properties":{"url":{"type":"string","format":"uri"},"max_chars":{"type":"integer","minimum":500,"maximum":50000}}}`)
+	return schema(`{"type":"object","required":["url"],"properties":{"url":{"type":"string","format":"uri"},"max_chars":{"type":"integer","minimum":1,"description":"optional caller-requested text limit; omit to return all extracted text"}}}`)
 }
 func (FetchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -1124,15 +1091,8 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 	if !publicHostAllowed(u.Hostname()) {
 		return nil, fmt.Errorf("only public HTTP(S) hosts are supported")
 	}
-	maxChars := req.MaxChars
-	if maxChars <= 0 {
-		maxChars = 12000
-	}
-	if maxChars < 500 {
-		maxChars = 500
-	}
-	if maxChars > 50000 {
-		maxChars = 50000
+	if req.MaxChars < 0 {
+		return nil, fmt.Errorf("max_chars must be positive when supplied")
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -1143,7 +1103,7 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.8")
 	httpReq.Header.Set("User-Agent", t.base.userAgent())
 
-	fetched, err := t.base.doReadRequestWithRetry(ctx, httpReq, 25<<20)
+	fetched, err := t.base.doReadRequestWithRetry(ctx, httpReq, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1185,8 +1145,8 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 		return nil, fmt.Errorf("page fetch did not contain extractable text")
 	}
 	truncated := false
-	if len(text) > maxChars {
-		text = strings.TrimSpace(text[:maxChars])
+	if req.MaxChars > 0 && len(text) > req.MaxChars {
+		text = strings.TrimSpace(text[:req.MaxChars])
 		truncated = true
 	}
 	return json.Marshal(map[string]any{
@@ -1346,9 +1306,6 @@ func (b Base) httpClient() *http.Client {
 }
 
 func (b Base) doReadRequestWithRetry(ctx context.Context, req *http.Request, maxBytes int64) (httpReadResult, error) {
-	if maxBytes <= 0 {
-		maxBytes = 2 << 20
-	}
 	var last httpReadResult
 	for attempt := 0; attempt < httpRetryAttempts; attempt++ {
 		attemptReq := req.Clone(ctx)
@@ -1362,7 +1319,13 @@ func (b Base) doReadRequestWithRetry(ctx context.Context, req *http.Request, max
 			}
 			return httpReadResult{}, err
 		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		var body []byte
+		var readErr error
+		if maxBytes > 0 {
+			body, readErr = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		} else {
+			body, readErr = io.ReadAll(resp.Body)
+		}
 		_ = resp.Body.Close()
 		result := httpReadResult{
 			Body:        body,
@@ -1379,7 +1342,7 @@ func (b Base) doReadRequestWithRetry(ctx context.Context, req *http.Request, max
 		if readErr != nil {
 			return result, readErr
 		}
-		if int64(len(body)) > maxBytes {
+		if maxBytes > 0 && int64(len(body)) > maxBytes {
 			return result, fmt.Errorf("response exceeds %d byte limit", maxBytes)
 		}
 		if retryableHTTPStatus(resp.StatusCode) && attempt+1 < httpRetryAttempts {

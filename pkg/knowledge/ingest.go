@@ -24,7 +24,6 @@ import (
 
 const (
 	defaultFetchTimeout = 15 * time.Second
-	maxFetchedBytes     = 5 << 20
 	defaultPDFOCRDPI    = 200
 	defaultPDFOCRPages  = 25
 	defaultPDFOCRTime   = 10 * time.Minute
@@ -164,12 +163,9 @@ func (f HTTPFetcher) Fetch(ctx context.Context, uri string) (FetchedSource, erro
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return FetchedSource{}, fmt.Errorf("fetch failed: HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchedBytes+1))
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return FetchedSource{}, err
-	}
-	if len(body) > maxFetchedBytes {
-		return FetchedSource{}, fmt.Errorf("source exceeds %d byte fetch limit", maxFetchedBytes)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
 	title, content, extractor, err := ExtractFetchedText(ctx, body, contentType, f.Extraction)
@@ -286,9 +282,6 @@ func extractPDFTextWithCommand(ctx context.Context, body []byte, command string)
 	text := cleanExtractedText(string(output.Stdout))
 	if text == "" {
 		return "", fmt.Errorf("PDF text extraction completed but no text was extracted")
-	}
-	if len(text) > maxFetchedBytes {
-		return "", fmt.Errorf("PDF text exceeds %d byte limit", maxFetchedBytes)
 	}
 	return text, nil
 }
@@ -412,9 +405,6 @@ func extractPDFTextWithOCR(ctx context.Context, body []byte, options PDFOCROptio
 		if err != nil {
 			return "", fmt.Errorf("PDF OCR recognition failed: %s", commandErrorMessage(err, output))
 		}
-		if builder.Len()+len(output.Stdout) > maxFetchedBytes {
-			return "", fmt.Errorf("PDF OCR text exceeds %d byte limit", maxFetchedBytes)
-		}
 		builder.WriteByte(' ')
 		builder.Write(output.Stdout)
 	}
@@ -487,12 +477,9 @@ func inflatePDFStream(stream []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer reader.Close()
-	data, err := io.ReadAll(io.LimitReader(reader, maxFetchedBytes+1))
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
-	}
-	if len(data) > maxFetchedBytes {
-		return nil, fmt.Errorf("PDF extracted text exceeds %d byte limit", maxFetchedBytes)
 	}
 	return data, nil
 }

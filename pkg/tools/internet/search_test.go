@@ -545,6 +545,45 @@ func TestResearchToolUsesExplicitQueriesWithoutGeneratedSuffixes(t *testing.T) {
 	}
 }
 
+func TestResearchToolUsesAllExplicitQueriesWhenMaxSearchesOmitted(t *testing.T) {
+	var searched []string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		query := r.URL.Query().Get("q")
+		searched = append(searched, query)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"Results":[{"Text":"Source","FirstURL":"https://example.com/source"}]
+			}`)),
+		}, nil
+	})}
+
+	raw, err := ResearchTool{base: Base{Endpoint: "https://search.example/", SearchProvider: "duckduckgo", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"paper search","queries":["query one","query two","query three"],"source":"web","fetch":false}`))
+	if err != nil {
+		t.Fatalf("run research: %v", err)
+	}
+	var result struct {
+		Subqueries []string `json:"subqueries"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal research result: %v", err)
+	}
+	if strings.Join(result.Subqueries, "|") != "query one|query two|query three" {
+		t.Fatalf("subqueries = %#v, want all explicit queries", result.Subqueries)
+	}
+	searchedSet := map[string]bool{}
+	for _, query := range searched {
+		searchedSet[query] = true
+	}
+	for _, query := range result.Subqueries {
+		if !searchedSet[query] {
+			t.Fatalf("searched = %#v, want explicit query %q searched", searched, query)
+		}
+	}
+}
+
 func TestSearchToolRequiresQuery(t *testing.T) {
 	_, err := SearchTool{}.Run(context.Background(), json.RawMessage(`{"query":"   "}`))
 	if err == nil {
@@ -606,6 +645,37 @@ func TestFetchToolExtractsHTMLText(t *testing.T) {
 	}
 	if strings.Contains(result.Text, "skip navigation") || strings.Contains(result.Text, "alert") {
 		t.Fatalf("expected noisy elements removed, got %q", result.Text)
+	}
+}
+
+func TestFetchToolReturnsFullTextWhenMaxCharsOmitted(t *testing.T) {
+	longText := strings.Repeat("complete source sentence ", 800)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Request:    r,
+			Body:       io.NopCloser(strings.NewReader(`<html><body><main>` + longText + `final marker</main></body></html>`)),
+		}, nil
+	})}
+
+	raw, err := FetchTool{base: Base{Client: client}}.Run(context.Background(), json.RawMessage(`{"url":"https://example.com/full"}`))
+	if err != nil {
+		t.Fatalf("fetch html: %v", err)
+	}
+	var result struct {
+		Text      string `json:"text"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal fetch result: %v", err)
+	}
+	if result.Truncated {
+		t.Fatalf("fetch result was truncated without max_chars")
+	}
+	if !strings.Contains(result.Text, "final marker") || len(result.Text) < len(longText) {
+		t.Fatalf("text length = %d, want full extracted text including final marker", len(result.Text))
 	}
 }
 

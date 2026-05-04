@@ -81,8 +81,8 @@ const knowledgeReport = {
   question: 'How should evidence be reviewed?',
   mode: 'research',
   answer:
-    '## Evidence review\n\nAnswering "How should evidence be reviewed?" from 1 stored source:\n\n- [S1] Keep **evidence** visible beside generated claims.\n\n```mermaid\nflowchart LR\n  Source --> Evidence\n  Evidence --> Claim\n```',
-  key_findings: ['[S1] Keep evidence visible beside generated claims.'],
+    '## Evidence review\n\nAnswering "How should evidence be reviewed?" from 1 stored source:\n\n- [S1, S2] Keep **evidence** visible beside generated claims.\n\n```mermaid\nflowchart LR\n  Source --> Evidence\n  Evidence --> Claim\n```',
+  key_findings: ['[S1, S2] Keep evidence visible beside generated claims.'],
   evidence: [
     {
       id: 'evidence_01',
@@ -98,6 +98,21 @@ const knowledgeReport = {
       lexical_score: 3,
       semantic_score: 2,
       score: 18
+    },
+    {
+      id: 'evidence_02',
+      source_id: knowledgeSource.id,
+      source_title: knowledgeSource.title,
+      section_id: 'section_1',
+      section_title: 'Review flow',
+      citation_label: 'S2',
+      excerpt: 'Grouped citations should keep every referenced source reachable.',
+      terms: ['citation'],
+      source_summary: 'Grouped citation links stay navigable.',
+      retrieval: 'hybrid',
+      lexical_score: 2,
+      semantic_score: 2,
+      score: 16
     }
   ],
   gaps: ['Only stored Knowledge Space sources were used for this report.'],
@@ -782,7 +797,8 @@ for (const viewport of [
     test.use({
       viewport: { width: viewport.width, height: viewport.height },
       isMobile: viewport.mobile,
-      hasTouch: viewport.mobile
+      hasTouch: viewport.mobile,
+      acceptDownloads: true
     });
 
     test('shows a compact loading state before spaces resolve', async ({ page }) => {
@@ -1017,15 +1033,17 @@ for (const viewport of [
       );
       await page.getByRole('button', { name: 'Ask question' }).click();
       await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
-      await expect(page.getByRole('article', { name: 'Selected report' })).toContainText('[S1]');
-      await expect(page.getByRole('article', { name: 'Selected report' }).getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      const askReport = page.getByRole('article', { name: 'Selected report' });
+      await expect(askReport.getByRole('link', { name: 'S1' }).first()).toBeVisible();
+      await expect(askReport.getByRole('link', { name: 'S2' }).first()).toBeVisible();
+      await expect(askReport.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
       await expect(page.locator('[aria-label="Selected report"] .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
       await expect(page.getByRole('tab', { name: /Reports/ })).toContainText('2');
       await expect(page.locator('[aria-label="Report key findings"]')).not.toHaveAttribute('open', '');
       await expect(page.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
       await expect(page.locator('[aria-label="Report gaps"]')).not.toHaveAttribute('open', '');
       await page.locator('[aria-label="Report evidence"] summary').click();
-      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow')).toBeVisible();
+      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
       await page.locator('[aria-label="Report gaps"] summary').click();
       await expect(
         page.locator('[aria-label="Report gaps"]').getByRole('button', { name: /Research this: Only stored Knowledge Space sources/ })
@@ -1049,7 +1067,7 @@ for (const viewport of [
         animations: 'disabled',
         maxDiffPixels: 100
       });
-      await page.getByRole('article', { name: 'Selected report' }).getByRole('link', { name: 'S1' }).first().click();
+      await page.getByRole('article', { name: 'Selected report' }).getByRole('link', { name: 'S2' }).first().click();
       await expect(page).toHaveURL(/#knowledge-source-ksrc_20260428_120000_33333333$/);
       await expect(page.getByRole('tab', { name: /Sources/ })).toHaveAttribute('aria-selected', 'true');
       await expect(page.locator('#knowledge-source-ksrc_20260428_120000_33333333')).toHaveAttribute('open', '');
@@ -1082,6 +1100,18 @@ for (const viewport of [
       await expect(selectedResearch).toContainText('Final answer');
       await expect(finalAnswer).toHaveAttribute('open', '');
       await expect(finalAnswer.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+      await expect(finalAnswer.getByRole('link', { name: 'S1' }).first()).toBeVisible();
+      await expect(finalAnswer.getByRole('link', { name: 'S2' }).first()).toBeVisible();
+      await selectedResearch.locator('[aria-label="Download research output Track evidence review patterns"]').click();
+      await expectHorizontallyInsideViewport(page, selectedResearch.locator('.download-menu-popover').first());
+      const markdownDownload = page.waitForEvent('download');
+      await selectedResearch.getByRole('menuitem', { name: 'Markdown' }).click();
+      expect((await markdownDownload).suggestedFilename()).toMatch(/how-should-evidence-be-reviewed-44444444\.md$/);
+      await selectedResearch.locator('[aria-label="Download research output Track evidence review patterns"]').click();
+      await expectHorizontallyInsideViewport(page, selectedResearch.locator('.download-menu-popover').first());
+      const pdfDownload = page.waitForEvent('download');
+      await selectedResearch.getByRole('menuitem', { name: 'PDF' }).click();
+      expect((await pdfDownload).suggestedFilename()).toMatch(/how-should-evidence-be-reviewed-44444444\.pdf$/);
       await expect(page.locator('[aria-label="Research key findings"]')).not.toHaveAttribute('open', '');
       await expect(researchPlan).not.toHaveAttribute('open', '');
       await expect(researchEvidence).not.toHaveAttribute('open', '');
@@ -1118,8 +1148,8 @@ for (const viewport of [
       await loops.first().locator(':scope > summary').click();
       await expect(loops.first().getByText('external evidence review source transparency')).toBeVisible();
       await researchEvidence.locator(':scope > summary').click();
-      await expect(researchEvidence.getByText('hybrid retrieval')).toBeVisible();
-      await expect(researchEvidence.getByText('Review flow')).toBeVisible();
+      await expect(researchEvidence.getByText('hybrid retrieval').first()).toBeVisible();
+      await expect(researchEvidence.getByText('Review flow').first()).toBeVisible();
       await researchCoverage.locator(':scope > summary').click();
       await expect(researchCoverage.getByText('covered')).toBeVisible();
       await sourceCandidates.locator(':scope > summary').click();
@@ -1204,7 +1234,13 @@ for (const viewport of [
       await reportsTable.getByRole('link', { name: /How should evidence be reviewed/ }).click();
       await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
       const selectedReport = page.getByRole('article', { name: 'Selected report' });
-      await expect(selectedReport).toContainText('[S1]');
+      await expect(selectedReport.getByRole('link', { name: 'S1' }).first()).toBeVisible();
+      await expect(selectedReport.getByRole('link', { name: 'S2' }).first()).toBeVisible();
+      await selectedReport.locator('[aria-label="Download report How should evidence be reviewed?"]').click();
+      await expectHorizontallyInsideViewport(page, selectedReport.locator('.download-menu-popover').first());
+      const reportMarkdownDownload = page.waitForEvent('download');
+      await selectedReport.getByRole('menuitem', { name: 'Markdown' }).click();
+      expect((await reportMarkdownDownload).suggestedFilename()).toMatch(/how-should-evidence-be-reviewed-44444444\.md$/);
       if (viewport.mobile) {
         await expectVerticallyBefore(selectedReport, page.getByLabel('Knowledge Space reports'));
       }
@@ -1232,13 +1268,13 @@ for (const viewport of [
         maxDiffPixels: 100
       });
       await page.locator('[aria-label="Report evidence"] summary').click();
-      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow')).toBeVisible();
+      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
       const referenceHref = await page.getByRole('link', { name: 'Link to report reference S1' }).getAttribute('href');
       expect(referenceHref).toContain('#knowledge-reference-');
       await page.goto(referenceHref!);
       await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
       await expect(page.locator('[aria-label="Report evidence"]')).toHaveAttribute('open', '');
-      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow')).toBeVisible();
+      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
     });
 
     test('renames spaces and deletes sources or spaces through explicit confirmations', async ({ page }) => {

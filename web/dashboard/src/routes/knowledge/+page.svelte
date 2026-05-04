@@ -19,9 +19,13 @@
     canResumeResearchRun,
     compactKnowledgeID,
     filterKnowledgeSpaces,
+    knowledgeReportExportFilename,
+    knowledgeReportExportMarkdown,
+    knowledgeReportExportPdf,
     knowledgeMarkdownPreview,
     knowledgeSpacesFromResponse,
     latestReport,
+    linkKnowledgeCitations,
     modelProvenanceLabel,
     panelLabel,
     panelItemCount,
@@ -499,23 +503,57 @@
     pushKnowledgeHash(anchorId);
   };
 
-  const citationLinkedMarkdown = (content = '', evidence: HomelabdKnowledgeEvidence[] = []) => {
-    const labels = new Map<string, string>();
-    for (const item of evidence || []) {
-      if (item.citation_label && sourceAnchorHref(item.source_id)) {
-        labels.set(item.citation_label, sourceAnchorHref(item.source_id));
-      }
+  const citationLinkedMarkdown = (content = '', evidence: HomelabdKnowledgeEvidence[] = []) =>
+    linkKnowledgeCitations(content, evidence, sourceAnchorHref);
+
+  const closeDownloadMenu = (event: MouseEvent) => {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLElement)) {
+      return;
     }
-    if (!labels.size) {
-      return content;
+    const menu = target.closest('details');
+    if (menu instanceof HTMLDetailsElement) {
+      menu.open = false;
     }
-    return content.replace(/\[([A-Za-z]+\d+(?:\.\d+)?)\]/g, (match, label, offset, whole) => {
-      if (whole.slice(offset + match.length, offset + match.length + 1) === '(') {
-        return match;
-      }
-      const href = labels.get(label);
-      return href ? `[${label}](${href})` : match;
-    });
+  };
+
+  const downloadBlob = (filename: string, blob: Blob) => {
+    if (!browser) {
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = 'noreferrer';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const downloadReportMarkdown = (
+    report: HomelabdKnowledgeReport,
+    run: HomelabdKnowledgeResearchRun | undefined,
+    event: MouseEvent
+  ) => {
+    closeDownloadMenu(event);
+    downloadBlob(
+      knowledgeReportExportFilename(report, 'md'),
+      new Blob([knowledgeReportExportMarkdown(report, run)], { type: 'text/markdown;charset=utf-8' })
+    );
+  };
+
+  const downloadReportPdf = (
+    report: HomelabdKnowledgeReport,
+    run: HomelabdKnowledgeResearchRun | undefined,
+    event: MouseEvent
+  ) => {
+    closeDownloadMenu(event);
+    downloadBlob(
+      knowledgeReportExportFilename(report, 'pdf'),
+      new Blob([knowledgeReportExportPdf(report, run)], { type: 'application/pdf' })
+    );
   };
 
   const reportForRun = (
@@ -2117,6 +2155,34 @@
                     </div>
                     <span class="header-link-group">
                       <strong>{compactTime(latestSelectedRun.created_at)}</strong>
+                      {#if selectedRunReport}
+                        <details class="download-menu">
+                          <summary
+                            aria-label={`Download research output ${latestSelectedRun.objective}`}
+                            title="Download research output"
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                              <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
+                            </svg>
+                          </summary>
+                          <div class="download-menu-popover" role="menu">
+                            <button
+                              type="button"
+                              role="menuitem"
+                              on:click={(event) => downloadReportMarkdown(selectedRunReport!, latestSelectedRun, event)}
+                            >
+                              Markdown
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              on:click={(event) => downloadReportPdf(selectedRunReport!, latestSelectedRun, event)}
+                            >
+                              PDF
+                            </button>
+                          </div>
+                        </details>
+                      {/if}
                       <a
                         class="permalink"
                         href={runHref(latestSelectedRun)}
@@ -2579,6 +2645,32 @@
                   </div>
                   <span class="header-link-group">
                     <strong>{compactTime(latestSelectedReport.created_at)}</strong>
+                    <details class="download-menu">
+                      <summary
+                        aria-label={`Download report ${latestSelectedReport.question}`}
+                        title="Download report"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
+                        </svg>
+                      </summary>
+                      <div class="download-menu-popover" role="menu">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          on:click={(event) => downloadReportMarkdown(latestSelectedReport!, undefined, event)}
+                        >
+                          Markdown
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          on:click={(event) => downloadReportPdf(latestSelectedReport!, undefined, event)}
+                        >
+                          PDF
+                        </button>
+                      </div>
+                    </details>
                     <a
                       class="permalink"
                       href={reportHref(latestSelectedReport)}
@@ -3069,6 +3161,7 @@
   .sync-button svg,
   .icon-button svg,
   .icon-action svg,
+  .download-menu svg,
   .run-resume-action svg,
   .source-delete-action svg {
     width: 1rem;
@@ -3277,6 +3370,72 @@
   .permalink:focus-visible {
     border-color: var(--primary, #2563eb);
     box-shadow: 0 0 0 1px var(--primary, #2563eb);
+    color: var(--primary, #2563eb);
+  }
+
+  .download-menu {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .download-menu > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    min-width: 1.75rem;
+    height: 1.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 999px;
+    color: var(--knowledge-muted, #475569);
+    background: var(--panel, #ffffff);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .download-menu > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .download-menu > summary:hover,
+  .download-menu > summary:focus-visible {
+    border-color: var(--primary, #2563eb);
+    box-shadow: 0 0 0 1px var(--primary, #2563eb);
+    color: var(--primary, #2563eb);
+  }
+
+  .download-menu-popover {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 0.35rem);
+    right: 0;
+    display: grid;
+    min-width: 8rem;
+    padding: 0.35rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--panel, #ffffff);
+    box-shadow: 0 18px 36px rgba(15, 23, 42, 0.16);
+  }
+
+  .download-menu:not([open]) .download-menu-popover {
+    display: none;
+  }
+
+  .download-menu-popover button {
+    min-height: 2rem;
+    padding: 0.35rem 0.55rem;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text, #172033);
+    font-weight: 800;
+    text-align: left;
+  }
+
+  .download-menu-popover button:hover,
+  .download-menu-popover button:focus-visible {
+    background: var(--bg, #eef2f7);
     color: var(--primary, #2563eb);
   }
 
@@ -4950,6 +5109,11 @@
     .detail-header {
       gap: 0.45rem;
       margin-bottom: 0.55rem;
+    }
+
+    .download-menu-popover {
+      left: 0;
+      right: auto;
     }
 
     .detail-header .eyebrow {

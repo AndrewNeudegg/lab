@@ -5,9 +5,13 @@ import {
   compactKnowledgeID,
   filterKnowledgeSpaces,
   knowledgeMarkdownPreview,
+  knowledgeReportExportFilename,
+  knowledgeReportExportMarkdown,
+  knowledgeReportExportPdf,
   knowledgeSpacesFromResponse,
   latestAskReport,
   latestReport,
+  linkKnowledgeCitations,
   modelProvenanceLabel,
   panelItemCount,
   researchRunStatusLabel,
@@ -157,6 +161,69 @@ describe('knowledge view model', () => {
         '## Evidence review\n\n- Keep **evidence** visible.\n\n```mermaid\nflowchart LR\n  A --> B\n```'
       )
     ).toBe('Evidence review Keep evidence visible.');
+  });
+
+  test('links grouped report citations without rewriting existing Markdown links', () => {
+    const evidence = [
+      { source_id: 'source_1', citation_label: 'S1' },
+      { source_id: 'source_2', citation_label: 'S2' },
+      { source_id: 'source_14', citation_label: 'S14' }
+    ] as never;
+    const hrefForSource = (sourceId: string) => `/knowledge?space=kspace#knowledge-source-${sourceId}`;
+
+    expect(
+      linkKnowledgeCitations('Single [S14], grouped [S1, S2], lower [s1; s2].', evidence, hrefForSource)
+    ).toBe(
+      'Single [S14](/knowledge?space=kspace#knowledge-source-source_14), grouped [S1](/knowledge?space=kspace#knowledge-source-source_1), [S2](/knowledge?space=kspace#knowledge-source-source_2), lower [s1](/knowledge?space=kspace#knowledge-source-source_1); [s2](/knowledge?space=kspace#knowledge-source-source_2).'
+    );
+    expect(
+      linkKnowledgeCitations('[S1](/already-linked) and [missing].', evidence, hrefForSource)
+    ).toBe('[S1](/already-linked) and [missing].');
+  });
+
+  test('exports research reports as Markdown and plain text PDF files', () => {
+    const report = {
+      id: 'kreport_20260504_025024_a4de2c1f',
+      question: 'How do fruit grow?',
+      mode: 'research',
+      answer: 'Fruit grow through cell expansion [S1, S2].',
+      key_findings: ['Water and sugars matter [S1].'],
+      evidence: [
+        {
+          id: 'evidence_1',
+          source_id: 'source_1',
+          source_title: 'Fruit physiology',
+          source_uri: 'https://example.com/fruit',
+          citation_label: 'S1',
+          excerpt: 'Fruit growth depends on water and carbon.'
+        }
+      ],
+      provider: 'gemini',
+      model: 'gemini-flash-latest',
+      usage: { total_tokens: 1200 },
+      created_at: '2026-05-04T02:50:24Z'
+    };
+    const run = {
+      id: 'krun_20260504_020219_c2fd642b',
+      status: 'completed',
+      depth: 'deep',
+      sources_examined: 10,
+      evidence_count: 32,
+      workspace_path: 'runs/kspace/krun'
+    };
+
+    const markdown = knowledgeReportExportMarkdown(report as never, run as never);
+    expect(markdown).toContain('# How do fruit grow?');
+    expect(markdown).toContain('- Research run ID: krun_20260504_020219_c2fd642b');
+    expect(markdown).toContain('Fruit grow through cell expansion [S1, S2].');
+    expect(markdown).toContain('### [S1] Fruit physiology');
+    expect(knowledgeReportExportFilename(report as never, 'md')).toBe('how-do-fruit-grow-a4de2c1f.md');
+
+    const pdf = knowledgeReportExportPdf(report as never, run as never);
+    expect(pdf.startsWith('%PDF-1.4')).toBe(true);
+    expect(pdf).toContain('How do fruit grow?');
+    expect(pdf).toContain('Fruit grow through cell expansion [S1, S2].');
+    expect(knowledgeReportExportFilename(report as never, 'pdf')).toBe('how-do-fruit-grow-a4de2c1f.pdf');
   });
 
   test('labels model provenance and research run states', () => {

@@ -21,6 +21,9 @@ func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
 
 func TestDefaultKnowledgeOCREnabled(t *testing.T) {
 	cfg := Default()
+	if cfg.Knowledge.PDFTextCommand != "pdftotext" {
+		t.Fatalf("knowledge PDF text command = %q, want pdftotext", cfg.Knowledge.PDFTextCommand)
+	}
 	if cfg.Knowledge.OCR.Enabled == nil || !*cfg.Knowledge.OCR.Enabled {
 		t.Fatalf("knowledge OCR enabled = %#v, want enabled", cfg.Knowledge.OCR.Enabled)
 	}
@@ -34,8 +37,11 @@ func TestDefaultKnowledgeOCREnabled(t *testing.T) {
 
 func TestWithDefaultsPreservesDisabledKnowledgeOCR(t *testing.T) {
 	disabled := false
-	cfg := Config{Knowledge: KnowledgeConfig{OCR: KnowledgeOCRConfig{Enabled: &disabled, PDFToPPMCommand: "custom-pdftoppm"}}}
+	cfg := Config{Knowledge: KnowledgeConfig{PDFTextCommand: "custom-pdftotext", OCR: KnowledgeOCRConfig{Enabled: &disabled, PDFToPPMCommand: "custom-pdftoppm"}}}
 	got := cfg.WithDefaults()
+	if got.Knowledge.PDFTextCommand != "custom-pdftotext" {
+		t.Fatalf("knowledge PDF text command = %q, want custom command preserved", got.Knowledge.PDFTextCommand)
+	}
 	if got.Knowledge.OCR.Enabled == nil || *got.Knowledge.OCR.Enabled {
 		t.Fatalf("knowledge OCR enabled = %#v, want disabled preserved", got.Knowledge.OCR.Enabled)
 	}

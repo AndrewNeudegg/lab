@@ -641,6 +641,7 @@ type knowledgeResearchSource struct {
 	PageTitle   string `json:"page_title"`
 	Text        string `json:"text"`
 	Truncated   bool   `json:"truncated"`
+	Extractor   string `json:"extractor"`
 }
 
 type knowledgeDiscoveryLoopResult struct {
@@ -700,7 +701,7 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 		toolInput := map[string]any{
 			"query":        primaryQuery,
 			"queries":      queries,
-			"source":       "all",
+			"source":       knowledgeDiscoverySource(run),
 			"depth":        run.Depth,
 			"provider":     "searxng",
 			"language":     knowledgeDiscoveryLanguage(run),
@@ -897,6 +898,9 @@ func (o *Orchestrator) processKnowledgeDiscoveryBundle(ctx context.Context, stor
 		}
 		source.Provenance.ContentType = firstNonEmptyString(candidate.ContentType, source.Provenance.ContentType)
 		source.Provenance.FetchedAt = now
+		if strings.TrimSpace(candidate.Extractor) != "" {
+			source.Provenance.Extractor = strings.TrimSpace(candidate.Extractor)
+		}
 		if source.Provenance.Extractor == "" {
 			source.Provenance.Extractor = "internet.research"
 		} else if !strings.Contains(source.Provenance.Extractor, "internet.research") {
@@ -915,7 +919,7 @@ func (o *Orchestrator) processKnowledgeDiscoveryBundle(ctx context.Context, stor
 			continue
 		}
 		candidateState.WordCount = analyzed.WordCount
-		candidateState.ExtractionState = "text"
+		candidateState.ExtractionState = firstNonEmptyString(candidateState.ExtractionState, "text")
 		if candidate.Truncated {
 			candidateState.ExtractionMessage = "Fetched text was truncated for model analysis."
 		} else {
@@ -1269,6 +1273,53 @@ func knowledgeEvidenceLimitForDepth(depth string) int {
 	}
 }
 
+func knowledgeDiscoverySource(run knowledgestore.ResearchRun) string {
+	text := strings.Join([]string{
+		run.Objective,
+		run.Question,
+		run.Scope,
+		run.Plan.RewrittenObjective,
+		strings.Join(run.Plan.SearchQueries, " "),
+		strings.Join(run.Plan.Steps, " "),
+		strings.Join(run.Plan.ExpectedOutputs, " "),
+	}, " ")
+	if knowledgeAcademicIntent(text) {
+		return "academic"
+	}
+	return "all"
+}
+
+func knowledgeAcademicIntent(value string) bool {
+	lower := " " + strings.ToLower(strings.Join(strings.Fields(value), " ")) + " "
+	for _, marker := range []string{
+		" academic ",
+		" scholarly ",
+		" peer reviewed ",
+		" peer-reviewed ",
+		" journal ",
+		" journals ",
+		" paper ",
+		" papers ",
+		" publication ",
+		" publications ",
+		" literature review ",
+		" research literature ",
+		" scientific literature ",
+		" dissertation ",
+		" dissertations ",
+		" thesis ",
+		" theses ",
+		" systematic review ",
+		" meta analysis ",
+		" meta-analysis ",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func knowledgeDiscoveryLanguage(run knowledgestore.ResearchRun) string {
 	text := strings.Join([]string{
 		run.Objective,
@@ -1497,8 +1548,11 @@ func knowledgeCandidateFromResearchSource(source knowledgeResearchSource, index 
 	extractionState := ""
 	if source.Fetched {
 		extractionState = "text"
+		if strings.TrimSpace(source.Extractor) != "" {
+			extractionState = strings.TrimSpace(source.Extractor)
+		}
 		if strings.Contains(strings.ToLower(source.ContentType), "pdf") {
-			extractionState = "pdf_text"
+			extractionState = firstNonEmptyString(strings.TrimSpace(source.Extractor), "pdf_text")
 		}
 	}
 	return knowledgestore.SourceCandidate{

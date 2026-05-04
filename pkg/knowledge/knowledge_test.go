@@ -117,6 +117,24 @@ func TestExtractPDFTextReadsCompressedTextStream(t *testing.T) {
 	}
 }
 
+func TestExtractPDFTextUsesConfiguredPDFTextCommand(t *testing.T) {
+	dir := t.TempDir()
+	pdftotext := writeExecutable(t, filepath.Join(dir, "pdftotext"), `#!/bin/sh
+printf 'Full academic paper text from pdftotext'
+`)
+
+	_, text, extractor, err := ExtractFetchedText(context.Background(), []byte("%PDF-1.7\n% paper bytes\n"), "application/pdf", TextExtractionOptions{
+		PDFTextCommand: pdftotext,
+		PDFOCR:         PDFOCROptions{Disabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extractor != "pdf" || !strings.Contains(text, "Full academic paper text from pdftotext") {
+		t.Fatalf("extractor = %q text = %q, want pdftotext PDF text", extractor, text)
+	}
+}
+
 func TestExtractPDFTextUsesOCRWhenEmbeddedTextIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	pdftoppm := writeExecutable(t, filepath.Join(dir, "pdftoppm"), `#!/bin/sh

@@ -399,6 +399,105 @@ func TestResearchToolFansOutSearchesAndFetchesSources(t *testing.T) {
 	}
 }
 
+func TestResearchToolPrefersAcademicPDFAndPreservesRelevanceOrder(t *testing.T) {
+	pdf := testPDFWithText(t, "Full paper text about academic fruit research")
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "academic.example":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{
+					"results":[{
+						"id":"https://openalex.org/W1",
+						"title":"Zeta highly relevant paper",
+						"publication_year":2026,
+						"primary_location":{
+							"landing_page_url":"https://papers.example.org/zeta",
+							"pdf_url":"https://papers.example.org/zeta-paywalled.pdf",
+							"source":{"display_name":"Journal"}
+						},
+						"best_oa_location":{
+							"landing_page_url":"https://repository.example.org/zeta",
+							"pdf_url":"https://papers.example.org/zeta.pdf",
+							"source":{"display_name":"Journal"}
+						},
+						"abstract_inverted_index":{"Fruit":[0],"research":[1]}
+					},{
+						"id":"https://openalex.org/W2",
+						"title":"Alpha less relevant paper",
+						"publication_year":2025,
+						"primary_location":{
+							"landing_page_url":"https://papers.example.org/alpha",
+							"source":{"display_name":"Journal"}
+						},
+						"abstract_inverted_index":{"Less":[0],"relevant":[1]}
+					}]
+				}`)),
+			}, nil
+		case "papers.example.org":
+			if r.URL.Path == "/alpha" {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"text/html"}},
+					Request:    r,
+					Body:       io.NopCloser(strings.NewReader(`<html><head><title>Alpha</title><meta name="citation_pdf_url" content="/alpha-full.pdf"></head><body><main>Less relevant abstract page.</main></body></html>`)),
+				}, nil
+			}
+			if r.URL.Path == "/alpha-full.pdf" {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+					Request:    r,
+					Body:       io.NopCloser(bytes.NewReader(testPDFWithText(t, "Full paper text from linked repository PDF"))),
+				}, nil
+			}
+			if r.URL.Path != "/zeta.pdf" {
+				t.Fatalf("unexpected fetched path %q, want PDF URL for top academic result", r.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+				Request:    r,
+				Body:       io.NopCloser(bytes.NewReader(pdf)),
+			}, nil
+		default:
+			t.Fatalf("unexpected host %q", r.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	raw, err := ResearchTool{base: Base{AcademicEndpoint: "https://academic.example/works", Client: client}}.Run(context.Background(), json.RawMessage(`{"query":"academic fruit research","source":"academic","depth":"quick","max_searches":1,"fetch":true}`))
+	if err != nil {
+		t.Fatalf("run research: %v", err)
+	}
+	var result struct {
+		Sources []ResearchSource `json:"sources"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal research result: %v", err)
+	}
+	if len(result.Sources) < 2 {
+		t.Fatalf("sources = %+v, want academic results", result.Sources)
+	}
+	if result.Sources[0].Title != "Zeta highly relevant paper" || result.Sources[0].URL != "https://papers.example.org/zeta.pdf" {
+		t.Fatalf("first source = %+v, want OpenAlex relevance order and PDF URL", result.Sources[0])
+	}
+	if result.Sources[0].Extractor != "pdf" || !strings.Contains(result.Sources[0].Text, "Full paper text about academic fruit research") {
+		t.Fatalf("first source = %+v, want fetched PDF full text", result.Sources[0])
+	}
+	if result.Sources[1].Title != "Alpha less relevant paper" {
+		t.Fatalf("second source = %+v, want relevance order preserved instead of title sorting", result.Sources[1])
+	}
+	if result.Sources[1].URL != "https://papers.example.org/alpha-full.pdf" || result.Sources[1].Extractor != "pdf" || !strings.Contains(result.Sources[1].Text, "Full paper text from linked repository PDF") {
+		t.Fatalf("second source = %+v, want academic landing page PDF link followed", result.Sources[1])
+	}
+}
+
 func TestResearchToolUsesExplicitQueriesWithoutGeneratedSuffixes(t *testing.T) {
 	var searched []string
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

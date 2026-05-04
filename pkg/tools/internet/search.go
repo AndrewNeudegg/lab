@@ -32,7 +32,6 @@ const (
 	defaultUserAgent            = "Mozilla/5.0 (compatible; homelabd/1.0; +https://github.com/andrewneudegg/lab)"
 	maxSearXNGInstancesPerQuery = 6
 	searxNGDiscoveryTTL         = 6 * time.Hour
-	maxResearchCandidates       = 64
 	httpRetryAttempts           = 4
 )
 
@@ -620,10 +619,11 @@ func (t ResearchTool) Run(ctx context.Context, input json.RawMessage) (json.RawM
 	}
 	search := SearchTool{base: t.base}
 	options := webSearchOptions{Provider: req.Provider, TimeRange: req.TimeRange, Language: req.Language}
-	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options, maxResearchCandidates)
+	candidateLimit := researchCandidateLimitForDepth(depth, source)
+	candidates, searchErrors := t.collectResearchCandidates(ctx, search, subqueries, source, options, candidateLimit)
 	sources := candidates
-	if len(sources) > maxResearchCandidates {
-		sources = sources[:maxResearchCandidates]
+	if len(sources) > candidateLimit {
+		sources = sources[:candidateLimit]
 	}
 	if fetchPages {
 		t.fetchResearchSources(ctx, sources, fetchCharsForDepth(depth))
@@ -652,6 +652,8 @@ type ResearchSource struct {
 	Provider    string `json:"provider"`
 	Title       string `json:"title"`
 	URL         string `json:"url,omitempty"`
+	LandingURL  string `json:"landing_url,omitempty"`
+	PDFURL      string `json:"pdf_url,omitempty"`
 	Domain      string `json:"domain,omitempty"`
 	Snippet     string `json:"snippet,omitempty"`
 	Year        int    `json:"year,omitempty"`
@@ -661,6 +663,7 @@ type ResearchSource struct {
 	PageTitle   string `json:"page_title,omitempty"`
 	Text        string `json:"text,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
+	Extractor   string `json:"extractor,omitempty"`
 }
 
 func (t ResearchTool) collectResearchCandidates(ctx context.Context, search SearchTool, subqueries []string, source string, options webSearchOptions, maxSources int) ([]*ResearchSource, []string) {
@@ -678,13 +681,15 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 		}
 	}
 	type searchResult struct {
+		index   int
 		sources []*ResearchSource
 		err     string
 	}
 	results := make(chan searchResult, len(jobs))
 	sem := make(chan struct{}, 2)
 	var wg sync.WaitGroup
-	for _, job := range jobs {
+	for index, job := range jobs {
+		index := index
 		job := job
 		wg.Add(1)
 		go func() {
@@ -693,7 +698,7 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				results <- searchResult{err: ctx.Err().Error()}
+				results <- searchResult{index: index, err: ctx.Err().Error()}
 				return
 			}
 			var raw json.RawMessage
@@ -704,19 +709,26 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 				raw, err = search.searchAcademic(ctx, job.query, minInt(maxSources, 20))
 			}
 			if err != nil {
-				results <- searchResult{err: fmt.Sprintf("%s search for %q failed: %v", job.source, job.query, err)}
+				results <- searchResult{index: index, err: fmt.Sprintf("%s search for %q failed: %v", job.source, job.query, err)}
 				return
 			}
-			results <- searchResult{sources: researchSourcesFromSearchRaw(job.query, job.source, raw)}
+			results <- searchResult{index: index, sources: researchSourcesFromSearchRaw(job.query, job.source, raw)}
 		}()
 	}
 	wg.Wait()
 	close(results)
 
+	ordered := make([]searchResult, 0, len(jobs))
+	for result := range results {
+		ordered = append(ordered, result)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].index < ordered[j].index
+	})
 	seen := map[string]bool{}
 	var out []*ResearchSource
 	var errors []string
-	for result := range results {
+	for _, result := range ordered {
 		if result.err != "" {
 			errors = append(errors, result.err)
 			continue
@@ -730,12 +742,6 @@ func (t ResearchTool) collectResearchCandidates(ctx context.Context, search Sear
 			out = append(out, source)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind == "web"
-		}
-		return out[i].Title < out[j].Title
-	})
 	return out, errors
 }
 
@@ -758,30 +764,91 @@ func (t ResearchTool) fetchResearchSources(ctx context.Context, sources []*Resea
 				source.FetchError = ctx.Err().Error()
 				return
 			}
-			input, _ := json.Marshal(map[string]any{"url": source.URL, "max_chars": maxChars})
-			raw, err := fetcher.Run(ctx, input)
+			fetched, err := t.fetchResearchSourceText(ctx, fetcher, source.URL, maxChars)
 			if err != nil {
-				source.FetchError = err.Error()
-				return
+				primaryErr := err
+				if source.Kind == "academic" && source.LandingURL != "" && !sameURL(source.URL, source.LandingURL) {
+					landing, landingErr := t.fetchResearchSourceText(ctx, fetcher, source.LandingURL, maxChars)
+					if landingErr != nil {
+						source.FetchError = fmt.Sprintf("%v; landing page fetch failed: %v", primaryErr, landingErr)
+						return
+					}
+					fetched = landing
+					source.URL = source.LandingURL
+					source.Domain = domainForURL(source.URL)
+				} else {
+					source.FetchError = primaryErr.Error()
+					return
+				}
 			}
-			var fetched struct {
-				Title       string `json:"title"`
-				Text        string `json:"text"`
-				ContentType string `json:"content_type"`
-				Truncated   bool   `json:"truncated"`
+			if source.Kind == "academic" && fetched.Extractor == "html" {
+				if linked, linkedURL, linkedErr := t.fetchFirstAcademicPDFLink(ctx, fetcher, fetched.PDFLinks, maxChars); linkedErr == nil {
+					fetched = linked
+					source.URL = linkedURL
+					source.PDFURL = firstNonEmpty(source.PDFURL, linkedURL)
+					source.Domain = domainForURL(linkedURL)
+				}
 			}
-			if err := json.Unmarshal(raw, &fetched); err != nil {
-				source.FetchError = err.Error()
-				return
-			}
-			source.Fetched = true
-			source.PageTitle = strings.TrimSpace(fetched.Title)
-			source.Text = strings.TrimSpace(fetched.Text)
-			source.ContentType = strings.TrimSpace(fetched.ContentType)
-			source.Truncated = fetched.Truncated
+			applyFetchedResearchText(source, fetched)
 		}()
 	}
 	wg.Wait()
+}
+
+type researchFetchedText struct {
+	URL         string   `json:"url"`
+	FinalURL    string   `json:"final_url"`
+	Title       string   `json:"title"`
+	Text        string   `json:"text"`
+	ContentType string   `json:"content_type"`
+	Extractor   string   `json:"extractor"`
+	Truncated   bool     `json:"truncated"`
+	PDFLinks    []string `json:"pdf_links"`
+}
+
+func (t ResearchTool) fetchResearchSourceText(ctx context.Context, fetcher FetchTool, rawURL string, maxChars int) (researchFetchedText, error) {
+	input, _ := json.Marshal(map[string]any{"url": rawURL, "max_chars": maxChars})
+	raw, err := fetcher.Run(ctx, input)
+	if err != nil {
+		return researchFetchedText{}, err
+	}
+	var fetched researchFetchedText
+	if err := json.Unmarshal(raw, &fetched); err != nil {
+		return researchFetchedText{}, err
+	}
+	return fetched, nil
+}
+
+func (t ResearchTool) fetchFirstAcademicPDFLink(ctx context.Context, fetcher FetchTool, links []string, maxChars int) (researchFetchedText, string, error) {
+	var lastErr error
+	for _, link := range links {
+		link = strings.TrimSpace(link)
+		if link == "" || !safePublicURL(link) {
+			continue
+		}
+		fetched, err := t.fetchResearchSourceText(ctx, fetcher, link, maxChars)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if fetched.Extractor == "pdf" || strings.Contains(strings.ToLower(fetched.ContentType), "pdf") {
+			return fetched, link, nil
+		}
+		lastErr = fmt.Errorf("linked source was not a PDF: %s", firstNonEmpty(fetched.ContentType, fetched.Extractor, "unknown"))
+	}
+	if lastErr != nil {
+		return researchFetchedText{}, "", lastErr
+	}
+	return researchFetchedText{}, "", fmt.Errorf("no linked PDF candidates")
+}
+
+func applyFetchedResearchText(source *ResearchSource, fetched researchFetchedText) {
+	source.Fetched = true
+	source.PageTitle = strings.TrimSpace(fetched.Title)
+	source.Text = strings.TrimSpace(fetched.Text)
+	source.ContentType = strings.TrimSpace(fetched.ContentType)
+	source.Extractor = strings.TrimSpace(fetched.Extractor)
+	source.Truncated = fetched.Truncated
 }
 
 func researchSourcesFromSearchRaw(query, kind string, raw json.RawMessage) []*ResearchSource {
@@ -796,11 +863,13 @@ func researchSourcesFromSearchRaw(query, kind string, raw json.RawMessage) []*Re
 	provider := firstNonEmpty(out.Provider, out.Source)
 	sources := make([]*ResearchSource, 0, len(out.Results))
 	for _, result := range out.Results {
-		rawURL := stringFromMap(result, "url")
+		landingURL := stringFromMap(result, "landing_url", "url")
+		pdfURL := stringFromMap(result, "pdf_url")
+		rawURL := landingURL
 		if kind == "academic" {
-			rawURL = firstNonEmpty(stringFromMap(result, "pdf_url"), rawURL)
+			rawURL = firstNonEmpty(pdfURL, rawURL)
 		} else if rawURL == "" {
-			rawURL = stringFromMap(result, "pdf_url")
+			rawURL = pdfURL
 		}
 		title := stringFromMap(result, "title", "display_name")
 		snippet := stringFromMap(result, "snippet", "text", "content")
@@ -809,14 +878,16 @@ func researchSourcesFromSearchRaw(query, kind string, raw json.RawMessage) []*Re
 			continue
 		}
 		sources = append(sources, &ResearchSource{
-			Query:    query,
-			Kind:     kind,
-			Provider: provider,
-			Title:    firstNonEmpty(title, rawURL, snippet),
-			URL:      rawURL,
-			Domain:   domainForURL(rawURL),
-			Snippet:  snippet,
-			Year:     year,
+			Query:      query,
+			Kind:       kind,
+			Provider:   provider,
+			Title:      firstNonEmpty(title, rawURL, snippet),
+			URL:        rawURL,
+			LandingURL: landingURL,
+			PDFURL:     pdfURL,
+			Domain:     domainForURL(rawURL),
+			Snippet:    snippet,
+			Year:       year,
 		})
 	}
 	return sources
@@ -836,11 +907,32 @@ func researchDefaults(depth string) (int, bool) {
 func fetchCharsForDepth(depth string) int {
 	switch depth {
 	case "deep":
-		return 6000
+		return 50000
 	case "quick":
-		return 1500
+		return 8000
 	default:
-		return 3000
+		return 25000
+	}
+}
+
+func researchCandidateLimitForDepth(depth, source string) int {
+	academicOnly := strings.EqualFold(strings.TrimSpace(source), "academic")
+	switch depth {
+	case "quick":
+		if academicOnly {
+			return 8
+		}
+		return 10
+	case "deep":
+		if academicOnly {
+			return 24
+		}
+		return 32
+	default:
+		if academicOnly {
+			return 16
+		}
+		return 20
 	}
 }
 
@@ -957,7 +1049,8 @@ func (t SearchTool) openAlexResults(ctx context.Context, query string, limit int
 				break
 			}
 		}
-		landingURL := firstNonEmpty(item.PrimaryLocation.LandingPageURL, item.ID)
+		landingURL := firstNonEmpty(item.BestOALocation.LandingPageURL, firstOpenAlexLocationLandingURL(item.Locations), item.OpenAccess.OAURL, item.PrimaryLocation.LandingPageURL, item.ID)
+		pdfURL := firstNonEmpty(item.BestOALocation.PDFURL, firstOpenAlexLocationPDFURL(item.Locations), item.PrimaryLocation.PDFURL)
 		result := map[string]any{
 			"kind":           "academic",
 			"title":          title,
@@ -966,7 +1059,8 @@ func (t SearchTool) openAlexResults(ctx context.Context, query string, limit int
 			"venue":          strings.TrimSpace(item.PrimaryLocation.Source.DisplayName),
 			"doi":            strings.TrimSpace(item.DOI),
 			"url":            strings.TrimSpace(landingURL),
-			"pdf_url":        strings.TrimSpace(item.PrimaryLocation.PDFURL),
+			"landing_url":    strings.TrimSpace(landingURL),
+			"pdf_url":        strings.TrimSpace(pdfURL),
 			"cited_by_count": item.CitedByCount,
 			"snippet":        abstractSnippet(item.AbstractInvertedIndex, 360),
 		}
@@ -978,6 +1072,24 @@ func (t SearchTool) openAlexResults(ctx context.Context, query string, limit int
 	return results, nil
 }
 
+func firstOpenAlexLocationPDFURL(locations []openAlexLocation) string {
+	for _, location := range locations {
+		if value := strings.TrimSpace(location.PDFURL); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstOpenAlexLocationLandingURL(locations []openAlexLocation) string {
+	for _, location := range locations {
+		if value := strings.TrimSpace(location.LandingPageURL); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 type FetchTool struct {
 	base Base
 }
@@ -987,7 +1099,7 @@ func (FetchTool) Description() string {
 	return "Fetch a public HTTP(S) page and return bounded extracted text, title, content type, and final URL."
 }
 func (FetchTool) Schema() json.RawMessage {
-	return schema(`{"type":"object","required":["url"],"properties":{"url":{"type":"string","format":"uri"},"max_chars":{"type":"integer","minimum":500,"maximum":20000}}}`)
+	return schema(`{"type":"object","required":["url"],"properties":{"url":{"type":"string","format":"uri"},"max_chars":{"type":"integer","minimum":500,"maximum":50000}}}`)
 }
 func (FetchTool) Risk() tool.RiskLevel { return tool.RiskReadOnly }
 func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -1019,8 +1131,8 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 	if maxChars < 500 {
 		maxChars = 500
 	}
-	if maxChars > 20000 {
-		maxChars = 20000
+	if maxChars > 50000 {
+		maxChars = 50000
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -1031,7 +1143,7 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.8")
 	httpReq.Header.Set("User-Agent", t.base.userAgent())
 
-	fetched, err := t.base.doReadRequestWithRetry(ctx, httpReq, 5<<20)
+	fetched, err := t.base.doReadRequestWithRetry(ctx, httpReq, 25<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -1046,6 +1158,7 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 	title := ""
 	text := ""
 	extractor := ""
+	var pdfLinks []string
 	switch {
 	case strings.Contains(contentType, "pdf") || looksLikePDFBytes(body):
 		extractedTitle, extractedText, extractedBy, err := knowledgestore.ExtractFetchedText(ctx, body, contentType, t.base.Extraction)
@@ -1059,6 +1172,7 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 		title = extractTitle(string(body))
 		text = htmlToText(string(body))
 		extractor = "html"
+		pdfLinks = extractPDFLinksFromHTML(string(body), fetched.FinalURL, 6)
 	case strings.HasPrefix(contentType, "text/") ||
 		strings.Contains(contentType, "json") ||
 		strings.Contains(contentType, "xml"):
@@ -1084,6 +1198,7 @@ func (t FetchTool) Run(ctx context.Context, input json.RawMessage) (json.RawMess
 		"title":        title,
 		"text":         text,
 		"truncated":    truncated,
+		"pdf_links":    pdfLinks,
 	})
 }
 
@@ -1145,16 +1260,21 @@ type tavilyResponse struct {
 }
 
 type openAlexWork struct {
-	ID                    string           `json:"id"`
-	DOI                   string           `json:"doi"`
-	Title                 string           `json:"title"`
-	DisplayName           string           `json:"display_name"`
-	PublicationYear       int              `json:"publication_year"`
-	Type                  string           `json:"type"`
-	CitedByCount          int              `json:"cited_by_count"`
-	AbstractInvertedIndex map[string][]int `json:"abstract_inverted_index"`
-	PrimaryLocation       openAlexLocation `json:"primary_location"`
-	Authorships           []openAlexAuthor `json:"authorships"`
+	ID                    string             `json:"id"`
+	DOI                   string             `json:"doi"`
+	Title                 string             `json:"title"`
+	DisplayName           string             `json:"display_name"`
+	PublicationYear       int                `json:"publication_year"`
+	Type                  string             `json:"type"`
+	CitedByCount          int                `json:"cited_by_count"`
+	AbstractInvertedIndex map[string][]int   `json:"abstract_inverted_index"`
+	PrimaryLocation       openAlexLocation   `json:"primary_location"`
+	BestOALocation        openAlexLocation   `json:"best_oa_location"`
+	Locations             []openAlexLocation `json:"locations"`
+	OpenAccess            struct {
+		OAURL string `json:"oa_url"`
+	} `json:"open_access"`
+	Authorships []openAlexAuthor `json:"authorships"`
 }
 
 type openAlexLocation struct {
@@ -1571,6 +1691,8 @@ var (
 	htmlDropRE           = regexp.MustCompile(`(?is)<(script|style|noscript|svg|canvas|template|iframe|head|nav|footer|form|button)\b[^>]*>.*?</\s*(script|style|noscript|svg|canvas|template|iframe|head|nav|footer|form|button)\s*>`)
 	htmlTagRE            = regexp.MustCompile(`(?is)<[^>]+>`)
 	htmlTitleRE          = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
+	htmlMetaTagRE        = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
+	htmlAttrRE           = regexp.MustCompile(`(?is)\s([a-zA-Z_:.-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))`)
 	searxNGHTMLResultRE  = regexp.MustCompile(`(?is)<article\b[^>]*class=["'][^"']*\bresult\b[^"']*["'][^>]*>(.*?)</article>`)
 	searxNGHTMLLinkRE    = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>`)
 	searxNGHTMLContentRE = regexp.MustCompile(`(?is)<p\b[^>]*class=["'][^"']*\bcontent\b[^"']*["'][^>]*>(.*?)</p>`)
@@ -1604,8 +1726,111 @@ func htmlToText(raw string) string {
 	return compactWhitespace(html.UnescapeString(raw))
 }
 
+func extractPDFLinksFromHTML(raw, baseURL string, limit int) []string {
+	if limit <= 0 {
+		limit = 6
+	}
+	seen := map[string]bool{}
+	var links []string
+	add := func(candidate string, force bool) {
+		if len(links) >= limit {
+			return
+		}
+		link := absolutePublicURL(candidate, baseURL)
+		if link == "" {
+			return
+		}
+		if !force && !looksLikePDFLink(link) {
+			return
+		}
+		key := strings.ToLower(link)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		links = append(links, link)
+	}
+	for _, match := range htmlMetaTagRE.FindAllString(raw, -1) {
+		attrs := htmlAttributes(match)
+		name := strings.ToLower(firstNonEmpty(attrs["name"], attrs["property"]))
+		content := attrs["content"]
+		add(content, name == "citation_pdf_url")
+	}
+	for _, match := range searxNGHTMLLinkRE.FindAllStringSubmatch(raw, -1) {
+		if len(match) < 3 {
+			continue
+		}
+		href := match[1]
+		label := strings.ToLower(htmlToText(match[2]))
+		add(href, strings.Contains(label, "pdf"))
+	}
+	return links
+}
+
+func htmlAttributes(tag string) map[string]string {
+	attrs := map[string]string{}
+	for _, match := range htmlAttrRE.FindAllStringSubmatch(tag, -1) {
+		if len(match) < 6 {
+			continue
+		}
+		value := firstNonEmpty(match[3], match[4], match[5])
+		attrs[strings.ToLower(match[1])] = strings.TrimSpace(html.UnescapeString(value))
+	}
+	return attrs
+}
+
+func absolutePublicURL(candidate, baseURL string) string {
+	candidate = strings.TrimSpace(html.UnescapeString(candidate))
+	if candidate == "" {
+		return ""
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return ""
+	}
+	if !parsed.IsAbs() {
+		base, err := url.Parse(baseURL)
+		if err != nil {
+			return ""
+		}
+		parsed = base.ResolveReference(parsed)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	if !publicHostAllowed(parsed.Hostname()) {
+		return ""
+	}
+	return parsed.String()
+}
+
+func looksLikePDFLink(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	lowerPath := strings.ToLower(parsed.EscapedPath())
+	lowerQuery := strings.ToLower(parsed.RawQuery)
+	return strings.Contains(lowerPath, ".pdf") ||
+		strings.Contains(lowerQuery, ".pdf") ||
+		strings.Contains(lowerQuery, "type=printable") ||
+		strings.Contains(lowerQuery, "download=1")
+}
+
 func compactWhitespace(s string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
+func sameURL(a, b string) bool {
+	ua, errA := url.Parse(strings.TrimSpace(a))
+	ub, errB := url.Parse(strings.TrimSpace(b))
+	if errA != nil || errB != nil {
+		return strings.TrimRight(strings.TrimSpace(a), "/") == strings.TrimRight(strings.TrimSpace(b), "/")
+	}
+	return strings.EqualFold(ua.Scheme, ub.Scheme) &&
+		strings.EqualFold(ua.Host, ub.Host) &&
+		strings.TrimRight(ua.EscapedPath(), "/") == strings.TrimRight(ub.EscapedPath(), "/") &&
+		ua.RawQuery == ub.RawQuery
 }
 
 func looksLikePDFBytes(body []byte) bool {

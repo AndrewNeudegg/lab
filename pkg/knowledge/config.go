@@ -12,6 +12,7 @@ func TextExtractionOptionsFromConfig(cfg config.KnowledgeConfig) TextExtractionO
 		ocrEnabled = *cfg.OCR.Enabled
 	}
 	return TextExtractionOptions{
+		PDFTextCommand: cfg.PDFTextCommand,
 		PDFOCR: PDFOCROptions{
 			Disabled:         !ocrEnabled,
 			PDFToPPMCommand:  cfg.OCR.PDFToPPMCommand,

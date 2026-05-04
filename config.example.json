@@ -72,6 +72,7 @@
     ]
   },
   "knowledge": {
+    "pdftotext_command": "pdftotext",
     "ocr": {
       "enabled": true,
       "pdftoppm_command": "pdftoppm",

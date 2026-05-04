@@ -53,7 +53,8 @@ type HTTPFetcher struct {
 }
 
 type TextExtractionOptions struct {
-	PDFOCR PDFOCROptions
+	PDFTextCommand string
+	PDFOCR         PDFOCROptions
 }
 
 type PDFOCROptions struct {
@@ -203,7 +204,7 @@ var (
 
 func ExtractFetchedText(ctx context.Context, body []byte, contentType string, options TextExtractionOptions) (string, string, string, error) {
 	if strings.Contains(contentType, "pdf") || looksLikePDF(body) {
-		content, extractor, err := extractPDFText(ctx, body, options.PDFOCR)
+		content, extractor, err := extractPDFText(ctx, body, options)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -226,21 +227,35 @@ func ExtractFetchedText(ctx context.Context, body []byte, contentType string, op
 	return "", "", "", fmt.Errorf("unsupported content type %q", contentType)
 }
 
-func extractPDFText(ctx context.Context, body []byte, options PDFOCROptions) (string, string, error) {
-	content, err := extractEmbeddedPDFText(body)
-	if err == nil && content != "" {
-		if pdfExtractedTextUsable(content) {
+func extractPDFText(ctx context.Context, body []byte, options TextExtractionOptions) (string, string, error) {
+	var err error
+	if command := strings.TrimSpace(options.PDFTextCommand); command != "" {
+		content, commandErr := extractPDFTextWithCommand(ctx, body, command)
+		if commandErr == nil && pdfExtractedTextUsable(content) {
 			return content, "pdf", nil
 		}
-		err = fmt.Errorf("extract PDF text: embedded text was not readable enough for indexing")
+		if commandErr != nil {
+			err = commandErr
+		} else {
+			err = fmt.Errorf("extract PDF text with %s: text was not readable enough for indexing", command)
+		}
+	} else {
+		content, embeddedErr := extractEmbeddedPDFText(body)
+		if embeddedErr == nil && content != "" {
+			if pdfExtractedTextUsable(content) {
+				return content, "pdf", nil
+			}
+			embeddedErr = fmt.Errorf("extract PDF text: embedded text was not readable enough for indexing")
+		}
+		err = embeddedErr
 	}
-	if options.Disabled {
+	if options.PDFOCR.Disabled {
 		if err != nil {
 			return "", "", err
 		}
 		return "", "", fmt.Errorf("PDF source did not contain extractable text")
 	}
-	ocrText, ocrErr := extractPDFTextWithOCR(ctx, body, options)
+	ocrText, ocrErr := extractPDFTextWithOCR(ctx, body, options.PDFOCR)
 	if ocrErr != nil {
 		if err != nil {
 			return "", "", fmt.Errorf("%v; %v", err, ocrErr)
@@ -248,6 +263,34 @@ func extractPDFText(ctx context.Context, body []byte, options PDFOCROptions) (st
 		return "", "", ocrErr
 	}
 	return ocrText, "pdf+ocr", nil
+}
+
+func extractPDFTextWithCommand(ctx context.Context, body []byte, command string) (string, error) {
+	binary, err := exec.LookPath(command)
+	if err != nil {
+		return "", fmt.Errorf("PDF text extraction unavailable: %s not found in PATH", command)
+	}
+	workDir, err := os.MkdirTemp("", "homelabd-pdf-text-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(workDir)
+	pdfPath := filepath.Join(workDir, "source.pdf")
+	if err := os.WriteFile(pdfPath, body, 0o600); err != nil {
+		return "", err
+	}
+	output, err := runExtractionCommand(ctx, binary, "-layout", "-enc", "UTF-8", pdfPath, "-")
+	if err != nil {
+		return "", fmt.Errorf("PDF text extraction failed: %s", commandErrorMessage(err, output))
+	}
+	text := cleanExtractedText(string(output.Stdout))
+	if text == "" {
+		return "", fmt.Errorf("PDF text extraction completed but no text was extracted")
+	}
+	if len(text) > maxFetchedBytes {
+		return "", fmt.Errorf("PDF text exceeds %d byte limit", maxFetchedBytes)
+	}
+	return text, nil
 }
 
 func pdfExtractedTextUsable(value string) bool {

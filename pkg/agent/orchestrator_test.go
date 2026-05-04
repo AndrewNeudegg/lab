@@ -6722,6 +6722,22 @@ func TestRecoverKnowledgeResearchRunsResumesInterruptedRun(t *testing.T) {
 	}
 }
 
+func TestKnowledgeDiscoverySourceFavoursAcademicForPaperRequests(t *testing.T) {
+	run := knowledgestore.ResearchRun{
+		Objective: "Find peer-reviewed papers about fruit development and phloem unloading.",
+		Plan: knowledgestore.ResearchPlan{
+			SearchQueries: []string{"fruit development phloem unloading academic papers"},
+		},
+	}
+	if got := knowledgeDiscoverySource(run); got != "academic" {
+		t.Fatalf("discovery source = %q, want academic for paper-focused run", got)
+	}
+	run = knowledgestore.ResearchRun{Objective: "What are common types of cheese?"}
+	if got := knowledgeDiscoverySource(run); got != "all" {
+		t.Fatalf("discovery source = %q, want all for general run", got)
+	}
+}
+
 func waitForKnowledgeRunTerminal(t *testing.T, store *knowledgestore.Store, spaceID, runID string) (knowledgestore.Space, knowledgestore.ResearchRun) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

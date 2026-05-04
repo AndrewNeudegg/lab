@@ -85,7 +85,8 @@ type RemoteAgentWorkdirConfig struct {
 }
 
 type KnowledgeConfig struct {
-	OCR KnowledgeOCRConfig `json:"ocr"`
+	PDFTextCommand string             `json:"pdftotext_command,omitempty"`
+	OCR            KnowledgeOCRConfig `json:"ocr"`
 }
 
 type KnowledgeOCRConfig struct {
@@ -271,6 +272,7 @@ func Default() Config {
 			PollIntervalSeconds:      5,
 		},
 		Knowledge: KnowledgeConfig{
+			PDFTextCommand: "pdftotext",
 			OCR: KnowledgeOCRConfig{
 				Enabled:          boolPtr(true),
 				PDFToPPMCommand:  "pdftoppm",
@@ -491,6 +493,9 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.RemoteAgent.PollIntervalSeconds == 0 {
 		c.RemoteAgent.PollIntervalSeconds = d.RemoteAgent.PollIntervalSeconds
+	}
+	if c.Knowledge.PDFTextCommand == "" {
+		c.Knowledge.PDFTextCommand = d.Knowledge.PDFTextCommand
 	}
 	if c.Knowledge.OCR.Enabled == nil {
 		c.Knowledge.OCR.Enabled = d.Knowledge.OCR.Enabled

@@ -688,6 +688,71 @@ func TestStoreListReturnsEmptySliceWhenNoSpacesExist(t *testing.T) {
 	if spaces == nil || len(spaces) != 0 {
 		t.Fatalf("spaces = %#v, want non-nil empty slice", spaces)
 	}
+	summaries, err := store.ListSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summaries == nil || len(summaries) != 0 {
+		t.Fatalf("summaries = %#v, want non-nil empty slice", summaries)
+	}
+}
+
+func TestStoreListSummariesOmitsHeavySourceBodies(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	store := NewStore(filepath.Join(t.TempDir(), "knowledge"))
+	space, err := NewSpace(CreateSpaceRequest{Title: "Large corpus"}, "kspace_large", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewSource(AddSourceRequest{
+		Title:   "Long paper",
+		Kind:    SourceKindURL,
+		URI:     "https://example.test/paper.pdf",
+		Content: strings.Repeat("Knowledge research should preserve full source text for retrieval while list views stay lightweight. ", 200),
+	}, "ksrc_large", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Summary = "A paper about keeping Knowledge list views lightweight."
+	source.KeyTerms = []string{"knowledge", "retrieval", "summaries"}
+	source.Questions = []string{"How should large corpora load?"}
+	source, err = NormalizeSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	space, err = AddSource(space, source, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(space); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := store.ListSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || len(summaries[0].Sources) != 1 {
+		t.Fatalf("summaries = %#v, want one space with one source", summaries)
+	}
+	summarySource := summaries[0].Sources[0]
+	if summarySource.Content != "" || len(summarySource.Sections) != 0 || len(summarySource.Chunks) != 0 {
+		t.Fatalf("summary source retained heavy fields: content=%d sections=%d chunks=%d", len(summarySource.Content), len(summarySource.Sections), len(summarySource.Chunks))
+	}
+	if summarySource.WordCount == 0 || summarySource.Provenance.ByteCount == 0 || summarySource.Summary == "" {
+		t.Fatalf("summary source = %#v, want metadata, provenance, and model summary", summarySource)
+	}
+	if summaries[0].Insight.SourceCount != 1 || summaries[0].Insight.WordCount == 0 {
+		t.Fatalf("insight = %#v, want source and word counts", summaries[0].Insight)
+	}
+
+	loaded, err := store.Load(space.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Sources[0].Content == "" || len(loaded.Sources[0].Chunks) == 0 {
+		t.Fatalf("full load lost source body: content=%d chunks=%d", len(loaded.Sources[0].Content), len(loaded.Sources[0].Chunks))
+	}
 }
 
 func modelBackedTestSpace(t *testing.T, now time.Time) Space {

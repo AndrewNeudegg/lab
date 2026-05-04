@@ -91,7 +91,7 @@ Knowledge PDF text extraction is configured under `knowledge.pdftotext_command` 
 
 ## HTTP API
 
-- `GET /knowledge/spaces`: list spaces. An empty store returns `{"spaces":[]}` and the dashboard shows the empty state.
+- `GET /knowledge/spaces`: list Knowledge Space summaries. An empty store returns `{"spaces":[]}` and the dashboard shows the empty state. Summary responses include space metadata, insight counts, source metadata, reports, and research run records, but deliberately omit heavy source bodies, generated sections, and chunk text so large corpora do not block the dashboard or service startup.
 - `POST /knowledge/spaces`: create a space with `title`, optional `objective`, and optional `description`.
 - `GET /knowledge/spaces/{space_id}`: load one space.
 - `PATCH /knowledge/spaces/{space_id}`: update a space title, objective, or description.

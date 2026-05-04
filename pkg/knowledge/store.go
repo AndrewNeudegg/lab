@@ -14,6 +14,7 @@ type Repository interface {
 	Save(space Space) error
 	Load(id string) (Space, error)
 	List() ([]Space, error)
+	ListSummaries() ([]Space, error)
 	Delete(id string) error
 	DeleteSourceArtifacts(spaceID, sourceID string) error
 }
@@ -246,6 +247,159 @@ func (s *Store) List() ([]Space, error) {
 		spaces = append(spaces, space)
 	}
 	return spaces, nil
+}
+
+func (s *Store) ListSummaries() ([]Space, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Space{}, nil
+		}
+		return nil, err
+	}
+	spaces := []Space{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		space, err := s.loadSummaryLocked(entry.Name()[:len(entry.Name())-len(".json")])
+		if err != nil {
+			return nil, err
+		}
+		spaces = append(spaces, space)
+	}
+	return spaces, nil
+}
+
+type spaceSummaryJSON struct {
+	ID           string              `json:"id"`
+	Title        string              `json:"title"`
+	Description  string              `json:"description,omitempty"`
+	Objective    string              `json:"objective,omitempty"`
+	Sources      []sourceSummaryJSON `json:"sources,omitempty"`
+	Reports      []Report            `json:"reports,omitempty"`
+	ResearchRuns []ResearchRun       `json:"research_runs,omitempty"`
+	Insight      SpaceInsight        `json:"insight"`
+	CreatedBy    string              `json:"created_by,omitempty"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
+}
+
+type sourceSummaryJSON struct {
+	ID          string           `json:"id"`
+	Title       string           `json:"title"`
+	Kind        string           `json:"kind"`
+	URI         string           `json:"uri,omitempty"`
+	Summary     string           `json:"summary"`
+	KeyTerms    []string         `json:"key_terms,omitempty"`
+	Questions   []string         `json:"questions,omitempty"`
+	Claims      []SourceClaim    `json:"claims,omitempty"`
+	Entities    []SourceEntity   `json:"entities,omitempty"`
+	Reliability []string         `json:"reliability_notes,omitempty"`
+	WordCount   int              `json:"word_count"`
+	Provenance  SourceProvenance `json:"provenance,omitempty"`
+	Ingestion   SourceIngestion  `json:"ingestion,omitempty"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+func (s *Store) loadSummaryLocked(id string) (Space, error) {
+	b, err := os.ReadFile(filepath.Join(s.dir, id+".json"))
+	if err != nil {
+		return Space{}, err
+	}
+	var raw spaceSummaryJSON
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return Space{}, err
+	}
+	return normalizeSpaceSummary(raw)
+}
+
+func normalizeSpaceSummary(raw spaceSummaryJSON) (Space, error) {
+	space := Space{
+		ID:           strings.TrimSpace(raw.ID),
+		Title:        strings.TrimSpace(raw.Title),
+		Description:  strings.TrimSpace(raw.Description),
+		Objective:    strings.TrimSpace(raw.Objective),
+		Reports:      raw.Reports,
+		ResearchRuns: raw.ResearchRuns,
+		Insight:      raw.Insight,
+		CreatedBy:    strings.TrimSpace(raw.CreatedBy),
+		CreatedAt:    raw.CreatedAt,
+		UpdatedAt:    raw.UpdatedAt,
+	}
+	if space.ID == "" {
+		return Space{}, errors.New("knowledge space id is required")
+	}
+	if space.Title == "" {
+		space.Title = firstLine(space.Objective)
+	}
+	if space.Title == "" {
+		return Space{}, errors.New("knowledge space title is required")
+	}
+	for _, source := range raw.Sources {
+		normalized, err := normalizeSourceSummary(source)
+		if err != nil {
+			return Space{}, err
+		}
+		space.Sources = append(space.Sources, normalized)
+	}
+	for index := range space.Reports {
+		space.Reports[index] = normalizeReport(space.Reports[index])
+	}
+	for index := range space.ResearchRuns {
+		space.ResearchRuns[index] = normalizeResearchRun(space.ResearchRuns[index])
+	}
+	if space.Insight.SourceCount == 0 && len(space.Sources) > 0 {
+		space.Insight = BuildSpaceInsight(space.Sources, firstNonZeroTime(space.UpdatedAt, time.Now().UTC()))
+	}
+	return space, nil
+}
+
+func normalizeSourceSummary(raw sourceSummaryJSON) (Source, error) {
+	source := Source{
+		ID:          strings.TrimSpace(raw.ID),
+		Title:       strings.TrimSpace(raw.Title),
+		Kind:        normalizeSourceKind(raw.Kind),
+		URI:         strings.TrimSpace(raw.URI),
+		Summary:     strings.TrimSpace(raw.Summary),
+		KeyTerms:    compactStrings(raw.KeyTerms, 12),
+		Questions:   compactStrings(raw.Questions, 8),
+		Claims:      normalizeSourceClaims(raw.Claims),
+		Entities:    normalizeSourceEntities(raw.Entities),
+		Reliability: compactStrings(raw.Reliability, 8),
+		WordCount:   raw.WordCount,
+		Provenance:  raw.Provenance,
+		Ingestion:   raw.Ingestion,
+		CreatedAt:   raw.CreatedAt,
+		UpdatedAt:   raw.UpdatedAt,
+	}
+	if source.ID == "" {
+		return Source{}, errors.New("knowledge source id is required")
+	}
+	if source.Title == "" {
+		source.Title = source.URI
+	}
+	if source.Title == "" {
+		return Source{}, errors.New("knowledge source title is required")
+	}
+	if source.Kind == SourceKindURL && source.URI == "" {
+		source.URI = source.Title
+	}
+	source.Provenance = normalizeSourceProvenance(source.Provenance, source)
+	source.Ingestion = normalizeSourceIngestion(source.Ingestion, source.WordCount > 0 || source.Provenance.ByteCount > 0 || source.Summary != "")
+	return source, nil
+}
+
+func firstNonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
 }
 
 func (s *Store) Delete(id string) error {

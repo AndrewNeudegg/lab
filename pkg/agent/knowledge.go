@@ -65,7 +65,7 @@ func (o *Orchestrator) ListKnowledgeSpaces() ([]knowledgestore.Space, error) {
 	if err != nil {
 		return nil, err
 	}
-	spaces, err := store.List()
+	spaces, err := store.ListSummaries()
 	if err != nil {
 		return nil, err
 	}
@@ -419,13 +419,20 @@ func (o *Orchestrator) RecoverKnowledgeResearchRuns(ctx context.Context) (int, e
 	if err != nil {
 		return 0, err
 	}
-	spaces, err := store.List()
+	spaces, err := store.ListSummaries()
 	if err != nil {
 		return 0, err
 	}
 	recovered := 0
 	now := time.Now().UTC()
-	for _, space := range spaces {
+	for _, summary := range spaces {
+		if !knowledgeSpaceHasResumableRun(summary) {
+			continue
+		}
+		space, err := store.Load(summary.ID)
+		if err != nil {
+			return recovered, err
+		}
 		changed := false
 		for _, run := range space.ResearchRuns {
 			if !knowledgeResearchRunResumable(run.Status) {
@@ -464,6 +471,15 @@ func (o *Orchestrator) RecoverKnowledgeResearchRuns(ctx context.Context) (int, e
 		o.log().Info("recovered knowledge research runs", "count", recovered)
 	}
 	return recovered, nil
+}
+
+func knowledgeSpaceHasResumableRun(space knowledgestore.Space) bool {
+	for _, run := range space.ResearchRuns {
+		if knowledgeResearchRunResumable(run.Status) {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) startKnowledgeResearchRunWorker(store knowledgestore.Repository, spaceID, runID string) bool {

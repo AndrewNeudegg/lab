@@ -375,6 +375,89 @@ func TestResearchCoverageDecisionIsModelBacked(t *testing.T) {
 	}
 }
 
+func TestResearchCoverageDecisionRetriesMalformedJSONAndCompactsLoops(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	space := modelBackedTestSpace(t, now)
+	provider := &scriptedKnowledgeProvider{contents: []string{
+		`{"decision":"continue","stop_reason":"truncated"`,
+		`{
+			"decision":"complete",
+			"stop_reason":"The accepted source and evidence cover the objective.",
+			"supported_claims":["Visible evidence supports review."],
+			"gaps":[],
+			"follow_up_queries":[],
+			"coverage":["stored review notes"]
+		}`,
+	}}
+	model := NewLanguageModel(provider, "test-model")
+	run := ResearchRun{
+		ID:        "krun_loop",
+		Objective: "Review evidence practices",
+		Depth:     "standard",
+		Status:    ResearchRunStatusDiscovering,
+		Mode:      ReportModeResearch,
+		Plan: ResearchPlan{
+			SearchQueries:   []string{"evidence review"},
+			ExpectedOutputs: []string{"Review report"},
+		},
+		SourceIDs: []string{space.Sources[0].ID},
+		ResearchLoops: []ResearchLoop{{
+			ID:              "loop_previous",
+			Index:           1,
+			Query:           "evidence review",
+			Queries:         []string{"evidence review"},
+			Status:          "completed",
+			Decision:        "continue",
+			CandidateIDs:    []string{"candidate_one", "candidate_two"},
+			SourceIDs:       []string{space.Sources[0].ID},
+			AcceptedCount:   1,
+			FailedCount:     8,
+			EvidenceCount:   1,
+			Gaps:            []string{"Need external corroboration."},
+			FollowUpQueries: []string{"external evidence review source transparency"},
+			SupportedClaims: []string{"Visible evidence supports review."},
+			Coverage:        []string{"stored review notes"},
+			StopReason:      "Stored evidence was useful but not enough.",
+		}},
+	}
+	evidence, err := ResearchEvidence(space, run, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, resp, err := model.EvaluateResearchCoverage(context.Background(), space, run, ResearchLoop{
+		ID:           "loop_current",
+		Index:        2,
+		Query:        "external evidence review",
+		Queries:      []string{"external evidence review"},
+		Status:       "evaluating",
+		CandidateIDs: []string{"candidate_three"},
+		SourceIDs:    []string{space.Sources[0].ID},
+	}, evidence, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Decision != "complete" || resp.Usage.TotalTokens != 30 {
+		t.Fatalf("decision = %#v response = %#v, want retried complete decision with aggregated usage", decision, resp)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("requests = %d, want malformed response retry", len(provider.requests))
+	}
+	if provider.requests[1].MaxTokens <= provider.requests[0].MaxTokens {
+		t.Fatalf("retry max tokens = %d, first = %d, want larger retry budget", provider.requests[1].MaxTokens, provider.requests[0].MaxTokens)
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
+	if !strings.Contains(lastMessage, "previous response") || !strings.Contains(lastMessage, "not valid complete JSON") {
+		t.Fatalf("retry prompt = %q, want JSON correction instruction", lastMessage)
+	}
+	requestJSON := provider.requests[0].Messages[len(provider.requests[0].Messages)-1].Content
+	if strings.Contains(requestJSON, "candidate_ids") || strings.Contains(requestJSON, "candidate_one") {
+		t.Fatalf("coverage prompt included candidate IDs: %s", requestJSON)
+	}
+	if !strings.Contains(requestJSON, "accepted_count") || !strings.Contains(requestJSON, "follow_up_queries") {
+		t.Fatalf("coverage prompt = %s, want compact loop diagnostics", requestJSON)
+	}
+}
+
 func TestStorePersistsProcessedSpace(t *testing.T) {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	store := NewStore(filepath.Join(t.TempDir(), "knowledge"))

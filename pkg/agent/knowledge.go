@@ -694,6 +694,7 @@ func (o *Orchestrator) discoverKnowledgeSources(ctx context.Context, store knowl
 			return space, run, err
 		}
 		run.EvidenceCount = len(queryResult)
+		run.SourcesExamined = countKnowledgeSources(space, run.SourceIDs)
 		run.Coverage = knowledgestore.BuildResearchCoverage(run, queryResult)
 		loop.EvidenceCount = len(queryResult)
 		loop.Status = "evaluating"
@@ -968,6 +969,7 @@ func (o *Orchestrator) failKnowledgeResearchRun(ctx context.Context, store knowl
 	now := time.Now().UTC()
 	run.Status = knowledgestore.ResearchRunStatusFailed
 	run.Error = strings.TrimSpace(cause.Error())
+	run.SourcesExamined = countKnowledgeSources(space, run.SourceIDs)
 	run.UpdatedAt = now
 	run.FinishedAt = now
 	run.Events = append(run.Events, knowledgestore.ResearchRunEvent{ID: id.New("kevt"), Stage: "failed", Message: run.Error, CreatedAt: now})

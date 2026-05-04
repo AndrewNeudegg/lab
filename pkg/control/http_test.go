@@ -933,6 +933,79 @@ func TestKnowledgeResearchRunDiscoveryFailureIsVisibleOverAPI(t *testing.T) {
 	}
 }
 
+func TestKnowledgeResearchRunFailedCoverageReportsImportedSources(t *testing.T) {
+	research := &controlInternetResearchStub{sources: []map[string]any{
+		{
+			"query":        "fruit development",
+			"kind":         "web",
+			"provider":     "searxng",
+			"title":        "Fruit development overview",
+			"url":          "https://example.org/fruit-development",
+			"domain":       "example.org",
+			"snippet":      "Fruit growth depends on pollination, fertilisation, vascular supply, and ripening.",
+			"fetched":      true,
+			"content_type": "text/html",
+			"page_title":   "Fruit development overview",
+			"text":         "Fruit growth depends on pollination, fertilisation, vascular supply, and ripening. Leaves supply sugars through phloem and roots supply water and minerals through xylem.",
+		},
+	}}
+	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{
+		`{
+			"rewritten_objective":"fruit development lifecycle",
+			"clarifying_questions":[],
+			"search_queries":["fruit development"],
+			"steps":["Search online","Import relevant fetched sources","Evaluate source coverage"],
+			"expected_outputs":["Fruit lifecycle answer"]
+		}`,
+		`{
+			"summary":"Fruit growth depends on pollination, fertilisation, vascular supply, and ripening.",
+			"key_terms":["fruit","phloem","xylem"],
+			"questions":["How are growing fruits fed?"],
+			"claims":[{"id":"claim_fruit","text":"Leaves supply sugars through phloem and roots supply water and minerals through xylem.","importance":"high"}],
+			"entities":[{"name":"Fruit","type":"plant organ","description":"Developing reproductive structure"}],
+			"reliability_notes":["Fetched online source."]
+		}`,
+		`{
+			"decision":"accept",
+			"relevance_score":90,
+			"reason":"The source directly covers fruit growth and vascular supply.",
+			"coverage":["fruit lifecycle","phloem and xylem feeding"],
+			"follow_up_queries":[]
+		}`,
+		`{"decision":"continue","stop_reason":"truncated"`,
+		`{"decision":"continue","stop_reason":"still truncated"`,
+		`{"decision":"continue","stop_reason":"also truncated"`,
+	}}, research)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces", `{"title":"Fruit research"}`, "", http.StatusCreated)
+	var createBody struct {
+		Space knowledgestore.Space `json:"space"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createBody); err != nil {
+		t.Fatal(err)
+	}
+	ran := requestJSON(t, mux, http.MethodPost, "/knowledge/spaces/"+createBody.Space.ID+"/research-runs", `{"objective":"Explore the lifecycle of fruit and how fruit are fed while growing.","depth":"standard","discover_sources":true}`, "", http.StatusCreated)
+	var runBody struct {
+		Run knowledgestore.ResearchRun `json:"run"`
+	}
+	if err := json.NewDecoder(ran.Body).Decode(&runBody); err != nil {
+		t.Fatal(err)
+	}
+
+	failedSpace, failedRun := waitForKnowledgeRun(t, mux, createBody.Space.ID, runBody.Run.ID)
+	if failedRun.Status != knowledgestore.ResearchRunStatusFailed {
+		t.Fatalf("run = %#v, want failed coverage decision run", failedRun)
+	}
+	if !strings.Contains(failedRun.Error, "knowledge_research_coverage_decision JSON") {
+		t.Fatalf("error = %q, want visible coverage JSON failure", failedRun.Error)
+	}
+	if len(failedSpace.Sources) != 1 || len(failedRun.SourceIDs) != 1 || failedRun.SourcesExamined != 1 || failedRun.EvidenceCount == 0 {
+		t.Fatalf("space = %#v run = %#v, want failed run to retain imported source and evidence counts", failedSpace, failedRun)
+	}
+}
+
 func TestKnowledgeResearchRunStoredOnlyDoesNotCallOnlineDiscovery(t *testing.T) {
 	research := &controlInternetResearchStub{}
 	server := newKnowledgeHTTPTestServerWithTools(t, &scriptedControlProvider{contents: []string{

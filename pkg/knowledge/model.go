@@ -120,6 +120,8 @@ type LanguageModel struct {
 	model    string
 }
 
+const jsonCompletionAttempts = 3
+
 func NewLanguageModel(provider llm.Provider, model string) LanguageModel {
 	return LanguageModel{provider: provider, model: strings.TrimSpace(model)}
 }
@@ -329,7 +331,7 @@ func (m LanguageModel) EvaluateResearchCoverage(ctx context.Context, space Space
 	run = normalizeResearchRun(run)
 	loop = normalizeResearchLoops([]ResearchLoop{loop})[0]
 	var output ResearchCoverageDecision
-	resp, err := m.completeJSON(ctx, "knowledge_research_coverage_decision", researchCoverageDecisionSchema, 1800, []llm.Message{
+	resp, err := m.completeJSON(ctx, "knowledge_research_coverage_decision", researchCoverageDecisionSchema, 2600, []llm.Message{
 		{Role: "system", Content: strings.Join([]string{
 			"You decide whether an iterative research run has enough source coverage to answer its objective.",
 			"Return exactly one JSON object matching the schema.",
@@ -343,8 +345,8 @@ func (m LanguageModel) EvaluateResearchCoverage(ctx context.Context, space Space
 			"question":     firstNonEmpty(run.Question, run.Objective),
 			"scope":        run.Scope,
 			"plan":         run.Plan,
-			"current_loop": loop,
-			"all_loops":    run.ResearchLoops,
+			"current_loop": researchLoopPrompt(loop),
+			"all_loops":    researchLoopPrompts(run.ResearchLoops),
 			"coverage":     run.Coverage,
 			"sources":      corpusSourceBriefs(selectedSources(space.Sources, run.SourceIDs)),
 			"evidence":     evidencePrompt(evidence),
@@ -387,7 +389,7 @@ func (m LanguageModel) SynthesizeReport(ctx context.Context, space Space, run Re
 			"depth":          run.Depth,
 			"mode":           run.Mode,
 			"plan":           run.Plan,
-			"research_loops": run.ResearchLoops,
+			"research_loops": researchLoopPrompts(run.ResearchLoops),
 			"stop_reason":    run.StopReason,
 			"coverage":       run.Coverage,
 			"space":          corpusSpaceBrief(space),
@@ -415,34 +417,79 @@ func (m LanguageModel) SynthesizeReport(ctx context.Context, space Space, run Re
 }
 
 func (m LanguageModel) completeJSON(ctx context.Context, name, schema string, maxTokens int, messages []llm.Message, target any) (llm.CompletionResponse, error) {
-	resp, err := m.provider.Complete(ctx, llm.CompletionRequest{
-		Model:       m.model,
-		Temperature: 0,
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		ResponseFormat: &llm.ResponseFormat{
-			Name:   name,
-			Schema: json.RawMessage(schema),
-			Strict: true,
-		},
-	})
-	if err != nil {
-		return llm.CompletionResponse{}, err
+	var lastErr error
+	var usage llm.Usage
+	for attempt := 1; attempt <= jsonCompletionAttempts; attempt++ {
+		resp, err := m.provider.Complete(ctx, llm.CompletionRequest{
+			Model:       m.model,
+			Temperature: 0,
+			MaxTokens:   jsonCompletionMaxTokens(maxTokens, attempt),
+			Messages:    jsonCompletionMessages(messages, name, lastErr),
+			ResponseFormat: &llm.ResponseFormat{
+				Name:   name,
+				Schema: json.RawMessage(schema),
+				Strict: true,
+			},
+		})
+		if err != nil {
+			return llm.CompletionResponse{}, err
+		}
+		usage = addLLMUsage(usage, resp.Usage)
+		raw := bytes.TrimSpace([]byte(resp.Message.Content))
+		if len(raw) == 0 {
+			lastErr = fmt.Errorf("knowledge language model returned empty JSON for %s", name)
+			continue
+		}
+		if err := decodeStrictJSON(raw, target); err != nil {
+			lastErr = fmt.Errorf("knowledge language model returned invalid %s JSON: %w", name, err)
+			continue
+		}
+		resp.Usage = usage
+		return resp, nil
 	}
-	raw := bytes.TrimSpace([]byte(resp.Message.Content))
-	if len(raw) == 0 {
-		return llm.CompletionResponse{}, fmt.Errorf("knowledge language model returned empty JSON for %s", name)
+	return llm.CompletionResponse{}, lastErr
+}
+
+func jsonCompletionMaxTokens(base, attempt int) int {
+	if base <= 0 || attempt <= 1 {
+		return base
 	}
+	return base * attempt
+}
+
+func jsonCompletionMessages(messages []llm.Message, name string, previous error) []llm.Message {
+	if previous == nil {
+		return messages
+	}
+	out := append([]llm.Message{}, messages...)
+	out = append(out, llm.Message{Role: "user", Content: strings.Join([]string{
+		"The previous response for " + name + " was not valid complete JSON.",
+		"Error: " + previous.Error(),
+		"Return exactly one complete JSON object matching the requested schema.",
+		"Do not include prose, Markdown fences, comments, or multiple JSON values.",
+	}, "\n")})
+	return out
+}
+
+func decodeStrictJSON(raw []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return llm.CompletionResponse{}, fmt.Errorf("knowledge language model returned invalid %s JSON: %w", name, err)
+		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return llm.CompletionResponse{}, fmt.Errorf("knowledge language model returned multiple JSON values for %s", name)
+		return fmt.Errorf("multiple JSON values")
 	}
-	return resp, nil
+	return nil
+}
+
+func addLLMUsage(left, right llm.Usage) llm.Usage {
+	return llm.Usage{
+		InputTokens:  left.InputTokens + right.InputTokens,
+		OutputTokens: left.OutputTokens + right.OutputTokens,
+		TotalTokens:  left.TotalTokens + right.TotalTokens,
+	}
 }
 
 func attachModelProvenance(source Source, resp llm.CompletionResponse) Source {
@@ -506,6 +553,35 @@ func corpusSourceBriefs(sources []Source) []map[string]any {
 	return out
 }
 
+func researchLoopPrompts(loops []ResearchLoop) []map[string]any {
+	out := make([]map[string]any, 0, len(loops))
+	for _, loop := range loops {
+		out = append(out, researchLoopPrompt(loop))
+	}
+	return out
+}
+
+func researchLoopPrompt(loop ResearchLoop) map[string]any {
+	return map[string]any{
+		"id":                loop.ID,
+		"index":             loop.Index,
+		"query":             boundedText(loop.Query, 700),
+		"queries":           promptStrings(loop.Queries, 10, 220),
+		"status":            loop.Status,
+		"decision":          loop.Decision,
+		"stop_reason":       boundedText(loop.StopReason, 900),
+		"accepted_count":    loop.AcceptedCount,
+		"rejected_count":    loop.RejectedCount,
+		"failed_count":      loop.FailedCount,
+		"evidence_count":    loop.EvidenceCount,
+		"source_ids":        compactStrings(loop.SourceIDs, 20),
+		"coverage":          promptStrings(loop.Coverage, 12, 260),
+		"supported_claims":  promptStrings(loop.SupportedClaims, 12, 320),
+		"gaps":              promptStrings(loop.Gaps, 12, 320),
+		"follow_up_queries": promptStrings(loop.FollowUpQueries, 12, 240),
+	}
+}
+
 func evidencePrompt(evidence []Evidence) []map[string]any {
 	out := make([]map[string]any, 0, len(evidence))
 	for _, item := range evidence {
@@ -530,6 +606,14 @@ func evidencePrompt(evidence []Evidence) []map[string]any {
 		})
 	}
 	return out
+}
+
+func promptStrings(values []string, limit, maxLen int) []string {
+	values = compactStrings(values, limit)
+	for i, value := range values {
+		values[i] = boundedText(value, maxLen)
+	}
+	return values
 }
 
 func normalizeSourceEvaluation(input SourceEvaluation) SourceEvaluation {

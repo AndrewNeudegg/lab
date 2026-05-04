@@ -1031,43 +1031,44 @@ for (const viewport of [
       await expect(page.locator('#knowledge-panel-runs').locator('details.source-picker > summary')).toHaveText(
         'All 1 source selected'
       );
-      await page.getByRole('button', { name: 'Ask question' }).click();
-      await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
-      const askReport = page.getByRole('article', { name: 'Selected report' });
-      await expect(askReport.getByRole('link', { name: 'S1' }).first()).toBeVisible();
-      await expect(askReport.getByRole('link', { name: 'S2' }).first()).toBeVisible();
-      await expect(askReport.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
-      await expect(page.locator('[aria-label="Selected report"] .mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
-      await expect(page.getByRole('tab', { name: /Reports/ })).toContainText('2');
-      await expect(page.locator('[aria-label="Report key findings"]')).not.toHaveAttribute('open', '');
-      await expect(page.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
-      await expect(page.locator('[aria-label="Report gaps"]')).not.toHaveAttribute('open', '');
-      await page.locator('[aria-label="Report evidence"] summary').click();
-      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
-      await page.locator('[aria-label="Report gaps"] summary').click();
-      await expect(
-        page.locator('[aria-label="Report gaps"]').getByRole('button', { name: /Research this: Only stored Knowledge Space sources/ })
-      ).toBeVisible();
-      await expectNoHorizontalOverflow(page, [
-        '#knowledge-panel-artefacts',
-        '[aria-label="Selected report"]',
-        '[aria-label="Report evidence"]',
-        '[aria-label="Report gaps"]'
-      ]);
+	      await page.getByRole('button', { name: 'Ask question' }).click();
+	      await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
+	      const askReport = page.locator('#knowledge-report-kreport_ask');
+	      await expect(askReport).toHaveAttribute('open', '');
+	      await expect(askReport.getByRole('link', { name: 'S1' }).first()).toBeVisible();
+	      await expect(askReport.getByRole('link', { name: 'S2' }).first()).toBeVisible();
+	      await expect(askReport.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+	      await expect(askReport.locator('.mermaid-diagram[data-mermaid-status="rendered"]')).toBeVisible();
+	      await expect(page.getByRole('tab', { name: /Reports/ })).toContainText('2');
+	      await expect(askReport.locator('[aria-label="Report key findings"]')).not.toHaveAttribute('open', '');
+	      await expect(askReport.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
+	      await expect(askReport.locator('[aria-label="Report gaps"]')).not.toHaveAttribute('open', '');
+	      await askReport.locator('[aria-label="Report evidence"] summary').click();
+	      await expect(askReport.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
+	      await askReport.locator('[aria-label="Report gaps"] summary').click();
+	      await expect(
+	        askReport.locator('[aria-label="Report gaps"]').getByRole('button', { name: /Research this: Only stored Knowledge Space sources/ })
+	      ).toBeVisible();
+	      await expectNoHorizontalOverflow(page, [
+	        '#knowledge-panel-artefacts',
+	        '#knowledge-report-kreport_ask',
+	        '[aria-label="Report evidence"]',
+	        '[aria-label="Report gaps"]'
+	      ]);
       await expectNoVisualArtifacts(page);
-      await expectNoAxeViolations(page);
-      if (viewport.mobile) {
-        await scrollToStart(page.getByRole('article', { name: 'Selected report' }));
-        await expectMobileTabsCoverNavbarGap(page);
-      } else {
-        await page.evaluate(() => window.scrollTo(0, 0));
+	      await expectNoAxeViolations(page);
+	      if (viewport.mobile) {
+	        await scrollToStart(askReport);
+	        await expectMobileTabsCoverNavbarGap(page);
+	      } else {
+	        await page.evaluate(() => window.scrollTo(0, 0));
       }
       await expect(page).toHaveScreenshot(`knowledge-ask-report-${viewport.name}.png`, {
         fullPage: false,
-        animations: 'disabled',
-        maxDiffPixels: 100
-      });
-      await page.getByRole('article', { name: 'Selected report' }).getByRole('link', { name: 'S2' }).first().click();
+	        animations: 'disabled',
+	        maxDiffPixels: 100
+	      });
+	      await askReport.getByRole('link', { name: 'S2' }).first().click();
       await expect(page).toHaveURL(/#knowledge-source-ksrc_20260428_120000_33333333$/);
       await expect(page.getByRole('tab', { name: /Sources/ })).toHaveAttribute('aria-selected', 'true');
       await expect(page.locator('#knowledge-source-ksrc_20260428_120000_33333333')).toHaveAttribute('open', '');
@@ -1103,12 +1104,13 @@ for (const viewport of [
       await expect(finalAnswer.getByRole('link', { name: 'S1' }).first()).toBeVisible();
       await expect(finalAnswer.getByRole('link', { name: 'S2' }).first()).toBeVisible();
       await selectedResearch.locator('[aria-label="Download research output Track evidence review patterns"]').click();
-      await expectHorizontallyInsideViewport(page, selectedResearch.locator('.download-menu-popover').first());
+      const researchDownloadMenu = selectedResearch.locator('.download-menu-popover').first();
+      await expectHorizontallyInsideViewport(page, researchDownloadMenu);
       const markdownDownload = page.waitForEvent('download');
       await selectedResearch.getByRole('menuitem', { name: 'Markdown' }).click();
       expect((await markdownDownload).suggestedFilename()).toMatch(/how-should-evidence-be-reviewed-44444444\.md$/);
       await selectedResearch.locator('[aria-label="Download research output Track evidence review patterns"]').click();
-      await expectHorizontallyInsideViewport(page, selectedResearch.locator('.download-menu-popover').first());
+      await expectHorizontallyInsideViewport(page, researchDownloadMenu);
       const pdfDownload = page.waitForEvent('download');
       await selectedResearch.getByRole('menuitem', { name: 'PDF' }).click();
       expect((await pdfDownload).suggestedFilename()).toMatch(/how-should-evidence-be-reviewed-44444444\.pdf$/);
@@ -1141,6 +1143,10 @@ for (const viewport of [
         animations: 'disabled',
         maxDiffPixels: 100
       });
+      await selectedResearch.locator('[aria-label="Download research output Track evidence review patterns"]').click();
+      await expectHorizontallyInsideViewport(page, researchDownloadMenu);
+      await selectedResearch.getByRole('heading', { name: 'Track evidence review patterns' }).click();
+      await expect(researchDownloadMenu).toBeHidden();
       await researchPlan.locator(':scope > summary').click();
       await expect(researchPlan.getByText('evidence visible generated claims')).toBeVisible();
       const loops = page.locator('[aria-label="Research loops"] details');
@@ -1227,34 +1233,40 @@ for (const viewport of [
       await expect(queuedCandidates.getByText('example.com')).toBeVisible();
       await expectNoVisualArtifacts(page);
 
-      await page.getByRole('tab', { name: /Reports/ }).click();
-      await expect(page).toHaveURL(/#knowledge-panel-artefacts$/);
-      const reportsTable = page.getByLabel('Reports table');
-      await expect(reportsTable.getByRole('link')).toHaveCount(2);
-      await reportsTable.getByRole('link', { name: /How should evidence be reviewed/ }).click();
-      await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
-      const selectedReport = page.getByRole('article', { name: 'Selected report' });
-      await expect(selectedReport.getByRole('link', { name: 'S1' }).first()).toBeVisible();
-      await expect(selectedReport.getByRole('link', { name: 'S2' }).first()).toBeVisible();
-      await selectedReport.locator('[aria-label="Download report How should evidence be reviewed?"]').click();
-      await expectHorizontallyInsideViewport(page, selectedReport.locator('.download-menu-popover').first());
-      const reportMarkdownDownload = page.waitForEvent('download');
-      await selectedReport.getByRole('menuitem', { name: 'Markdown' }).click();
-      expect((await reportMarkdownDownload).suggestedFilename()).toMatch(/how-should-evidence-be-reviewed-44444444\.md$/);
-      if (viewport.mobile) {
-        await expectVerticallyBefore(selectedReport, page.getByLabel('Knowledge Space reports'));
-      }
-      await expect(page.locator('[aria-label="Report answer"]')).toHaveAttribute('open', '');
-      await expect(page.locator('[aria-label="Report key findings"]')).not.toHaveAttribute('open', '');
-      await expect(page.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
-      await expect(page.locator('[aria-label="Report gaps"]')).not.toHaveAttribute('open', '');
-      await expect(selectedReport.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
-      await expectNoHorizontalOverflow(page, [
-        '#knowledge-panel-artefacts',
-        '[aria-label="Selected report"]',
-        '[aria-label="Knowledge Space reports"]',
-        '[aria-label="Report answer"]'
-      ]);
+	      await page.getByRole('tab', { name: /Reports/ }).click();
+	      await expect(page).toHaveURL(/#knowledge-panel-artefacts$/);
+	      const reportsTable = page.getByLabel('Reports table');
+	      await expect(reportsTable.locator('.report-record-disclosure')).toHaveCount(2);
+	      const selectedReport = page.locator('#knowledge-report-kreport_20260428_120000_44444444');
+	      await expect(selectedReport).not.toHaveAttribute('open', '');
+	      await selectedReport.locator(':scope > summary').click();
+	      await expect(page).toHaveURL(/#knowledge-report-kreport_20260428_120000_44444444$/);
+	      await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
+	      await expect(selectedReport).toHaveAttribute('open', '');
+	      await selectedReport.locator(':scope > summary').click();
+	      await expect(selectedReport).not.toHaveAttribute('open', '');
+	      await expect(page).toHaveURL(/#knowledge-panel-artefacts$/);
+	      await selectedReport.locator(':scope > summary').click();
+	      await expect(page).toHaveURL(/#knowledge-report-kreport_20260428_120000_44444444$/);
+	      await expect(selectedReport.getByRole('link', { name: 'S1' }).first()).toBeVisible();
+	      await expect(selectedReport.getByRole('link', { name: 'S2' }).first()).toBeVisible();
+	      await selectedReport.locator('[aria-label="Download report How should evidence be reviewed?"]').click();
+      const reportDownloadMenu = selectedReport.locator('.download-menu-popover').first();
+      await expectHorizontallyInsideViewport(page, reportDownloadMenu);
+	      const reportMarkdownDownload = page.waitForEvent('download');
+	      await selectedReport.getByRole('menuitem', { name: 'Markdown' }).click();
+	      expect((await reportMarkdownDownload).suggestedFilename()).toMatch(/how-should-evidence-be-reviewed-44444444\.md$/);
+	      await expect(selectedReport.locator('[aria-label="Report answer"]')).toHaveAttribute('open', '');
+	      await expect(selectedReport.locator('[aria-label="Report key findings"]')).not.toHaveAttribute('open', '');
+	      await expect(selectedReport.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
+	      await expect(selectedReport.locator('[aria-label="Report gaps"]')).not.toHaveAttribute('open', '');
+	      await expect(selectedReport.getByRole('heading', { name: 'Evidence review' })).toBeVisible();
+	      await expectNoHorizontalOverflow(page, [
+	        '#knowledge-panel-artefacts',
+	        '#knowledge-report-kreport_20260428_120000_44444444',
+	        '[aria-label="Knowledge Space reports"]',
+	        '[aria-label="Report answer"]'
+	      ]);
       await expectNoVisualArtifacts(page);
       await expectNoAxeViolations(page);
       if (viewport.mobile) {
@@ -1267,15 +1279,20 @@ for (const viewport of [
         animations: 'disabled',
         maxDiffPixels: 100
       });
-      await page.locator('[aria-label="Report evidence"] summary').click();
-      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
-      const referenceHref = await page.getByRole('link', { name: 'Link to report reference S1' }).getAttribute('href');
-      expect(referenceHref).toContain('#knowledge-reference-');
-      await page.goto(referenceHref!);
-      await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
-      await expect(page.locator('[aria-label="Report evidence"]')).toHaveAttribute('open', '');
-      await expect(page.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
-    });
+	      await selectedReport.locator('[aria-label="Download report How should evidence be reviewed?"]').click();
+	      await expectHorizontallyInsideViewport(page, reportDownloadMenu);
+	      await page.keyboard.press('Escape');
+	      await expect(reportDownloadMenu).toBeHidden();
+	      await selectedReport.locator('[aria-label="Report evidence"] summary').click();
+	      await expect(selectedReport.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
+	      const referenceHref = await page.getByRole('link', { name: 'Link to report reference S1' }).getAttribute('href');
+	      expect(referenceHref).toContain('#knowledge-reference-');
+	      await page.goto(referenceHref!);
+	      await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
+	      await expect(selectedReport).toHaveAttribute('open', '');
+	      await expect(selectedReport.locator('[aria-label="Report evidence"]')).toHaveAttribute('open', '');
+	      await expect(selectedReport.locator('[aria-label="Report evidence"]').getByText('Review flow').first()).toBeVisible();
+	    });
 
     test('renames spaces and deletes sources or spaces through explicit confirmations', async ({ page }) => {
       await mockKnowledgeApis(page);

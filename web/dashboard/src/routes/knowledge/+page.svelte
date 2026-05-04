@@ -24,7 +24,6 @@
     knowledgeReportExportPdf,
     knowledgeMarkdownPreview,
     knowledgeSpacesFromResponse,
-    latestReport,
     linkKnowledgeCitations,
     modelProvenanceLabel,
     panelLabel,
@@ -123,7 +122,7 @@
     browser ? currentRouteSpaceId() : ''
   );
   $: selectedSpace = spaces.find((space) => space.id === selectedSpaceId);
-  $: latestSelectedReport = activeReport || latestReport(selectedSpace);
+  $: latestSelectedReport = activeReport;
   $: displayedAskResult = activeAskResult;
   $: latestSelectedRun = activeRun;
   $: selectedRunReport = reportForRun(selectedSpace, latestSelectedRun);
@@ -350,6 +349,9 @@
       return false;
     }
     activePanel = panel;
+    if (panel === 'artefacts') {
+      activeReport = undefined;
+    }
     return true;
   };
 
@@ -514,6 +516,28 @@
     const menu = target.closest('details');
     if (menu instanceof HTMLDetailsElement) {
       menu.open = false;
+    }
+  };
+
+  const closeDownloadMenus = (activeTarget: Element | null = null) => {
+    if (!browser) {
+      return;
+    }
+    const activeMenu = activeTarget?.closest('details.download-menu');
+    for (const menu of Array.from(document.querySelectorAll<HTMLDetailsElement>('details.download-menu[open]'))) {
+      if (menu !== activeMenu) {
+        menu.open = false;
+      }
+    }
+  };
+
+  const handleDownloadMenuPointerDown = (event: PointerEvent) => {
+    closeDownloadMenus(event.target instanceof Element ? event.target : null);
+  };
+
+  const handleDownloadMenuKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      closeDownloadMenus();
     }
   };
 
@@ -1087,8 +1111,20 @@
     revealDetailIfCompact();
   };
 
+  const clearSelectedReport = (updateHash = true) => {
+    activeReport = undefined;
+    activePanel = 'artefacts';
+    if (updateHash) {
+      pushKnowledgeHash(panelAnchorId('artefacts'), true);
+    }
+    revealDetailIfCompact();
+  };
+
   const selectPanel = (panel: KnowledgePanel, updateHash = true) => {
     activePanel = panel;
+    if (panel === 'artefacts') {
+      activeReport = undefined;
+    }
     if (updateHash) {
       pushKnowledgeHash(panelAnchorId(panel));
     }
@@ -1100,6 +1136,18 @@
     }
     event.preventDefault();
     selectReport(report);
+  };
+
+  const handleReportDisclosureToggle = (event: Event, report: HomelabdKnowledgeReport) => {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLDetailsElement)) {
+      return;
+    }
+    if (target.open) {
+      selectReport(report);
+    } else if (activeReport?.id === report.id) {
+      clearSelectedReport();
+    }
   };
 
   const handleRunRowClick = (event: MouseEvent, run: HomelabdKnowledgeResearchRun) => {
@@ -1139,10 +1187,14 @@
     }, 10000);
     window.addEventListener('popstate', handleKnowledgePopState);
     document.addEventListener('click', handleKnowledgeCitationClick, true);
+    document.addEventListener('pointerdown', handleDownloadMenuPointerDown, true);
+    document.addEventListener('keydown', handleDownloadMenuKeyDown, true);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener('popstate', handleKnowledgePopState);
       document.removeEventListener('click', handleKnowledgeCitationClick, true);
+      document.removeEventListener('pointerdown', handleDownloadMenuPointerDown, true);
+      document.removeEventListener('keydown', handleDownloadMenuKeyDown, true);
     };
   });
 </script>
@@ -2635,218 +2687,220 @@
             role="tabpanel"
             aria-labelledby="knowledge-tab-artefacts"
           >
-            <div class="record-workspace reports-workspace">
-            {#if latestSelectedReport}
-              <article id={reportAnchorId(latestSelectedReport.id)} class="report-card record-detail" aria-label="Selected report">
-                <header>
-                  <div>
-                    <span>{latestSelectedReport.mode}</span>
-                    <h3>{latestSelectedReport.question}</h3>
-                  </div>
-                  <span class="header-link-group">
-                    <strong>{compactTime(latestSelectedReport.created_at)}</strong>
-                    <details class="download-menu">
-                      <summary
-                        aria-label={`Download report ${latestSelectedReport.question}`}
-                        title="Download report"
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                          <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
-                        </svg>
-                      </summary>
-                      <div class="download-menu-popover" role="menu">
-                        <button
-                          type="button"
-                          role="menuitem"
-                          on:click={(event) => downloadReportMarkdown(latestSelectedReport!, undefined, event)}
-                        >
-                          Markdown
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          on:click={(event) => downloadReportPdf(latestSelectedReport!, undefined, event)}
-                        >
-                          PDF
-                        </button>
-                      </div>
-                    </details>
-                    <a
-                      class="permalink"
-                      href={reportHref(latestSelectedReport)}
-                      aria-label={`Link to report ${latestSelectedReport.question}`}
-                      title="Link to report"
-                    >
-                      #
-                    </a>
-                  </span>
-                </header>
-                <details class="knowledge-disclosure report-answer" aria-label="Report answer" open>
-                  <summary>
-                    <span>
-                      <strong>Answer</strong>
-                      <span>{latestSelectedReport.evidence?.length || 0} citations</span>
-                    </span>
-                  </summary>
-                  <div class="disclosure-body">
-                    <div class="markdown-block answer-body">
-                      <Markdown content={citationLinkedMarkdown(latestSelectedReport.answer, latestSelectedReport.evidence)} headingIds />
-                    </div>
-                  </div>
-                </details>
-                {#if latestSelectedReport.key_findings?.length}
-                  <details class="knowledge-disclosure" aria-label="Report key findings">
-                    <summary>
-                      <span>
-                        <strong>Key findings</strong>
-                        <span>{latestSelectedReport.key_findings.length}</span>
-                      </span>
-                    </summary>
-                    <div class="disclosure-body">
-                      <div class="claims-list">
-                        {#each latestSelectedReport.key_findings as finding}
-                          <section>
-                            <strong>Finding</strong>
-                            <div class="markdown-block compact">
-                              <Markdown content={citationLinkedMarkdown(finding, latestSelectedReport.evidence)} />
-                            </div>
-                          </section>
-                        {/each}
-                      </div>
-                    </div>
-                  </details>
-                {/if}
-                {#if modelProvenanceLabel(latestSelectedReport.provider, latestSelectedReport.model) || latestSelectedReport.usage?.total_tokens}
-                  <dl class="source-meta">
-                    {#if modelProvenanceLabel(latestSelectedReport.provider, latestSelectedReport.model)}
-                      <div>
-                        <dt>Model</dt>
-                        <dd>{modelProvenanceLabel(latestSelectedReport.provider, latestSelectedReport.model)}</dd>
-                      </div>
-                    {/if}
-                    {#if latestSelectedReport.usage?.total_tokens}
-                      <div>
-                        <dt>Tokens</dt>
-                        <dd>{latestSelectedReport.usage.total_tokens}</dd>
-                      </div>
-                    {/if}
-                  </dl>
-                {/if}
-                {#if latestSelectedReport.evidence?.length}
-                  <details class="knowledge-disclosure" aria-label="Report evidence">
-                    <summary>
-                      <span>
-                        <strong>Evidence</strong>
-                        <span>{latestSelectedReport.evidence.length} cited chunks</span>
-                      </span>
-                    </summary>
-                    <div class="disclosure-body">
-                      <div class="evidence-list">
-                        {#each latestSelectedReport.evidence as evidence (evidence.id)}
-                          <section id={evidenceAnchorId(latestSelectedReport.id, evidence.id)}>
-                            <div class="evidence-heading">
-                              {#if sourceAnchorHref(evidence.source_id)}
-                                <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
-                              {:else}
-                                <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
-                              {/if}
-                              <a
-                                class="permalink"
-                                href={knowledgeHashHref(evidenceAnchorId(latestSelectedReport.id, evidence.id))}
-                                aria-label={`Link to report reference ${evidence.citation_label}`}
-                                title="Link to reference"
-                              >
-                                #
-                              </a>
-                            </div>
-                            <div class="markdown-block evidence-body">
-                              <Markdown content={evidence.excerpt} />
-                            </div>
-                            <dl class="candidate-meta evidence-trace">
-                              {#if evidence.section_title}
-                                <div>
-                                  <dt>Section</dt>
-                                  <dd>{evidence.section_title}</dd>
-                                </div>
-                              {/if}
-                            <div>
-                              <dt>Trace</dt>
-                              <dd>{evidenceTraceLabel(evidence)}</dd>
-                            </div>
-                              <div>
-                                <dt>Score</dt>
-                                <dd>{evidence.score}</dd>
-                              </div>
-                            </dl>
-                            {#if evidence.source_summary}
-                              <div class="markdown-block compact">
-                                <Markdown content={evidence.source_summary} />
-                              </div>
-                            {/if}
-                          </section>
-                        {/each}
-                      </div>
-                    </div>
-                  </details>
-                {/if}
-                {#if latestSelectedReport.gaps?.length}
-                  <details class="knowledge-disclosure" aria-label="Report gaps">
-                    <summary>
-                      <span>
-                        <strong>Gaps</strong>
-                        <span>{latestSelectedReport.gaps.length}</span>
-                      </span>
-                    </summary>
-                    <div class="disclosure-body">
-                      <ResearchPromptList
-                        items={latestSelectedReport.gaps.map((gap, index) =>
-                          promptItem(reportGapAnchorId(latestSelectedReport.id, index), gap)
-                        )}
-                        label="Report gap prompts"
-                        disabled={creatingRun}
-                        onResearch={researchPrompt}
-                      />
-                    </div>
-                  </details>
-                {/if}
-              </article>
-            {/if}
-            <div class="record-inventory reports-list" aria-label="Knowledge Space reports">
+            <section class="record-inventory reports-list" aria-label="Knowledge Space reports">
               <header>
                 <div>
                   <h3>Report records</h3>
                   <p>{plural(selectedSpace.reports?.length || 0, 'report')}</p>
                 </div>
               </header>
-              <div class="record-table" aria-label="Reports table">
+              <div class="record-table report-record-table" aria-label="Reports table">
                 {#if selectedSpace.reports?.length}
                   {#each selectedSpace.reports as report (report.id)}
-                    <a
-                      id={`${reportAnchorId(report.id)}-row`}
-                      class="record-row"
-                      class:active={latestSelectedReport?.id === report.id}
-                      href={reportHref(report)}
-                      aria-current={latestSelectedReport?.id === report.id ? 'true' : undefined}
-                      on:click={(event) => handleReportRowClick(event, report)}
+                    <details
+                      id={reportAnchorId(report.id)}
+                      class="report-record-disclosure"
+                      open={latestSelectedReport?.id === report.id}
+                      on:toggle={(event) => handleReportDisclosureToggle(event, report)}
                     >
-                      <span class="record-row-main">
-                        <span class="record-type">{report.mode}</span>
-                        <strong>{report.question}</strong>
-                        <small>{knowledgeMarkdownPreview(report.key_findings?.[0] || report.answer, 96)}</small>
-                      </span>
-                      <span class="record-row-meta">
-                        <strong>{report.evidence?.length || 0}</strong>
-                        <small>citations</small>
-                      </span>
-                      <span class="record-row-time">{compactTime(report.created_at)}</span>
-                    </a>
+                      <summary
+                        id={`${reportAnchorId(report.id)}-row`}
+                        class="record-row report-record-summary"
+                        class:active={latestSelectedReport?.id === report.id}
+                        aria-current={latestSelectedReport?.id === report.id ? 'true' : undefined}
+                      >
+                        <span class="record-row-main">
+                          <span class="record-type">{report.mode}</span>
+                          <strong>{report.question}</strong>
+                          <small>{knowledgeMarkdownPreview(report.key_findings?.[0] || report.answer, 96)}</small>
+                        </span>
+                        <span class="record-row-meta">
+                          <strong>{report.evidence?.length || 0}</strong>
+                          <small>citations</small>
+                        </span>
+                        <span class="record-row-time">{compactTime(report.created_at)}</span>
+                        <span class="record-row-chevron" aria-hidden="true">
+                          <svg viewBox="0 0 20 20" focusable="false">
+                            <path d="m7 5 5 5-5 5" />
+                          </svg>
+                        </span>
+                      </summary>
+                      <div class="report-record-body" aria-label={`Report details ${report.question}`}>
+                        <div class="report-record-actions">
+                          <span>{report.mode} · {compactTime(report.created_at)}</span>
+                          <span class="header-link-group">
+                            <details class="download-menu">
+                              <summary
+                                aria-label={`Download report ${report.question}`}
+                                title="Download report"
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                  <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
+                                </svg>
+                              </summary>
+                              <div class="download-menu-popover" role="menu">
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  on:click={(event) => downloadReportMarkdown(report, undefined, event)}
+                                >
+                                  Markdown
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  on:click={(event) => downloadReportPdf(report, undefined, event)}
+                                >
+                                  PDF
+                                </button>
+                              </div>
+                            </details>
+                            <a
+                              class="permalink"
+                              href={reportHref(report)}
+                              aria-label={`Link to report ${report.question}`}
+                              title="Link to report"
+                            >
+                              #
+                            </a>
+                          </span>
+                        </div>
+                        <details class="knowledge-disclosure report-answer" aria-label="Report answer" open>
+                          <summary>
+                            <span>
+                              <strong>Answer</strong>
+                              <span>{report.evidence?.length || 0} citations</span>
+                            </span>
+                          </summary>
+                          <div class="disclosure-body">
+                            <div class="markdown-block answer-body">
+                              <Markdown content={citationLinkedMarkdown(report.answer, report.evidence)} headingIds />
+                            </div>
+                          </div>
+                        </details>
+                        {#if report.key_findings?.length}
+                          <details class="knowledge-disclosure" aria-label="Report key findings">
+                            <summary>
+                              <span>
+                                <strong>Key findings</strong>
+                                <span>{report.key_findings.length}</span>
+                              </span>
+                            </summary>
+                            <div class="disclosure-body">
+                              <div class="claims-list">
+                                {#each report.key_findings as finding}
+                                  <section>
+                                    <strong>Finding</strong>
+                                    <div class="markdown-block compact">
+                                      <Markdown content={citationLinkedMarkdown(finding, report.evidence)} />
+                                    </div>
+                                  </section>
+                                {/each}
+                              </div>
+                            </div>
+                          </details>
+                        {/if}
+                        {#if modelProvenanceLabel(report.provider, report.model) || report.usage?.total_tokens}
+                          <dl class="source-meta">
+                            {#if modelProvenanceLabel(report.provider, report.model)}
+                              <div>
+                                <dt>Model</dt>
+                                <dd>{modelProvenanceLabel(report.provider, report.model)}</dd>
+                              </div>
+                            {/if}
+                            {#if report.usage?.total_tokens}
+                              <div>
+                                <dt>Tokens</dt>
+                                <dd>{report.usage.total_tokens}</dd>
+                              </div>
+                            {/if}
+                          </dl>
+                        {/if}
+                        {#if report.evidence?.length}
+                          <details class="knowledge-disclosure" aria-label="Report evidence">
+                            <summary>
+                              <span>
+                                <strong>Evidence</strong>
+                                <span>{report.evidence.length} cited chunks</span>
+                              </span>
+                            </summary>
+                            <div class="disclosure-body">
+                              <div class="evidence-list">
+                                {#each report.evidence as evidence (evidence.id)}
+                                  <section id={evidenceAnchorId(report.id, evidence.id)}>
+                                    <div class="evidence-heading">
+                                      {#if sourceAnchorHref(evidence.source_id)}
+                                        <a class="source-reference-link" href={sourceAnchorHref(evidence.source_id)}>[{evidence.citation_label}] {evidence.source_title}</a>
+                                      {:else}
+                                        <strong>[{evidence.citation_label}] {evidence.source_title}</strong>
+                                      {/if}
+                                      <a
+                                        class="permalink"
+                                        href={knowledgeHashHref(evidenceAnchorId(report.id, evidence.id))}
+                                        aria-label={`Link to report reference ${evidence.citation_label}`}
+                                        title="Link to reference"
+                                      >
+                                        #
+                                      </a>
+                                    </div>
+                                    <div class="markdown-block evidence-body">
+                                      <Markdown content={evidence.excerpt} />
+                                    </div>
+                                    <dl class="candidate-meta evidence-trace">
+                                      {#if evidence.section_title}
+                                        <div>
+                                          <dt>Section</dt>
+                                          <dd>{evidence.section_title}</dd>
+                                        </div>
+                                      {/if}
+                                      <div>
+                                        <dt>Trace</dt>
+                                        <dd>{evidenceTraceLabel(evidence)}</dd>
+                                      </div>
+                                      <div>
+                                        <dt>Score</dt>
+                                        <dd>{evidence.score}</dd>
+                                      </div>
+                                    </dl>
+                                    {#if evidence.source_summary}
+                                      <div class="markdown-block compact">
+                                        <Markdown content={evidence.source_summary} />
+                                      </div>
+                                    {/if}
+                                  </section>
+                                {/each}
+                              </div>
+                            </div>
+                          </details>
+                        {/if}
+                        {#if report.gaps?.length}
+                          <details class="knowledge-disclosure" aria-label="Report gaps">
+                            <summary>
+                              <span>
+                                <strong>Gaps</strong>
+                                <span>{report.gaps.length}</span>
+                              </span>
+                            </summary>
+                            <div class="disclosure-body">
+                              <ResearchPromptList
+                                items={report.gaps.map((gap, index) =>
+                                  promptItem(reportGapAnchorId(report.id, index), gap)
+                                )}
+                                label="Report gap prompts"
+                                disabled={creatingRun}
+                                onResearch={researchPrompt}
+                              />
+                            </div>
+                          </details>
+                        {/if}
+                      </div>
+                    </details>
                   {/each}
                 {:else}
                   <p class="empty">No reports are stored.</p>
                 {/if}
               </div>
-            </div>
-            </div>
+            </section>
           </div>
         {/if}
       {:else}
@@ -3804,10 +3858,11 @@
     grid-column: 1 / -1;
   }
 
-  .source-card,
-  .report-card,
-  .record-row,
-  .evidence-list section {
+	  .source-card,
+	  .report-card,
+	  .report-record-disclosure,
+	  .record-row,
+	  .evidence-list section {
     min-width: 0;
     max-width: 100%;
     box-sizing: border-box;
@@ -3817,9 +3872,10 @@
     background: var(--panel, #ffffff);
   }
 
-  .report-card,
-  .record-row,
-  .evidence-list section,
+	  .report-card,
+	  .report-record-disclosure,
+	  .record-row,
+	  .evidence-list section,
   .source-candidates section,
   .run-events section {
     scroll-margin-top: 8rem;
@@ -3901,12 +3957,14 @@
     max-width: 100%;
   }
 
-  .report-card,
-  .record-workspace,
-  .record-inventory,
-  .record-table,
-  .record-row-wrap,
-  .record-row,
+	  .report-card,
+	  .record-workspace,
+	  .record-inventory,
+	  .record-table,
+	  .report-record-disclosure,
+	  .report-record-body,
+	  .record-row-wrap,
+	  .record-row,
   .record-row-main,
   .record-row-meta,
   .source-card,
@@ -3954,16 +4012,8 @@
     align-items: start;
   }
 
-  .reports-workspace .record-inventory {
-    order: 1;
-  }
-
-  .reports-workspace .record-detail {
-    order: 2;
-  }
-
-  .research-sidebar,
-  .record-inventory,
+	  .research-sidebar,
+	  .record-inventory,
   .record-table,
   .record-row-main {
     display: grid;
@@ -4057,6 +4107,90 @@
     align-items: center;
     gap: 0.65rem;
     text-decoration: none;
+  }
+
+  .report-record-table {
+    gap: 0.75rem;
+  }
+
+  .report-record-disclosure {
+    padding: 0;
+    overflow: hidden;
+    overscroll-behavior-x: none;
+  }
+
+  .report-record-disclosure[open] {
+    border-color: var(--primary, #2563eb);
+    box-shadow: 0 0 0 1px var(--primary, #2563eb);
+  }
+
+  .report-record-summary {
+    grid-template-columns: minmax(0, 1fr) minmax(4rem, auto) auto auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .report-record-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .report-record-disclosure .record-row:hover,
+  .report-record-disclosure .record-row:focus-visible,
+  .report-record-disclosure .record-row.active {
+    border-color: transparent;
+    box-shadow: none;
+    background: color-mix(in srgb, var(--primary, #2563eb) 7%, transparent);
+  }
+
+  .record-row-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    color: var(--knowledge-muted, #475569);
+  }
+
+  .record-row-chevron svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 120ms ease;
+  }
+
+  .report-record-disclosure[open] .record-row-chevron svg {
+    transform: rotate(90deg);
+  }
+
+  .report-record-body {
+    display: grid;
+    gap: 0.7rem;
+    padding: 0 0.9rem 0.9rem;
+    border-top: 1px solid var(--border-soft, #dbe3ef);
+  }
+
+  .report-record-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-width: 0;
+    padding-top: 0.75rem;
+    color: var(--knowledge-muted, #475569);
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
+
+  .report-record-actions > span:first-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .record-row-wrap {
@@ -5206,15 +5340,13 @@
       margin-top: 0.55rem;
     }
 
-    .run-panel .runs-list,
-    .reports-workspace .record-detail {
-      order: 1;
-    }
+	    .run-panel .runs-list {
+	      order: 1;
+	    }
 
-    .run-panel .research-sidebar,
-    .reports-workspace .record-inventory {
-      order: 2;
-    }
+	    .run-panel .research-sidebar {
+	      order: 2;
+	    }
 
     .panel-title {
       gap: 0.45rem;
@@ -5238,6 +5370,31 @@
 
     .record-row {
       grid-template-columns: minmax(0, 1fr);
+      gap: 0.45rem;
+    }
+
+    .report-record-summary {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .report-record-summary .record-row-main,
+    .report-record-summary .record-row-meta,
+    .report-record-summary .record-row-time {
+      grid-column: 1;
+    }
+
+    .report-record-summary .record-row-chevron {
+      grid-column: 2;
+      grid-row: 1;
+    }
+
+    .report-record-body {
+      padding: 0 0.7rem 0.7rem;
+    }
+
+    .report-record-actions {
+      align-items: flex-start;
+      flex-direction: column;
       gap: 0.45rem;
     }
 

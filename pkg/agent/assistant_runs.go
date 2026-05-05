@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -269,6 +271,7 @@ func (o *Orchestrator) StartAssistantProactiveLoop(ctx context.Context) {
 		interval = time.Hour
 	}
 	autonomy := o.cfg.Assistant.ProactiveAutonomy
+	eventWatchEnabled := o.cfg.Assistant.ProactiveEventWatchEnabled == nil || *o.cfg.Assistant.ProactiveEventWatchEnabled
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -289,6 +292,160 @@ func (o *Orchestrator) StartAssistantProactiveLoop(ctx context.Context) {
 			}
 		}
 	}()
+	if eventWatchEnabled {
+		o.startAssistantEventWatchLoop(ctx, autonomy)
+	}
+}
+
+func (o *Orchestrator) startAssistantEventWatchLoop(ctx context.Context, autonomy string) {
+	if o.events == nil {
+		return
+	}
+	poll := time.Duration(o.cfg.Assistant.ProactiveEventPollSeconds) * time.Second
+	if poll <= 0 {
+		poll = 15 * time.Second
+	}
+	cooldown := time.Duration(o.cfg.Assistant.ProactiveEventCooldownSeconds) * time.Second
+	if cooldown <= 0 {
+		cooldown = 5 * time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(poll)
+		defer ticker.Stop()
+		lastSeen := time.Now().UTC()
+		lastTriggered := time.Time{}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				events := o.assistantEventsAfter(lastSeen, now.UTC())
+				if len(events) == 0 {
+					lastSeen = now.UTC()
+					continue
+				}
+				lastSeen = latestAssistantEventTime(events, now.UTC())
+				trigger, ok := assistantTriggerFromEvents(events)
+				if !ok || (!lastTriggered.IsZero() && now.UTC().Sub(lastTriggered) < cooldown) {
+					continue
+				}
+				lastTriggered = now.UTC()
+				_, _, err := o.StartAssistantRun(ctx, assistantstore.RunRequest{
+					TriggerKind:  "event",
+					TriggerLabel: trigger.Label,
+					Goal:         trigger.Goal,
+					Autonomy:     autonomy,
+				})
+				if err != nil {
+					o.log().Warn("event-triggered assistant run failed", "error", err, "trigger", trigger.Label)
+				}
+			}
+		}
+	}()
+}
+
+type assistantEventTrigger struct {
+	Label string
+	Goal  string
+}
+
+func (o *Orchestrator) assistantEventsAfter(after, now time.Time) []eventlog.Event {
+	if o.events == nil {
+		return nil
+	}
+	after = after.UTC()
+	now = now.UTC()
+	days := []time.Time{now}
+	if after.Format("2006-01-02") != now.Format("2006-01-02") {
+		days = append(days, after)
+	}
+	seen := map[string]bool{}
+	var out []eventlog.Event
+	for _, day := range days {
+		events, err := o.events.ReadDay(day)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			o.log().Warn("assistant event watch read failed", "error", err)
+			continue
+		}
+		for _, event := range events {
+			if event.Time.After(after) && !event.Time.After(now) && !seen[event.ID] {
+				out = append(out, event)
+				seen[event.ID] = true
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	return out
+}
+
+func latestAssistantEventTime(events []eventlog.Event, fallback time.Time) time.Time {
+	latest := fallback
+	for _, event := range events {
+		if event.Time.After(latest) {
+			latest = event.Time
+		}
+	}
+	return latest
+}
+
+func assistantTriggerFromEvents(events []eventlog.Event) (assistantEventTrigger, bool) {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		label, ok := assistantEventTriggerLabel(event)
+		if !ok {
+			continue
+		}
+		return assistantEventTrigger{
+			Label: label,
+			Goal:  assistantEventTriggerGoal(event),
+		}, true
+	}
+	return assistantEventTrigger{}, false
+}
+
+func assistantEventTriggerLabel(event eventlog.Event) (string, bool) {
+	switch event.Type {
+	case "task.blocked":
+		return assistantEventLabel("Task blocked", event), true
+	case "task.conflict_resolution":
+		return assistantEventLabel("Task needs conflict resolution", event), true
+	case "task.review.failed":
+		return assistantEventLabel("Task review failed", event), true
+	case "task.restart.failed":
+		return assistantEventLabel("Task restart failed", event), true
+	case "task.auto_recovery.exhausted":
+		return assistantEventLabel("Task automatic recovery exhausted", event), true
+	case "task.awaiting_approval":
+		return assistantEventLabel("Task awaiting approval", event), true
+	case "task.awaiting_restart":
+		return assistantEventLabel("Task awaiting restart", event), true
+	case "task.awaiting_verification":
+		return assistantEventLabel("Task awaiting verification", event), true
+	case "approval.requested":
+		return assistantEventLabel("Approval requested", event), true
+	case "approval.failed":
+		return assistantEventLabel("Approval failed", event), true
+	default:
+		return "", false
+	}
+}
+
+func assistantEventLabel(prefix string, event eventlog.Event) string {
+	if strings.TrimSpace(event.TaskID) == "" {
+		return prefix
+	}
+	return prefix + ": " + taskShortID(event.TaskID)
+}
+
+func assistantEventTriggerGoal(event eventlog.Event) string {
+	return strings.Join([]string{
+		"Review current homelabd state after " + event.Type + ".",
+		"Decide whether the event requires a task, research, workflow, or no action.",
+		"Use the current Tasks, Knowledge, Workflows, health, supervisor, and recent event snapshot.",
+	}, " ")
 }
 
 func normalizeAssistantRunRequest(req assistantstore.RunRequest) assistantstore.RunRequest {

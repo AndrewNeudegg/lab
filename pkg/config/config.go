@@ -86,9 +86,12 @@ type RemoteAgentWorkdirConfig struct {
 }
 
 type AssistantConfig struct {
-	ProactiveEnabled         bool   `json:"proactive_enabled"`
-	ProactiveIntervalSeconds int    `json:"proactive_interval_seconds"`
-	ProactiveAutonomy        string `json:"proactive_autonomy,omitempty"`
+	ProactiveEnabled              bool   `json:"proactive_enabled"`
+	ProactiveIntervalSeconds      int    `json:"proactive_interval_seconds"`
+	ProactiveAutonomy             string `json:"proactive_autonomy,omitempty"`
+	ProactiveEventWatchEnabled    *bool  `json:"proactive_event_watch_enabled,omitempty"`
+	ProactiveEventPollSeconds     int    `json:"proactive_event_poll_seconds"`
+	ProactiveEventCooldownSeconds int    `json:"proactive_event_cooldown_seconds"`
 }
 
 type KnowledgeConfig struct {
@@ -279,9 +282,12 @@ func Default() Config {
 			PollIntervalSeconds:      5,
 		},
 		Assistant: AssistantConfig{
-			ProactiveEnabled:         false,
-			ProactiveIntervalSeconds: 3600,
-			ProactiveAutonomy:        "observe",
+			ProactiveEnabled:              false,
+			ProactiveIntervalSeconds:      3600,
+			ProactiveAutonomy:             "observe",
+			ProactiveEventWatchEnabled:    boolPtr(true),
+			ProactiveEventPollSeconds:     15,
+			ProactiveEventCooldownSeconds: 300,
 		},
 		Knowledge: KnowledgeConfig{
 			PDFTextCommand: "pdftotext",
@@ -511,6 +517,15 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Assistant.ProactiveAutonomy == "" {
 		c.Assistant.ProactiveAutonomy = d.Assistant.ProactiveAutonomy
+	}
+	if c.Assistant.ProactiveEventWatchEnabled == nil {
+		c.Assistant.ProactiveEventWatchEnabled = d.Assistant.ProactiveEventWatchEnabled
+	}
+	if c.Assistant.ProactiveEventPollSeconds == 0 {
+		c.Assistant.ProactiveEventPollSeconds = d.Assistant.ProactiveEventPollSeconds
+	}
+	if c.Assistant.ProactiveEventCooldownSeconds == 0 {
+		c.Assistant.ProactiveEventCooldownSeconds = d.Assistant.ProactiveEventCooldownSeconds
 	}
 	if c.Knowledge.PDFTextCommand == "" {
 		c.Knowledge.PDFTextCommand = d.Knowledge.PDFTextCommand

@@ -55,7 +55,10 @@
   "assistant": {
     "proactive_enabled": false,
     "proactive_interval_seconds": 3600,
-    "proactive_autonomy": "observe"
+    "proactive_autonomy": "observe",
+    "proactive_event_watch_enabled": true,
+    "proactive_event_poll_seconds": 15,
+    "proactive_event_cooldown_seconds": 300
   },
   "remote_agent": {
     "id": "workstation",

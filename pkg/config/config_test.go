@@ -20,6 +20,12 @@ func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
 	if cfg.Assistant.ProactiveEnabled || cfg.Assistant.ProactiveIntervalSeconds != 3600 || cfg.Assistant.ProactiveAutonomy != "observe" {
 		t.Fatalf("assistant config = %#v, want disabled hourly observe defaults", cfg.Assistant)
 	}
+	if cfg.Assistant.ProactiveEventWatchEnabled == nil || !*cfg.Assistant.ProactiveEventWatchEnabled {
+		t.Fatalf("assistant event watch = %#v, want enabled default", cfg.Assistant.ProactiveEventWatchEnabled)
+	}
+	if cfg.Assistant.ProactiveEventPollSeconds != 15 || cfg.Assistant.ProactiveEventCooldownSeconds != 300 {
+		t.Fatalf("assistant event timing = %#v, want poll and cooldown defaults", cfg.Assistant)
+	}
 }
 
 func TestWithDefaultsFillsAssistantProactiveConfig(t *testing.T) {
@@ -31,6 +37,22 @@ func TestWithDefaultsFillsAssistantProactiveConfig(t *testing.T) {
 	}
 	if got.Assistant.ProactiveIntervalSeconds != 3600 || got.Assistant.ProactiveAutonomy != "observe" {
 		t.Fatalf("assistant defaults = %#v, want interval and autonomy filled", got.Assistant)
+	}
+	if got.Assistant.ProactiveEventWatchEnabled == nil || !*got.Assistant.ProactiveEventWatchEnabled {
+		t.Fatalf("assistant event watch default = %#v, want enabled", got.Assistant.ProactiveEventWatchEnabled)
+	}
+	if got.Assistant.ProactiveEventPollSeconds != 15 || got.Assistant.ProactiveEventCooldownSeconds != 300 {
+		t.Fatalf("assistant event timings = %#v, want defaults", got.Assistant)
+	}
+}
+
+func TestWithDefaultsPreservesDisabledAssistantEventWatch(t *testing.T) {
+	disabled := false
+	cfg := Config{Assistant: AssistantConfig{ProactiveEnabled: true, ProactiveEventWatchEnabled: &disabled}}
+	got := cfg.WithDefaults()
+
+	if got.Assistant.ProactiveEventWatchEnabled == nil || *got.Assistant.ProactiveEventWatchEnabled {
+		t.Fatalf("assistant event watch = %#v, want disabled preserved", got.Assistant.ProactiveEventWatchEnabled)
 	}
 }
 

@@ -107,6 +107,104 @@ const assistantCatalogue = {
   }
 };
 
+const assistantRun = {
+  id: 'arun_focus',
+  status: 'completed',
+  decision: 'recommend',
+  trigger: { kind: 'schedule', label: 'Scheduled proactive check' },
+  autonomy: 'propose',
+  goal: 'Review current homelabd state and recommend useful next actions.',
+  summary: 'Task and health signals suggest one useful follow-up.',
+  changed: ['Reviewed tasks, workflows, health, supervisor, and knowledge spaces.'],
+  concerns: [
+    {
+      title: 'Blocked deploy needs attention',
+      detail: 'A blocked task has been waiting for an operator decision.',
+      severity: 'warning',
+      surface: 'tasks',
+      object_id: 'task_blocked',
+      object_url: '/tasks?task=task_blocked'
+    }
+  ],
+  opportunities: [
+    {
+      title: 'Turn the daily scan into a reusable workflow',
+      detail: 'The same proactive review can run on a schedule with receipts.',
+      severity: 'info',
+      surface: 'workflows',
+      object_id: 'workflow_daily'
+    }
+  ],
+  recommended_actions: [
+    {
+      id: 'action_1',
+      kind: 'task',
+      title: 'Review blocked deploy',
+      rationale: 'The deploy is blocked and has a clear operator decision point.',
+      priority: 'high',
+      risk: 'low',
+      target_surface: 'tasks',
+      task_goal: 'Review the blocked deploy and decide the next step.',
+      status: 'recommended'
+    }
+  ],
+  receipts: [
+    {
+      kind: 'trigger',
+      message: 'Assistant run started from Scheduled proactive check.',
+      created_at: now
+    },
+    {
+      kind: 'decision',
+      message: 'Recommended 1 actions from 1 concerns and 1 opportunities.',
+      created_at: now
+    }
+  ],
+  snapshot: {
+    generated_at: now,
+    task_counts: { blocked: 1, running: 1, done: 2 },
+    attention_tasks: [
+      {
+        id: 'task_blocked',
+        title: 'Blocked deploy',
+        status: 'blocked',
+        summary: 'Waiting on operator decision.',
+        url: '/tasks?task=task_blocked'
+      }
+    ],
+    pending_approvals: 1,
+    workflow_counts: { completed: 2, running: 1 },
+    recent_workflows: [
+      {
+        id: 'workflow_daily',
+        title: 'Daily review',
+        status: 'running',
+        summary: 'Scheduled context review.',
+        url: '/workflows?workflow=workflow_daily'
+      }
+    ],
+    knowledge_spaces: [
+      {
+        id: 'kspace_ops',
+        title: 'Operations memory',
+        summary: '6 sources, 2 reports',
+        url: '/knowledge?space=kspace_ops'
+      }
+    ],
+    remote_agent_counts: { online: 2 },
+    health: { status: 'warning', items: [{ id: 'disk', title: 'Disk', status: 'warning' }] },
+    supervisor: { status: 'healthy', items: [] },
+    recent_events: [{ id: 'evt_1', type: 'task.blocked', actor: 'Codex', time: now }]
+  },
+  provider: 'test-provider',
+  model: 'test-model',
+  usage: { input_tokens: 90, output_tokens: 30, total_tokens: 120 },
+  created_at: now,
+  started_at: now,
+  finished_at: now,
+  updated_at: now
+};
+
 const freezeTime = async (page: Page) => {
   await page.addInitScript((fixedNow) => {
     const RealDate = Date;
@@ -138,6 +236,28 @@ const mockShellApis = async (page: Page) => {
 
 const mockAssistantApis = async (page: Page) => {
   await mockShellApis(page);
+  const runs = [assistantRun];
+  await page.route(/\/api\/assistant\/runs(?:\/[^?]+)?(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const runID = url.pathname.split('/').pop() || '';
+    if (route.request().method() === 'POST') {
+      const created = {
+        ...assistantRun,
+        id: 'arun_manual',
+        trigger: { kind: 'manual', label: 'Operator requested proactive check' },
+        summary: 'Manual check found one useful follow-up.',
+        updated_at: now
+      };
+      runs.unshift(created);
+      await route.fulfill({ status: 201, json: { reply: 'Assistant run completed.', run: created } });
+      return;
+    }
+    if (runID && runID !== 'runs') {
+      await route.fulfill({ json: runs.find((run) => run.id === runID) || runs[0] });
+      return;
+    }
+    await route.fulfill({ json: { runs } });
+  });
   await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const area = url.searchParams.get('area') || 'all';
@@ -245,7 +365,15 @@ for (const viewport of [
       await expectAssistantReady(page);
 
       await expect(page.getByRole('heading', { name: 'Useful outcomes' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
       await expect(page.getByText('2 capabilities')).toBeVisible();
+      await page.getByRole('button', { name: /Scheduled proactive check/ }).click();
+      await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeInViewport();
+      await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
+      await expect(page.getByText('Review blocked deploy')).toBeVisible();
+      await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
+      await expect(page.getByRole('status')).toContainText('Assistant run completed.');
+      await expect(page.getByRole('heading', { name: 'Operator requested proactive check' })).toBeInViewport();
       await page.getByRole('button', { name: /Research a decision/ }).click();
       await expect(page.getByRole('heading', { name: 'Research and prepare' })).toBeInViewport();
       await expect(page.locator('.detail-header .status')).toHaveText('Plan and propose');

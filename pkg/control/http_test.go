@@ -212,6 +212,67 @@ func TestAssistantEndpointReturnsFilteredCatalogue(t *testing.T) {
 	}
 }
 
+func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
+	server, tasks, _ := newHTTPTestServer(t)
+	if err := tasks.Save(taskstore.Task{
+		ID:         "task_blocked",
+		Title:      "Blocked deploy",
+		Goal:       "Fix deploy blocker.",
+		Status:     taskstore.StatusBlocked,
+		AssignedTo: "Codex",
+		Result:     "Waiting on operator decision.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/assistant/runs", `{
+		"trigger_kind":"manual",
+		"trigger_label":"Operator requested proactive check",
+		"goal":"Review state.",
+		"autonomy":"propose"
+	}`, "", http.StatusCreated)
+	var startResponse struct {
+		Reply string `json:"reply"`
+		Run   struct {
+			ID                 string `json:"id"`
+			Status             string `json:"status"`
+			Decision           string `json:"decision"`
+			RecommendedActions []struct {
+				Title string `json:"title"`
+			} `json:"recommended_actions"`
+			Snapshot struct {
+				AttentionTasks []struct {
+					ID string `json:"id"`
+				} `json:"attention_tasks"`
+			} `json:"snapshot"`
+		} `json:"run"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&startResponse); err != nil {
+		t.Fatal(err)
+	}
+	if startResponse.Run.ID == "" || startResponse.Run.Status != "completed" || startResponse.Run.Decision != "recommend" {
+		t.Fatalf("start response = %#v, want completed recommendation", startResponse)
+	}
+	if len(startResponse.Run.RecommendedActions) == 0 {
+		t.Fatalf("start response missing recommended actions: %#v", startResponse)
+	}
+	if len(startResponse.Run.Snapshot.AttentionTasks) != 1 || startResponse.Run.Snapshot.AttentionTasks[0].ID != "task_blocked" {
+		t.Fatalf("attention tasks = %#v, want blocked task", startResponse.Run.Snapshot.AttentionTasks)
+	}
+
+	listed := requestJSON(t, mux, http.MethodGet, "/assistant/runs", "", "", http.StatusOK)
+	if !strings.Contains(listed.Body.String(), startResponse.Run.ID) {
+		t.Fatalf("list response did not include run %q: %s", startResponse.Run.ID, listed.Body.String())
+	}
+
+	loaded := requestJSON(t, mux, http.MethodGet, "/assistant/runs/"+startResponse.Run.ID, "", "", http.StatusOK)
+	if !strings.Contains(loaded.Body.String(), `"id":"`+startResponse.Run.ID+`"`) {
+		t.Fatalf("load response did not include run %q: %s", startResponse.Run.ID, loaded.Body.String())
+	}
+}
+
 func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	server := newKnowledgeHTTPTestServer(t, &scriptedControlProvider{contents: []string{
 		`{

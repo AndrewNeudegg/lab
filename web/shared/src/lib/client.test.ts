@@ -246,6 +246,87 @@ describe('homelabd client', () => {
     expect(response.capabilities[0].workflow_template.steps[0].tool).toBe('internet.search');
   });
 
+  test('uses typed assistant proactive run endpoints', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        if (String(input).endsWith('/assistant/runs/arun_1')) {
+          return jsonResponse({
+            id: 'arun_1',
+            status: 'completed',
+            decision: 'recommend',
+            trigger: { kind: 'manual', label: 'Manual proactive check' },
+            autonomy: 'propose',
+            summary: 'Action recommended.',
+            snapshot: { generated_at: '2026-04-30T21:00:00Z' },
+            created_at: '2026-04-30T21:00:00Z',
+            updated_at: '2026-04-30T21:00:00Z'
+          });
+        }
+        if (init?.method === 'POST') {
+          return jsonResponse({
+            reply: 'Assistant run completed.',
+            run: {
+              id: 'arun_2',
+              status: 'completed',
+              decision: 'recommend',
+              trigger: { kind: 'manual', label: 'Operator requested proactive check' },
+              autonomy: 'propose',
+              summary: 'Follow-up recommended.',
+              snapshot: { generated_at: '2026-04-30T21:01:00Z' },
+              created_at: '2026-04-30T21:01:00Z',
+              updated_at: '2026-04-30T21:01:00Z'
+            }
+          });
+        }
+        return jsonResponse({
+          runs: [
+            {
+              id: 'arun_1',
+              status: 'completed',
+              decision: 'recommend',
+              trigger: { kind: 'manual', label: 'Manual proactive check' },
+              autonomy: 'propose',
+              summary: 'Action recommended.',
+              snapshot: { generated_at: '2026-04-30T21:00:00Z' },
+              created_at: '2026-04-30T21:00:00Z',
+              updated_at: '2026-04-30T21:00:00Z'
+            }
+          ]
+        });
+      }
+    });
+
+    const runs = await client.listAssistantRuns();
+    const run = await client.getAssistantRun('arun_1');
+    const started = await client.startAssistantRun({
+      trigger_kind: 'manual',
+      trigger_label: 'Operator requested proactive check',
+      autonomy: 'propose'
+    });
+
+    expect(runs.runs[0].id).toBe('arun_1');
+    expect(run.id).toBe('arun_1');
+    expect(started.run.id).toBe('arun_2');
+    expect(requests.map((request) => request.url)).toEqual([
+      'http://homelabd/assistant/runs',
+      'http://homelabd/assistant/runs/arun_1',
+      'http://homelabd/assistant/runs'
+    ]);
+    expect(requests[2].init?.method).toBe('POST');
+    expect(requests[2].body).toEqual({
+      trigger_kind: 'manual',
+      trigger_label: 'Operator requested proactive check',
+      autonomy: 'propose'
+    });
+  });
+
   test('uses typed task and approval action endpoints', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({

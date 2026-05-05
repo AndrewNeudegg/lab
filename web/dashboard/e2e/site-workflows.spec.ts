@@ -204,6 +204,65 @@ const assistantCatalogue = {
   }
 };
 
+const assistantRun = {
+  id: 'arun_site',
+  status: 'completed',
+  decision: 'recommend',
+  trigger: { kind: 'schedule', label: 'Scheduled proactive check' },
+  autonomy: 'propose',
+  goal: 'Review current homelabd state and recommend useful next actions.',
+  summary: 'Task queue signals suggest one useful follow-up.',
+  changed: ['Reviewed tasks, workflows, health, supervisor, and knowledge spaces.'],
+  concerns: [
+    {
+      title: 'Restart gate still needs review',
+      detail: 'A dashboard restart gate is waiting after merge.',
+      severity: 'warning',
+      surface: 'tasks',
+      object_id: restartTask.id,
+      object_url: `/tasks?task=${restartTask.id}`
+    }
+  ],
+  opportunities: [],
+  recommended_actions: [
+    {
+      id: 'action_1',
+      kind: 'task',
+      title: 'Review restart gate',
+      rationale: 'The queue contains an awaiting-restart task with a failed restart status.',
+      priority: 'high',
+      risk: 'low',
+      target_surface: 'tasks',
+      task_goal: 'Review the dashboard restart gate and decide the recovery path.',
+      status: 'recommended'
+    }
+  ],
+  receipts: [{ kind: 'decision', message: 'Recommended 1 actions.', created_at: now }],
+  snapshot: {
+    generated_at: now,
+    task_counts: { awaiting_approval: 1, awaiting_restart: 1, ready_for_review: 1 },
+    attention_tasks: [
+      {
+        id: restartTask.id,
+        title: restartTask.title,
+        status: restartTask.status,
+        summary: restartTask.result,
+        url: `/tasks?task=${restartTask.id}`
+      }
+    ],
+    pending_approvals: 1,
+    workflow_counts: { running: 1 },
+    remote_agent_counts: { online: 1 },
+    health: { status: 'healthy', items: [] },
+    supervisor: { status: 'healthy', items: [] },
+    recent_events: [{ id: 'evt_site', type: 'task.awaiting_restart', actor: 'Codex', time: now }]
+  },
+  created_at: now,
+  started_at: now,
+  finished_at: now,
+  updated_at: now
+};
+
 const knowledgeSource = {
   id: 'ksrc_20260428_120000_33333333',
   title: 'Source transparency notes',
@@ -387,6 +446,28 @@ const mockDashboardApis = async (page: Page) => {
         stats: { model_turns: 1, tool_calls: 2, total_tokens: 128, elapsed_ms: 1234 }
       }
     });
+  });
+  const assistantRuns = [assistantRun];
+  await page.route(/\/api\/assistant\/runs(?:\/[^?]+)?(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const runID = url.pathname.split('/').pop() || '';
+    if (route.request().method() === 'POST') {
+      const created = {
+        ...assistantRun,
+        id: 'arun_site_manual',
+        trigger: { kind: 'manual', label: 'Operator requested proactive check' },
+        summary: 'Manual proactive check completed.',
+        updated_at: now
+      };
+      assistantRuns.unshift(created);
+      await route.fulfill({ status: 201, json: { reply: 'Assistant run completed.', run: created } });
+      return;
+    }
+    if (runID && runID !== 'runs') {
+      await route.fulfill({ json: assistantRuns.find((run) => run.id === runID) || assistantRuns[0] });
+      return;
+    }
+    await route.fulfill({ json: { runs: assistantRuns } });
   });
   await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -821,6 +902,12 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   await expectTaskNavAttention(page, mobile);
   if (route === '/assistant') {
     await expect(page.getByRole('heading', { name: 'Assistant' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
+    await page.getByRole('button', { name: /Scheduled proactive check/ }).click();
+    await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
+    await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
+    await expect(page.getByRole('status')).toContainText('Assistant run completed.');
     await page.getByLabel('Area').selectOption('research');
     await expect(page.getByRole('button', { name: /Research and prepare/ })).toBeVisible();
     await page.getByRole('searchbox', { name: 'Search' }).fill('source');
@@ -915,9 +1002,10 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await page.getByRole('button', { name: 'Ask question' }).click();
     await expect(knowledgeNoticeScope.getByText('Grounded answer saved.')).toBeVisible();
     await expect(page.getByRole('tab', { name: /Reports/ })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
-    await page.locator('[aria-label="Report evidence"] summary').click();
-    await expect(page.locator('[aria-label="Report evidence"]')).toContainText('[S1]');
+    const askReport = page.locator('#knowledge-report-kreport_ask');
+    await expect(askReport.locator('[aria-label="Report evidence"]')).not.toHaveAttribute('open', '');
+    await askReport.locator('[aria-label="Report evidence"] summary').click();
+    await expect(askReport.locator('[aria-label="Report evidence"]')).toContainText('[S1]');
     await page.getByRole('tab', { name: /Research/ }).click();
     const newResearch = page.locator('[aria-label="New research"]');
     if ((await newResearch.getAttribute('open')) === null) {

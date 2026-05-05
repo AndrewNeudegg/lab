@@ -1,6 +1,10 @@
 import type {
   AssistantCatalogue,
   AssistantCatalogueOptions,
+  AssistantRun,
+  AssistantRunActionResponse,
+  AssistantRunRequest,
+  AssistantRunsResponse,
   FetchClient,
   FetchClientOptions,
   HomelabdApprovalsResponse,
@@ -172,6 +176,26 @@ export const createHomelabdClient = (
       return apiFetch<AssistantCatalogue>(`/assistant${query}`, {
         baseUrl,
         fetcher
+      });
+    },
+    listAssistantRuns() {
+      return apiFetch<AssistantRunsResponse>('/assistant/runs', {
+        baseUrl,
+        fetcher
+      });
+    },
+    getAssistantRun(runId: string) {
+      return apiFetch<AssistantRun>(`/assistant/runs/${encodeURIComponent(runId)}`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    startAssistantRun(request: AssistantRunRequest = {}) {
+      return apiFetch<AssistantRunActionResponse>('/assistant/runs', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
       });
     },
     clearChat(request: HomelabdClearChatRequest) {

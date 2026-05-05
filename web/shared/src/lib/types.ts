@@ -404,6 +404,129 @@ export interface AssistantCatalogueOptions {
   area?: string;
 }
 
+export type AssistantRunStatus = 'running' | 'completed' | 'failed' | string;
+export type AssistantRunDecision = 'no_op' | 'recommend' | 'created_tasks' | string;
+
+export interface AssistantRunRequest {
+  trigger_kind?: string;
+  trigger_label?: string;
+  goal?: string;
+  autonomy?: string;
+}
+
+export interface AssistantRunTrigger {
+  kind: string;
+  label: string;
+}
+
+export interface AssistantRunFinding {
+  title: string;
+  detail?: string;
+  severity?: string;
+  surface?: string;
+  object_id?: string;
+  object_url?: string;
+}
+
+export interface AssistantRunAction {
+  id: string;
+  kind: string;
+  title: string;
+  rationale: string;
+  priority?: string;
+  risk?: string;
+  target_surface?: string;
+  task_goal?: string;
+  knowledge_query?: string;
+  workflow_hint?: string;
+  status?: string;
+  created_task_id?: string;
+}
+
+export interface AssistantRunReceipt {
+  kind: string;
+  message: string;
+  object_id?: string;
+  object_url?: string;
+  created_at: string;
+}
+
+export interface AssistantRunObjectRef {
+  id: string;
+  title: string;
+  status?: string;
+  summary?: string;
+  url?: string;
+}
+
+export interface AssistantRunSystemSnapshot {
+  status?: string;
+  error?: string;
+  items?: AssistantRunObjectRef[];
+}
+
+export interface AssistantRunEventRef {
+  id: string;
+  type: string;
+  actor?: string;
+  task_id?: string;
+  summary?: string;
+  time: string;
+}
+
+export interface AssistantRunSnapshot {
+  generated_at: string;
+  task_counts?: Record<string, number>;
+  attention_tasks?: AssistantRunObjectRef[];
+  pending_approvals?: number;
+  workflow_counts?: Record<string, number>;
+  recent_workflows?: AssistantRunObjectRef[];
+  knowledge_spaces?: AssistantRunObjectRef[];
+  remote_agent_counts?: Record<string, number>;
+  health?: AssistantRunSystemSnapshot;
+  supervisor?: AssistantRunSystemSnapshot;
+  recent_events?: AssistantRunEventRef[];
+}
+
+export interface AssistantRunUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface AssistantRun {
+  id: string;
+  status: AssistantRunStatus;
+  decision: AssistantRunDecision;
+  trigger: AssistantRunTrigger;
+  autonomy: string;
+  goal?: string;
+  summary: string;
+  changed?: string[];
+  concerns?: AssistantRunFinding[];
+  opportunities?: AssistantRunFinding[];
+  recommended_actions?: AssistantRunAction[];
+  receipts?: AssistantRunReceipt[];
+  snapshot: AssistantRunSnapshot;
+  error?: string;
+  provider?: string;
+  model?: string;
+  usage?: AssistantRunUsage;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at: string;
+}
+
+export interface AssistantRunsResponse {
+  runs: AssistantRun[];
+}
+
+export interface AssistantRunActionResponse {
+  reply: string;
+  run: AssistantRun;
+}
+
 export interface HomelabdKnowledgeSpace {
   id: string;
   title: string;
@@ -992,6 +1115,9 @@ export interface SupervisorSnapshot {
 export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
   getAssistant(options?: AssistantCatalogueOptions): Promise<AssistantCatalogue>;
+  listAssistantRuns(): Promise<AssistantRunsResponse>;
+  getAssistantRun(runId: string): Promise<AssistantRun>;
+  startAssistantRun(request?: AssistantRunRequest): Promise<AssistantRunActionResponse>;
   clearChat(request: HomelabdClearChatRequest): Promise<HomelabdClearChatResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;

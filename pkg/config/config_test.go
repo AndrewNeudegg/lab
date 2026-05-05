@@ -17,6 +17,21 @@ func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
 	if cfg.RemoteAgent.APIBase == "" || cfg.RemoteAgent.Backend != "codex" {
 		t.Fatalf("remote agent config = %#v", cfg.RemoteAgent)
 	}
+	if cfg.Assistant.ProactiveEnabled || cfg.Assistant.ProactiveIntervalSeconds != 3600 || cfg.Assistant.ProactiveAutonomy != "observe" {
+		t.Fatalf("assistant config = %#v, want disabled hourly observe defaults", cfg.Assistant)
+	}
+}
+
+func TestWithDefaultsFillsAssistantProactiveConfig(t *testing.T) {
+	cfg := Config{Assistant: AssistantConfig{ProactiveEnabled: true}}
+	got := cfg.WithDefaults()
+
+	if !got.Assistant.ProactiveEnabled {
+		t.Fatalf("assistant proactive enabled was not preserved: %#v", got.Assistant)
+	}
+	if got.Assistant.ProactiveIntervalSeconds != 3600 || got.Assistant.ProactiveAutonomy != "observe" {
+		t.Fatalf("assistant defaults = %#v, want interval and autonomy filled", got.Assistant)
+	}
 }
 
 func TestDefaultKnowledgeOCREnabled(t *testing.T) {

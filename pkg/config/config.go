@@ -21,6 +21,7 @@ type Config struct {
 	HTTP            HTTPConfig                     `json:"http"`
 	ControlPlane    ControlPlaneConfig             `json:"control_plane"`
 	RemoteAgent     RemoteAgentConfig              `json:"remote_agent"`
+	Assistant       AssistantConfig                `json:"assistant"`
 	Knowledge       KnowledgeConfig                `json:"knowledge"`
 	Healthd         HealthdConfig                  `json:"healthd"`
 	Supervisord     SupervisordConfig              `json:"supervisord"`
@@ -82,6 +83,12 @@ type RemoteAgentWorkdirConfig struct {
 	ID    string `json:"id,omitempty"`
 	Path  string `json:"path"`
 	Label string `json:"label,omitempty"`
+}
+
+type AssistantConfig struct {
+	ProactiveEnabled         bool   `json:"proactive_enabled"`
+	ProactiveIntervalSeconds int    `json:"proactive_interval_seconds"`
+	ProactiveAutonomy        string `json:"proactive_autonomy,omitempty"`
 }
 
 type KnowledgeConfig struct {
@@ -270,6 +277,11 @@ func Default() Config {
 			Backend:                  "codex",
 			HeartbeatIntervalSeconds: 10,
 			PollIntervalSeconds:      5,
+		},
+		Assistant: AssistantConfig{
+			ProactiveEnabled:         false,
+			ProactiveIntervalSeconds: 3600,
+			ProactiveAutonomy:        "observe",
 		},
 		Knowledge: KnowledgeConfig{
 			PDFTextCommand: "pdftotext",
@@ -493,6 +505,12 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.RemoteAgent.PollIntervalSeconds == 0 {
 		c.RemoteAgent.PollIntervalSeconds = d.RemoteAgent.PollIntervalSeconds
+	}
+	if c.Assistant.ProactiveIntervalSeconds == 0 {
+		c.Assistant.ProactiveIntervalSeconds = d.Assistant.ProactiveIntervalSeconds
+	}
+	if c.Assistant.ProactiveAutonomy == "" {
+		c.Assistant.ProactiveAutonomy = d.Assistant.ProactiveAutonomy
 	}
 	if c.Knowledge.PDFTextCommand == "" {
 		c.Knowledge.PDFTextCommand = d.Knowledge.PDFTextCommand

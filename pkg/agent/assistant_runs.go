@@ -1,0 +1,672 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	assistantstore "github.com/andrewneudegg/lab/pkg/assistant"
+	"github.com/andrewneudegg/lab/pkg/eventlog"
+	"github.com/andrewneudegg/lab/pkg/id"
+	"github.com/andrewneudegg/lab/pkg/llm"
+	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
+)
+
+const assistantRunDecisionSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "decision": {"type": "string", "enum": ["no_op", "recommend", "created_tasks"]},
+    "summary": {"type": "string"},
+    "changed": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+    "concerns": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {"type": "string"},
+          "detail": {"type": "string"},
+          "severity": {"type": "string"},
+          "surface": {"type": "string"},
+          "object_id": {"type": "string"},
+          "object_url": {"type": "string"}
+        },
+        "required": ["title"]
+      }
+    },
+    "opportunities": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {"type": "string"},
+          "detail": {"type": "string"},
+          "severity": {"type": "string"},
+          "surface": {"type": "string"},
+          "object_id": {"type": "string"},
+          "object_url": {"type": "string"}
+        },
+        "required": ["title"]
+      }
+    },
+    "recommended_actions": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"type": "string", "enum": ["task", "research", "workflow", "watch", "observe"]},
+          "title": {"type": "string"},
+          "rationale": {"type": "string"},
+          "priority": {"type": "string"},
+          "risk": {"type": "string"},
+          "target_surface": {"type": "string"},
+          "task_goal": {"type": "string"},
+          "knowledge_query": {"type": "string"},
+          "workflow_hint": {"type": "string"},
+          "status": {"type": "string"}
+        },
+        "required": ["kind", "title", "rationale"]
+      }
+    }
+  },
+  "required": ["decision", "summary", "changed", "concerns", "opportunities", "recommended_actions"]
+}`
+
+type assistantRunDecision struct {
+	Decision           string                      `json:"decision"`
+	Summary            string                      `json:"summary"`
+	Changed            []string                    `json:"changed"`
+	Concerns           []assistantstore.RunFinding `json:"concerns"`
+	Opportunities      []assistantstore.RunFinding `json:"opportunities"`
+	RecommendedActions []assistantstore.RunAction  `json:"recommended_actions"`
+}
+
+func (o *Orchestrator) assistantRunStore() (*assistantstore.RunStore, error) {
+	if strings.TrimSpace(o.cfg.DataDir) == "" {
+		return nil, fmt.Errorf("assistant run store is not configured")
+	}
+	return assistantstore.NewRunStore(filepath.Join(o.cfg.DataDir, "assistant_runs")), nil
+}
+
+func (o *Orchestrator) ListAssistantRuns() ([]assistantstore.Run, error) {
+	store, err := o.assistantRunStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.List()
+}
+
+func (o *Orchestrator) LoadAssistantRun(runID string) (assistantstore.Run, error) {
+	store, err := o.assistantRunStore()
+	if err != nil {
+		return assistantstore.Run{}, err
+	}
+	return store.Load(runID)
+}
+
+func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore.RunRequest) (assistantstore.Run, string, error) {
+	store, err := o.assistantRunStore()
+	if err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	now := time.Now().UTC()
+	req = normalizeAssistantRunRequest(req)
+	run := assistantstore.Run{
+		ID:        id.New("arun"),
+		Status:    assistantstore.RunStatusRunning,
+		Decision:  assistantstore.RunDecisionNoop,
+		Trigger:   assistantstore.RunTrigger{Kind: req.TriggerKind, Label: req.TriggerLabel},
+		Autonomy:  req.Autonomy,
+		Goal:      req.Goal,
+		CreatedAt: now,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	run.Snapshot = o.assistantRunSnapshot(ctx, now)
+	run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+		Kind:      "trigger",
+		Message:   "Assistant run started from " + run.Trigger.Label + ".",
+		CreatedAt: now,
+	})
+	if err := store.Save(run); err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	o.appendAssistantRunEvent(ctx, "assistant.run.started", run, map[string]any{
+		"trigger":  run.Trigger,
+		"autonomy": run.Autonomy,
+	})
+
+	decision, response, err := o.evaluateAssistantRun(ctx, run)
+	finished := time.Now().UTC()
+	if err != nil {
+		run.Status = assistantstore.RunStatusFailed
+		run.Error = err.Error()
+		run.Decision = assistantstore.RunDecisionNoop
+		run.Summary = "Assistant run failed before it could produce a decision."
+		run.FinishedAt = finished
+		run.UpdatedAt = finished
+		run.Receipts = append(run.Receipts, assistantstore.RunReceipt{Kind: "error", Message: err.Error(), CreatedAt: finished})
+		_ = store.Save(run)
+		o.appendAssistantRunEvent(ctx, "assistant.run.failed", run, map[string]any{"error": err.Error()})
+		return run, "Assistant run failed: " + err.Error(), err
+	}
+	run.Status = assistantstore.RunStatusCompleted
+	run.Decision = firstNonEmptyString(decision.Decision, assistantstore.RunDecisionNoop)
+	run.Summary = decision.Summary
+	run.Changed = decision.Changed
+	run.Concerns = decision.Concerns
+	run.Opportunities = decision.Opportunities
+	run.RecommendedActions = decision.RecommendedActions
+	o.applyAssistantRunActions(ctx, &run)
+	run.Provider = response.Provider
+	run.Model = response.Model
+	run.Usage = assistantstore.RunUsage{
+		InputTokens:  response.Usage.InputTokens,
+		OutputTokens: response.Usage.OutputTokens,
+		TotalTokens:  response.Usage.TotalTokens,
+	}
+	run.FinishedAt = finished
+	run.UpdatedAt = finished
+	run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+		Kind:      "decision",
+		Message:   assistantRunReceiptMessage(run),
+		CreatedAt: finished,
+	})
+	if err := store.Save(run); err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	run, _ = store.Load(run.ID)
+	o.appendAssistantRunEvent(ctx, "assistant.run.completed", run, map[string]any{
+		"decision": run.Decision,
+		"actions":  len(run.RecommendedActions),
+		"concerns": len(run.Concerns),
+	})
+	return run, "Assistant run completed.", nil
+}
+
+func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assistantstore.Run) {
+	if run == nil {
+		return
+	}
+	for index := range run.RecommendedActions {
+		action := &run.RecommendedActions[index]
+		if action.Status == "" {
+			action.Status = "recommended"
+		}
+	}
+	if run.Autonomy != assistantstore.RunAutonomyCreateTasks {
+		return
+	}
+	createdCount := 0
+	for index := range run.RecommendedActions {
+		action := &run.RecommendedActions[index]
+		if !strings.EqualFold(action.Kind, "task") {
+			continue
+		}
+		goal := strings.TrimSpace(action.TaskGoal)
+		if goal == "" {
+			goal = strings.TrimSpace(strings.Join([]string{action.Title, "", "Rationale: " + action.Rationale}, "\n"))
+		}
+		if goal == "" || strings.TrimSpace(action.Title) == "" {
+			action.Status = "skipped"
+			run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+				Kind:      "task_skipped",
+				Message:   "Skipped a task action because the goal or title was empty.",
+				ObjectID:  action.ID,
+				CreatedAt: time.Now().UTC(),
+			})
+			continue
+		}
+		created, err := o.createTaskRecord(ctx, goal)
+		if err != nil {
+			action.Status = "failed"
+			run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+				Kind:      "task_failed",
+				Message:   "Failed to create task for " + action.Title + ": " + err.Error(),
+				ObjectID:  action.ID,
+				CreatedAt: time.Now().UTC(),
+			})
+			continue
+		}
+		if created.Task.ID == "" {
+			action.Status = "skipped"
+			continue
+		}
+		action.Status = "created"
+		action.CreatedTaskID = created.Task.ID
+		createdCount++
+		run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+			Kind:      "task_created",
+			Message:   "Created task for recommended action: " + action.Title + ".",
+			ObjectID:  created.Task.ID,
+			ObjectURL: dashboardTaskURL(created.Task.ID),
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	if createdCount > 0 {
+		run.Decision = assistantstore.RunDecisionCreated
+	}
+}
+
+func (o *Orchestrator) StartAssistantProactiveLoop(ctx context.Context) {
+	if !o.cfg.Assistant.ProactiveEnabled {
+		return
+	}
+	interval := time.Duration(o.cfg.Assistant.ProactiveIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	autonomy := o.cfg.Assistant.ProactiveAutonomy
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, _, err := o.StartAssistantRun(ctx, assistantstore.RunRequest{
+					TriggerKind:  "schedule",
+					TriggerLabel: "Scheduled proactive check",
+					Goal:         "Review current homelabd state and recommend useful next actions.",
+					Autonomy:     autonomy,
+				})
+				if err != nil {
+					o.log().Warn("scheduled assistant run failed", "error", err)
+				}
+			}
+		}
+	}()
+}
+
+func normalizeAssistantRunRequest(req assistantstore.RunRequest) assistantstore.RunRequest {
+	req.TriggerKind = strings.ToLower(strings.TrimSpace(req.TriggerKind))
+	if req.TriggerKind == "" {
+		req.TriggerKind = "manual"
+	}
+	req.TriggerLabel = strings.TrimSpace(req.TriggerLabel)
+	if req.TriggerLabel == "" {
+		req.TriggerLabel = "Manual proactive check"
+	}
+	req.Goal = strings.TrimSpace(req.Goal)
+	if req.Goal == "" {
+		req.Goal = "Review current homelabd state and recommend useful next actions."
+	}
+	req.Autonomy = strings.TrimSpace(req.Autonomy)
+	if req.Autonomy == "" {
+		req.Autonomy = assistantstore.RunAutonomyPropose
+	}
+	return req
+}
+
+func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantstore.Run) (assistantRunDecision, llm.CompletionResponse, error) {
+	if o.provider == nil {
+		return fallbackAssistantRunDecision(run), llm.CompletionResponse{}, nil
+	}
+	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
+		Model:       o.model,
+		Temperature: 0.1,
+		MaxTokens:   1800,
+		ResponseFormat: &llm.ResponseFormat{
+			Name:        "assistant_proactive_run",
+			Description: "Decision output from a bounded proactive assistant run.",
+			Schema:      json.RawMessage(assistantRunDecisionSchema),
+			Strict:      true,
+		},
+		Messages: []llm.Message{
+			{
+				Role: "system",
+				Content: strings.Join([]string{
+					"You are homelabd's proactive executive layer.",
+					"Use the harness: Tasks are for changing things, Knowledge is for durable research and memory, and Workflows are for repeatable thinking.",
+					"Do not claim to have executed actions unless the snapshot already proves they happened.",
+					"Prefer no-op when there is no actionable signal. Prefer recommendations over mutation.",
+					"Return exactly one JSON object matching the schema.",
+				}, "\n"),
+			},
+			{
+				Role: "user",
+				Content: "Assistant run request and compact state snapshot:\n" + mustJSON(map[string]any{
+					"trigger":  run.Trigger,
+					"autonomy": run.Autonomy,
+					"goal":     run.Goal,
+					"snapshot": run.Snapshot,
+				}),
+			},
+		},
+	})
+	if err != nil {
+		return assistantRunDecision{}, resp, err
+	}
+	var decision assistantRunDecision
+	if err := json.Unmarshal([]byte(extractJSON(resp.Message.Content)), &decision); err != nil {
+		return assistantRunDecision{}, resp, fmt.Errorf("assistant run returned invalid JSON: %w", err)
+	}
+	return normalizeAssistantRunDecision(decision), resp, nil
+}
+
+func normalizeAssistantRunDecision(decision assistantRunDecision) assistantRunDecision {
+	decision.Decision = strings.TrimSpace(decision.Decision)
+	if decision.Decision == "" {
+		if len(decision.Concerns) > 0 || len(decision.Opportunities) > 0 || len(decision.RecommendedActions) > 0 {
+			decision.Decision = assistantstore.RunDecisionRecommend
+		} else {
+			decision.Decision = assistantstore.RunDecisionNoop
+		}
+	}
+	decision.Summary = strings.TrimSpace(decision.Summary)
+	if decision.Summary == "" {
+		decision.Summary = "No assistant summary was provided."
+	}
+	return decision
+}
+
+func fallbackAssistantRunDecision(run assistantstore.Run) assistantRunDecision {
+	decision := assistantRunDecision{
+		Decision: assistantstore.RunDecisionNoop,
+		Summary:  "No urgent action found in the current homelabd state.",
+		Changed:  []string{"Fallback deterministic scan used because no language model provider is configured."},
+	}
+	for _, task := range run.Snapshot.AttentionTasks {
+		decision.Concerns = append(decision.Concerns, assistantstore.RunFinding{
+			Title:     "Task needs attention: " + task.Title,
+			Detail:    task.Summary,
+			Severity:  "warning",
+			Surface:   "tasks",
+			ObjectID:  task.ID,
+			ObjectURL: task.URL,
+		})
+	}
+	if run.Snapshot.PendingApprovals > 0 {
+		decision.Concerns = append(decision.Concerns, assistantstore.RunFinding{
+			Title:    "Pending approvals need review",
+			Detail:   fmt.Sprintf("%d approvals are waiting for an operator decision.", run.Snapshot.PendingApprovals),
+			Severity: "warning",
+			Surface:  "tasks",
+		})
+	}
+	if run.Snapshot.Health.Status == "critical" || run.Snapshot.Health.Status == "warning" {
+		decision.Concerns = append(decision.Concerns, assistantstore.RunFinding{
+			Title:    "Health needs review",
+			Detail:   "healthd reported " + run.Snapshot.Health.Status + ".",
+			Severity: run.Snapshot.Health.Status,
+			Surface:  "health",
+		})
+	}
+	if len(decision.Concerns) > 0 {
+		decision.Decision = assistantstore.RunDecisionRecommend
+		decision.Summary = "Current homelabd state has actionable items to review."
+		decision.RecommendedActions = append(decision.RecommendedActions, assistantstore.RunAction{
+			ID:            "action_1",
+			Kind:          "task",
+			Title:         "Review proactive assistant findings",
+			Rationale:     "The deterministic scan found tasks, approvals, or health state that may need operator action.",
+			Priority:      "medium",
+			Risk:          "low",
+			TargetSurface: "tasks",
+			TaskGoal:      assistantTaskGoalFromFindings(decision.Concerns),
+			Status:        "recommended",
+		})
+	}
+	return decision
+}
+
+func assistantTaskGoalFromFindings(findings []assistantstore.RunFinding) string {
+	var lines []string
+	lines = append(lines, "Review proactive assistant findings and decide whether follow-up work is needed.")
+	for _, finding := range findings {
+		lines = append(lines, "- "+finding.Title+": "+finding.Detail)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (o *Orchestrator) assistantRunSnapshot(ctx context.Context, now time.Time) assistantstore.RunSnapshot {
+	snapshot := assistantstore.RunSnapshot{
+		GeneratedAt:       now,
+		TaskCounts:        map[string]int{},
+		WorkflowCounts:    map[string]int{},
+		RemoteAgentCounts: map[string]int{},
+	}
+	if tasks, err := o.ListTasks(); err == nil {
+		for _, task := range tasks {
+			snapshot.TaskCounts[task.Status]++
+			if assistantTaskNeedsAttention(task.Status) && len(snapshot.AttentionTasks) < 8 {
+				snapshot.AttentionTasks = append(snapshot.AttentionTasks, assistantstore.RunObjectRef{
+					ID:      task.ID,
+					Title:   friendlyTaskTitle(task),
+					Status:  task.Status,
+					Summary: strings.TrimSpace(task.Result),
+					URL:     dashboardTaskURL(task.ID),
+				})
+			}
+		}
+	}
+	if o.approvals != nil {
+		if approvals, err := o.approvals.List(); err == nil {
+			for _, approval := range approvals {
+				if approval.Status == approvalstore.StatusPending {
+					snapshot.PendingApprovals++
+				}
+			}
+		}
+	}
+	if workflows, err := o.ListWorkflows(); err == nil {
+		for _, workflow := range workflows {
+			snapshot.WorkflowCounts[workflow.Status]++
+			if len(snapshot.RecentWorkflows) < 5 {
+				snapshot.RecentWorkflows = append(snapshot.RecentWorkflows, assistantstore.RunObjectRef{
+					ID:      workflow.ID,
+					Title:   workflow.Name,
+					Status:  workflow.Status,
+					Summary: workflow.Description,
+					URL:     "/workflows?workflow=" + workflow.ID,
+				})
+			}
+		}
+	}
+	if spaces, err := o.ListKnowledgeSpaces(); err == nil {
+		for _, space := range spaces {
+			if len(snapshot.KnowledgeSpaces) >= 5 {
+				break
+			}
+			snapshot.KnowledgeSpaces = append(snapshot.KnowledgeSpaces, assistantstore.RunObjectRef{
+				ID:      space.ID,
+				Title:   space.Title,
+				Summary: fmt.Sprintf("%d sources, %d reports", len(space.Sources), len(space.Reports)),
+				URL:     "/knowledge?space=" + space.ID,
+			})
+		}
+	}
+	if o.remoteAgents != nil {
+		staleAfter := time.Duration(o.cfg.ControlPlane.AgentStaleSeconds) * time.Second
+		if staleAfter <= 0 {
+			staleAfter = 30 * time.Second
+		}
+		if agents, err := o.remoteAgents.List(staleAfter, now); err == nil {
+			for _, agent := range agents {
+				snapshot.RemoteAgentCounts[agent.Status]++
+			}
+		}
+	}
+	snapshot.Health = o.assistantHealthSnapshot(ctx)
+	snapshot.Supervisor = o.assistantSupervisorSnapshot(ctx)
+	snapshot.RecentEvents = o.assistantRecentEvents(now, 12)
+	return snapshot
+}
+
+func assistantTaskNeedsAttention(status string) bool {
+	switch status {
+	case "blocked", "failed", "conflict_resolution", "ready_for_review", "awaiting_approval", "awaiting_restart", "awaiting_verification", "no_change_required":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) assistantRecentEvents(now time.Time, limit int) []assistantstore.RunEventRef {
+	if o.events == nil || limit <= 0 {
+		return nil
+	}
+	events, err := o.events.ReadDay(now.UTC())
+	if err != nil {
+		return nil
+	}
+	if len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+	out := make([]assistantstore.RunEventRef, 0, len(events))
+	for _, event := range events {
+		out = append(out, assistantstore.RunEventRef{
+			ID:      event.ID,
+			Type:    event.Type,
+			Actor:   event.Actor,
+			TaskID:  event.TaskID,
+			Summary: truncateAssistantRunText(string(event.Payload), 240),
+			Time:    event.Time,
+		})
+	}
+	return out
+}
+
+func truncateAssistantRunText(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return value[:max] + "...[truncated]"
+}
+
+func (o *Orchestrator) assistantHealthSnapshot(ctx context.Context) assistantstore.RunSystemSnapshot {
+	var raw struct {
+		Status string `json:"status"`
+		Checks []struct {
+			Name    string `json:"name"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"checks"`
+		Processes []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Type   string `json:"type"`
+		} `json:"processes"`
+	}
+	if err := assistantFetchJSON(ctx, o.cfg.Healthd.Addr, "/healthd", &raw); err != nil {
+		return assistantstore.RunSystemSnapshot{Error: err.Error()}
+	}
+	out := assistantstore.RunSystemSnapshot{Status: strings.TrimSpace(raw.Status)}
+	for _, check := range raw.Checks {
+		if check.Status == "healthy" && len(out.Items) >= 5 {
+			continue
+		}
+		out.Items = append(out.Items, assistantstore.RunObjectRef{Title: check.Name, Status: check.Status, Summary: check.Message, URL: "/healthd"})
+		if len(out.Items) >= 8 {
+			break
+		}
+	}
+	for _, process := range raw.Processes {
+		if process.Status == "healthy" || len(out.Items) >= 8 {
+			continue
+		}
+		out.Items = append(out.Items, assistantstore.RunObjectRef{Title: process.Name, Status: process.Status, Summary: process.Type, URL: "/healthd"})
+	}
+	return out
+}
+
+func (o *Orchestrator) assistantSupervisorSnapshot(ctx context.Context) assistantstore.RunSystemSnapshot {
+	var raw struct {
+		Status string `json:"status"`
+		Apps   []struct {
+			Name    string `json:"name"`
+			State   string `json:"state"`
+			Desired string `json:"desired"`
+			Message string `json:"message"`
+		} `json:"apps"`
+	}
+	if err := assistantFetchJSON(ctx, o.cfg.Supervisord.Addr, "/supervisord", &raw); err != nil {
+		return assistantstore.RunSystemSnapshot{Error: err.Error()}
+	}
+	out := assistantstore.RunSystemSnapshot{Status: strings.TrimSpace(raw.Status)}
+	for _, app := range raw.Apps {
+		if app.State == "running" && app.Desired == "running" && len(out.Items) >= 5 {
+			continue
+		}
+		out.Items = append(out.Items, assistantstore.RunObjectRef{Title: app.Name, Status: app.State, Summary: app.Message, URL: "/supervisord"})
+		if len(out.Items) >= 8 {
+			break
+		}
+	}
+	return out
+}
+
+func assistantFetchJSON(ctx context.Context, addr, path string, target any) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fmt.Errorf("service address is not configured")
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodGet, assistantHTTPBase(addr)+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("service returned %s", resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func assistantHTTPBase(addr string) string {
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return strings.TrimRight(addr, "/")
+	}
+	return "http://" + strings.TrimRight(addr, "/")
+}
+
+func assistantRunReceiptMessage(run assistantstore.Run) string {
+	if len(run.RecommendedActions) == 0 && len(run.Concerns) == 0 && len(run.Opportunities) == 0 {
+		return "No follow-up action was recommended."
+	}
+	return fmt.Sprintf("Recommended %d actions from %d concerns and %d opportunities.", len(run.RecommendedActions), len(run.Concerns), len(run.Opportunities))
+}
+
+func (o *Orchestrator) appendAssistantRunEvent(ctx context.Context, eventType string, run assistantstore.Run, payload map[string]any) {
+	if o.events == nil {
+		return
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["run_id"] = run.ID
+	_ = o.events.Append(ctx, eventlog.Event{
+		ID:      id.New("evt"),
+		Type:    eventType,
+		Actor:   "Assistant",
+		Payload: eventlog.Payload(payload),
+	})
+}
+
+func sortedAssistantCountPairs(values map[string]int) []assistantstore.RunObjectRef {
+	out := make([]assistantstore.RunObjectRef, 0, len(values))
+	for key, value := range values {
+		out = append(out, assistantstore.RunObjectRef{Title: key, Summary: fmt.Sprintf("%d", value)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Title < out[j].Title })
+	return out
+}

@@ -52,6 +52,11 @@
     "agent_token_env": "HOMELABD_AGENT_TOKEN",
     "agent_stale_seconds": 30
   },
+  "assistant": {
+    "proactive_enabled": false,
+    "proactive_interval_seconds": 3600,
+    "proactive_autonomy": "observe"
+  },
   "remote_agent": {
     "id": "workstation",
     "name": "Workstation",

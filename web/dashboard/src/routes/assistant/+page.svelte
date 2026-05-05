@@ -6,6 +6,7 @@
     type AssistantActivity,
     type AssistantCapability,
     type AssistantCatalogue,
+    type AssistantRun,
     type AssistantUXPattern
   } from '@homelab/shared';
   import {
@@ -13,10 +14,14 @@
     assistantAreaLabel,
     assistantAutonomyLabel,
     assistantAutonomyTone,
+    assistantRunActionCount,
+    assistantRunDecisionLabel,
+    assistantRunStatusTone,
     activityForCapability,
     patternsForCapability,
     primaryCapabilityForActivity,
-    selectAssistantCapability
+    selectAssistantCapability,
+    selectAssistantRun
   } from './assistant-model';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
@@ -28,19 +33,28 @@
   let selectedCapability: AssistantCapability | undefined;
   let selectedActivity: AssistantActivity | undefined;
   let selectedPatterns: AssistantUXPattern[] = [];
+  let runs: AssistantRun[] = [];
+  let selectedRunId = '';
+  let selectedRun: AssistantRun | undefined;
   let search = '';
   let area = 'all';
   let hasActiveFilters = false;
   let loading = true;
+  let runsLoading = true;
+  let runStarting = false;
   let error = '';
+  let runsError = '';
+  let runNotice = '';
   let lastSynced = '';
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let mounted = false;
+  let detailMode: 'capability' | 'run' = 'capability';
   let detailEl: HTMLElement | undefined;
 
   $: selectedCapability = selectAssistantCapability(catalogue?.capabilities || [], selectedCapabilityId);
   $: selectedActivity = activityForCapability(selectedCapability, catalogue?.activities || []);
   $: selectedPatterns = patternsForCapability(selectedCapability, catalogue?.ux_patterns || []);
+  $: selectedRun = selectAssistantRun(runs, selectedRunId);
   $: hasActiveFilters = Boolean(search.trim() || area !== 'all');
 
   const syncTimeLabel = () =>
@@ -64,6 +78,24 @@
       error = err instanceof Error ? err.message : 'Unable to load Assistant capabilities.';
     } finally {
       loading = false;
+    }
+  };
+
+  const refreshAssistantRuns = async () => {
+    runsLoading = true;
+    runsError = '';
+    try {
+      const response = await client.listAssistantRuns();
+      runs = response.runs || [];
+      if (selectedRunId && !runs.some((run) => run.id === selectedRunId)) {
+        selectedRunId = runs[0]?.id || '';
+      } else if (!selectedRunId) {
+        selectedRunId = runs[0]?.id || '';
+      }
+    } catch (err) {
+      runsError = err instanceof Error ? err.message : 'Unable to load proactive Assistant runs.';
+    } finally {
+      runsLoading = false;
     }
   };
 
@@ -105,6 +137,15 @@
 
   const selectCapability = (capabilityId: string, revealDetail = true) => {
     selectedCapabilityId = capabilityId;
+    detailMode = 'capability';
+    if (revealDetail) {
+      revealDetailIfCompact();
+    }
+  };
+
+  const selectRun = (runId: string, revealDetail = true) => {
+    selectedRunId = runId;
+    detailMode = 'run';
     if (revealDetail) {
       revealDetailIfCompact();
     }
@@ -136,9 +177,71 @@
   const stepDetail = (step: { prompt?: string; tool?: string; workflow_id?: string; condition?: string }) =>
     step.tool || step.workflow_id || step.condition || step.prompt || '';
 
+  const labelFromSlug = (value: unknown) =>
+    String(value || '')
+      .replaceAll('_', ' ')
+      .replaceAll('-', ' ') || 'unknown';
+
+  const formatAssistantTime = (value?: string) => {
+    if (!value) {
+      return '';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+    return date.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const countTotal = (values: Record<string, number> | undefined) =>
+    Object.values(values || {}).reduce((total, value) => total + value, 0);
+
+  const countEntries = (values: Record<string, number> | undefined) =>
+    Object.entries(values || {})
+      .filter(([, value]) => value > 0)
+      .sort(([left], [right]) => left.localeCompare(right));
+
+  const assistantRunSubtitle = (run: AssistantRun) =>
+    [
+      assistantRunDecisionLabel(run.decision),
+      labelFromSlug(run.status),
+      formatAssistantTime(run.updated_at)
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+  const startProactiveRun = async () => {
+    runStarting = true;
+    runsError = '';
+    runNotice = '';
+    try {
+      const response = await client.startAssistantRun({
+        trigger_kind: 'manual',
+        trigger_label: 'Operator requested proactive check',
+        goal: 'Review current homelabd state and recommend useful next actions.',
+        autonomy: 'propose'
+      });
+      runs = [response.run, ...runs.filter((run) => run.id !== response.run.id)];
+      selectedRunId = response.run.id;
+      detailMode = 'run';
+      runNotice = response.reply || 'Assistant proactive check completed.';
+      revealDetailIfCompact();
+    } catch (err) {
+      runsError = err instanceof Error ? err.message : 'Unable to start proactive Assistant run.';
+    } finally {
+      runStarting = false;
+    }
+  };
+
   onMount(() => {
     mounted = true;
     void refreshAssistant();
+    void refreshAssistantRuns();
     return () => {
       if (searchTimer) {
         window.clearTimeout(searchTimer);
@@ -268,6 +371,67 @@
         <p class="notice error" role="alert">{error}</p>
       {/if}
 
+      <section class="proactive-output" aria-label="Assistant proactive output">
+        <header class="section-title proactive-title">
+          <div>
+            <p>Proactive output</p>
+            <h2>Runs</h2>
+          </div>
+          <button
+            type="button"
+            class="run-button"
+            disabled={runStarting}
+            aria-label={runStarting ? 'Running proactive Assistant check' : 'Run proactive Assistant check'}
+            title="Run proactive Assistant check"
+            on:click={() => void startProactiveRun()}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 3v4M12 17v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M3 12h4M17 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8" />
+            </svg>
+            <span>{runStarting ? 'Checking' : 'Run check'}</span>
+          </button>
+        </header>
+
+        {#if runNotice}
+          <p class="notice success" role="status">{runNotice}</p>
+        {/if}
+
+        {#if runsError}
+          <p class="notice error" role="alert">{runsError}</p>
+        {/if}
+
+        {#if runsLoading}
+          <p class="empty">Loading proactive runs...</p>
+        {:else if runs.length}
+          <div class="run-rows" aria-label="Proactive Assistant runs">
+            {#each runs as run}
+              <button
+                type="button"
+                class="capability-row run-row"
+                class:selected={detailMode === 'run' && selectedRun?.id === run.id}
+                aria-pressed={detailMode === 'run' && selectedRun?.id === run.id}
+                on:click={() => selectRun(run.id)}
+              >
+                <span class={`tone ${assistantRunStatusTone(run.status)}`}></span>
+                <span class="capability-copy">
+                  <strong>{run.trigger.label}</strong>
+                  <small>{assistantRunSubtitle(run)}</small>
+                  <span>{run.summary || run.goal || 'Snapshot captured for Assistant review.'}</span>
+                </span>
+                <em>{assistantRunActionCount(run)} actions</em>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <div class="empty">
+            <p>No proactive runs yet.</p>
+            <button type="button" class="text-action" on:click={() => void startProactiveRun()}>
+              Run first check
+            </button>
+          </div>
+        {/if}
+      </section>
+
       <header class="section-title">
         <div>
           <p>Operating model</p>
@@ -315,7 +479,266 @@
     </section>
 
     <section class="capability-detail" aria-label="Assistant capability detail" bind:this={detailEl}>
-      {#if selectedCapability}
+      {#if detailMode === 'run' && selectedRun}
+        <header class="detail-header">
+          <div>
+            <p>{labelFromSlug(selectedRun.trigger.kind)}</p>
+            <h2>{selectedRun.trigger.label}</h2>
+            <span>{selectedRun.summary || selectedRun.goal || 'Assistant run is waiting for output.'}</span>
+          </div>
+          <div class="detail-actions">
+            <span class={`status ${assistantRunStatusTone(selectedRun.status)}`}>
+              {labelFromSlug(selectedRun.status)}
+            </span>
+            <span class="status-text">{assistantRunDecisionLabel(selectedRun.decision)}</span>
+          </div>
+        </header>
+
+        <div class="detail-metrics" aria-label="Selected Assistant run metrics">
+          <div>
+            <span>Tasks</span>
+            <strong>{countTotal(selectedRun.snapshot.task_counts)}</strong>
+          </div>
+          <div>
+            <span>Concerns</span>
+            <strong>{selectedRun.concerns?.length || 0}</strong>
+          </div>
+          <div>
+            <span>Actions</span>
+            <strong>{assistantRunActionCount(selectedRun)}</strong>
+          </div>
+        </div>
+
+        {#if selectedRun.error}
+          <p class="notice error" role="alert">{selectedRun.error}</p>
+        {/if}
+
+        <section class="detail-section" aria-label="Assistant run summary">
+          <h3>Summary</h3>
+          <p>{selectedRun.summary || 'The run has not produced a summary yet.'}</p>
+          {#if selectedRun.changed?.length}
+            <ul class="token-list">
+              {#each selectedRun.changed as item}
+                <li>{item}</li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+
+        <section class="detail-section" aria-label="Assistant run concerns">
+          <h3>Concerns</h3>
+          {#if selectedRun.concerns?.length}
+            <div class="record-list">
+              {#each selectedRun.concerns as concern}
+                <article class="record">
+                  <div>
+                    <span class={`tone ${assistantRunStatusTone(concern.severity || 'failed')}`}></span>
+                    <strong>{concern.title}</strong>
+                  </div>
+                  {#if concern.detail}
+                    <p>{concern.detail}</p>
+                  {/if}
+                  <small>{[concern.surface, concern.severity].filter(Boolean).map(labelFromSlug).join(' · ')}</small>
+                  {#if concern.object_url}
+                    <a href={concern.object_url}>Open related item</a>
+                  {/if}
+                </article>
+              {/each}
+            </div>
+          {:else}
+            <p>No immediate concerns were found.</p>
+          {/if}
+        </section>
+
+        <section class="detail-section" aria-label="Assistant run opportunities">
+          <h3>Opportunities</h3>
+          {#if selectedRun.opportunities?.length}
+            <div class="record-list">
+              {#each selectedRun.opportunities as opportunity}
+                <article class="record">
+                  <div>
+                    <span class={`tone ${assistantRunStatusTone(opportunity.severity || 'completed')}`}></span>
+                    <strong>{opportunity.title}</strong>
+                  </div>
+                  {#if opportunity.detail}
+                    <p>{opportunity.detail}</p>
+                  {/if}
+                  <small>{[opportunity.surface, opportunity.severity].filter(Boolean).map(labelFromSlug).join(' · ')}</small>
+                  {#if opportunity.object_url}
+                    <a href={opportunity.object_url}>Open related item</a>
+                  {/if}
+                </article>
+              {/each}
+            </div>
+          {:else}
+            <p>No opportunities were recommended for this run.</p>
+          {/if}
+        </section>
+
+        <section class="detail-section" aria-label="Assistant recommended actions">
+          <h3>Recommended actions</h3>
+          {#if selectedRun.recommended_actions?.length}
+            <ol class="steps run-actions">
+              {#each selectedRun.recommended_actions as action}
+                <li>
+                  <strong>{action.title}</strong>
+                  <span>
+                    {[action.kind, action.priority, action.target_surface].filter(Boolean).map(labelFromSlug).join(' · ')}
+                  </span>
+                  <p>{action.rationale}</p>
+                  {#if action.task_goal}
+                    <small>{action.task_goal}</small>
+                  {:else if action.knowledge_query}
+                    <small>{action.knowledge_query}</small>
+                  {:else if action.workflow_hint}
+                    <small>{action.workflow_hint}</small>
+                  {/if}
+                  {#if action.created_task_id}
+                    <a href={`/tasks?task=${action.created_task_id}`}>Open created task</a>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          {:else}
+            <p>No follow-up action was recommended.</p>
+          {/if}
+        </section>
+
+        <section class="detail-section" aria-label="Assistant run snapshot">
+          <h3>Snapshot</h3>
+          <div class="snapshot-grid">
+            <div>
+              <h4>Tasks</h4>
+              {#if countEntries(selectedRun.snapshot.task_counts).length}
+                <ul class="token-list">
+                  {#each countEntries(selectedRun.snapshot.task_counts) as [name, count]}
+                    <li><strong>{count}</strong> {labelFromSlug(name)}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <p>No task counts were available.</p>
+              {/if}
+            </div>
+            <div>
+              <h4>Workflows</h4>
+              {#if countEntries(selectedRun.snapshot.workflow_counts).length}
+                <ul class="token-list">
+                  {#each countEntries(selectedRun.snapshot.workflow_counts) as [name, count]}
+                    <li><strong>{count}</strong> {labelFromSlug(name)}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <p>No workflow counts were available.</p>
+              {/if}
+            </div>
+            <div>
+              <h4>Agents</h4>
+              {#if countEntries(selectedRun.snapshot.remote_agent_counts).length}
+                <ul class="token-list">
+                  {#each countEntries(selectedRun.snapshot.remote_agent_counts) as [name, count]}
+                    <li><strong>{count}</strong> {labelFromSlug(name)}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <p>No remote agent counts were available.</p>
+              {/if}
+            </div>
+          </div>
+
+          {#if selectedRun.snapshot.attention_tasks?.length}
+            <details class="run-disclosure" open aria-label="Attention tasks">
+              <summary>Attention tasks</summary>
+              <ul class="object-list">
+                {#each selectedRun.snapshot.attention_tasks as item}
+                  <li>
+                    {#if item.url}
+                      <a href={item.url}>{item.title}</a>
+                    {:else}
+                      <strong>{item.title}</strong>
+                    {/if}
+                    <span>{[item.status, item.summary].filter(Boolean).map(labelFromSlug).join(' · ')}</span>
+                  </li>
+                {/each}
+              </ul>
+            </details>
+          {/if}
+
+          <details class="run-disclosure" aria-label="System signals">
+            <summary>System signals</summary>
+            <div class="system-signal-grid">
+              <div>
+                <h4>Health</h4>
+                <p>{selectedRun.snapshot.health?.status || selectedRun.snapshot.health?.error || 'No health snapshot.'}</p>
+                {#if selectedRun.snapshot.health?.items?.length}
+                  <ul class="object-list">
+                    {#each selectedRun.snapshot.health.items as item}
+                      <li>
+                        <strong>{item.title}</strong>
+                        <span>{[item.status, item.summary].filter(Boolean).map(labelFromSlug).join(' · ')}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+              <div>
+                <h4>Supervisor</h4>
+                <p>
+                  {selectedRun.snapshot.supervisor?.status ||
+                    selectedRun.snapshot.supervisor?.error ||
+                    'No supervisor snapshot.'}
+                </p>
+                {#if selectedRun.snapshot.supervisor?.items?.length}
+                  <ul class="object-list">
+                    {#each selectedRun.snapshot.supervisor.items as item}
+                      <li>
+                        <strong>{item.title}</strong>
+                        <span>{[item.status, item.summary].filter(Boolean).map(labelFromSlug).join(' · ')}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </div>
+          </details>
+
+          {#if selectedRun.snapshot.recent_events?.length}
+            <details class="run-disclosure" aria-label="Recent Assistant run events">
+              <summary>Recent events</summary>
+              <ol class="steps">
+                {#each selectedRun.snapshot.recent_events as event}
+                  <li>
+                    <strong>{event.type}</strong>
+                    <span>{[event.actor, formatAssistantTime(event.time)].filter(Boolean).join(' · ')}</span>
+                    {#if event.summary}
+                      <small>{event.summary}</small>
+                    {/if}
+                  </li>
+                {/each}
+              </ol>
+            </details>
+          {/if}
+        </section>
+
+        <section class="detail-section" aria-label="Assistant run receipts">
+          <h3>Receipts</h3>
+          {#if selectedRun.receipts?.length}
+            <ol class="steps">
+              {#each selectedRun.receipts as receipt}
+                <li>
+                  <strong>{labelFromSlug(receipt.kind)}</strong>
+                  <span>{formatAssistantTime(receipt.created_at)}</span>
+                  <p>{receipt.message}</p>
+                  {#if receipt.object_url}
+                    <a href={receipt.object_url}>Open receipt item</a>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          {:else}
+            <p>No receipts were recorded.</p>
+          {/if}
+        </section>
+      {:else if selectedCapability}
         <header class="detail-header">
           <div>
             <p>{assistantAreaLabel(selectedCapability.area)}</p>
@@ -494,7 +917,8 @@
   .section-title,
   .detail-header,
   .activity,
-  .capability-row {
+  .capability-row,
+  .record > div {
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -549,10 +973,16 @@
   .capability-row em,
   .detail-header p,
   .detail-header span,
+  .status-text,
   .detail-section p,
+  .record p,
+  .record small,
+  .run-actions small,
+  .object-list span,
   .pattern p,
   .pattern span,
   .steps span,
+  .steps small,
   .empty,
   .empty-detail p {
     color: var(--assistant-muted, #475569);
@@ -563,6 +993,9 @@
   .activity-copy > span,
   .detail-header span,
   .detail-section p,
+  .record p,
+  .run-actions small,
+  .object-list span,
   .pattern p,
   .pattern span,
   .steps span {
@@ -583,7 +1016,8 @@
     opacity: 0.65;
   }
 
-  .sync-button {
+  .sync-button,
+  .run-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -595,6 +1029,7 @@
   }
 
   .sync-button svg,
+  .run-button svg,
   .icon-button svg {
     width: 1rem;
     height: 1rem;
@@ -605,8 +1040,20 @@
     stroke-linejoin: round;
   }
 
-  .sync-button span {
+  .sync-button span,
+  .run-button span {
     color: var(--assistant-primary-text, #ffffff);
+  }
+
+  .proactive-output {
+    display: grid;
+    gap: 0.65rem;
+    padding-bottom: 0.85rem;
+    border-bottom: 1px solid var(--border-soft, #dbe3ef);
+  }
+
+  .proactive-title {
+    align-items: center;
   }
 
   .catalogue-strip,
@@ -718,7 +1165,10 @@
 
   .activity-list,
   .capability-rows,
+  .run-rows,
+  .record-list,
   .pattern-list,
+  .object-list,
   .checks,
   .steps {
     display: grid;
@@ -736,6 +1186,8 @@
 
   .activity strong,
   .capability-row strong,
+  .record strong,
+  .object-list strong,
   .pattern strong,
   .steps strong {
     color: var(--text-strong, #0f172a);
@@ -836,6 +1288,10 @@
     min-width: 12rem;
   }
 
+  .status-text {
+    text-align: right;
+  }
+
   .detail-section {
     display: grid;
     gap: 0.7rem;
@@ -847,6 +1303,20 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.75rem;
+  }
+
+  .snapshot-grid,
+  .system-signal-grid {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .snapshot-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .system-signal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .io-grid div {
@@ -880,7 +1350,12 @@
     font-size: 0.84rem;
   }
 
+  .token-list strong {
+    margin-right: 0.2rem;
+  }
+
   .pattern,
+  .record,
   .steps li {
     display: grid;
     gap: 0.25rem;
@@ -888,6 +1363,43 @@
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 0.5rem;
     background: var(--surface-muted, #f8fafc);
+  }
+
+  .record a,
+  .steps a,
+  .object-list a {
+    color: var(--accent, #2563eb);
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .object-list {
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .object-list li {
+    display: grid;
+    gap: 0.15rem;
+  }
+
+  .run-disclosure {
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 0.5rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .run-disclosure summary {
+    cursor: pointer;
+    color: var(--text-strong, #0f172a);
+    font-weight: 850;
+  }
+
+  .run-disclosure[open] {
+    gap: 0.7rem;
   }
 
   .surface-links {
@@ -935,6 +1447,13 @@
     background: var(--danger-bg, #fef2f2);
   }
 
+  .notice.success {
+    color: var(--success-text, #166534);
+    border: 1px solid var(--success-text, #166534);
+    border-radius: 0.5rem;
+    background: var(--success-bg, #f0fdf4);
+  }
+
   @media (max-width: 1180px) {
     .assistant-page {
       grid-template-columns: minmax(17rem, 22rem) minmax(0, 1fr);
@@ -967,6 +1486,8 @@
     .catalogue-strip,
     .filter-panel,
     .detail-metrics,
+    .snapshot-grid,
+    .system-signal-grid,
     .io-grid {
       grid-template-columns: 1fr;
     }

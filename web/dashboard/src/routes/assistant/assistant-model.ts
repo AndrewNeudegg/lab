@@ -1,4 +1,9 @@
-import type { AssistantActivity, AssistantCapability, AssistantUXPattern } from '@homelab/shared';
+import type {
+  AssistantActivity,
+  AssistantCapability,
+  AssistantRun,
+  AssistantUXPattern
+} from '@homelab/shared';
 
 const areaLabels: Record<string, string> = {
   communication: 'Communication',
@@ -71,3 +76,35 @@ export const activityForCapability = (
   capability: AssistantCapability | undefined,
   activities: AssistantActivity[]
 ) => activities.find((activity) => Boolean(capability && activity.capability_ids.includes(capability.id)));
+
+export const assistantRunStatusTone = (status = '') => {
+  switch (status) {
+    case 'failed':
+      return 'red';
+    case 'running':
+      return 'blue';
+    case 'completed':
+      return 'green';
+    default:
+      return 'amber';
+  }
+};
+
+export const assistantRunDecisionLabel = (decision = '') => {
+  switch (decision) {
+    case 'recommend':
+      return 'Recommended action';
+    case 'created_tasks':
+      return 'Created tasks';
+    case 'no_op':
+      return 'No action';
+    default:
+      return decision.replaceAll('_', ' ') || 'Decision pending';
+  }
+};
+
+export const selectAssistantRun = (runs: AssistantRun[], selectedRunId: string) =>
+  runs.find((run) => run.id === selectedRunId);
+
+export const assistantRunActionCount = (run: AssistantRun | undefined) =>
+  run?.recommended_actions?.length || 0;

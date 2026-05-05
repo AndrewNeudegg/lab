@@ -70,6 +70,8 @@ func (s *Server) register(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/assistant", s.withCORS(s.handleAssistant))
+	mux.HandleFunc("/assistant/runs", s.withCORS(s.handleAssistantRuns))
+	mux.HandleFunc("/assistant/runs/", s.withCORS(s.handleAssistantRun))
 	mux.HandleFunc("/chat/clear", s.withCORS(s.handleChatClear))
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
@@ -100,6 +102,57 @@ func (s *Server) handleAssistant(rw http.ResponseWriter, req *http.Request) {
 		Area:   req.URL.Query().Get("area"),
 	})
 	writeJSON(rw, http.StatusOK, catalogue)
+}
+
+func (s *Server) handleAssistantRuns(rw http.ResponseWriter, req *http.Request) {
+	if s.Orchestrator == nil {
+		writeError(rw, http.StatusServiceUnavailable, "orchestrator is not configured")
+		return
+	}
+	switch req.Method {
+	case http.MethodGet:
+		runs, err := s.Orchestrator.ListAssistantRuns()
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"runs": runs})
+	case http.MethodPost:
+		var in assistant.RunRequest
+		if req.Body != nil {
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		run, reply, err := s.Orchestrator.StartAssistantRun(req.Context(), in)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusCreated, map[string]any{"run": run, "reply": reply})
+	default:
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleAssistantRun(rw http.ResponseWriter, req *http.Request) {
+	if s.Orchestrator == nil {
+		writeError(rw, http.StatusServiceUnavailable, "orchestrator is not configured")
+		return
+	}
+	rest := strings.TrimPrefix(req.URL.Path, "/assistant/runs/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 1 || parts[0] == "" || req.Method != http.MethodGet {
+		writeError(rw, http.StatusNotFound, "assistant run not found")
+		return
+	}
+	run, err := s.Orchestrator.LoadAssistantRun(parts[0])
+	if err != nil {
+		writeError(rw, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, run)
 }
 
 func (s *Server) handleSettings(rw http.ResponseWriter, req *http.Request) {
@@ -149,7 +202,7 @@ func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, req *http.Request) {
 		rw.Header().Set("Access-Control-Allow-Origin", "*")
 		rw.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		rw.Header().Set("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
+		rw.Header().Set("Access-Control-Allow-Methods", "DELETE, GET, PATCH, POST, OPTIONS")
 		if req.Method == http.MethodOptions {
 			rw.WriteHeader(http.StatusNoContent)
 			return

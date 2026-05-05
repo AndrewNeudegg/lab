@@ -1,14 +1,23 @@
 import { describe, expect, test } from 'bun:test';
-import type { AssistantActivity, AssistantCapability, AssistantUXPattern } from '@homelab/shared';
+import type {
+  AssistantActivity,
+  AssistantCapability,
+  AssistantRun,
+  AssistantUXPattern
+} from '@homelab/shared';
 import {
   activityCountForCapability,
   activityForCapability,
   assistantAreaLabel,
+  assistantRunActionCount,
+  assistantRunDecisionLabel,
+  assistantRunStatusTone,
   assistantAutonomyLabel,
   assistantAutonomyTone,
   patternsForCapability,
   primaryCapabilityForActivity,
-  selectAssistantCapability
+  selectAssistantCapability,
+  selectAssistantRun
 } from './assistant-model';
 
 const capability = (id: string, uxPatternIds: string[] = []): AssistantCapability => ({
@@ -39,6 +48,24 @@ const activity = (id: string, capabilityIds: string[]): AssistantActivity => ({
   description: 'description',
   outcome: 'outcome',
   capability_ids: capabilityIds
+});
+
+const run = (id: string, actions = 0): AssistantRun => ({
+  id,
+  status: 'completed',
+  decision: actions > 0 ? 'recommend' : 'no_op',
+  trigger: { kind: 'manual', label: 'Manual proactive check' },
+  autonomy: 'propose',
+  summary: 'summary',
+  recommended_actions: Array.from({ length: actions }, (_, index) => ({
+    id: `action_${index + 1}`,
+    kind: 'task',
+    title: `Action ${index + 1}`,
+    rationale: 'because'
+  })),
+  snapshot: { generated_at: '2026-04-30T21:00:00Z' },
+  created_at: '2026-04-30T21:00:00Z',
+  updated_at: '2026-04-30T21:00:00Z'
 });
 
 describe('assistant model', () => {
@@ -92,5 +119,17 @@ describe('assistant model', () => {
     expect(activityForCapability(capabilities[1], [activity('briefing', ['brief']), researchActivity])?.id).toBe(
       'decision'
     );
+  });
+
+  test('labels and selects proactive assistant runs', () => {
+    const runs = [run('arun_1'), run('arun_2', 2)];
+
+    expect(assistantRunStatusTone('failed')).toBe('red');
+    expect(assistantRunStatusTone('running')).toBe('blue');
+    expect(assistantRunDecisionLabel('created_tasks')).toBe('Created tasks');
+    expect(selectAssistantRun(runs, 'arun_2')?.id).toBe('arun_2');
+    expect(selectAssistantRun(runs, 'missing')).toBeUndefined();
+    expect(assistantRunActionCount(runs[1])).toBe(2);
+    expect(assistantRunActionCount(undefined)).toBe(0);
   });
 });

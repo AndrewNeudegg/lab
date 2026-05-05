@@ -81,6 +81,7 @@ func main() {
 		fatal(err)
 	}
 	runtime.Orchestrator.StartTaskSupervisor(ctx)
+	runtime.Orchestrator.StartAssistantProactiveLoop(ctx)
 	switch *mode {
 	case "stdio":
 		runStdio(ctx, cfg, runtime.Orchestrator)

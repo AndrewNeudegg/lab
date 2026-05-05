@@ -11,6 +11,7 @@ import {
   assistantAreaLabel,
   assistantRunActionCount,
   assistantRunActionStatusLabel,
+  assistantRunActionStatusTone,
   assistantRunDecisionLabel,
   assistantRunStatusTone,
   assistantAutonomyLabel,
@@ -130,6 +131,8 @@ describe('assistant model', () => {
     expect(assistantRunDecisionLabel('created_tasks')).toBe('Created tasks');
     expect(assistantRunActionStatusLabel('created_task')).toBe('Task created');
     expect(assistantRunActionStatusLabel('snoozed')).toBe('Snoozed');
+    expect(assistantRunActionStatusTone('dismissed')).toBe('gray');
+    expect(assistantRunActionStatusTone('useful')).toBe('green');
     expect(selectAssistantRun(runs, 'arun_2')?.id).toBe('arun_2');
     expect(selectAssistantRun(runs, 'missing')).toBeUndefined();
     expect(assistantRunActionCount(runs[1])).toBe(2);

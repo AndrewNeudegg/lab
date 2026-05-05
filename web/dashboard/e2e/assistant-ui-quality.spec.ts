@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
 const now = '2026-04-28T12:00:00.000Z';
+const themeStorageKey = 'homelabd.dashboard.theme';
 
 const assistantCatalogue = {
   name: 'Assistant',
@@ -386,6 +387,115 @@ const expectNoVisualArtifacts = async (page: Page) => {
   expect(metrics.clippedControls, JSON.stringify(metrics)).toEqual([]);
 };
 
+const initLightTheme = async (page: Page) => {
+  await page.addInitScript((key) => {
+    localStorage.setItem(key, 'light');
+  }, themeStorageKey);
+};
+
+const waitForThemeRuntime = async (page: Page, mode = 'light') => {
+  await expect(page.locator('.theme-toggle').first()).toHaveAttribute(
+    'data-theme-toggle-ready',
+    'true'
+  );
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+    .toBe(mode);
+};
+
+const readyThemeToggle = async (page: Page, name: string | RegExp) => {
+  const toggle = page.getByRole('button', { name });
+  await expect(toggle).toHaveAttribute('data-theme-toggle-ready', 'true');
+  return toggle;
+};
+
+const switchToDarkTheme = async (page: Page, mobile: boolean) => {
+  if (mobile) {
+    await page.getByRole('button', { name: 'Menu' }).click();
+  }
+  const darkToggle = await readyThemeToggle(page, 'Switch to dark mode');
+  await darkToggle.click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await waitForThemeRuntime(page, 'dark');
+  if (mobile) {
+    await page.getByRole('button', { name: 'Menu' }).click();
+  }
+};
+
+const collectSurfaceStyles = async (page: Page, selectors: string[]) =>
+  page.evaluate((surfaceSelectors) => {
+    const parseRuntimeColor = (value: string) => {
+      const parts = value.match(/[\d.]+/g)?.map(Number) ?? [0, 0, 0];
+      return {
+        r: parts[0] ?? 0,
+        g: parts[1] ?? 0,
+        b: parts[2] ?? 0
+      };
+    };
+    const luminance = ({ r, g, b }: ReturnType<typeof parseRuntimeColor>) => {
+      const channels = [r, g, b].map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.03928
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    const contrast = (left: number, right: number) => {
+      const [lighter, darker] = left >= right ? [left, right] : [right, left];
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+
+    return surfaceSelectors.map((selector) => {
+      const element = document.querySelector(selector) as HTMLElement | null;
+      if (!element) {
+        return { selector, found: false, visible: false, backgroundLuminance: 0, contrast: 0 };
+      }
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const backgroundLuminance = luminance(parseRuntimeColor(style.backgroundColor));
+      const textLuminance = luminance(parseRuntimeColor(style.color));
+      return {
+        selector,
+        found: true,
+        visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden',
+        backgroundLuminance,
+        contrast: contrast(backgroundLuminance, textLuminance)
+      };
+    });
+  }, selectors);
+
+const expectAssistantThemeSurfaces = async (page: Page, mode: 'light' | 'dark') => {
+  const styles = await collectSurfaceStyles(page, [
+    '.assistant-workbench',
+    '.assistant-record .record-header',
+    '.decision-panel',
+    '.recommendation-card',
+    '.detail-section'
+  ]);
+  for (const style of styles) {
+    expect(style.found, `${mode} missing ${style.selector}`).toBe(true);
+    expect(style.visible, `${mode} hidden ${style.selector}`).toBe(true);
+    if (mode === 'dark') {
+      expect(style.backgroundLuminance, `${mode} ${JSON.stringify(style)}`).toBeLessThan(0.16);
+    } else {
+      expect(style.backgroundLuminance, `${mode} ${JSON.stringify(style)}`).toBeGreaterThan(0.72);
+    }
+    expect(style.contrast, `${mode} ${JSON.stringify(style)}`).toBeGreaterThan(3);
+  }
+};
+
+const frameRecommendationScreenshot = async (page: Page, mobile: boolean) => {
+  if (!mobile) {
+    return;
+  }
+  await page.locator('.recommendation-section').evaluate((element) => {
+    const navbarBottom = document.querySelector('.navbar')?.getBoundingClientRect().bottom || 0;
+    const top = element.getBoundingClientRect().top + window.scrollY - navbarBottom - 8;
+    window.scrollTo({ top: Math.max(0, top) });
+  });
+};
+
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 1000, mobile: false },
   { name: 'mobile', width: 390, height: 844, mobile: true }
@@ -398,18 +508,23 @@ for (const viewport of [
     });
 
     test('selects useful outcomes and keeps the detail usable', async ({ page }) => {
+      await initLightTheme(page);
       await mockAssistantApis(page);
       await page.goto('/assistant');
       await expectAssistantReady(page);
+      await waitForThemeRuntime(page, 'light');
 
-      await expect(page.getByRole('heading', { name: 'Useful outcomes' })).toBeVisible();
-      await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
-      await expect(page.getByText('2 capabilities')).toBeVisible();
+      await expect(page.getByRole('heading', { name: '1 decision' })).toBeVisible();
+      const runTotals = page.getByLabel('Assistant run totals');
+      await expect(runTotals.getByText('1 run', { exact: true })).toBeVisible();
+      await expect(runTotals.getByText('1 action', { exact: true })).toBeVisible();
       await page.getByRole('button', { name: /Scheduled proactive check/ }).click();
       await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeInViewport();
+      await expect(page.getByRole('heading', { name: '1 recommendation to decide' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
       await expect(page.getByText('Review blocked deploy')).toBeVisible();
       await expect(page.getByText('2 sightings')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'What it noticed' })).toBeVisible();
       const recommendationActions = page.getByRole('group', {
         name: 'Recommendation actions for Review blocked deploy'
       });
@@ -422,28 +537,43 @@ for (const viewport of [
         'href',
         '/tasks?task=task_from_assistant'
       );
+      await expect(page.getByRole('heading', { name: 'Recommendation acted on' })).toBeVisible();
       await expectNoVisualArtifacts(page);
       await expectNoAxeViolations(page);
-      await expect(page).toHaveScreenshot(`assistant-proactive-actions-${viewport.name}.png`, {
+      await expectAssistantThemeSurfaces(page, 'light');
+      await frameRecommendationScreenshot(page, viewport.mobile);
+      await expect(page).toHaveScreenshot(`assistant-proactive-actions-light-${viewport.name}.png`, {
         fullPage: !viewport.mobile,
         animations: 'disabled'
       });
+
+      await switchToDarkTheme(page, viewport.mobile);
+      await expectAssistantThemeSurfaces(page, 'dark');
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      await frameRecommendationScreenshot(page, viewport.mobile);
+      await expect(page).toHaveScreenshot(`assistant-proactive-actions-dark-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled'
+      });
+
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'Back to runs' }).click();
+      }
       await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
       await expect(page.getByRole('status')).toContainText('Assistant run completed.');
       await expect(page.getByRole('heading', { name: 'Operator requested proactive check' })).toBeInViewport();
-      await page.getByRole('button', { name: /Research a decision/ }).click();
-      await expect(page.getByRole('heading', { name: 'Research and prepare' })).toBeInViewport();
-      await expect(page.locator('.detail-header .status')).toHaveText('Plan and propose');
-      await expect(page.getByRole('navigation', { name: 'Related assistant surfaces' })).toContainText(
-        'Open Chat'
-      );
-      await expect(page.getByRole('button', { name: /Research and prepare/ })).toHaveAttribute(
-        'aria-pressed',
-        'true'
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'Back to runs' }).click();
+      }
+      await page.getByRole('group', { name: 'Assistant reference' }).locator('summary').click();
+      await expect(page.locator('[aria-label="Assistant capability reference"]')).toContainText(
+        'Research and prepare'
       );
 
       await expectNoVisualArtifacts(page);
       await expectNoAxeViolations(page);
+      await page.evaluate(() => window.scrollTo({ top: 0 }));
       await expect(page).toHaveScreenshot(`assistant-ui-quality-${viewport.name}.png`, {
         fullPage: !viewport.mobile,
         animations: 'disabled'
@@ -451,17 +581,19 @@ for (const viewport of [
     });
 
     test('keeps filtered empty states recoverable', async ({ page }) => {
+      await initLightTheme(page);
       await mockAssistantApis(page);
       await page.goto('/assistant');
       await expectAssistantReady(page);
 
+      await page.getByRole('group', { name: 'Assistant reference' }).locator('summary').click();
       const search = page.getByRole('searchbox', { name: 'Search' });
       await search.fill('missing');
       await expect(page.getByText('No capabilities match this view.')).toBeVisible();
       await page.getByRole('button', { name: 'Clear filters' }).first().click();
       await expectAssistantReady(page);
       await expect(search).toHaveValue('');
-      await expect(page.getByRole('button', { name: /Research and prepare/ })).toBeVisible();
+      await expect(page.getByText('Research and prepare')).toBeVisible();
     });
   });
 }

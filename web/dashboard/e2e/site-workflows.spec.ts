@@ -901,24 +901,28 @@ const expectTaskNavAttention = async (page: Page, mobile: boolean) => {
 const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   await expectTaskNavAttention(page, mobile);
   if (route === '/assistant') {
-    await expect(page.getByRole('heading', { name: 'Assistant' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '1 decision' })).toBeVisible();
     await page.getByRole('button', { name: /Scheduled proactive check/ }).click();
     await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
+    if (mobile) {
+      await page.getByRole('button', { name: 'Back to runs' }).click();
+    }
     await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
     await expect(page.getByRole('status')).toContainText('Assistant run completed.');
+    if (mobile) {
+      await page.getByRole('button', { name: 'Back to runs' }).click();
+    }
+    await page.getByRole('group', { name: 'Assistant reference' }).locator('summary').click();
     await page.getByLabel('Area').selectOption('research');
-    await expect(page.getByRole('button', { name: /Research and prepare/ })).toBeVisible();
+    await expect(page.locator('[aria-label="Assistant capability reference"]')).toContainText(
+      'Research and prepare'
+    );
     await page.getByRole('searchbox', { name: 'Search' }).fill('source');
-    await expect(page.getByRole('button', { name: /Research and prepare/ })).toBeVisible();
-    await page.getByRole('button', { name: /Research and prepare/ }).click();
-    await expect(page.getByRole('region', { name: 'Assistant capability detail' })).toContainText(
-      'Source tray'
+    await expect(page.locator('[aria-label="Assistant capability reference"]')).toContainText(
+      'Research and prepare'
     );
-    await expect(page.getByRole('navigation', { name: 'Related assistant surfaces' })).toContainText(
-      'Open Chat'
-    );
+    await expect(page.getByRole('link', { name: 'Open Chat' })).toBeVisible();
   } else if (route === '/' || route === '/chat') {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();

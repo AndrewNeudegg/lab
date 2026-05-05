@@ -129,3 +129,20 @@ export const assistantRunActionStatusLabel = (status = '') => {
       return status.replaceAll('_', ' ') || 'Recommended';
   }
 };
+
+export const assistantRunActionStatusTone = (status = '') => {
+  switch (status) {
+    case 'created_task':
+    case 'useful':
+      return 'green';
+    case 'dismissed':
+    case 'skipped':
+      return 'gray';
+    case 'failed':
+      return 'red';
+    case 'snoozed':
+      return 'amber';
+    default:
+      return 'blue';
+  }
+};

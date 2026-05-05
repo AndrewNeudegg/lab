@@ -121,6 +121,27 @@ func TestOrchestratorCanManageMemoryLessons(t *testing.T) {
 	}
 }
 
+func TestOrchestratorCanUseKnowledgeTools(t *testing.T) {
+	policy := NewPolicy(nil)
+	for _, tt := range []struct {
+		name  string
+		risk  RiskLevel
+		input string
+	}{
+		{name: "knowledge.list", risk: RiskReadOnly, input: `{}`},
+		{name: "knowledge.query", risk: RiskReadOnly, input: `{"space_id":"kspace_123","query":"evidence"}`},
+		{name: "knowledge.create", risk: RiskLow, input: `{"title":"Chat research"}`},
+		{name: "knowledge.add_source", risk: RiskLow, input: `{"space_id":"kspace_123","content":"source text"}`},
+		{name: "knowledge.ask", risk: RiskLow, input: `{"space_id":"kspace_123","question":"What is known?"}`},
+		{name: "knowledge.research", risk: RiskLow, input: `{"space_id":"kspace_123","objective":"Learn more"}`},
+	} {
+		decision := policy.Decide("OrchestratorAgent", stubTool{name: tt.name, risk: tt.risk}, json.RawMessage(tt.input))
+		if !decision.Allowed || decision.NeedsApproval {
+			t.Fatalf("expected OrchestratorAgent %s to be allowed without approval: %+v", tt.name, decision)
+		}
+	}
+}
+
 func TestOrchestratorCanRequestApprovalGatedGitWorkflow(t *testing.T) {
 	policy := NewPolicy(nil)
 	for _, name := range []string{"git.commit", "git.revert", "git.merge"} {

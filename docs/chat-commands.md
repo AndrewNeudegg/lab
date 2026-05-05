@@ -256,6 +256,8 @@ research academic papers on deep research agents
 
 Research runs through `internet.research`. It creates fan-out queries, or uses explicit `queries` supplied by a caller, searches web and/or academic sources, deduplicates URLs, fetches bounded text from top public pages, and returns follow-up queries. SearXNG is used for web fan-out by default. Brave, Tavily, and DuckDuckGo remain available as explicit providers; Brave and Tavily require their existing API key environment variables.
 
+When the chat agent needs durable source-grounded knowledge rather than a one-turn research bundle, it can use `knowledge.list`, `knowledge.query`, `knowledge.ask`, `knowledge.create`, `knowledge.add_source`, and `knowledge.research`. The expected flow is to inspect existing Knowledge Spaces, query or ask a fitting corpus, and queue `knowledge.research` when the answer needs more evidence. Knowledge research runs asynchronously and returns a stable `/knowledge?space=<space_id>#knowledge-research-<run_id>` path for follow-up.
+
 ## Task Worktree Recovery
 
 External coding agents can edit files in local task worktrees, but the runtime owns git state. If a local task branch becomes too stale to reconcile cleanly, retry it first so the next worker receives the recorded failure text and the prepared conflict state:

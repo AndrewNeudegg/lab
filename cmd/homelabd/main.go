@@ -34,6 +34,7 @@ import (
 	gittools "github.com/andrewneudegg/lab/pkg/tools/git"
 	healthdtools "github.com/andrewneudegg/lab/pkg/tools/healthd"
 	internettools "github.com/andrewneudegg/lab/pkg/tools/internet"
+	knowledgetools "github.com/andrewneudegg/lab/pkg/tools/knowledge"
 	memtools "github.com/andrewneudegg/lab/pkg/tools/memory"
 	repotools "github.com/andrewneudegg/lab/pkg/tools/repo"
 	shelltools "github.com/andrewneudegg/lab/pkg/tools/shell"
@@ -230,6 +231,16 @@ func buildRuntime(cfg config.Config) (runtimeServices, error) {
 		WithRemoteAgents(remoteAgents).
 		WithWorkflows(workflows).
 		WithKnowledge(knowledge)
+	if err := knowledgetools.Register(registry, knowledgetools.Base{
+		Store:            knowledge,
+		CreateSpace:      orch.CreateKnowledgeSpace,
+		AddSource:        orch.AddKnowledgeSource,
+		Query:            orch.QueryKnowledgeSpace,
+		Ask:              orch.AskKnowledgeSpace,
+		StartResearchRun: orch.StartKnowledgeResearchRun,
+	}); err != nil {
+		return runtimeServices{}, err
+	}
 	return runtimeServices{Orchestrator: orch, RemoteAgents: remoteAgents}, nil
 }
 

@@ -90,7 +90,7 @@ The replacement args must be one JSON object and must pass the target tool schem
 
 Default role access:
 
-- `OrchestratorAgent`: chat history/search/send pseudo-tools, task and workflow pseudo-tools, external delegation, memory list/read/remember/unlearn/proposal, text, internet, health error reads, repo read/diff, git read/write/worktree, Go/Bun validation, limited, chained, and approved shell.
+- `OrchestratorAgent`: chat history/search/send pseudo-tools, task and workflow pseudo-tools, external delegation, memory list/read/remember/unlearn/proposal, Knowledge list/create/import/query/ask/research tools, text, internet, health error reads, repo read/diff, git read/write/worktree, Go/Bun validation, limited, chained, and approved shell.
 - `CoderAgent`: text, internet, repo read/write patch/diff, git read, Go/Bun validation, limited and chained shell.
 - `UXAgent`: same as `CoderAgent`, with UX/browser-UAT expectations in its prompt.
 - `ResearchAgent`: text, internet, and memory proposals.
@@ -210,6 +210,17 @@ Research depth defaults:
 - `deep`: eight generated searches and page fetch enabled.
 
 Use `internet.fetch` on promising result URLs before relying on page details, and prefer official, primary, standards, maintainer, or scholarly sources when sources disagree.
+
+## Knowledge Tools
+
+`knowledge.*` tools let chat use Knowledge Spaces as durable source corpora instead of treating web research as disposable context. The Orchestrator prompt tells the agent to inspect existing spaces first, query or ask a suitable corpus when possible, and queue durable research when it does not have enough grounded evidence. Queued research is asynchronous: the agent should return the run ID or `/knowledge?space=<space_id>#knowledge-research-<run_id>` path rather than claiming the report is already complete.
+
+- `knowledge.list`: required args: none. Optional args: `query`, `include_sources`, `limit`. Returns compact Knowledge Space summaries and deliberately omits full source bodies, sections, and chunks.
+- `knowledge.create`: required args: `title`. Optional args: `objective`, `description`, `created_by`. Creates a corpus for a new research objective when no existing space fits.
+- `knowledge.add_source`: required args: `space_id`. Optional args: `title`, `kind`, `uri`, `url`, `content`. Imports a specific URL or supplied source text into a space. `url` is an alias for `uri`; URL sources may omit `content` when the URI is fetchable.
+- `knowledge.query`: required args: `space_id`, `query`. Optional args: `source_ids`, `limit`. Retrieves source-grounded evidence chunks without generating an answer.
+- `knowledge.ask`: required args: `space_id`, `question`. Optional args: `source_ids`, `limit`. Asks the selected corpus with the configured model, returns citations, and persists an `ask` report.
+- `knowledge.research`: required args: `space_id`, `objective`. Optional args: `question`, `mode`, `depth`, `source_ids`, `discover_sources`. Queues durable research that can search web and academic sources, import useful sources, and synthesise a report. `discover_sources` defaults to `true`; set it to `false` for stored-corpus-only runs.
 
 ## Text Tools
 

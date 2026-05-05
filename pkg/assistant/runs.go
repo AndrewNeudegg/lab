@@ -72,18 +72,22 @@ type RunFinding struct {
 }
 
 type RunAction struct {
-	ID             string `json:"id"`
-	Kind           string `json:"kind"`
-	Title          string `json:"title"`
-	Rationale      string `json:"rationale"`
-	Priority       string `json:"priority,omitempty"`
-	Risk           string `json:"risk,omitempty"`
-	TargetSurface  string `json:"target_surface,omitempty"`
-	TaskGoal       string `json:"task_goal,omitempty"`
-	KnowledgeQuery string `json:"knowledge_query,omitempty"`
-	WorkflowHint   string `json:"workflow_hint,omitempty"`
-	Status         string `json:"status,omitempty"`
-	CreatedTaskID  string `json:"created_task_id,omitempty"`
+	ID             string    `json:"id"`
+	Fingerprint    string    `json:"fingerprint,omitempty"`
+	Kind           string    `json:"kind"`
+	Title          string    `json:"title"`
+	Rationale      string    `json:"rationale"`
+	Priority       string    `json:"priority,omitempty"`
+	Risk           string    `json:"risk,omitempty"`
+	TargetSurface  string    `json:"target_surface,omitempty"`
+	TaskGoal       string    `json:"task_goal,omitempty"`
+	KnowledgeQuery string    `json:"knowledge_query,omitempty"`
+	WorkflowHint   string    `json:"workflow_hint,omitempty"`
+	Status         string    `json:"status,omitempty"`
+	CreatedTaskID  string    `json:"created_task_id,omitempty"`
+	SeenCount      int       `json:"seen_count,omitempty"`
+	UsefulCount    int       `json:"useful_count,omitempty"`
+	SnoozedUntil   time.Time `json:"snoozed_until,omitempty"`
 }
 
 type RunReceipt struct {
@@ -296,6 +300,18 @@ func normalizeRunAction(value RunAction, index int) RunAction {
 	value.WorkflowHint = strings.TrimSpace(value.WorkflowHint)
 	value.Status = strings.TrimSpace(value.Status)
 	value.CreatedTaskID = strings.TrimSpace(value.CreatedTaskID)
+	value.Fingerprint = strings.TrimSpace(value.Fingerprint)
+	if value.Fingerprint == "" {
+		value.Fingerprint = FingerprintRunAction(value)
+	} else {
+		value.Fingerprint = SignalFingerprint(value.Fingerprint)
+	}
+	if value.SeenCount < 0 {
+		value.SeenCount = 0
+	}
+	if value.UsefulCount < 0 {
+		value.UsefulCount = 0
+	}
 	return value
 }
 

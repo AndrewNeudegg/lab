@@ -102,6 +102,13 @@ func (o *Orchestrator) assistantRunStore() (*assistantstore.RunStore, error) {
 	return assistantstore.NewRunStore(filepath.Join(o.cfg.DataDir, "assistant_runs")), nil
 }
 
+func (o *Orchestrator) assistantSignalStore() (*assistantstore.SignalStore, error) {
+	if strings.TrimSpace(o.cfg.DataDir) == "" {
+		return nil, fmt.Errorf("assistant signal store is not configured")
+	}
+	return assistantstore.NewSignalStore(filepath.Join(o.cfg.DataDir, "assistant_signals")), nil
+}
+
 func (o *Orchestrator) ListAssistantRuns() ([]assistantstore.Run, error) {
 	store, err := o.assistantRunStore()
 	if err != nil {
@@ -171,6 +178,8 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 	run.Concerns = decision.Concerns
 	run.Opportunities = decision.Opportunities
 	run.RecommendedActions = decision.RecommendedActions
+	run = assistantstore.NormalizeRun(run)
+	o.applyAssistantSignalMemory(ctx, &run)
 	o.applyAssistantRunActions(ctx, &run)
 	run.Provider = response.Provider
 	run.Model = response.Model
@@ -198,6 +207,26 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 	return run, "Assistant run completed.", nil
 }
 
+func (o *Orchestrator) applyAssistantSignalMemory(ctx context.Context, run *assistantstore.Run) {
+	if run == nil || len(run.RecommendedActions) == 0 {
+		return
+	}
+	store, err := o.assistantSignalStore()
+	if err != nil {
+		o.log().Warn("assistant signal store unavailable", "error", err)
+		return
+	}
+	now := time.Now().UTC()
+	for index := range run.RecommendedActions {
+		record, err := store.UpsertFromAction(run.ID, run.RecommendedActions[index], now)
+		if err != nil {
+			o.log().Warn("assistant signal update failed", "error", err, "action", run.RecommendedActions[index].ID)
+			continue
+		}
+		applyAssistantSignalToAction(&run.RecommendedActions[index], record, now)
+	}
+}
+
 func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assistantstore.Run) {
 	if run == nil {
 		return
@@ -211,10 +240,14 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 	if run.Autonomy != assistantstore.RunAutonomyCreateTasks {
 		return
 	}
+	signalStore, _ := o.assistantSignalStore()
 	createdCount := 0
 	for index := range run.RecommendedActions {
 		action := &run.RecommendedActions[index]
 		if !strings.EqualFold(action.Kind, "task") {
+			continue
+		}
+		if assistantActionSuppressesTaskCreation(*action, time.Now().UTC()) {
 			continue
 		}
 		goal := strings.TrimSpace(action.TaskGoal)
@@ -246,9 +279,12 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 			action.Status = "skipped"
 			continue
 		}
-		action.Status = "created"
+		action.Status = assistantstore.SignalStatusCreatedTask
 		action.CreatedTaskID = created.Task.ID
 		createdCount++
+		if signalStore != nil {
+			o.saveAssistantCreatedTaskSignal(signalStore, run.ID, *action, created.Task.ID)
+		}
 		run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
 			Kind:      "task_created",
 			Message:   "Created task for recommended action: " + action.Title + ".",
@@ -260,6 +296,208 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 	if createdCount > 0 {
 		run.Decision = assistantstore.RunDecisionCreated
 	}
+}
+
+func (o *Orchestrator) UpdateAssistantRunAction(ctx context.Context, runID, actionID string, req assistantstore.SignalFeedbackRequest) (assistantstore.Run, string, error) {
+	runStore, err := o.assistantRunStore()
+	if err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	signalStore, err := o.assistantSignalStore()
+	if err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	run, err := runStore.Load(runID)
+	if err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	index := -1
+	for i := range run.RecommendedActions {
+		if run.RecommendedActions[i].ID == actionID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return assistantstore.Run{}, "", fmt.Errorf("assistant run action %q not found", actionID)
+	}
+	now := time.Now().UTC()
+	action := &run.RecommendedActions[index]
+	record, err := assistantSignalRecordForAction(signalStore, run.ID, *action, now)
+	if err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	feedback := strings.ToLower(strings.TrimSpace(req.Feedback))
+	reply := ""
+	switch feedback {
+	case assistantstore.SignalFeedbackUseful:
+		record.Status = assistantstore.SignalStatusUseful
+		record.UsefulCount++
+		record.UpdatedAt = now
+		reply = "Marked recommendation as useful."
+	case assistantstore.SignalFeedbackDismiss:
+		record.Status = assistantstore.SignalStatusDismissed
+		record.DismissedAt = now
+		record.SnoozedUntil = time.Time{}
+		record.UpdatedAt = now
+		reply = "Dismissed recommendation."
+	case assistantstore.SignalFeedbackSnooze:
+		seconds := req.SnoozeSeconds
+		if seconds <= 0 {
+			seconds = 24 * 60 * 60
+		}
+		record.Status = assistantstore.SignalStatusSnoozed
+		record.SnoozedUntil = now.Add(time.Duration(seconds) * time.Second)
+		record.UpdatedAt = now
+		reply = "Snoozed recommendation."
+	case assistantstore.SignalFeedbackCreateTask:
+		taskID := record.CreatedTaskID
+		if taskID == "" {
+			taskID, err = o.createTaskFromAssistantAction(ctx, *action)
+			if err != nil {
+				return assistantstore.Run{}, "", err
+			}
+		}
+		record.Status = assistantstore.SignalStatusCreatedTask
+		record.CreatedTaskID = taskID
+		record.UpdatedAt = now
+		run.Decision = assistantstore.RunDecisionCreated
+		reply = "Created task from recommendation."
+	default:
+		return assistantstore.Run{}, "", fmt.Errorf("unknown assistant action feedback %q", req.Feedback)
+	}
+	if err := signalStore.Save(record); err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	applyAssistantSignalToAction(action, record, now)
+	run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+		Kind:      "action_" + feedback,
+		Message:   reply,
+		ObjectID:  action.ID,
+		ObjectURL: assistantActionReceiptURL(*action),
+		CreatedAt: now,
+	})
+	run.UpdatedAt = now
+	if err := runStore.Save(run); err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	run, _ = runStore.Load(run.ID)
+	o.appendAssistantRunEvent(ctx, "assistant.action.feedback", run, map[string]any{
+		"action_id":   action.ID,
+		"fingerprint": action.Fingerprint,
+		"feedback":    feedback,
+		"status":      action.Status,
+	})
+	return run, reply, nil
+}
+
+func assistantSignalRecordForAction(store *assistantstore.SignalStore, runID string, action assistantstore.RunAction, now time.Time) (assistantstore.SignalRecord, error) {
+	action = assistantstore.NormalizeRun(assistantstore.Run{RecommendedActions: []assistantstore.RunAction{action}}).RecommendedActions[0]
+	record, err := store.Load(action.Fingerprint)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return assistantstore.SignalRecord{}, err
+		}
+		record = assistantstore.SignalRecord{
+			Fingerprint:  action.Fingerprint,
+			Status:       assistantstore.SignalStatusActive,
+			Kind:         action.Kind,
+			Title:        action.Title,
+			Surface:      action.TargetSurface,
+			FirstSeenAt:  now,
+			LastSeenAt:   now,
+			SeenCount:    assistantMaxInt(1, action.SeenCount),
+			LastRunID:    runID,
+			LastActionID: action.ID,
+			UpdatedAt:    now,
+		}
+	}
+	return assistantstore.NormalizeSignalRecord(record, now), nil
+}
+
+func applyAssistantSignalToAction(action *assistantstore.RunAction, record assistantstore.SignalRecord, now time.Time) {
+	if action == nil {
+		return
+	}
+	record = assistantstore.NormalizeSignalRecord(record, now)
+	action.Fingerprint = record.Fingerprint
+	action.SeenCount = record.SeenCount
+	action.UsefulCount = record.UsefulCount
+	action.SnoozedUntil = record.SnoozedUntil
+	if record.CreatedTaskID != "" {
+		action.CreatedTaskID = record.CreatedTaskID
+		action.Status = assistantstore.SignalStatusCreatedTask
+		return
+	}
+	switch record.Status {
+	case assistantstore.SignalStatusDismissed, assistantstore.SignalStatusSnoozed, assistantstore.SignalStatusUseful:
+		action.Status = record.Status
+	case assistantstore.SignalStatusActive:
+		if action.Status == "" || action.Status == assistantstore.SignalStatusActive {
+			action.Status = "recommended"
+		}
+	}
+}
+
+func assistantActionSuppressesTaskCreation(action assistantstore.RunAction, now time.Time) bool {
+	switch action.Status {
+	case assistantstore.SignalStatusDismissed, assistantstore.SignalStatusCreatedTask:
+		return true
+	case assistantstore.SignalStatusSnoozed:
+		return action.SnoozedUntil.IsZero() || action.SnoozedUntil.After(now)
+	default:
+		return strings.TrimSpace(action.CreatedTaskID) != ""
+	}
+}
+
+func (o *Orchestrator) createTaskFromAssistantAction(ctx context.Context, action assistantstore.RunAction) (string, error) {
+	if strings.TrimSpace(action.CreatedTaskID) != "" {
+		return action.CreatedTaskID, nil
+	}
+	goal := strings.TrimSpace(action.TaskGoal)
+	if goal == "" {
+		goal = strings.TrimSpace(strings.Join([]string{action.Title, "", "Rationale: " + action.Rationale}, "\n"))
+	}
+	if goal == "" {
+		return "", fmt.Errorf("assistant recommendation has no task goal")
+	}
+	created, err := o.createTaskRecord(ctx, goal)
+	if err != nil {
+		return "", err
+	}
+	if created.Task.ID == "" {
+		return "", fmt.Errorf("task was not created")
+	}
+	return created.Task.ID, nil
+}
+
+func (o *Orchestrator) saveAssistantCreatedTaskSignal(store *assistantstore.SignalStore, runID string, action assistantstore.RunAction, taskID string) {
+	now := time.Now().UTC()
+	record, err := assistantSignalRecordForAction(store, runID, action, now)
+	if err != nil {
+		o.log().Warn("assistant created task signal load failed", "error", err)
+		return
+	}
+	record.Status = assistantstore.SignalStatusCreatedTask
+	record.CreatedTaskID = taskID
+	record.UpdatedAt = now
+	if err := store.Save(record); err != nil {
+		o.log().Warn("assistant created task signal save failed", "error", err)
+	}
+}
+
+func assistantActionReceiptURL(action assistantstore.RunAction) string {
+	if strings.TrimSpace(action.CreatedTaskID) != "" {
+		return dashboardTaskURL(action.CreatedTaskID)
+	}
+	return ""
+}
+
+func assistantMaxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (o *Orchestrator) StartAssistantProactiveLoop(ctx context.Context) {

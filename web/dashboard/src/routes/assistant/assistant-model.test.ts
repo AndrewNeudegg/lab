@@ -10,6 +10,7 @@ import {
   activityForCapability,
   assistantAreaLabel,
   assistantRunActionCount,
+  assistantRunActionStatusLabel,
   assistantRunDecisionLabel,
   assistantRunStatusTone,
   assistantAutonomyLabel,
@@ -127,6 +128,8 @@ describe('assistant model', () => {
     expect(assistantRunStatusTone('failed')).toBe('red');
     expect(assistantRunStatusTone('running')).toBe('blue');
     expect(assistantRunDecisionLabel('created_tasks')).toBe('Created tasks');
+    expect(assistantRunActionStatusLabel('created_task')).toBe('Task created');
+    expect(assistantRunActionStatusLabel('snoozed')).toBe('Snoozed');
     expect(selectAssistantRun(runs, 'arun_2')?.id).toBe('arun_2');
     expect(selectAssistantRun(runs, 'missing')).toBeUndefined();
     expect(assistantRunActionCount(runs[1])).toBe(2);

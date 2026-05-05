@@ -256,6 +256,32 @@ describe('homelabd client', () => {
           init,
           body: init?.body ? JSON.parse(String(init.body)) : undefined
         });
+        if (String(input).endsWith('/assistant/runs/arun_1/actions/action_1')) {
+          return jsonResponse({
+            reply: 'Marked recommendation as useful.',
+            run: {
+              id: 'arun_1',
+              status: 'completed',
+              decision: 'recommend',
+              trigger: { kind: 'manual', label: 'Manual proactive check' },
+              autonomy: 'propose',
+              summary: 'Action recommended.',
+              recommended_actions: [
+                {
+                  id: 'action_1',
+                  fingerprint: 'sig_action',
+                  kind: 'task',
+                  title: 'Review finding',
+                  rationale: 'Useful.',
+                  status: 'useful'
+                }
+              ],
+              snapshot: { generated_at: '2026-04-30T21:00:00Z' },
+              created_at: '2026-04-30T21:00:00Z',
+              updated_at: '2026-04-30T21:00:00Z'
+            }
+          });
+        }
         if (String(input).endsWith('/assistant/runs/arun_1')) {
           return jsonResponse({
             id: 'arun_1',
@@ -310,14 +336,19 @@ describe('homelabd client', () => {
       trigger_label: 'Operator requested proactive check',
       autonomy: 'propose'
     });
+    const feedback = await client.updateAssistantRunAction('arun_1', 'action_1', {
+      feedback: 'useful'
+    });
 
     expect(runs.runs[0].id).toBe('arun_1');
     expect(run.id).toBe('arun_1');
     expect(started.run.id).toBe('arun_2');
+    expect(feedback.run.recommended_actions?.[0].status).toBe('useful');
     expect(requests.map((request) => request.url)).toEqual([
       'http://homelabd/assistant/runs',
       'http://homelabd/assistant/runs/arun_1',
-      'http://homelabd/assistant/runs'
+      'http://homelabd/assistant/runs',
+      'http://homelabd/assistant/runs/arun_1/actions/action_1'
     ]);
     expect(requests[2].init?.method).toBe('POST');
     expect(requests[2].body).toEqual({
@@ -325,6 +356,8 @@ describe('homelabd client', () => {
       trigger_label: 'Operator requested proactive check',
       autonomy: 'propose'
     });
+    expect(requests[3].init?.method).toBe('POST');
+    expect(requests[3].body).toEqual({ feedback: 'useful' });
   });
 
   test('uses typed task and approval action endpoints', async () => {

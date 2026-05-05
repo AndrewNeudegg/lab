@@ -430,6 +430,7 @@ export interface AssistantRunFinding {
 
 export interface AssistantRunAction {
   id: string;
+  fingerprint?: string;
   kind: string;
   title: string;
   rationale: string;
@@ -441,6 +442,9 @@ export interface AssistantRunAction {
   workflow_hint?: string;
   status?: string;
   created_task_id?: string;
+  seen_count?: number;
+  useful_count?: number;
+  snoozed_until?: string;
 }
 
 export interface AssistantRunReceipt {
@@ -525,6 +529,11 @@ export interface AssistantRunsResponse {
 export interface AssistantRunActionResponse {
   reply: string;
   run: AssistantRun;
+}
+
+export interface AssistantRunActionUpdateRequest {
+  feedback: 'useful' | 'dismiss' | 'snooze' | 'create_task' | string;
+  snooze_seconds?: number;
 }
 
 export interface HomelabdKnowledgeSpace {
@@ -1118,6 +1127,11 @@ export interface HomelabdClient {
   listAssistantRuns(): Promise<AssistantRunsResponse>;
   getAssistantRun(runId: string): Promise<AssistantRun>;
   startAssistantRun(request?: AssistantRunRequest): Promise<AssistantRunActionResponse>;
+  updateAssistantRunAction(
+    runId: string,
+    actionId: string,
+    request: AssistantRunActionUpdateRequest
+  ): Promise<AssistantRunActionResponse>;
   clearChat(request: HomelabdClearChatRequest): Promise<HomelabdClearChatResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;

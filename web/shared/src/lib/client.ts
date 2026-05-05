@@ -3,6 +3,7 @@ import type {
   AssistantCatalogueOptions,
   AssistantRun,
   AssistantRunActionResponse,
+  AssistantRunActionUpdateRequest,
   AssistantRunRequest,
   AssistantRunsResponse,
   FetchClient,
@@ -197,6 +198,21 @@ export const createHomelabdClient = (
         method: 'POST',
         body: JSON.stringify(request)
       });
+    },
+    updateAssistantRunAction(
+      runId: string,
+      actionId: string,
+      request: AssistantRunActionUpdateRequest
+    ) {
+      return apiFetch<AssistantRunActionResponse>(
+        `/assistant/runs/${encodeURIComponent(runId)}/actions/${encodeURIComponent(actionId)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
     },
     clearChat(request: HomelabdClearChatRequest) {
       return apiFetch<HomelabdClearChatResponse>('/chat/clear', {

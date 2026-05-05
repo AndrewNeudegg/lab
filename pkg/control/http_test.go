@@ -240,7 +240,9 @@ func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
 			Status             string `json:"status"`
 			Decision           string `json:"decision"`
 			RecommendedActions []struct {
-				Title string `json:"title"`
+				ID          string `json:"id"`
+				Title       string `json:"title"`
+				Fingerprint string `json:"fingerprint"`
 			} `json:"recommended_actions"`
 			Snapshot struct {
 				AttentionTasks []struct {
@@ -270,6 +272,11 @@ func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
 	loaded := requestJSON(t, mux, http.MethodGet, "/assistant/runs/"+startResponse.Run.ID, "", "", http.StatusOK)
 	if !strings.Contains(loaded.Body.String(), `"id":"`+startResponse.Run.ID+`"`) {
 		t.Fatalf("load response did not include run %q: %s", startResponse.Run.ID, loaded.Body.String())
+	}
+
+	feedback := requestJSON(t, mux, http.MethodPost, "/assistant/runs/"+startResponse.Run.ID+"/actions/"+startResponse.Run.RecommendedActions[0].ID, `{"feedback":"useful"}`, "", http.StatusOK)
+	if !strings.Contains(feedback.Body.String(), `"status":"useful"`) || !strings.Contains(feedback.Body.String(), `"fingerprint":"`+startResponse.Run.RecommendedActions[0].Fingerprint+`"`) {
+		t.Fatalf("feedback response did not mark action useful: %s", feedback.Body.String())
 	}
 }
 

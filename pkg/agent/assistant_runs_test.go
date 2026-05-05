@@ -37,7 +37,7 @@ func TestAssistantRunCreateTasksAutonomyCreatesFollowUpTask(t *testing.T) {
 	if run.Decision != assistantstore.RunDecisionCreated {
 		t.Fatalf("decision = %q, want created_tasks", run.Decision)
 	}
-	if run.RecommendedActions[0].Status != "created" || run.RecommendedActions[0].CreatedTaskID == "" {
+	if run.RecommendedActions[0].Status != assistantstore.SignalStatusCreatedTask || run.RecommendedActions[0].CreatedTaskID == "" {
 		t.Fatalf("task action = %#v, want created task id", run.RecommendedActions[0])
 	}
 	if run.RecommendedActions[1].Status != "recommended" || run.RecommendedActions[1].CreatedTaskID != "" {
@@ -52,6 +52,60 @@ func TestAssistantRunCreateTasksAutonomyCreatesFollowUpTask(t *testing.T) {
 	}
 	if len(run.Receipts) != 1 || run.Receipts[0].Kind != "task_created" || run.Receipts[0].ObjectURL == "" {
 		t.Fatalf("receipts = %#v, want task_created receipt", run.Receipts)
+	}
+}
+
+func TestAssistantRunActionCreateTaskFeedbackDedupesBySignal(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	run := assistantstore.NormalizeRun(assistantstore.Run{
+		ID:        "arun_feedback",
+		Status:    assistantstore.RunStatusCompleted,
+		Decision:  assistantstore.RunDecisionRecommend,
+		Trigger:   assistantstore.RunTrigger{Kind: "manual", Label: "Manual proactive check"},
+		Autonomy:  assistantstore.RunAutonomyPropose,
+		Summary:   "Action recommended.",
+		CreatedAt: now,
+		UpdatedAt: now,
+		RecommendedActions: []assistantstore.RunAction{
+			{
+				ID:        "action_1",
+				Kind:      "task",
+				Title:     "Review restart gate",
+				Rationale: "The task queue shows a failed restart gate.",
+				TaskGoal:  "Review the dashboard restart gate and decide the recovery path.",
+			},
+		},
+	})
+	store, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _, err := orch.UpdateAssistantRunAction(context.Background(), run.ID, "action_1", assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackCreateTask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdTaskID := updated.RecommendedActions[0].CreatedTaskID
+	if updated.RecommendedActions[0].Status != assistantstore.SignalStatusCreatedTask || createdTaskID == "" {
+		t.Fatalf("updated action = %#v, want created task", updated.RecommendedActions[0])
+	}
+	updatedAgain, _, err := orch.UpdateAssistantRunAction(context.Background(), run.ID, "action_1", assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackCreateTask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedAgain.RecommendedActions[0].CreatedTaskID != createdTaskID {
+		t.Fatalf("created task id changed from %q to %q", createdTaskID, updatedAgain.RecommendedActions[0].CreatedTaskID)
+	}
+	tasks, err := orch.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %d, want one deduped task", len(tasks))
 	}
 }
 

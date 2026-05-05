@@ -7,6 +7,7 @@
     type AssistantCapability,
     type AssistantCatalogue,
     type AssistantRun,
+    type AssistantRunAction,
     type AssistantUXPattern
   } from '@homelab/shared';
   import {
@@ -15,6 +16,7 @@
     assistantAutonomyLabel,
     assistantAutonomyTone,
     assistantRunActionCount,
+    assistantRunActionStatusLabel,
     assistantRunDecisionLabel,
     assistantRunStatusTone,
     activityForCapability,
@@ -42,6 +44,7 @@
   let loading = true;
   let runsLoading = true;
   let runStarting = false;
+  let actionUpdating: string[] = [];
   let error = '';
   let runsError = '';
   let runNotice = '';
@@ -235,6 +238,40 @@
       runsError = err instanceof Error ? err.message : 'Unable to start proactive Assistant run.';
     } finally {
       runStarting = false;
+    }
+  };
+
+  const actionMutationKey = (action: AssistantRunAction) =>
+    `${selectedRun?.id || 'run'}:${action.id || action.fingerprint || action.title}`;
+
+  const isActionUpdating = (action: AssistantRunAction) =>
+    actionUpdating.includes(actionMutationKey(action));
+
+  const updateSelectedRunAction = async (
+    action: AssistantRunAction,
+    feedback: 'useful' | 'dismiss' | 'snooze' | 'create_task',
+    snoozeSeconds = 24 * 60 * 60
+  ) => {
+    if (!selectedRun) {
+      return;
+    }
+    const key = actionMutationKey(action);
+    actionUpdating = [...actionUpdating, key];
+    runsError = '';
+    runNotice = '';
+    try {
+      const response = await client.updateAssistantRunAction(selectedRun.id, action.id, {
+        feedback,
+        snooze_seconds: feedback === 'snooze' ? snoozeSeconds : undefined
+      });
+      runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
+      selectedRunId = response.run.id;
+      detailMode = 'run';
+      runNotice = response.reply;
+    } catch (err) {
+      runsError = err instanceof Error ? err.message : 'Unable to update Assistant recommendation.';
+    } finally {
+      actionUpdating = actionUpdating.filter((value) => value !== key);
     }
   };
 
@@ -581,9 +618,20 @@
             <ol class="steps run-actions">
               {#each selectedRun.recommended_actions as action}
                 <li>
-                  <strong>{action.title}</strong>
+                  <div class="action-head">
+                    <strong>{action.title}</strong>
+                    <span class="action-status">{assistantRunActionStatusLabel(action.status)}</span>
+                  </div>
                   <span>
-                    {[action.kind, action.priority, action.target_surface].filter(Boolean).map(labelFromSlug).join(' · ')}
+                    {[
+                      action.kind,
+                      action.priority,
+                      action.target_surface,
+                      action.seen_count && action.seen_count > 1 ? `${action.seen_count} sightings` : ''
+                    ]
+                      .filter(Boolean)
+                      .map(labelFromSlug)
+                      .join(' · ')}
                   </span>
                   <p>{action.rationale}</p>
                   {#if action.task_goal}
@@ -596,6 +644,42 @@
                   {#if action.created_task_id}
                     <a href={`/tasks?task=${action.created_task_id}`}>Open created task</a>
                   {/if}
+                  <div class="action-toolbar" role="group" aria-label={`Recommendation actions for ${action.title}`}>
+                    {#if action.kind === 'task'}
+                      <button
+                        type="button"
+                        class="text-action"
+                        disabled={isActionUpdating(action) || Boolean(action.created_task_id)}
+                        on:click={() => void updateSelectedRunAction(action, 'create_task')}
+                      >
+                        Create task
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="text-action"
+                      disabled={isActionUpdating(action)}
+                      on:click={() => void updateSelectedRunAction(action, 'useful')}
+                    >
+                      Useful
+                    </button>
+                    <button
+                      type="button"
+                      class="text-action"
+                      disabled={isActionUpdating(action) || action.status === 'snoozed'}
+                      on:click={() => void updateSelectedRunAction(action, 'snooze')}
+                    >
+                      Snooze
+                    </button>
+                    <button
+                      type="button"
+                      class="text-action danger-action"
+                      disabled={isActionUpdating(action) || action.status === 'dismissed'}
+                      on:click={() => void updateSelectedRunAction(action, 'dismiss')}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
                 </li>
               {/each}
             </ol>
@@ -974,6 +1058,7 @@
   .detail-header p,
   .detail-header span,
   .status-text,
+  .action-status,
   .detail-section p,
   .record p,
   .record small,
@@ -1239,6 +1324,11 @@
     background: #16a34a;
   }
 
+  .status.green {
+    color: #ffffff;
+    background: #14532d;
+  }
+
   .blue {
     background: #172554;
   }
@@ -1252,8 +1342,18 @@
     background: #d97706;
   }
 
+  .status.amber {
+    color: #ffffff;
+    background: #78350f;
+  }
+
   .red {
     background: #dc2626;
+  }
+
+  .status.red {
+    color: #ffffff;
+    background: #7f1d1d;
   }
 
   .detail-header,
@@ -1365,6 +1465,34 @@
     background: var(--surface-muted, #f8fafc);
   }
 
+  .action-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.65rem;
+  }
+
+  .action-status {
+    flex: 0 0 auto;
+    padding: 0.15rem 0.45rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 999px;
+    background: var(--surface, #ffffff);
+    font-weight: 850;
+  }
+
+  .action-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.25rem;
+  }
+
+  .action-toolbar .text-action {
+    min-height: 2rem;
+    font-size: 0.8rem;
+  }
+
   .record a,
   .steps a,
   .object-list a {
@@ -1440,6 +1568,11 @@
     background: var(--surface, #ffffff);
   }
 
+  .danger-action {
+    color: var(--danger-text, #991b1b);
+    border-color: var(--danger-text, #991b1b);
+  }
+
   .notice.error {
     color: var(--danger-text, #991b1b);
     border: 1px solid var(--danger-text, #991b1b);
@@ -1478,7 +1611,8 @@
     }
 
     .section-title,
-    .detail-header {
+    .detail-header,
+    .action-head {
       align-items: flex-start;
       flex-direction: column;
     }

@@ -143,6 +143,10 @@ func (s *Server) handleAssistantRun(rw http.ResponseWriter, req *http.Request) {
 	}
 	rest := strings.TrimPrefix(req.URL.Path, "/assistant/runs/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "actions" && parts[2] != "" {
+		s.handleAssistantRunAction(rw, req, parts[0], parts[2])
+		return
+	}
 	if len(parts) != 1 || parts[0] == "" || req.Method != http.MethodGet {
 		writeError(rw, http.StatusNotFound, "assistant run not found")
 		return
@@ -153,6 +157,26 @@ func (s *Server) handleAssistantRun(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(rw, http.StatusOK, run)
+}
+
+func (s *Server) handleAssistantRunAction(rw http.ResponseWriter, req *http.Request, runID, actionID string) {
+	if req.Method != http.MethodPost && req.Method != http.MethodPatch {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var in assistant.SignalFeedbackRequest
+	if req.Body != nil {
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	run, reply, err := s.Orchestrator.UpdateAssistantRunAction(req.Context(), runID, actionID, in)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"run": run, "reply": reply})
 }
 
 func (s *Server) handleSettings(rw http.ResponseWriter, req *http.Request) {

@@ -138,6 +138,7 @@ const assistantRun = {
   recommended_actions: [
     {
       id: 'action_1',
+      fingerprint: 'sig_blocked_deploy',
       kind: 'task',
       title: 'Review blocked deploy',
       rationale: 'The deploy is blocked and has a clear operator decision point.',
@@ -145,7 +146,10 @@ const assistantRun = {
       risk: 'low',
       target_surface: 'tasks',
       task_goal: 'Review the blocked deploy and decide the next step.',
-      status: 'recommended'
+      status: 'recommended',
+      seen_count: 2,
+      created_task_id: '',
+      snoozed_until: ''
     }
   ],
   receipts: [
@@ -205,6 +209,8 @@ const assistantRun = {
   updated_at: now
 };
 
+const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
 const freezeTime = async (page: Page) => {
   await page.addInitScript((fixedNow) => {
     const RealDate = Date;
@@ -236,13 +242,44 @@ const mockShellApis = async (page: Page) => {
 
 const mockAssistantApis = async (page: Page) => {
   await mockShellApis(page);
-  const runs = [assistantRun];
-  await page.route(/\/api\/assistant\/runs(?:\/[^?]+)?(?:\?.*)?$/, async (route) => {
+  const runs = [clone(assistantRun)];
+  await page.route(/\/api\/assistant\/runs(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
-    const runID = url.pathname.split('/').pop() || '';
-    if (route.request().method() === 'POST') {
+    const parts = url.pathname.split('/').filter(Boolean);
+    const actionIndex = parts.indexOf('actions');
+    if (actionIndex > 0 && route.request().method() === 'POST') {
+      const runID = parts[actionIndex - 1];
+      const actionID = parts[actionIndex + 1];
+      const body = route.request().postDataJSON() as { feedback?: string };
+      const run = runs.find((candidate) => candidate.id === runID) || runs[0];
+      const action = run.recommended_actions.find((candidate) => candidate.id === actionID);
+      if (action) {
+        action.status = body.feedback === 'create_task' ? 'created_task' : body.feedback || 'recommended';
+        if (body.feedback === 'create_task') {
+          action.created_task_id = 'task_from_assistant';
+        }
+        if (body.feedback === 'snooze') {
+          action.snoozed_until = '2026-04-29T12:00:00.000Z';
+        }
+      }
+      await route.fulfill({
+        json: {
+          reply:
+            body.feedback === 'create_task'
+              ? 'Created task from recommendation.'
+              : body.feedback === 'snooze'
+                ? 'Snoozed recommendation.'
+                : body.feedback === 'dismiss'
+                  ? 'Dismissed recommendation.'
+                  : 'Marked recommendation as useful.',
+          run
+        }
+      });
+      return;
+    }
+    if (route.request().method() === 'POST' && url.pathname.endsWith('/assistant/runs')) {
       const created = {
-        ...assistantRun,
+        ...clone(assistantRun),
         id: 'arun_manual',
         trigger: { kind: 'manual', label: 'Operator requested proactive check' },
         summary: 'Manual check found one useful follow-up.',
@@ -252,6 +289,7 @@ const mockAssistantApis = async (page: Page) => {
       await route.fulfill({ status: 201, json: { reply: 'Assistant run completed.', run: created } });
       return;
     }
+    const runID = parts[parts.length - 1] || '';
     if (runID && runID !== 'runs') {
       await route.fulfill({ json: runs.find((run) => run.id === runID) || runs[0] });
       return;
@@ -371,6 +409,25 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeInViewport();
       await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
       await expect(page.getByText('Review blocked deploy')).toBeVisible();
+      await expect(page.getByText('2 sightings')).toBeVisible();
+      const recommendationActions = page.getByRole('group', {
+        name: 'Recommendation actions for Review blocked deploy'
+      });
+      await recommendationActions.getByRole('button', { name: 'Useful' }).click();
+      await expect(page.getByRole('status')).toContainText('Marked recommendation as useful.');
+      await expect(page.getByText('Marked useful')).toBeVisible();
+      await recommendationActions.getByRole('button', { name: 'Create task' }).click();
+      await expect(page.getByRole('status')).toContainText('Created task from recommendation.');
+      await expect(page.getByRole('link', { name: 'Open created task' })).toHaveAttribute(
+        'href',
+        '/tasks?task=task_from_assistant'
+      );
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      await expect(page).toHaveScreenshot(`assistant-proactive-actions-${viewport.name}.png`, {
+        fullPage: !viewport.mobile,
+        animations: 'disabled'
+      });
       await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
       await expect(page.getByRole('status')).toContainText('Assistant run completed.');
       await expect(page.getByRole('heading', { name: 'Operator requested proactive check' })).toBeInViewport();

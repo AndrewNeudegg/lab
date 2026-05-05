@@ -73,7 +73,50 @@ func TestNormalizeRunFillsDefaultsAndActionIDs(t *testing.T) {
 	if run.RecommendedActions[0].ID != "action_1" {
 		t.Fatalf("action id = %q, want action_1", run.RecommendedActions[0].ID)
 	}
+	if run.RecommendedActions[0].Fingerprint == "" {
+		t.Fatal("action fingerprint was not generated")
+	}
 	if run.Snapshot.TaskCounts == nil || run.Snapshot.WorkflowCounts == nil || run.Snapshot.RemoteAgentCounts == nil {
 		t.Fatalf("snapshot maps were not initialised: %#v", run.Snapshot)
+	}
+}
+
+func TestSignalStoreTracksRecommendationState(t *testing.T) {
+	store := NewSignalStore(filepath.Join(t.TempDir(), "signals"))
+	now := time.Now().UTC()
+	action := NormalizeRun(Run{RecommendedActions: []RunAction{{
+		Kind:          "task",
+		Title:         "Review restart gate",
+		Rationale:     "Restart failed.",
+		TargetSurface: "tasks",
+		TaskGoal:      "Review the dashboard restart gate.",
+	}}}).RecommendedActions[0]
+
+	first, err := store.UpsertFromAction("arun_1", action, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.UpsertFromAction("arun_2", action, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.Fingerprint != second.Fingerprint {
+		t.Fatalf("fingerprint changed: %q then %q", first.Fingerprint, second.Fingerprint)
+	}
+	if second.SeenCount != 2 || second.LastRunID != "arun_2" || second.Status != SignalStatusActive {
+		t.Fatalf("signal = %#v, want active second sighting", second)
+	}
+	second.Status = SignalStatusSnoozed
+	second.SnoozedUntil = now.Add(time.Hour)
+	if err := store.Save(second); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(action.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != SignalStatusSnoozed {
+		t.Fatalf("loaded status = %q, want snoozed", loaded.Status)
 	}
 }

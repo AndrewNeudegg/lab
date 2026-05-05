@@ -108,3 +108,24 @@ export const selectAssistantRun = (runs: AssistantRun[], selectedRunId: string) 
 
 export const assistantRunActionCount = (run: AssistantRun | undefined) =>
   run?.recommended_actions?.length || 0;
+
+export const assistantRunActionStatusLabel = (status = '') => {
+  switch (status) {
+    case 'created_task':
+      return 'Task created';
+    case 'dismissed':
+      return 'Dismissed';
+    case 'snoozed':
+      return 'Snoozed';
+    case 'useful':
+      return 'Marked useful';
+    case 'failed':
+      return 'Failed';
+    case 'skipped':
+      return 'Skipped';
+    case 'recommended':
+      return 'Recommended';
+    default:
+      return status.replaceAll('_', ' ') || 'Recommended';
+  }
+};

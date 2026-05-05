@@ -709,7 +709,7 @@ func normalizeResearchRun(run ResearchRun) ResearchRun {
 	run.WorkspacePath = strings.TrimSpace(run.WorkspacePath)
 	run.Error = strings.TrimSpace(run.Error)
 	run.StopReason = strings.TrimSpace(run.StopReason)
-	run.SourceIDs = compactStrings(run.SourceIDs, 200)
+	run.SourceIDs = compactStrings(run.SourceIDs, 0)
 	for index := range run.Events {
 		run.Events[index].ID = strings.TrimSpace(run.Events[index].ID)
 		run.Events[index].Stage = strings.TrimSpace(run.Events[index].Stage)
@@ -736,8 +736,8 @@ func normalizeResearchLoops(loops []ResearchLoop) []ResearchLoop {
 		}
 		loop.Decision = strings.ToLower(strings.TrimSpace(loop.Decision))
 		loop.StopReason = strings.TrimSpace(loop.StopReason)
-		loop.CandidateIDs = compactStrings(loop.CandidateIDs, 200)
-		loop.SourceIDs = compactStrings(loop.SourceIDs, 200)
+		loop.CandidateIDs = compactStrings(loop.CandidateIDs, 0)
+		loop.SourceIDs = compactStrings(loop.SourceIDs, 0)
 		loop.Coverage = compactStrings(loop.Coverage, 20)
 		loop.SupportedClaims = compactStrings(loop.SupportedClaims, 20)
 		loop.Gaps = compactStrings(loop.Gaps, 20)
@@ -904,9 +904,6 @@ func normalizeSourceCandidates(candidates []SourceCandidate) []SourceCandidate {
 		if candidate.Title != "" || candidate.URL != "" || candidate.Snippet != "" {
 			out = append(out, candidate)
 		}
-		if len(out) >= 100 {
-			break
-		}
 	}
 	return out
 }
@@ -923,7 +920,7 @@ func normalizeResearchCoverage(items []ResearchCoverage) []ResearchCoverage {
 		if item.Status == "" {
 			item.Status = "planned"
 		}
-		item.SourceIDs = compactStrings(item.SourceIDs, 30)
+		item.SourceIDs = compactStrings(item.SourceIDs, 0)
 		if item.EvidenceCount < 0 {
 			item.EvidenceCount = 0
 		}

@@ -50,7 +50,7 @@
   let lastSelectedSpaceId = '';
   let activePanel: KnowledgePanel = 'sources';
   let search = '';
-  let loading = false;
+  let loading = true;
   let creating = false;
   let addingSource = false;
   let asking = false;
@@ -92,6 +92,7 @@
   let researchDepthDraft = 'standard';
   let runObjectiveDraft = '';
   let discoverSourcesDraft = true;
+  let openSourceIds: string[] = [];
   let activeReport: HomelabdKnowledgeReport | undefined;
   let activeAskResult: HomelabdKnowledgeAskResult | undefined;
   let activeRun: HomelabdKnowledgeResearchRun | undefined;
@@ -275,6 +276,28 @@
   const sourceAnchorHref = (sourceId = '') =>
     (selectedSpace?.sources || []).some((source) => source.id === sourceId) ? knowledgeHashHref(sourceAnchorId(sourceId)) : '';
 
+  const isSourceOpen = (sourceId = '') => openSourceIds.includes(sourceId);
+
+  const setSourceOpen = (sourceId: string, open: boolean) => {
+    if (!sourceId) {
+      return;
+    }
+    const alreadyOpen = openSourceIds.includes(sourceId);
+    if (open && !alreadyOpen) {
+      openSourceIds = [...openSourceIds, sourceId];
+    }
+    if (!open && alreadyOpen) {
+      openSourceIds = openSourceIds.filter((id) => id !== sourceId);
+    }
+  };
+
+  const handleSourceCardToggle = (event: Event, sourceId: string) => {
+    const target = event.currentTarget;
+    if (target instanceof HTMLDetailsElement) {
+      setSourceOpen(sourceId, target.open);
+    }
+  };
+
   const reportHref = (report?: HomelabdKnowledgeReport) => (report ? knowledgeHashHref(reportAnchorId(report.id)) : '#');
 
   const runHref = (run?: HomelabdKnowledgeResearchRun) => (run ? knowledgeHashHref(runAnchorId(run.id)) : '#');
@@ -301,7 +324,8 @@
     (focusTarget || target).focus({ preventScroll: true });
   };
 
-  const scrollKnowledgeAnchorIntoView = (anchorId: string) => {
+  const scrollKnowledgeAnchorIntoView = async (anchorId: string) => {
+    await tick();
     requestAnimationFrame(() => {
       const target = document.getElementById(anchorId);
       if (!(target instanceof HTMLElement)) {
@@ -336,11 +360,13 @@
   const openSourceFromAnchor = (anchorId: string) => {
     const source = sourceForAnchor(anchorId);
     if (!source) {
-      return;
+      return false;
     }
     activePanel = 'sources';
     highlightedSourceId = source.id;
-    scrollKnowledgeAnchorIntoView(anchorId);
+    setSourceOpen(source.id, true);
+    void scrollKnowledgeAnchorIntoView(anchorId);
+    return true;
   };
 
   const openPanelFromAnchor = (anchorId: string) => {
@@ -362,7 +388,7 @@
     }
     activeReport = report;
     activePanel = 'artefacts';
-    scrollKnowledgeAnchorIntoView(anchorId);
+    void scrollKnowledgeAnchorIntoView(anchorId);
     return true;
   };
 
@@ -373,7 +399,7 @@
     }
     activeRun = run;
     activePanel = 'runs';
-    scrollKnowledgeAnchorIntoView(anchorId);
+    void scrollKnowledgeAnchorIntoView(anchorId);
     return true;
   };
 
@@ -382,7 +408,7 @@
       if ((report.evidence || []).some((evidence) => evidenceAnchorId(report.id, evidence.id) === anchorId)) {
         activeReport = report;
         activePanel = 'artefacts';
-        scrollKnowledgeAnchorIntoView(anchorId);
+        void scrollKnowledgeAnchorIntoView(anchorId);
         return true;
       }
     }
@@ -390,7 +416,7 @@
       if ((reportForRun(selectedSpace, run)?.evidence || []).some((evidence) => evidenceAnchorId(run.id, evidence.id) === anchorId)) {
         activeRun = run;
         activePanel = 'runs';
-        scrollKnowledgeAnchorIntoView(anchorId);
+        void scrollKnowledgeAnchorIntoView(anchorId);
         return true;
       }
     }
@@ -404,12 +430,12 @@
     if (source) {
       activePanel = 'sources';
       highlightedSourceId = source.id;
-      scrollKnowledgeAnchorIntoView(anchorId);
+      void scrollKnowledgeAnchorIntoView(anchorId);
       return true;
     }
     if ((selectedSpace?.insight?.suggested_questions || []).some((_, index) => spaceQuestionAnchorId(selectedSpace?.id, index) === anchorId)) {
       mobileOptionsOpen = true;
-      scrollKnowledgeAnchorIntoView(anchorId);
+      void scrollKnowledgeAnchorIntoView(anchorId);
       return true;
     }
     for (const run of selectedSpace?.research_runs || []) {
@@ -417,7 +443,7 @@
         if ((loop.gaps || []).some((_, index) => runLoopGapAnchorId(run.id, loop.id, index) === anchorId)) {
           activeRun = run;
           activePanel = 'runs';
-          scrollKnowledgeAnchorIntoView(anchorId);
+          void scrollKnowledgeAnchorIntoView(anchorId);
           return true;
         }
       }
@@ -426,7 +452,7 @@
       if ((report.gaps || []).some((_, index) => reportGapAnchorId(report.id, index) === anchorId)) {
         activeReport = report;
         activePanel = 'artefacts';
-        scrollKnowledgeAnchorIntoView(anchorId);
+        void scrollKnowledgeAnchorIntoView(anchorId);
         return true;
       }
     }
@@ -443,7 +469,7 @@
       if (runMatches) {
         activeRun = run;
         activePanel = 'runs';
-        scrollKnowledgeAnchorIntoView(anchorId);
+        void scrollKnowledgeAnchorIntoView(anchorId);
         return true;
       }
     }
@@ -458,8 +484,7 @@
       return openPanelFromAnchor(anchorId);
     }
     if (anchorId.startsWith('knowledge-source-')) {
-      openSourceFromAnchor(anchorId);
-      return true;
+      return openSourceFromAnchor(anchorId);
     }
     if (anchorId.startsWith('knowledge-report-')) {
       return openReportFromAnchor(anchorId);
@@ -697,6 +722,7 @@
   const refreshSpaces = async () => {
     loading = true;
     error = '';
+    let anchorId = '';
     try {
       const response = await client.listKnowledgeSpaces();
       spaces = [...knowledgeSpacesFromResponse(response)].sort(
@@ -713,19 +739,19 @@
       if (!spaces.length) {
         createSpaceOpen = true;
       }
-      await tick();
-      const anchorId = currentRouteHash();
-      if (anchorId) {
-        applyKnowledgeAnchor(anchorId);
-      } else {
-        lastAppliedAnchorId = '';
-      }
+      anchorId = currentRouteHash();
       lastRefresh = syncTimeLabel();
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to load Knowledge Space data.';
     } finally {
       loading = false;
       ready = true;
+    }
+    await tick();
+    if (anchorId) {
+      applyKnowledgeAnchor(anchorId);
+    } else {
+      lastAppliedAnchorId = '';
     }
   };
 
@@ -1700,6 +1726,8 @@
                       id={sourceAnchorId(source.id)}
                       class="source-card source-card-collapsible"
                       class:highlighted={highlightedSourceId === source.id}
+                      open={isSourceOpen(source.id) || confirmDeleteSourceId === source.id}
+                      on:toggle={(event) => handleSourceCardToggle(event, source.id)}
                     >
                       <summary class="source-summary">
                         <span class="source-summary-main">
@@ -1719,6 +1747,7 @@
                             aria-expanded={confirmDeleteSourceId === source.id}
                             aria-label={`Delete source ${source.title}`}
                             on:click={() => {
+                              setSourceOpen(source.id, true);
                               confirmDeleteSourceId = source.id;
                               confirmDeleteSpace = false;
                             }}

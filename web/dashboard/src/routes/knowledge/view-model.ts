@@ -211,6 +211,9 @@ const groupedCitationPattern =
 
 const normaliseCitationLabel = (value = '') => value.trim().toUpperCase();
 
+const normaliseCitationGroupSpacing = (value = '') =>
+  value.replace(groupedCitationPattern, (_match, group: string) => `[${group.replace(/\s*(,|;)\s*/g, '$1 ')}]`);
+
 export const linkKnowledgeCitations = (
   content = '',
   evidence: HomelabdKnowledgeEvidence[] = [],
@@ -234,6 +237,10 @@ export const linkKnowledgeCitations = (
 
     const parts = group.split(/(\s*(?:,|;)\s*)/);
     const linked = parts.map((part) => {
+      const separator = part.match(/^\s*(,|;)\s*$/);
+      if (separator) {
+        return `${separator[1]} `;
+      }
       if (!citationLabelPattern.test(part.trim())) {
         return part;
       }
@@ -250,7 +257,7 @@ export const linkKnowledgeCitations = (
 };
 
 export const knowledgeMarkdownPreview = (value = '', maxLength = 180) => {
-  const cleaned = value
+  const cleaned = normaliseCitationGroupSpacing(value)
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')

@@ -59,7 +59,7 @@ const renderInlineMarkdown = (value: string): string => {
   });
 
   rendered = rendered.replace(
-    /!\[([^\]\n]*)\]\(([^ \n]+)\)/g,
+    /!\[([^\]\n]*)\]\(((?:[^()\s]+|\([^()\s]*\))+)\)/g,
     (_match, alt: string, src: string) =>
       createHtmlToken(
         htmlTokens,
@@ -67,7 +67,7 @@ const renderInlineMarkdown = (value: string): string => {
       )
   );
   rendered = rendered.replace(
-    /\[([^\]\n]+)\]\(([^ \n]+)\)/g,
+    /\[([^\]\n]+)\]\(((?:[^()\s]+|\([^()\s]*\))+)\)/g,
     (_match, label: string, href: string) =>
       createHtmlToken(
         htmlTokens,

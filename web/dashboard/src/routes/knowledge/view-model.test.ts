@@ -161,6 +161,7 @@ describe('knowledge view model', () => {
         '## Evidence review\n\n- Keep **evidence** visible.\n\n```mermaid\nflowchart LR\n  A --> B\n```'
       )
     ).toBe('Evidence review Keep evidence visible.');
+    expect(knowledgeMarkdownPreview('Finding [S1,S2] and [s3; s4].')).toBe('Finding [S1, S2] and [s3; s4].');
   });
 
   test('links grouped report citations without rewriting existing Markdown links', () => {
@@ -172,9 +173,9 @@ describe('knowledge view model', () => {
     const hrefForSource = (sourceId: string) => `/knowledge?space=kspace#knowledge-source-${sourceId}`;
 
     expect(
-      linkKnowledgeCitations('Single [S14], grouped [S1, S2], lower [s1; s2].', evidence, hrefForSource)
+      linkKnowledgeCitations('Single [S14], grouped [S1, S2], tight [S1,S2], lower [s1; s2].', evidence, hrefForSource)
     ).toBe(
-      'Single [S14](/knowledge?space=kspace#knowledge-source-source_14), grouped [S1](/knowledge?space=kspace#knowledge-source-source_1), [S2](/knowledge?space=kspace#knowledge-source-source_2), lower [s1](/knowledge?space=kspace#knowledge-source-source_1); [s2](/knowledge?space=kspace#knowledge-source-source_2).'
+      'Single [S14](/knowledge?space=kspace#knowledge-source-source_14), grouped [S1](/knowledge?space=kspace#knowledge-source-source_1), [S2](/knowledge?space=kspace#knowledge-source-source_2), tight [S1](/knowledge?space=kspace#knowledge-source-source_1), [S2](/knowledge?space=kspace#knowledge-source-source_2), lower [s1](/knowledge?space=kspace#knowledge-source-source_1); [s2](/knowledge?space=kspace#knowledge-source-source_2).'
     );
     expect(
       linkKnowledgeCitations('[S1](/already-linked) and [missing].', evidence, hrefForSource)

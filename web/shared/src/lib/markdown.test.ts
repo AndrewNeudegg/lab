@@ -40,6 +40,12 @@ describe('renderMarkdown', () => {
     );
   });
 
+  test('keeps adjacent links separate', () => {
+    expect(renderMarkdown('[S23](/knowledge#source-23),[S26](/knowledge#source-26)')).toBe(
+      '<p><a href="/knowledge#source-23" rel="noreferrer">S23</a>,<a href="/knowledge#source-26" rel="noreferrer">S26</a></p>'
+    );
+  });
+
   test('adds stable unique heading ids when requested', () => {
     expect(renderMarkdown('## Task Flow\n\n### Task Flow', { headingIds: true })).toBe(
       '<h2 id="task-flow">Task Flow</h2><h3 id="task-flow-2">Task Flow</h3>'

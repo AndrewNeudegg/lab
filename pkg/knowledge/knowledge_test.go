@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -675,6 +676,58 @@ func TestAddResearchRunUpsertsRunState(t *testing.T) {
 	}
 	if len(space.ResearchRuns) != 1 || space.ResearchRuns[0].Status != ResearchRunStatusCompleted || space.ResearchRuns[0].ReportID != "kreport_one" {
 		t.Fatalf("research_runs = %#v, want updated existing run", space.ResearchRuns)
+	}
+}
+
+func TestNormalizeResearchRunKeepsAllDiscoveryProvenance(t *testing.T) {
+	candidates := make([]SourceCandidate, 0, 125)
+	sourceIDs := make([]string, 0, 225)
+	candidateIDs := make([]string, 0, 225)
+	for index := 0; index < 225; index++ {
+		sourceIDs = append(sourceIDs, fmt.Sprintf("ksrc_%03d", index+1))
+		candidateIDs = append(candidateIDs, fmt.Sprintf("kcand_%03d", index+1))
+		if index < 125 {
+			candidates = append(candidates, SourceCandidate{
+				ID:       fmt.Sprintf("kcand_%03d", index+1),
+				Title:    fmt.Sprintf("Candidate %03d", index+1),
+				URL:      fmt.Sprintf("https://example.test/%03d", index+1),
+				Status:   "accepted",
+				SourceID: fmt.Sprintf("ksrc_%03d", index+1),
+			})
+		}
+	}
+
+	run := normalizeResearchRun(ResearchRun{
+		ID:         "krun_many",
+		Objective:  "Preserve all discovered source provenance",
+		Status:     ResearchRunStatusDiscovering,
+		SourceIDs:  sourceIDs,
+		Candidates: candidates,
+		ResearchLoops: []ResearchLoop{{
+			ID:           "kloop_many",
+			Query:        "source provenance",
+			CandidateIDs: candidateIDs,
+			SourceIDs:    sourceIDs,
+		}},
+		Coverage: []ResearchCoverage{{
+			ID:        "coverage_many",
+			Topic:     "source accounting",
+			Status:    "covered",
+			SourceIDs: sourceIDs,
+		}},
+	})
+
+	if len(run.Candidates) != 125 {
+		t.Fatalf("candidates = %d, want all 125", len(run.Candidates))
+	}
+	if len(run.SourceIDs) != 225 {
+		t.Fatalf("run source ids = %d, want all 225", len(run.SourceIDs))
+	}
+	if len(run.ResearchLoops) != 1 || len(run.ResearchLoops[0].CandidateIDs) != 225 || len(run.ResearchLoops[0].SourceIDs) != 225 {
+		t.Fatalf("loop provenance = %#v, want all candidate and source ids", run.ResearchLoops)
+	}
+	if len(run.Coverage) != 1 || len(run.Coverage[0].SourceIDs) != 225 {
+		t.Fatalf("coverage provenance = %#v, want all source ids", run.Coverage)
 	}
 }
 

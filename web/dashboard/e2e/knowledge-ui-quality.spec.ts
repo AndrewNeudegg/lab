@@ -81,8 +81,8 @@ const knowledgeReport = {
   question: 'How should evidence be reviewed?',
   mode: 'research',
   answer:
-    '## Evidence review\n\nAnswering "How should evidence be reviewed?" from 1 stored source:\n\n- [S1, S2] Keep **evidence** visible beside generated claims.\n\n```mermaid\nflowchart LR\n  Source --> Evidence\n  Evidence --> Claim\n```',
-  key_findings: ['[S1, S2] Keep evidence visible beside generated claims.'],
+    '## Evidence review\n\nAnswering "How should evidence be reviewed?" from 1 stored source:\n\n- [S1,S2] Keep **evidence** visible beside generated claims.\n\n```mermaid\nflowchart LR\n  Source --> Evidence\n  Evidence --> Claim\n```',
+  key_findings: ['[S1,S2] Keep evidence visible beside generated claims.'],
   evidence: [
     {
       id: 'evidence_01',
@@ -289,6 +289,17 @@ const baseKnowledgeSpace = {
   created_at: now,
   updated_at: now
 };
+
+test('server-rendered hard refresh starts on the Knowledge loading skeleton', async ({ request }) => {
+  const response = await request.get(
+    `/knowledge?space=${baseKnowledgeSpace.id}#knowledge-source-${knowledgeSource.id}`
+  );
+  const html = await response.text();
+  expect(response.ok()).toBe(true);
+  expect(html).toContain('Loading research corpus');
+  expect(html).toContain('Syncing spaces, sources, reports, and research records.');
+  expect(html).not.toContain('Not synced');
+});
 
 const freezeTime = async (page: Page) => {
   await page.addInitScript((fixedNow) => {

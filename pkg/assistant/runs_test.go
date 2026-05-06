@@ -53,6 +53,13 @@ func TestRunStoreListsRunsNewestFirst(t *testing.T) {
 func TestNormalizeRunFillsDefaultsAndActionIDs(t *testing.T) {
 	run := NormalizeRun(Run{
 		ID: " arun_1 ",
+		Snapshot: RunSnapshot{Signals: []RunSignal{{
+			Title:       " Review blocked task ",
+			Fingerprint: "watchlist|tasks|blocked|task_1",
+			Score:       120,
+			SeenCount:   -3,
+			UsefulCount: -2,
+		}}},
 		RecommendedActions: []RunAction{
 			{Kind: "task", Title: "Review findings", Rationale: "Needs attention."},
 		},
@@ -78,6 +85,12 @@ func TestNormalizeRunFillsDefaultsAndActionIDs(t *testing.T) {
 	}
 	if run.Snapshot.TaskCounts == nil || run.Snapshot.WorkflowCounts == nil || run.Snapshot.RemoteAgentCounts == nil {
 		t.Fatalf("snapshot maps were not initialised: %#v", run.Snapshot)
+	}
+	if run.Snapshot.Signals[0].Title != "Review blocked task" || run.Snapshot.Signals[0].Score != 100 {
+		t.Fatalf("signal = %#v, want trimmed and clamped signal", run.Snapshot.Signals[0])
+	}
+	if run.Snapshot.Signals[0].SeenCount != 0 || run.Snapshot.Signals[0].UsefulCount != 0 {
+		t.Fatalf("signal counts = %#v, want non-negative counts", run.Snapshot.Signals[0])
 	}
 }
 

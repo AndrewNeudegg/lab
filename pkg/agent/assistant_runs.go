@@ -69,6 +69,7 @@ const assistantRunDecisionSchema = `{
         "properties": {
           "id": {"type": "string"},
           "kind": {"type": "string", "enum": ["task", "research", "workflow", "watch", "observe"]},
+          "fingerprint": {"type": "string"},
           "title": {"type": "string"},
           "rationale": {"type": "string"},
           "priority": {"type": "string"},
@@ -180,6 +181,14 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 	run.RecommendedActions = decision.RecommendedActions
 	run = assistantstore.NormalizeRun(run)
 	o.applyAssistantSignalMemory(ctx, &run)
+	suppressedActions := pruneAssistantSuppressedRunActions(&run)
+	if suppressedActions > 0 {
+		run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+			Kind:      "signal_suppressed",
+			Message:   fmt.Sprintf("Suppressed %d repeated recommendations using prior Assistant feedback.", suppressedActions),
+			CreatedAt: time.Now().UTC(),
+		})
+	}
 	o.applyAssistantRunActions(ctx, &run)
 	run.Provider = response.Provider
 	run.Model = response.Model
@@ -708,7 +717,7 @@ func normalizeAssistantRunRequest(req assistantstore.RunRequest) assistantstore.
 
 func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantstore.Run) (assistantRunDecision, llm.CompletionResponse, error) {
 	if o.provider == nil {
-		return fallbackAssistantRunDecision(run), llm.CompletionResponse{}, nil
+		return assistantRunDecisionWithSignals(run, fallbackAssistantRunDecision(run)), llm.CompletionResponse{}, nil
 	}
 	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
 		Model:       o.model,
@@ -726,6 +735,7 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 				Content: strings.Join([]string{
 					"You are homelabd's proactive executive layer.",
 					"Use the harness: Tasks are for changing things, Knowledge is for durable research and memory, and Workflows are for repeatable thinking.",
+					"Treat snapshot.signals as the pre-scored watchlist. Prefer high-score, high-confidence signals, and do not recommend suppressed signals.",
 					"Do not claim to have executed actions unless the snapshot already proves they happened.",
 					"Prefer no-op when there is no actionable signal. Prefer recommendations over mutation.",
 					"Return exactly one JSON object matching the schema.",
@@ -749,7 +759,7 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 	if err := json.Unmarshal([]byte(extractJSON(resp.Message.Content)), &decision); err != nil {
 		return assistantRunDecision{}, resp, fmt.Errorf("assistant run returned invalid JSON: %w", err)
 	}
-	return normalizeAssistantRunDecision(decision), resp, nil
+	return assistantRunDecisionWithSignals(run, decision), resp, nil
 }
 
 func normalizeAssistantRunDecision(decision assistantRunDecision) assistantRunDecision {
@@ -773,6 +783,9 @@ func fallbackAssistantRunDecision(run assistantstore.Run) assistantRunDecision {
 		Decision: assistantstore.RunDecisionNoop,
 		Summary:  "No urgent action found in the current homelabd state.",
 		Changed:  []string{"Fallback deterministic scan used because no language model provider is configured."},
+	}
+	if len(run.Snapshot.Signals) > 0 {
+		return decision
 	}
 	for _, task := range run.Snapshot.AttentionTasks {
 		decision.Concerns = append(decision.Concerns, assistantstore.RunFinding{
@@ -898,6 +911,7 @@ func (o *Orchestrator) assistantRunSnapshot(ctx context.Context, now time.Time) 
 	snapshot.Health = o.assistantHealthSnapshot(ctx)
 	snapshot.Supervisor = o.assistantSupervisorSnapshot(ctx)
 	snapshot.RecentEvents = o.assistantRecentEvents(now, 12)
+	snapshot.Signals = o.assistantWatchlistSignals(snapshot, now)
 	return snapshot
 }
 
@@ -997,12 +1011,30 @@ func (o *Orchestrator) assistantSupervisorSnapshot(ctx context.Context) assistan
 		if app.State == "running" && app.Desired == "running" && len(out.Items) >= 5 {
 			continue
 		}
-		out.Items = append(out.Items, assistantstore.RunObjectRef{Title: app.Name, Status: app.State, Summary: app.Message, URL: "/supervisord"})
+		out.Items = append(out.Items, assistantstore.RunObjectRef{
+			ID:      app.Name,
+			Title:   app.Name,
+			Status:  app.State,
+			Summary: assistantSupervisorAppSummary(app.Desired, app.Message),
+			URL:     "/supervisord",
+		})
 		if len(out.Items) >= 8 {
 			break
 		}
 	}
 	return out
+}
+
+func assistantSupervisorAppSummary(desired, message string) string {
+	desired = strings.TrimSpace(desired)
+	message = strings.TrimSpace(message)
+	if desired == "" {
+		return message
+	}
+	if message == "" {
+		return "desired " + desired
+	}
+	return "desired " + desired + " / " + message
 }
 
 func assistantFetchJSON(ctx context.Context, addr, path string, target any) error {

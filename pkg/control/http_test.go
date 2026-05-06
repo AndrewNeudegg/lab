@@ -245,6 +245,11 @@ func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
 				Fingerprint string `json:"fingerprint"`
 			} `json:"recommended_actions"`
 			Snapshot struct {
+				Signals []struct {
+					Fingerprint string `json:"fingerprint"`
+					Score       int    `json:"score"`
+					Confidence  string `json:"confidence"`
+				} `json:"signals"`
 				AttentionTasks []struct {
 					ID string `json:"id"`
 				} `json:"attention_tasks"`
@@ -262,6 +267,9 @@ func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
 	}
 	if len(startResponse.Run.Snapshot.AttentionTasks) != 1 || startResponse.Run.Snapshot.AttentionTasks[0].ID != "task_blocked" {
 		t.Fatalf("attention tasks = %#v, want blocked task", startResponse.Run.Snapshot.AttentionTasks)
+	}
+	if len(startResponse.Run.Snapshot.Signals) == 0 || startResponse.Run.Snapshot.Signals[0].Score < 70 || startResponse.Run.Snapshot.Signals[0].Confidence == "" {
+		t.Fatalf("signals = %#v, want scored proactive signal", startResponse.Run.Snapshot.Signals)
 	}
 
 	listed := requestJSON(t, mux, http.MethodGet, "/assistant/runs", "", "", http.StatusOK)

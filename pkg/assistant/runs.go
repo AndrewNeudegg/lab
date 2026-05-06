@@ -106,6 +106,7 @@ type RunUsage struct {
 
 type RunSnapshot struct {
 	GeneratedAt       time.Time         `json:"generated_at"`
+	Signals           []RunSignal       `json:"signals,omitempty"`
 	TaskCounts        map[string]int    `json:"task_counts,omitempty"`
 	AttentionTasks    []RunObjectRef    `json:"attention_tasks,omitempty"`
 	PendingApprovals  int               `json:"pending_approvals,omitempty"`
@@ -116,6 +117,30 @@ type RunSnapshot struct {
 	Health            RunSystemSnapshot `json:"health,omitempty"`
 	Supervisor        RunSystemSnapshot `json:"supervisor,omitempty"`
 	RecentEvents      []RunEventRef     `json:"recent_events,omitempty"`
+}
+
+type RunSignal struct {
+	ID                string    `json:"id"`
+	Fingerprint       string    `json:"fingerprint"`
+	Kind              string    `json:"kind"`
+	Title             string    `json:"title"`
+	Detail            string    `json:"detail,omitempty"`
+	Severity          string    `json:"severity,omitempty"`
+	Surface           string    `json:"surface,omitempty"`
+	ObjectID          string    `json:"object_id,omitempty"`
+	ObjectURL         string    `json:"object_url,omitempty"`
+	Score             int       `json:"score"`
+	Confidence        string    `json:"confidence,omitempty"`
+	Priority          string    `json:"priority,omitempty"`
+	ActionKind        string    `json:"action_kind,omitempty"`
+	Rationale         string    `json:"rationale,omitempty"`
+	TaskGoal          string    `json:"task_goal,omitempty"`
+	Suppressed        bool      `json:"suppressed,omitempty"`
+	SuppressionReason string    `json:"suppression_reason,omitempty"`
+	SeenCount         int       `json:"seen_count,omitempty"`
+	UsefulCount       int       `json:"useful_count,omitempty"`
+	CreatedTaskID     string    `json:"created_task_id,omitempty"`
+	SnoozedUntil      time.Time `json:"snoozed_until,omitempty"`
 }
 
 type RunObjectRef struct {
@@ -256,6 +281,9 @@ func NormalizeRun(run Run) Run {
 	if run.Snapshot.RemoteAgentCounts == nil {
 		run.Snapshot.RemoteAgentCounts = map[string]int{}
 	}
+	for index := range run.Snapshot.Signals {
+		run.Snapshot.Signals[index] = normalizeRunSignal(run.Snapshot.Signals[index], index)
+	}
 	for index := range run.Concerns {
 		run.Concerns[index] = normalizeRunFinding(run.Concerns[index])
 	}
@@ -272,6 +300,47 @@ func NormalizeRun(run Run) Run {
 		run.Receipts[index].ObjectURL = strings.TrimSpace(run.Receipts[index].ObjectURL)
 	}
 	return run
+}
+
+func normalizeRunSignal(value RunSignal, index int) RunSignal {
+	value.ID = strings.TrimSpace(value.ID)
+	if value.ID == "" {
+		value.ID = "signal_" + strconv.Itoa(index+1)
+	}
+	value.Fingerprint = SignalFingerprint(value.Fingerprint)
+	value.Kind = strings.TrimSpace(value.Kind)
+	if value.Kind == "" {
+		value.Kind = "watchlist"
+	}
+	value.Title = strings.TrimSpace(value.Title)
+	if value.Title == "" {
+		value.Title = "Assistant signal"
+	}
+	value.Detail = strings.TrimSpace(value.Detail)
+	value.Severity = strings.TrimSpace(value.Severity)
+	value.Surface = strings.TrimSpace(value.Surface)
+	value.ObjectID = strings.TrimSpace(value.ObjectID)
+	value.ObjectURL = strings.TrimSpace(value.ObjectURL)
+	if value.Score < 0 {
+		value.Score = 0
+	}
+	if value.Score > 100 {
+		value.Score = 100
+	}
+	value.Confidence = strings.TrimSpace(value.Confidence)
+	value.Priority = strings.TrimSpace(value.Priority)
+	value.ActionKind = strings.TrimSpace(value.ActionKind)
+	value.Rationale = strings.TrimSpace(value.Rationale)
+	value.TaskGoal = strings.TrimSpace(value.TaskGoal)
+	value.SuppressionReason = strings.TrimSpace(value.SuppressionReason)
+	if value.SeenCount < 0 {
+		value.SeenCount = 0
+	}
+	if value.UsefulCount < 0 {
+		value.UsefulCount = 0
+	}
+	value.CreatedTaskID = strings.TrimSpace(value.CreatedTaskID)
+	return value
 }
 
 func normalizeRunFinding(value RunFinding) RunFinding {

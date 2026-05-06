@@ -478,8 +478,33 @@ export interface AssistantRunEventRef {
   time: string;
 }
 
+export interface AssistantRunSignal {
+  id: string;
+  fingerprint: string;
+  kind: string;
+  title: string;
+  detail?: string;
+  severity?: string;
+  surface?: string;
+  object_id?: string;
+  object_url?: string;
+  score: number;
+  confidence?: string;
+  priority?: string;
+  action_kind?: string;
+  rationale?: string;
+  task_goal?: string;
+  suppressed?: boolean;
+  suppression_reason?: string;
+  seen_count?: number;
+  useful_count?: number;
+  created_task_id?: string;
+  snoozed_until?: string;
+}
+
 export interface AssistantRunSnapshot {
   generated_at: string;
+  signals?: AssistantRunSignal[];
   task_counts?: Record<string, number>;
   attention_tasks?: AssistantRunObjectRef[];
   pending_approvals?: number;

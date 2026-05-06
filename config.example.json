@@ -58,7 +58,15 @@
     "proactive_autonomy": "observe",
     "proactive_event_watch_enabled": true,
     "proactive_event_poll_seconds": 15,
-    "proactive_event_cooldown_seconds": 300
+    "proactive_event_cooldown_seconds": 300,
+    "signal_sources": {
+      "chat": {
+        "enabled": true,
+        "min_score": 50,
+        "cooldown_seconds": 300,
+        "safe_actions": ["create_task", "useful", "snooze", "dismiss"]
+      }
+    }
   },
   "remote_agent": {
     "id": "workstation",

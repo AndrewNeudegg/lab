@@ -4737,6 +4737,58 @@ func TestOpenEndedChatReportsInteractionStats(t *testing.T) {
 	}
 }
 
+func TestChatQualityFeedbackEmitsAssistantSignalCandidate(t *testing.T) {
+	provider := &scriptedProvider{contents: []string{
+		`{"message":"The app works this way.","done":true,"tool_calls":[]}`,
+		`{"message":"I will revisit that answer.","done":true,"tool_calls":[]}`,
+	}}
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = provider
+	orch.model = "test-model"
+
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "Tell me about the app",
+		ConversationID: "chat_quality",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.HandleDetailedRequest(context.Background(), HandleRequest{
+		From:           "dashboard",
+		Message:        "That was wrong and not useful.",
+		ConversationID: "chat_quality",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	signals, err := orch.ListAssistantSignalCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 1 {
+		t.Fatalf("signals = %#v, want one chat quality signal", signals)
+	}
+	signal := signals[0]
+	if signal.Source != "chat" || signal.Kind != "chat_quality_feedback" || signal.ActionKind != "task" {
+		t.Fatalf("signal = %#v, want chat quality task signal", signal)
+	}
+	if !assistantStringSliceContains(signal.SafeActions, "create_task") {
+		t.Fatalf("safe actions = %#v, want create_task", signal.SafeActions)
+	}
+	var sawUserFeedback, sawPreviousReply bool
+	for _, evidence := range signal.Evidence {
+		if evidence.Kind == "user_feedback" && strings.Contains(evidence.Detail, "not useful") {
+			sawUserFeedback = true
+		}
+		if evidence.Kind == "assistant_reply" && strings.Contains(evidence.Detail, "The app works this way") {
+			sawPreviousReply = true
+		}
+	}
+	if !sawUserFeedback || !sawPreviousReply {
+		t.Fatalf("evidence = %#v, want user feedback and previous assistant reply", signal.Evidence)
+	}
+}
+
 func TestOpenEndedChatReturnsStructuredButtons(t *testing.T) {
 	provider := &staticProvider{content: `{"message":"Do you want me to create the task?","done":true,"tool_calls":[],"buttons":["Yes, create it","No, leave it"]}`}
 	orch := newTestOrchestrator(t, nil)

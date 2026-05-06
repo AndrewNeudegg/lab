@@ -19,6 +19,8 @@ const (
 
 func (o *Orchestrator) assistantWatchlistSignals(snapshot assistantstore.RunSnapshot, now time.Time) []assistantstore.RunSignal {
 	signals := assistantSignalCandidatesFromSnapshot(snapshot)
+	signals = append(signals, o.assistantSubmittedSignalCandidates(now)...)
+	signals = mergeAssistantSignalCandidates(signals)
 	store, err := o.assistantSignalStore()
 	if err == nil {
 		for index := range signals {
@@ -28,6 +30,109 @@ func (o *Orchestrator) assistantWatchlistSignals(snapshot assistantstore.RunSnap
 		o.log().Warn("assistant signal store unavailable", "error", err)
 	}
 	return rankAssistantSignals(signals)
+}
+
+func (o *Orchestrator) assistantSubmittedSignalCandidates(now time.Time) []assistantstore.RunSignal {
+	store, err := o.assistantSignalCandidateStore()
+	if err != nil {
+		if strings.TrimSpace(o.cfg.DataDir) != "" {
+			o.log().Warn("assistant signal candidate store unavailable", "error", err)
+		}
+		return nil
+	}
+	candidates, err := store.ListActive(now)
+	if err != nil {
+		o.log().Warn("assistant signal candidates unavailable", "error", err)
+		return nil
+	}
+	out := make([]assistantstore.RunSignal, 0, len(candidates))
+	for _, candidate := range candidates {
+		signal := candidate.ToRunSignal()
+		if strings.TrimSpace(signal.Surface) == "" {
+			signal.Surface = candidate.Source
+		}
+		out = append(out, newAssistantRunSignal(signal))
+	}
+	return out
+}
+
+func mergeAssistantSignalCandidates(signals []assistantstore.RunSignal) []assistantstore.RunSignal {
+	if len(signals) < 2 {
+		return signals
+	}
+	indexByFingerprint := map[string]int{}
+	out := make([]assistantstore.RunSignal, 0, len(signals))
+	for _, signal := range signals {
+		signal = newAssistantRunSignal(signal)
+		if strings.TrimSpace(signal.Fingerprint) == "" {
+			out = append(out, signal)
+			continue
+		}
+		if existingIndex, ok := indexByFingerprint[signal.Fingerprint]; ok {
+			out[existingIndex] = mergeAssistantRunSignals(out[existingIndex], signal)
+			continue
+		}
+		indexByFingerprint[signal.Fingerprint] = len(out)
+		out = append(out, signal)
+	}
+	return out
+}
+
+func mergeAssistantRunSignals(existing, incoming assistantstore.RunSignal) assistantstore.RunSignal {
+	base := existing
+	other := incoming
+	if incoming.Score > existing.Score {
+		base = incoming
+		other = existing
+	}
+	base.Evidence = mergeAssistantRunSignalEvidence(base.Evidence, other.Evidence, 8)
+	base.SafeActions = normalizeAssistantSignalSafeActions(append(append([]string{}, base.SafeActions...), other.SafeActions...))
+	if other.SeenCount > base.SeenCount {
+		base.SeenCount = other.SeenCount
+	}
+	if other.UsefulCount > base.UsefulCount {
+		base.UsefulCount = other.UsefulCount
+	}
+	if strings.TrimSpace(base.CreatedTaskID) == "" {
+		base.CreatedTaskID = strings.TrimSpace(other.CreatedTaskID)
+	}
+	if base.SnoozedUntil.IsZero() {
+		base.SnoozedUntil = other.SnoozedUntil
+	}
+	if !base.Suppressed && other.Suppressed {
+		base.Suppressed = true
+		base.SuppressionReason = other.SuppressionReason
+	}
+	base.WhyNow = firstNonEmptyString(base.WhyNow, other.WhyNow)
+	base.SuggestedNextStep = firstNonEmptyString(base.SuggestedNextStep, other.SuggestedNextStep)
+	return newAssistantRunSignal(base)
+}
+
+func mergeAssistantRunSignalEvidence(primary, secondary []assistantstore.RunSignalEvidence, limit int) []assistantstore.RunSignalEvidence {
+	if limit <= 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]assistantstore.RunSignalEvidence, 0, limit)
+	for _, values := range [][]assistantstore.RunSignalEvidence{primary, secondary} {
+		for _, value := range values {
+			key := strings.ToLower(strings.Join([]string{
+				strings.TrimSpace(value.Source),
+				strings.TrimSpace(value.Kind),
+				strings.TrimSpace(value.Title),
+				strings.TrimSpace(value.ObjectID),
+			}, "|"))
+			if key == "|||" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, value)
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) []assistantstore.RunSignal {

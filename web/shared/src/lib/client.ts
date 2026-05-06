@@ -6,6 +6,9 @@ import type {
   AssistantRunActionUpdateRequest,
   AssistantRunRequest,
   AssistantRunsResponse,
+  AssistantSignalResponse,
+  AssistantSignalsResponse,
+  AssistantSignalSubmitRequest,
   FetchClient,
   FetchClientOptions,
   HomelabdApprovalsResponse,
@@ -193,6 +196,20 @@ export const createHomelabdClient = (
     },
     startAssistantRun(request: AssistantRunRequest = {}) {
       return apiFetch<AssistantRunActionResponse>('/assistant/runs', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
+    listAssistantSignals() {
+      return apiFetch<AssistantSignalsResponse>('/assistant/signals', {
+        baseUrl,
+        fetcher
+      });
+    },
+    submitAssistantSignal(request: AssistantSignalSubmitRequest) {
+      return apiFetch<AssistantSignalResponse>('/assistant/signals', {
         baseUrl,
         fetcher,
         method: 'POST',

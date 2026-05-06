@@ -427,11 +427,13 @@ func (o *Orchestrator) HandleDetailedRequest(ctx context.Context, req HandleRequ
 		source = "program"
 		err = nil
 	}
+	stats.ElapsedMilliseconds = elapsedMillisecondsSince(started)
+	result := HandleResult{Reply: reply, Source: normalizeSource(source), Stats: *stats, Buttons: buttons}
 	if err == nil {
+		o.maybeSubmitChatQualitySignal(ctx, req, userEventID, result)
 		o.appendChatReply(ctx, req.From, reply)
 	}
-	stats.ElapsedMilliseconds = elapsedMillisecondsSince(started)
-	return HandleResult{Reply: reply, Source: normalizeSource(source), Stats: *stats, Buttons: buttons}, err
+	return result, err
 }
 
 func (o *Orchestrator) handleMessage(ctx context.Context, message string) (string, string, error) {

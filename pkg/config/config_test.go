@@ -26,6 +26,10 @@ func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
 	if cfg.Assistant.ProactiveEventPollSeconds != 15 || cfg.Assistant.ProactiveEventCooldownSeconds != 300 {
 		t.Fatalf("assistant event timing = %#v, want poll and cooldown defaults", cfg.Assistant)
 	}
+	chatSource := cfg.Assistant.SignalSources["chat"]
+	if chatSource.Enabled == nil || !*chatSource.Enabled || chatSource.MinScore != 50 || chatSource.CooldownSeconds != 300 {
+		t.Fatalf("assistant chat signal source = %#v, want enabled scored cooldown defaults", chatSource)
+	}
 }
 
 func TestWithDefaultsFillsAssistantProactiveConfig(t *testing.T) {
@@ -43,6 +47,9 @@ func TestWithDefaultsFillsAssistantProactiveConfig(t *testing.T) {
 	}
 	if got.Assistant.ProactiveEventPollSeconds != 15 || got.Assistant.ProactiveEventCooldownSeconds != 300 {
 		t.Fatalf("assistant event timings = %#v, want defaults", got.Assistant)
+	}
+	if got.Assistant.SignalSources["chat"].MinScore != 50 {
+		t.Fatalf("assistant signal source defaults = %#v, want chat min score", got.Assistant.SignalSources)
 	}
 }
 

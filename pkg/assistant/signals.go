@@ -24,6 +24,9 @@ const (
 	SignalFeedbackDismiss    = "dismiss"
 	SignalFeedbackSnooze     = "snooze"
 	SignalFeedbackCreateTask = "create_task"
+
+	DefaultSignalCandidateTTL = 7 * 24 * time.Hour
+	MaxSignalCandidateTTL     = 30 * 24 * time.Hour
 )
 
 type SignalRecord struct {
@@ -49,13 +52,256 @@ type SignalFeedbackRequest struct {
 	SnoozeSeconds int    `json:"snooze_seconds,omitempty"`
 }
 
+type SignalSubmitRequest struct {
+	Fingerprint       string              `json:"fingerprint,omitempty"`
+	Source            string              `json:"source,omitempty"`
+	Kind              string              `json:"kind,omitempty"`
+	Title             string              `json:"title"`
+	Detail            string              `json:"detail,omitempty"`
+	WhyNow            string              `json:"why_now,omitempty"`
+	Severity          string              `json:"severity,omitempty"`
+	Surface           string              `json:"surface,omitempty"`
+	ObjectID          string              `json:"object_id,omitempty"`
+	ObjectURL         string              `json:"object_url,omitempty"`
+	Score             int                 `json:"score,omitempty"`
+	Confidence        string              `json:"confidence,omitempty"`
+	Priority          string              `json:"priority,omitempty"`
+	ActionKind        string              `json:"action_kind,omitempty"`
+	Rationale         string              `json:"rationale,omitempty"`
+	TaskGoal          string              `json:"task_goal,omitempty"`
+	Evidence          []RunSignalEvidence `json:"evidence,omitempty"`
+	SafeActions       []string            `json:"safe_actions,omitempty"`
+	SuggestedNextStep string              `json:"suggested_next_step,omitempty"`
+	ObservedAt        time.Time           `json:"observed_at,omitempty"`
+	ExpiresAt         time.Time           `json:"expires_at,omitempty"`
+	TTLSeconds        int                 `json:"ttl_seconds,omitempty"`
+}
+
+type SignalCandidate struct {
+	RunSignal
+	Source          string    `json:"source,omitempty"`
+	FirstObservedAt time.Time `json:"first_observed_at,omitempty"`
+	LastObservedAt  time.Time `json:"last_observed_at,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at,omitempty"`
+	CreatedAt       time.Time `json:"created_at,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+}
+
 type SignalStore struct {
+	dir string
+	mu  sync.Mutex
+}
+
+type SignalCandidateStore struct {
 	dir string
 	mu  sync.Mutex
 }
 
 func NewSignalStore(dir string) *SignalStore {
 	return &SignalStore{dir: dir}
+}
+
+func NewSignalCandidateStore(dir string) *SignalCandidateStore {
+	return &SignalCandidateStore{dir: dir}
+}
+
+func (s *SignalCandidateStore) ListActive(now time.Time) ([]SignalCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []SignalCandidate{}, nil
+		}
+		return nil, err
+	}
+	candidates := []SignalCandidate{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		candidate, err := s.loadPathLocked(filepath.Join(s.dir, entry.Name()), now)
+		if err != nil {
+			return nil, err
+		}
+		if candidate.ExpiresAt.IsZero() || candidate.ExpiresAt.After(now) {
+			candidates = append(candidates, candidate)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
+	})
+	return candidates, nil
+}
+
+func (s *SignalCandidateStore) Load(fingerprint string, now time.Time) (SignalCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadLocked(fingerprint, now)
+}
+
+func (s *SignalCandidateStore) Upsert(req SignalSubmitRequest, now time.Time) (SignalCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := SignalCandidateFromSubmitRequest(req, now)
+	existing, exists, err := s.loadIfExistsLocked(candidate.Fingerprint, now)
+	if err != nil {
+		return SignalCandidate{}, err
+	}
+	if exists {
+		candidate.CreatedAt = existing.CreatedAt
+		candidate.FirstObservedAt = existing.FirstObservedAt
+		candidate.SeenCount = existing.SeenCount + 1
+		candidate.Evidence = mergeRunSignalEvidence(candidate.Evidence, existing.Evidence, 8)
+		candidate.UsefulCount = existing.UsefulCount
+	} else {
+		candidate.SeenCount = assistantMaxInt(1, candidate.SeenCount)
+	}
+	candidate.UpdatedAt = now
+	candidate.LastObservedAt = now
+	candidate = NormalizeSignalCandidate(candidate, now)
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return SignalCandidate{}, err
+	}
+	b, err := json.MarshalIndent(candidate, "", "  ")
+	if err != nil {
+		return SignalCandidate{}, err
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, signalCandidateFileName(candidate.Fingerprint)+".json"), append(b, '\n'), 0o644); err != nil {
+		return SignalCandidate{}, err
+	}
+	return candidate, nil
+}
+
+func (s *SignalCandidateStore) loadLocked(fingerprint string, now time.Time) (SignalCandidate, error) {
+	return s.loadPathLocked(filepath.Join(s.dir, signalCandidateFileName(fingerprint)+".json"), now)
+}
+
+func (s *SignalCandidateStore) loadPathLocked(path string, now time.Time) (SignalCandidate, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return SignalCandidate{}, err
+	}
+	var candidate SignalCandidate
+	if err := json.Unmarshal(b, &candidate); err != nil {
+		return SignalCandidate{}, err
+	}
+	return NormalizeSignalCandidate(candidate, now), nil
+}
+
+func (s *SignalCandidateStore) loadIfExistsLocked(fingerprint string, now time.Time) (SignalCandidate, bool, error) {
+	if strings.TrimSpace(fingerprint) == "" {
+		return SignalCandidate{}, false, nil
+	}
+	candidate, err := s.loadLocked(fingerprint, now)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return SignalCandidate{}, false, nil
+		}
+		return SignalCandidate{}, false, err
+	}
+	return candidate, true, nil
+}
+
+func SignalCandidateFromSubmitRequest(req SignalSubmitRequest, now time.Time) SignalCandidate {
+	observedAt := req.ObservedAt.UTC()
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = firstEvidenceSource(req.Evidence)
+	}
+	if source == "" {
+		source = strings.TrimSpace(req.Surface)
+	}
+	if source == "" {
+		source = "external"
+	}
+	signal := RunSignal{
+		Fingerprint:       req.Fingerprint,
+		Kind:              req.Kind,
+		Title:             req.Title,
+		Detail:            req.Detail,
+		WhyNow:            req.WhyNow,
+		Severity:          req.Severity,
+		Surface:           firstRunValue(req.Surface, source),
+		ObjectID:          req.ObjectID,
+		ObjectURL:         req.ObjectURL,
+		Score:             req.Score,
+		Confidence:        req.Confidence,
+		Priority:          req.Priority,
+		ActionKind:        req.ActionKind,
+		Rationale:         req.Rationale,
+		TaskGoal:          req.TaskGoal,
+		Evidence:          req.Evidence,
+		SafeActions:       req.SafeActions,
+		SuggestedNextStep: req.SuggestedNextStep,
+	}
+	if signal.Fingerprint == "" {
+		signal.Fingerprint = SignalFingerprint(strings.Join([]string{"candidate", source, req.Kind, req.Surface, req.ObjectID, req.Title}, "|"))
+	}
+	candidate := SignalCandidate{
+		RunSignal:       signal,
+		Source:          source,
+		FirstObservedAt: observedAt,
+		LastObservedAt:  observedAt,
+		ExpiresAt:       req.ExpiresAt,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	candidate.ExpiresAt = candidateExpiry(req, now)
+	return NormalizeSignalCandidate(candidate, now)
+}
+
+func NormalizeSignalCandidate(candidate SignalCandidate, now time.Time) SignalCandidate {
+	candidate.Source = strings.TrimSpace(candidate.Source)
+	if candidate.Source == "" {
+		candidate.Source = firstEvidenceSource(candidate.Evidence)
+	}
+	if candidate.Source == "" {
+		candidate.Source = firstRunValue(candidate.Surface, "external")
+	}
+	if candidate.Fingerprint == "" {
+		candidate.Fingerprint = SignalFingerprint(strings.Join([]string{"candidate", candidate.Source, candidate.Kind, candidate.Surface, candidate.ObjectID, candidate.Title}, "|"))
+	}
+	if strings.TrimSpace(candidate.ID) == "" {
+		candidate.ID = candidate.Fingerprint
+	}
+	run := NormalizeRun(Run{Snapshot: RunSnapshot{Signals: []RunSignal{candidate.RunSignal}}})
+	if len(run.Snapshot.Signals) > 0 {
+		candidate.RunSignal = run.Snapshot.Signals[0]
+	}
+	if candidate.CreatedAt.IsZero() {
+		candidate.CreatedAt = now
+	}
+	if candidate.UpdatedAt.IsZero() {
+		candidate.UpdatedAt = now
+	}
+	if candidate.FirstObservedAt.IsZero() {
+		candidate.FirstObservedAt = candidate.CreatedAt
+	}
+	if candidate.LastObservedAt.IsZero() {
+		candidate.LastObservedAt = candidate.FirstObservedAt
+	}
+	if candidate.ExpiresAt.IsZero() || candidate.ExpiresAt.After(now.Add(MaxSignalCandidateTTL)) {
+		candidate.ExpiresAt = now.Add(DefaultSignalCandidateTTL)
+	}
+	if candidate.SeenCount < 1 {
+		candidate.SeenCount = 1
+	}
+	return candidate
+}
+
+func (c SignalCandidate) ToRunSignal() RunSignal {
+	run := NormalizeRun(Run{Snapshot: RunSnapshot{Signals: []RunSignal{c.RunSignal}}})
+	if len(run.Snapshot.Signals) == 0 {
+		return RunSignal{}
+	}
+	return run.Snapshot.Signals[0]
 }
 
 func (s *SignalStore) List() ([]SignalRecord, error) {
@@ -222,6 +468,70 @@ func FingerprintRunAction(action RunAction) string {
 
 func signalFileName(fingerprint string) string {
 	return SignalFingerprint(fingerprint)
+}
+
+func signalCandidateFileName(fingerprint string) string {
+	return SignalFingerprint(fingerprint)
+}
+
+func candidateExpiry(req SignalSubmitRequest, now time.Time) time.Time {
+	if !req.ExpiresAt.IsZero() {
+		expiresAt := req.ExpiresAt.UTC()
+		if expiresAt.After(now) && !expiresAt.After(now.Add(MaxSignalCandidateTTL)) {
+			return expiresAt
+		}
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	if ttl <= 0 {
+		ttl = DefaultSignalCandidateTTL
+	}
+	if ttl > MaxSignalCandidateTTL {
+		ttl = MaxSignalCandidateTTL
+	}
+	return now.Add(ttl)
+}
+
+func firstEvidenceSource(values []RunSignalEvidence) string {
+	for _, value := range values {
+		if strings.TrimSpace(value.Source) != "" {
+			return strings.TrimSpace(value.Source)
+		}
+	}
+	return ""
+}
+
+func mergeRunSignalEvidence(primary, secondary []RunSignalEvidence, limit int) []RunSignalEvidence {
+	if limit <= 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]RunSignalEvidence, 0, limit)
+	for _, values := range [][]RunSignalEvidence{primary, secondary} {
+		for _, value := range values {
+			key := strings.ToLower(strings.Join([]string{
+				strings.TrimSpace(value.Source),
+				strings.TrimSpace(value.Kind),
+				strings.TrimSpace(value.Title),
+				strings.TrimSpace(value.ObjectID),
+			}, "|"))
+			if key == "|||" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, value)
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func assistantMaxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func normalizeSignalStatus(status string, snoozedUntil time.Time, now time.Time) string {

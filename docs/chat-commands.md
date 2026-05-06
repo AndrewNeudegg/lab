@@ -56,6 +56,8 @@ search chat for what did you tell me about workflows
 
 The Orchestrator can also call `chat.history` and `chat.search` before answering questions about earlier user messages, assistant replies, what it sent, or how you responded. The LLM harness separates the prior transcript from the current request and excludes the current request from those tool results, so prompts like `what was my last message?`, `what was the third word in my last message?`, or `create a task from that interaction` can inspect the preceding exchange instead of paraphrasing the live prompt. These tools read the server event log for `user.message` and `chat.reply` entries. Dashboard chat sends a `conversation_id`, so history and search are scoped to the selected dashboard chat. CLI messages without a conversation id still use the shared unscoped history.
 
+Chat also feeds the proactive Assistant signal queue. Direct poor-answer feedback, failed chat actions, and stateful requests answered without tool calls can submit source-neutral candidates to `/assistant/signals`; the next Assistant run shows them with evidence and safe actions instead of creating work automatically.
+
 ## Clearing And Chat Sessions
 
 The dashboard stores resumable chat sessions in browser local storage. Use `New chat` to start a fresh local session, or select a previous chat from the history pane to continue that context. Clearing a chat removes the selected local session and asks homelabd to delete matching `user.message`, `chat.reply`, and HTTP transcript entries so future dashboard context for that chat is gone.

@@ -110,12 +110,143 @@ func (o *Orchestrator) assistantSignalStore() (*assistantstore.SignalStore, erro
 	return assistantstore.NewSignalStore(filepath.Join(o.cfg.DataDir, "assistant_signals")), nil
 }
 
+func (o *Orchestrator) assistantSignalCandidateStore() (*assistantstore.SignalCandidateStore, error) {
+	if strings.TrimSpace(o.cfg.DataDir) == "" {
+		return nil, fmt.Errorf("assistant signal candidate store is not configured")
+	}
+	return assistantstore.NewSignalCandidateStore(filepath.Join(o.cfg.DataDir, "assistant_signal_candidates")), nil
+}
+
 func (o *Orchestrator) ListAssistantRuns() ([]assistantstore.Run, error) {
 	store, err := o.assistantRunStore()
 	if err != nil {
 		return nil, err
 	}
 	return store.List()
+}
+
+func (o *Orchestrator) ListAssistantSignalCandidates() ([]assistantstore.SignalCandidate, error) {
+	store, err := o.assistantSignalCandidateStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.ListActive(time.Now().UTC())
+}
+
+func (o *Orchestrator) SubmitAssistantSignal(ctx context.Context, req assistantstore.SignalSubmitRequest) (assistantstore.SignalCandidate, error) {
+	now := time.Now().UTC()
+	if req.Score <= 0 {
+		req.Score = 50
+	}
+	var err error
+	req, err = o.applyAssistantSignalSourceControls(req)
+	if err != nil {
+		return assistantstore.SignalCandidate{}, err
+	}
+	store, err := o.assistantSignalCandidateStore()
+	if err != nil {
+		return assistantstore.SignalCandidate{}, err
+	}
+	if cooldown := o.assistantSignalSourceCooldown(req.Source); cooldown > 0 {
+		preview := assistantstore.SignalCandidateFromSubmitRequest(req, now)
+		existing, err := store.Load(preview.Fingerprint, now)
+		if err == nil && (existing.ExpiresAt.IsZero() || existing.ExpiresAt.After(now)) && existing.UpdatedAt.Add(cooldown).After(now) {
+			return existing, nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return assistantstore.SignalCandidate{}, err
+		}
+	}
+	candidate, err := store.Upsert(req, now)
+	if err != nil {
+		return assistantstore.SignalCandidate{}, err
+	}
+	o.appendAssistantSignalCandidateEvent(ctx, candidate)
+	return candidate, nil
+}
+
+func (o *Orchestrator) applyAssistantSignalSourceControls(req assistantstore.SignalSubmitRequest) (assistantstore.SignalSubmitRequest, error) {
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = firstAssistantSignalEvidenceSource(req.Evidence)
+	}
+	if source == "" {
+		source = strings.TrimSpace(req.Surface)
+	}
+	if source == "" {
+		source = "external"
+	}
+	req.Source = source
+	if o.cfg.Assistant.SignalSources != nil {
+		if control, ok := o.cfg.Assistant.SignalSources[source]; ok {
+			if control.Enabled != nil && !*control.Enabled {
+				return req, fmt.Errorf("assistant signal source %q is disabled", source)
+			}
+			if control.MinScore > 0 && req.Score < control.MinScore {
+				return req, fmt.Errorf("assistant signal source %q score %d is below min_score %d", source, req.Score, control.MinScore)
+			}
+			if len(control.SafeActions) > 0 {
+				req.SafeActions = intersectAssistantSignalSafeActions(req.SafeActions, control.SafeActions)
+				if len(req.SafeActions) == 0 {
+					req.SafeActions = normalizeAssistantSignalSafeActions(control.SafeActions)
+				}
+			}
+		}
+	}
+	return req, nil
+}
+
+func (o *Orchestrator) assistantSignalSourceCooldown(source string) time.Duration {
+	source = strings.TrimSpace(source)
+	if source == "" || o.cfg.Assistant.SignalSources == nil {
+		return 0
+	}
+	control, ok := o.cfg.Assistant.SignalSources[source]
+	if !ok || control.CooldownSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(control.CooldownSeconds) * time.Second
+}
+
+func firstAssistantSignalEvidenceSource(values []assistantstore.RunSignalEvidence) string {
+	for _, value := range values {
+		if strings.TrimSpace(value.Source) != "" {
+			return strings.TrimSpace(value.Source)
+		}
+	}
+	return ""
+}
+
+func intersectAssistantSignalSafeActions(requested, allowed []string) []string {
+	allowedSet := map[string]bool{}
+	for _, value := range allowed {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			allowedSet[value] = true
+		}
+	}
+	var out []string
+	for _, value := range requested {
+		value = strings.TrimSpace(value)
+		if value != "" && allowedSet[value] {
+			out = append(out, value)
+		}
+	}
+	return normalizeAssistantSignalSafeActions(out)
+}
+
+func normalizeAssistantSignalSafeActions(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func (o *Orchestrator) LoadAssistantRun(runID string) (assistantstore.Run, error) {
@@ -1085,6 +1216,28 @@ func (o *Orchestrator) appendAssistantRunEvent(ctx context.Context, eventType st
 	_ = o.events.Append(ctx, eventlog.Event{
 		ID:      id.New("evt"),
 		Type:    eventType,
+		Actor:   "Assistant",
+		Payload: eventlog.Payload(payload),
+	})
+}
+
+func (o *Orchestrator) appendAssistantSignalCandidateEvent(ctx context.Context, candidate assistantstore.SignalCandidate) {
+	if o.events == nil {
+		return
+	}
+	payload := map[string]any{
+		"fingerprint": candidate.Fingerprint,
+		"source":      candidate.Source,
+		"kind":        candidate.Kind,
+		"title":       candidate.Title,
+		"surface":     candidate.Surface,
+		"object_id":   candidate.ObjectID,
+		"object_url":  candidate.ObjectURL,
+		"score":       candidate.Score,
+	}
+	_ = o.events.Append(ctx, eventlog.Event{
+		ID:      id.New("evt"),
+		Type:    "assistant.signal.candidate",
 		Actor:   "Assistant",
 		Payload: eventlog.Payload(payload),
 	})

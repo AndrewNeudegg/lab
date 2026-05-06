@@ -151,3 +151,63 @@ func TestSignalStoreTracksRecommendationState(t *testing.T) {
 		t.Fatalf("loaded status = %q, want snoozed", loaded.Status)
 	}
 }
+
+func TestSignalCandidateStoreUpsertsAndListsActiveCandidates(t *testing.T) {
+	store := NewSignalCandidateStore(filepath.Join(t.TempDir(), "signal_candidates"))
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	req := SignalSubmitRequest{
+		Source:            "chat",
+		Kind:              "chat_quality_feedback",
+		Title:             "Review subpar chat answer",
+		Detail:            "Operator feedback flagged a poor answer.",
+		WhyNow:            "The operator said the answer was not useful.",
+		Severity:          "warning",
+		Surface:           "chat",
+		ObjectID:          "evt_user",
+		ObjectURL:         "/chat",
+		Score:             88,
+		ActionKind:        "task",
+		Rationale:         "Poor answers are useful source-neutral signals.",
+		TaskGoal:          "Review the exchange and improve the response path.",
+		SafeActions:       []string{"create_task", "useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Create follow-up work to inspect the exchange.",
+		TTLSeconds:        60,
+		Evidence: []RunSignalEvidence{
+			{Source: "chat", Kind: "user_feedback", Title: "Operator feedback", Detail: "That was wrong.", ObjectID: "evt_user", Weight: 88},
+		},
+	}
+
+	first, err := store.Upsert(req, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Evidence = append(req.Evidence, RunSignalEvidence{Source: "chat", Kind: "assistant_reply", Title: "Previous reply", Detail: "Old answer.", ObjectID: "evt_reply", Weight: 80})
+	second, err := store.Upsert(req, now.Add(10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.Fingerprint != second.Fingerprint {
+		t.Fatalf("fingerprint changed from %q to %q", first.Fingerprint, second.Fingerprint)
+	}
+	if second.SeenCount != 2 || second.Source != "chat" || second.ActionKind != "task" {
+		t.Fatalf("candidate = %#v, want second chat task sighting", second)
+	}
+	if len(second.Evidence) != 2 {
+		t.Fatalf("evidence = %#v, want merged evidence", second.Evidence)
+	}
+	active, err := store.ListActive(now.Add(30 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].Fingerprint != second.Fingerprint {
+		t.Fatalf("active = %#v, want stored candidate", active)
+	}
+	expired, err := store.ListActive(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 0 {
+		t.Fatalf("expired = %#v, want no active candidates after ttl", expired)
+	}
+}

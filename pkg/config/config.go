@@ -86,12 +86,20 @@ type RemoteAgentWorkdirConfig struct {
 }
 
 type AssistantConfig struct {
-	ProactiveEnabled              bool   `json:"proactive_enabled"`
-	ProactiveIntervalSeconds      int    `json:"proactive_interval_seconds"`
-	ProactiveAutonomy             string `json:"proactive_autonomy,omitempty"`
-	ProactiveEventWatchEnabled    *bool  `json:"proactive_event_watch_enabled,omitempty"`
-	ProactiveEventPollSeconds     int    `json:"proactive_event_poll_seconds"`
-	ProactiveEventCooldownSeconds int    `json:"proactive_event_cooldown_seconds"`
+	ProactiveEnabled              bool                                   `json:"proactive_enabled"`
+	ProactiveIntervalSeconds      int                                    `json:"proactive_interval_seconds"`
+	ProactiveAutonomy             string                                 `json:"proactive_autonomy,omitempty"`
+	ProactiveEventWatchEnabled    *bool                                  `json:"proactive_event_watch_enabled,omitempty"`
+	ProactiveEventPollSeconds     int                                    `json:"proactive_event_poll_seconds"`
+	ProactiveEventCooldownSeconds int                                    `json:"proactive_event_cooldown_seconds"`
+	SignalSources                 map[string]AssistantSignalSourceConfig `json:"signal_sources,omitempty"`
+}
+
+type AssistantSignalSourceConfig struct {
+	Enabled         *bool    `json:"enabled,omitempty"`
+	MinScore        int      `json:"min_score,omitempty"`
+	CooldownSeconds int      `json:"cooldown_seconds,omitempty"`
+	SafeActions     []string `json:"safe_actions,omitempty"`
 }
 
 type KnowledgeConfig struct {
@@ -288,6 +296,14 @@ func Default() Config {
 			ProactiveEventWatchEnabled:    boolPtr(true),
 			ProactiveEventPollSeconds:     15,
 			ProactiveEventCooldownSeconds: 300,
+			SignalSources: map[string]AssistantSignalSourceConfig{
+				"chat": {
+					Enabled:         boolPtr(true),
+					MinScore:        50,
+					CooldownSeconds: 300,
+					SafeActions:     []string{"create_task", "useful", "snooze", "dismiss"},
+				},
+			},
 		},
 		Knowledge: KnowledgeConfig{
 			PDFTextCommand: "pdftotext",
@@ -526,6 +542,15 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Assistant.ProactiveEventCooldownSeconds == 0 {
 		c.Assistant.ProactiveEventCooldownSeconds = d.Assistant.ProactiveEventCooldownSeconds
+	}
+	if c.Assistant.SignalSources == nil {
+		c.Assistant.SignalSources = d.Assistant.SignalSources
+	} else {
+		for name, source := range d.Assistant.SignalSources {
+			if _, ok := c.Assistant.SignalSources[name]; !ok {
+				c.Assistant.SignalSources[name] = source
+			}
+		}
 	}
 	if c.Knowledge.PDFTextCommand == "" {
 		c.Knowledge.PDFTextCommand = d.Knowledge.PDFTextCommand

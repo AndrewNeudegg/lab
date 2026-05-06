@@ -7,6 +7,7 @@ import (
 	"time"
 
 	assistantstore "github.com/andrewneudegg/lab/pkg/assistant"
+	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
 )
@@ -136,6 +137,90 @@ func TestAssistantWatchlistSignalsScoreAndRespectFeedback(t *testing.T) {
 	}
 	if sawDesiredStopped {
 		t.Fatalf("signals = %#v, did not want desired-stopped component treated as action", signals)
+	}
+}
+
+func TestAssistantWatchlistSignalsIncludesSubmittedCandidates(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	candidate, err := orch.SubmitAssistantSignal(context.Background(), assistantstore.SignalSubmitRequest{
+		Source:            "chat",
+		Kind:              "chat_quality_feedback",
+		Title:             "Review subpar chat answer",
+		Detail:            "Operator feedback flagged a poor answer.",
+		WhyNow:            "The operator said the answer was not useful.",
+		Severity:          "warning",
+		Surface:           "chat",
+		ObjectID:          "evt_user",
+		ObjectURL:         "/chat",
+		Score:             88,
+		ActionKind:        "task",
+		Rationale:         "Poor answers are useful source-neutral signals.",
+		TaskGoal:          "Review the exchange and improve the response path.",
+		Evidence:          []assistantstore.RunSignalEvidence{{Source: "chat", Kind: "user_feedback", Title: "Operator feedback", Detail: "That was wrong.", ObjectID: "evt_user", Weight: 88}},
+		SafeActions:       []string{"create_task", "useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Create follow-up work to inspect the exchange.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signals := orch.assistantWatchlistSignals(assistantstore.RunSnapshot{}, now)
+
+	var found assistantstore.RunSignal
+	for _, signal := range signals {
+		if signal.Fingerprint == candidate.Fingerprint {
+			found = signal
+			break
+		}
+	}
+	if found.Fingerprint == "" {
+		t.Fatalf("signals = %#v, want submitted chat candidate", signals)
+	}
+	if found.Surface != "chat" || found.Score < 80 || len(found.Evidence) == 0 || !assistantStringSliceContains(found.SafeActions, "create_task") {
+		t.Fatalf("signal = %#v, want rich generic chat signal", found)
+	}
+}
+
+func TestSubmitAssistantSignalAppliesSourceControlsAndCooldown(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	allowed := true
+	orch.cfg.Assistant.SignalSources = map[string]config.AssistantSignalSourceConfig{
+		"chat": {
+			Enabled:         &allowed,
+			MinScore:        70,
+			CooldownSeconds: 300,
+			SafeActions:     []string{"useful", "snooze", "dismiss"},
+		},
+	}
+	req := assistantstore.SignalSubmitRequest{
+		Source:      "chat",
+		Kind:        "chat_tool_light_response",
+		Title:       "Check tool-light chat response",
+		Surface:     "chat",
+		ObjectID:    "evt_user",
+		Score:       69,
+		ActionKind:  "task",
+		SafeActions: []string{"create_task", "useful"},
+	}
+	if _, err := orch.SubmitAssistantSignal(context.Background(), req); err == nil {
+		t.Fatal("SubmitAssistantSignal accepted score below min_score")
+	}
+
+	req.Score = 74
+	first, err := orch.SubmitAssistantSignal(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := orch.SubmitAssistantSignal(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Fingerprint != second.Fingerprint || second.SeenCount != first.SeenCount {
+		t.Fatalf("cooldown candidate = %#v after %#v, want existing candidate without increment", second, first)
+	}
+	if assistantStringSliceContains(first.SafeActions, "create_task") || !assistantStringSliceContains(first.SafeActions, "useful") {
+		t.Fatalf("safe actions = %#v, want source-controlled actions", first.SafeActions)
 	}
 }
 

@@ -70,6 +70,7 @@ func (s *Server) register(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/assistant", s.withCORS(s.handleAssistant))
+	mux.HandleFunc("/assistant/signals", s.withCORS(s.handleAssistantSignals))
 	mux.HandleFunc("/assistant/runs", s.withCORS(s.handleAssistantRuns))
 	mux.HandleFunc("/assistant/runs/", s.withCORS(s.handleAssistantRun))
 	mux.HandleFunc("/chat/clear", s.withCORS(s.handleChatClear))
@@ -131,6 +132,38 @@ func (s *Server) handleAssistantRuns(rw http.ResponseWriter, req *http.Request) 
 			return
 		}
 		writeJSON(rw, http.StatusCreated, map[string]any{"run": run, "reply": reply})
+	default:
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleAssistantSignals(rw http.ResponseWriter, req *http.Request) {
+	if s.Orchestrator == nil {
+		writeError(rw, http.StatusServiceUnavailable, "orchestrator is not configured")
+		return
+	}
+	switch req.Method {
+	case http.MethodGet:
+		signals, err := s.Orchestrator.ListAssistantSignalCandidates()
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"signals": signals})
+	case http.MethodPost:
+		var in assistant.SignalSubmitRequest
+		if req.Body != nil {
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		signal, err := s.Orchestrator.SubmitAssistantSignal(req.Context(), in)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusCreated, map[string]any{"signal": signal})
 	default:
 		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 	}

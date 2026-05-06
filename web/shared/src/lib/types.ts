@@ -506,6 +506,48 @@ export interface AssistantRunSignal {
   snoozed_until?: string;
 }
 
+export interface AssistantSignalSubmitRequest {
+  fingerprint?: string;
+  source?: string;
+  kind?: string;
+  title: string;
+  detail?: string;
+  why_now?: string;
+  severity?: string;
+  surface?: string;
+  object_id?: string;
+  object_url?: string;
+  score?: number;
+  confidence?: string;
+  priority?: string;
+  action_kind?: string;
+  rationale?: string;
+  task_goal?: string;
+  evidence?: AssistantRunSignalEvidence[];
+  safe_actions?: string[];
+  suggested_next_step?: string;
+  observed_at?: string;
+  expires_at?: string;
+  ttl_seconds?: number;
+}
+
+export interface AssistantSignalCandidate extends AssistantRunSignal {
+  source?: string;
+  first_observed_at?: string;
+  last_observed_at?: string;
+  expires_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AssistantSignalsResponse {
+  signals: AssistantSignalCandidate[];
+}
+
+export interface AssistantSignalResponse {
+  signal: AssistantSignalCandidate;
+}
+
 export interface AssistantRunSignalEvidence {
   source?: string;
   kind?: string;
@@ -1167,6 +1209,8 @@ export interface HomelabdClient {
   listAssistantRuns(): Promise<AssistantRunsResponse>;
   getAssistantRun(runId: string): Promise<AssistantRun>;
   startAssistantRun(request?: AssistantRunRequest): Promise<AssistantRunActionResponse>;
+  listAssistantSignals(): Promise<AssistantSignalsResponse>;
+  submitAssistantSignal(request: AssistantSignalSubmitRequest): Promise<AssistantSignalResponse>;
   updateAssistantRunAction(
     runId: string,
     actionId: string,

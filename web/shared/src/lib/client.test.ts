@@ -360,6 +360,77 @@ describe('homelabd client', () => {
     expect(requests[3].body).toEqual({ feedback: 'useful' });
   });
 
+  test('uses typed assistant signal candidate endpoints', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        if (init?.method === 'POST') {
+          return jsonResponse({
+            signal: {
+              id: 'sig_chat',
+              fingerprint: 'sig_chat',
+              source: 'chat',
+              kind: 'chat_quality_feedback',
+              title: 'Review subpar chat answer',
+              surface: 'chat',
+              score: 88,
+              action_kind: 'task',
+              safe_actions: ['create_task', 'useful', 'snooze', 'dismiss'],
+              updated_at: '2026-05-06T12:00:00Z'
+            }
+          });
+        }
+        return jsonResponse({
+          signals: [
+            {
+              id: 'sig_chat',
+              fingerprint: 'sig_chat',
+              source: 'chat',
+              kind: 'chat_quality_feedback',
+              title: 'Review subpar chat answer',
+              surface: 'chat',
+              score: 88
+            }
+          ]
+        });
+      }
+    });
+
+    const listed = await client.listAssistantSignals();
+    const submitted = await client.submitAssistantSignal({
+      source: 'chat',
+      kind: 'chat_quality_feedback',
+      title: 'Review subpar chat answer',
+      surface: 'chat',
+      score: 88,
+      evidence: [{ source: 'chat', kind: 'user_feedback', title: 'Operator feedback' }],
+      safe_actions: ['create_task', 'useful']
+    });
+
+    expect(listed.signals[0].source).toBe('chat');
+    expect(submitted.signal.action_kind).toBe('task');
+    expect(requests.map((request) => request.url)).toEqual([
+      'http://homelabd/assistant/signals',
+      'http://homelabd/assistant/signals'
+    ]);
+    expect(requests[1].init?.method).toBe('POST');
+    expect(requests[1].body).toEqual({
+      source: 'chat',
+      kind: 'chat_quality_feedback',
+      title: 'Review subpar chat answer',
+      surface: 'chat',
+      score: 88,
+      evidence: [{ source: 'chat', kind: 'user_feedback', title: 'Operator feedback' }],
+      safe_actions: ['create_task', 'useful']
+    });
+  });
+
   test('uses typed task and approval action endpoints', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({

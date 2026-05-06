@@ -288,6 +288,50 @@ func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
 	}
 }
 
+func TestAssistantSignalEndpointsSubmitAndListCandidates(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/assistant/signals", `{
+		"source":"chat",
+		"kind":"chat_quality_feedback",
+		"title":"Review subpar chat answer",
+		"detail":"Operator feedback flagged a poor answer.",
+		"why_now":"The operator said the answer was not useful.",
+		"severity":"warning",
+		"surface":"chat",
+		"object_id":"evt_user",
+		"object_url":"/chat",
+		"score":88,
+		"action_kind":"task",
+		"rationale":"Poor answers are useful source-neutral signals.",
+		"task_goal":"Review the exchange and improve the response path.",
+		"evidence":[{"source":"chat","kind":"user_feedback","title":"Operator feedback","detail":"That was wrong.","object_id":"evt_user","weight":88}],
+		"safe_actions":["create_task","useful","snooze","dismiss"],
+		"suggested_next_step":"Create follow-up work to inspect the exchange."
+	}`, "", http.StatusCreated)
+	var createResponse struct {
+		Signal struct {
+			Fingerprint string `json:"fingerprint"`
+			Source      string `json:"source"`
+			Kind        string `json:"kind"`
+			Score       int    `json:"score"`
+		} `json:"signal"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&createResponse); err != nil {
+		t.Fatal(err)
+	}
+	if createResponse.Signal.Fingerprint == "" || createResponse.Signal.Source != "chat" || createResponse.Signal.Score != 88 {
+		t.Fatalf("created signal = %#v, want chat candidate", createResponse.Signal)
+	}
+
+	listed := requestJSON(t, mux, http.MethodGet, "/assistant/signals", "", "", http.StatusOK)
+	if !strings.Contains(listed.Body.String(), createResponse.Signal.Fingerprint) || !strings.Contains(listed.Body.String(), `"kind":"chat_quality_feedback"`) {
+		t.Fatalf("list response missing created signal: %s", listed.Body.String())
+	}
+}
+
 func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	server := newKnowledgeHTTPTestServer(t, &scriptedControlProvider{contents: []string{
 		`{

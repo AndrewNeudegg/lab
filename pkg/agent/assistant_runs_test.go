@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
+	"github.com/andrewneudegg/lab/pkg/llm"
 )
 
 func TestAssistantRunCreateTasksAutonomyCreatesFollowUpTask(t *testing.T) {
@@ -292,6 +294,78 @@ func TestAssistantRunDecisionUsesScoredSignalsWhenModelMisses(t *testing.T) {
 	}
 }
 
+func TestAssistantRunFallsBackWhenModelReturnsInvalidJSON(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "empty", content: ""},
+		{name: "partial", content: `{"decision":`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			orch := newTestOrchestrator(t, nil)
+			orch.provider = &staticProvider{content: tc.content}
+			orch.model = "assistant-model"
+
+			run, reply, err := orch.StartAssistantRun(context.Background(), assistantstore.RunRequest{
+				TriggerLabel: "Regression invalid JSON check",
+			})
+			if err != nil {
+				t.Fatalf("StartAssistantRun returned error: %v", err)
+			}
+
+			if run.Status != assistantstore.RunStatusCompleted || run.Error != "" {
+				t.Fatalf("run status/error = %q/%q, want completed without error", run.Status, run.Error)
+			}
+			if !strings.Contains(reply, "completed") {
+				t.Fatalf("reply = %q, want completed", reply)
+			}
+			if len(run.Changed) == 0 || !strings.Contains(run.Changed[0], "model output was not valid JSON") {
+				t.Fatalf("changed = %#v, want invalid JSON fallback note", run.Changed)
+			}
+			for _, receipt := range run.Receipts {
+				if receipt.Kind == "error" {
+					t.Fatalf("receipts = %#v, want no error receipt for fallback", run.Receipts)
+				}
+			}
+			if len(run.Receipts) == 0 || run.Receipts[len(run.Receipts)-1].Kind != "decision" {
+				t.Fatalf("receipts = %#v, want decision receipt", run.Receipts)
+			}
+			stored, err := orch.LoadAssistantRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Status != assistantstore.RunStatusCompleted || len(stored.Changed) == 0 {
+				t.Fatalf("stored run = %#v, want persisted fallback decision", stored)
+			}
+		})
+	}
+}
+
+func TestAssistantRunFallsBackWhenModelCallFails(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = failingAssistantProvider{err: llm.Retryable(errors.New("gemini provider returned empty content: MAX_TOKENS"))}
+	orch.model = "assistant-model"
+
+	run, _, err := orch.StartAssistantRun(context.Background(), assistantstore.RunRequest{
+		TriggerLabel: "Regression provider failure check",
+	})
+	if err != nil {
+		t.Fatalf("StartAssistantRun returned error: %v", err)
+	}
+
+	if run.Status != assistantstore.RunStatusCompleted || run.Error != "" {
+		t.Fatalf("run status/error = %q/%q, want completed without error", run.Status, run.Error)
+	}
+	if run.Provider != "failing-assistant-provider" || run.Model != "assistant-model" {
+		t.Fatalf("provider/model = %q/%q, want fallback provenance", run.Provider, run.Model)
+	}
+	if len(run.Changed) == 0 || !strings.Contains(run.Changed[0], "model call failed") {
+		t.Fatalf("changed = %#v, want model call fallback note", run.Changed)
+	}
+}
+
 func TestAssistantRunDecisionAcceptsGenericSignalSource(t *testing.T) {
 	signal := newAssistantRunSignal(assistantstore.RunSignal{
 		Kind:              "chat_quality_regression",
@@ -502,4 +576,14 @@ func assistantStringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type failingAssistantProvider struct {
+	err error
+}
+
+func (p failingAssistantProvider) Name() string { return "failing-assistant-provider" }
+
+func (p failingAssistantProvider) Complete(context.Context, llm.CompletionRequest) (llm.CompletionResponse, error) {
+	return llm.CompletionResponse{}, p.err
 }

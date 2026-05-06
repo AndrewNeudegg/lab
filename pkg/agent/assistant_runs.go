@@ -931,13 +931,35 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 		},
 	})
 	if err != nil {
-		return assistantRunDecision{}, resp, err
+		fallback := fallbackAssistantRunDecisionWithReason(run, assistantFallbackReason("Deterministic fallback scan used because the model call failed", err))
+		return assistantRunDecisionWithSignals(run, fallback), llm.CompletionResponse{Provider: o.provider.Name(), Model: o.model}, nil
 	}
-	var decision assistantRunDecision
-	if err := json.Unmarshal([]byte(extractJSON(resp.Message.Content)), &decision); err != nil {
-		return assistantRunDecision{}, resp, fmt.Errorf("assistant run returned invalid JSON: %w", err)
+	decision, err := parseAssistantRunDecision(resp.Message.Content)
+	if err != nil {
+		fallback := fallbackAssistantRunDecisionWithReason(run, assistantFallbackReason("Deterministic fallback scan used because the model output was not valid JSON", err))
+		return assistantRunDecisionWithSignals(run, fallback), resp, nil
 	}
 	return assistantRunDecisionWithSignals(run, decision), resp, nil
+}
+
+func parseAssistantRunDecision(content string) (assistantRunDecision, error) {
+	raw := strings.TrimSpace(extractJSON(content))
+	if raw == "" {
+		return assistantRunDecision{}, fmt.Errorf("empty model response")
+	}
+	var decision assistantRunDecision
+	if err := json.Unmarshal([]byte(raw), &decision); err != nil {
+		return assistantRunDecision{}, fmt.Errorf("assistant run returned invalid JSON: %w", err)
+	}
+	return decision, nil
+}
+
+func assistantFallbackReason(prefix string, err error) string {
+	reason := strings.Join(strings.Fields(err.Error()), " ")
+	if reason == "" {
+		return prefix + "."
+	}
+	return prefix + ": " + truncateAssistantRunText(reason, 220)
 }
 
 func normalizeAssistantRunDecision(decision assistantRunDecision) assistantRunDecision {
@@ -957,10 +979,18 @@ func normalizeAssistantRunDecision(decision assistantRunDecision) assistantRunDe
 }
 
 func fallbackAssistantRunDecision(run assistantstore.Run) assistantRunDecision {
+	return fallbackAssistantRunDecisionWithReason(run, "Fallback deterministic scan used because no language model provider is configured.")
+}
+
+func fallbackAssistantRunDecisionWithReason(run assistantstore.Run, reason string) assistantRunDecision {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "Fallback deterministic scan used."
+	}
 	decision := assistantRunDecision{
 		Decision: assistantstore.RunDecisionNoop,
 		Summary:  "No urgent action found in the current homelabd state.",
-		Changed:  []string{"Fallback deterministic scan used because no language model provider is configured."},
+		Changed:  []string{reason},
 	}
 	if len(run.Snapshot.Signals) > 0 {
 		return decision

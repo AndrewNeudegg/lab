@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +87,30 @@ func TestGeminiCapabilities(t *testing.T) {
 	}
 	if caps.MaxTokensField != "maxOutputTokens" {
 		t.Fatalf("max tokens field = %q", caps.MaxTokensField)
+	}
+}
+
+func TestGeminiRejectsEmptyTextPart(t *testing.T) {
+	skipIfNoLoopback(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":""}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":0,"totalTokenCount":2}}`))
+	}))
+	defer server.Close()
+
+	provider := NewGemini(server.URL, "test")
+	provider.client = server.Client()
+
+	_, err := provider.Complete(context.Background(), CompletionRequest{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("Complete returned nil error for empty text part")
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("error = %v, want retryable empty content error", err)
+	}
+	if !strings.Contains(err.Error(), "empty content") || !strings.Contains(err.Error(), "MAX_TOKENS") {
+		t.Fatalf("error = %q, want empty content with finish reason", err.Error())
 	}
 }

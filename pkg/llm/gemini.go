@@ -67,11 +67,16 @@ func (p *Gemini) Complete(ctx context.Context, req CompletionRequest) (Completio
 	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
 		return CompletionResponse{}, err
 	}
-	if len(wire.Candidates) == 0 || len(wire.Candidates[0].Content.Parts) == 0 {
-		return CompletionResponse{}, Retryable(fmt.Errorf("gemini provider returned no content"))
+	if len(wire.Candidates) == 0 {
+		return CompletionResponse{}, geminiNoContentError(wire)
+	}
+	candidate := wire.Candidates[0]
+	content := geminiTextContent(candidate.Content.Parts)
+	if strings.TrimSpace(content) == "" {
+		return CompletionResponse{}, geminiNoContentError(wire)
 	}
 	return CompletionResponse{
-		Message: Message{Role: "assistant", Content: wire.Candidates[0].Content.Parts[0].Text},
+		Message: Message{Role: "assistant", Content: content},
 		Usage: Usage{
 			InputTokens:  wire.UsageMetadata.PromptTokenCount,
 			OutputTokens: wire.UsageMetadata.CandidatesTokenCount,
@@ -104,13 +109,42 @@ type geminiGenerationConfig struct {
 
 type geminiResponse struct {
 	Candidates []struct {
-		Content geminiContent `json:"content"`
+		Content      geminiContent `json:"content"`
+		FinishReason string        `json:"finishReason"`
 	} `json:"candidates"`
+	PromptFeedback struct {
+		BlockReason string `json:"blockReason"`
+	} `json:"promptFeedback"`
 	UsageMetadata struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
 		TotalTokenCount      int `json:"totalTokenCount"`
 	} `json:"usageMetadata"`
+}
+
+func geminiTextContent(parts []geminiPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(part.Text)
+	}
+	return b.String()
+}
+
+func geminiNoContentError(wire geminiResponse) error {
+	reason := strings.TrimSpace(wire.PromptFeedback.BlockReason)
+	if reason == "" && len(wire.Candidates) > 0 {
+		reason = strings.TrimSpace(wire.Candidates[0].FinishReason)
+	}
+	err := fmt.Errorf("gemini provider returned empty content")
+	if reason != "" {
+		err = fmt.Errorf("gemini provider returned empty content: %s", reason)
+	}
+	switch strings.ToUpper(reason) {
+	case "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION", "SPII":
+		return err
+	default:
+		return Retryable(err)
+	}
 }
 
 func geminiGenerationConfigFor(req CompletionRequest) *geminiGenerationConfig {

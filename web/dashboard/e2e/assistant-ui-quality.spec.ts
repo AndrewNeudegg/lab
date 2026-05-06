@@ -518,6 +518,16 @@ for (const viewport of [
       const runTotals = page.getByLabel('Assistant run totals');
       await expect(runTotals.getByText('1 run', { exact: true })).toBeVisible();
       await expect(runTotals.getByText('1 action', { exact: true })).toBeVisible();
+      await expect(runTotals.getByText('1 open', { exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toHaveAttribute(
+        'href',
+        '/docs/dashboard#assistant'
+      );
+      await expect(page.getByText('Capabilities, triggers, and safeguards')).toBeVisible();
+      await expect(page.getByText('Assistant reference')).toHaveCount(0);
+      if (viewport.mobile) {
+        await expect(page.locator('.run-row.selected').first()).toHaveCSS('box-shadow', /inset/);
+      }
       await page.getByRole('button', { name: /Scheduled proactive check/ }).click();
       await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeInViewport();
       await expect(page.getByRole('heading', { name: '1 recommendation to decide' })).toBeVisible();
@@ -566,10 +576,7 @@ for (const viewport of [
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to runs' }).click();
       }
-      await page.getByRole('group', { name: 'Assistant reference' }).locator('summary').click();
-      await expect(page.locator('[aria-label="Assistant capability reference"]')).toContainText(
-        'Research and prepare'
-      );
+      await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toBeVisible();
 
       await expectNoVisualArtifacts(page);
       await expectNoAxeViolations(page);
@@ -580,20 +587,19 @@ for (const viewport of [
       });
     });
 
-    test('keeps filtered empty states recoverable', async ({ page }) => {
+    test('keeps capability reference in docs rather than page controls', async ({ page }) => {
       await initLightTheme(page);
       await mockAssistantApis(page);
       await page.goto('/assistant');
       await expectAssistantReady(page);
 
-      await page.getByRole('group', { name: 'Assistant reference' }).locator('summary').click();
-      const search = page.getByRole('searchbox', { name: 'Search' });
-      await search.fill('missing');
-      await expect(page.getByText('No capabilities match this view.')).toBeVisible();
-      await page.getByRole('button', { name: 'Clear filters' }).first().click();
-      await expectAssistantReady(page);
-      await expect(search).toHaveValue('');
-      await expect(page.getByText('Research and prepare')).toBeVisible();
+      await expect(page.getByText('Assistant reference')).toHaveCount(0);
+      await expect(page.getByRole('searchbox', { name: 'Search' })).toHaveCount(0);
+      await expect(page.getByText('No capabilities match this view.')).toHaveCount(0);
+      await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toHaveAttribute(
+        'href',
+        '/docs/dashboard#assistant'
+      );
     });
   });
 }

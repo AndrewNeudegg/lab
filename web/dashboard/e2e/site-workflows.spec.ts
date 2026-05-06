@@ -913,16 +913,11 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     if (mobile) {
       await page.getByRole('button', { name: 'Back to runs' }).click();
     }
-    await page.getByRole('group', { name: 'Assistant reference' }).locator('summary').click();
-    await page.getByLabel('Area').selectOption('research');
-    await expect(page.locator('[aria-label="Assistant capability reference"]')).toContainText(
-      'Research and prepare'
+    await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toHaveAttribute(
+      'href',
+      '/docs/dashboard#assistant'
     );
-    await page.getByRole('searchbox', { name: 'Search' }).fill('source');
-    await expect(page.locator('[aria-label="Assistant capability reference"]')).toContainText(
-      'Research and prepare'
-    );
-    await expect(page.getByRole('link', { name: 'Open Chat' })).toBeVisible();
+    await expect(page.getByText('Capabilities, triggers, and safeguards')).toBeVisible();
   } else if (route === '/' || route === '/chat') {
     await page.getByRole('textbox', { name: 'Message' }).fill('status');
     await page.getByRole('button', { name: 'Send' }).click();

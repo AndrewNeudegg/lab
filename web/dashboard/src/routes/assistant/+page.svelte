@@ -3,16 +3,11 @@
   import {
     createHomelabdClient,
     Navbar,
-    type AssistantCapability,
-    type AssistantCatalogue,
     type AssistantRun,
     type AssistantRunAction,
     type AssistantRunFinding
   } from '@homelab/shared';
   import {
-    assistantAreaLabel,
-    assistantAutonomyLabel,
-    assistantAutonomyTone,
     assistantRunActionCount,
     assistantRunActionStatusLabel,
     assistantRunActionStatusTone,
@@ -23,34 +18,23 @@
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
-  const searchDelayMs = 250;
   type MobilePanel = 'runs' | 'detail';
 
-  let catalogue: AssistantCatalogue | undefined;
   let runs: AssistantRun[] = [];
   let selectedRunId = '';
   let selectedRun: AssistantRun | undefined;
-  let search = '';
-  let area = 'all';
-  let hasActiveFilters = false;
-  let loading = true;
   let runsLoading = true;
   let runStarting = false;
   let actionUpdating: string[] = [];
-  let error = '';
   let runsError = '';
   let runNotice = '';
   let lastSynced = '';
-  let searchTimer: ReturnType<typeof setTimeout> | undefined;
-  let mounted = false;
   let detailEl: HTMLElement | undefined;
   let mobilePanel: MobilePanel = 'runs';
 
   $: selectedRun = selectAssistantRun(runs, selectedRunId);
-  $: hasActiveFilters = Boolean(search.trim() || area !== 'all');
   $: totalRunActions = runs.reduce((total, run) => total + assistantRunActionCount(run), 0);
   $: openRunActions = runs.reduce((total, run) => total + runOpenActionCount(run), 0);
-  $: visibleCapabilities = catalogue?.capabilities || [];
 
   const syncTimeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -58,19 +42,6 @@
       minute: '2-digit',
       second: '2-digit'
     });
-
-  const refreshAssistant = async () => {
-    loading = true;
-    error = '';
-    try {
-      catalogue = await client.getAssistant({ search, area });
-      lastSynced = syncTimeLabel();
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Unable to load Assistant reference.';
-    } finally {
-      loading = false;
-    }
-  };
 
   const refreshAssistantRuns = async () => {
     runsLoading = true;
@@ -83,33 +54,12 @@
       } else if (!selectedRunId) {
         selectedRunId = runs[0]?.id || '';
       }
+      lastSynced = syncTimeLabel();
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to load proactive Assistant runs.';
     } finally {
       runsLoading = false;
     }
-  };
-
-  const scheduleRefresh = () => {
-    if (!mounted) {
-      return;
-    }
-    if (searchTimer) {
-      window.clearTimeout(searchTimer);
-    }
-    searchTimer = window.setTimeout(() => {
-      void refreshAssistant();
-    }, searchDelayMs);
-  };
-
-  const changeArea = (event: Event) => {
-    area = event.currentTarget instanceof HTMLSelectElement ? event.currentTarget.value : 'all';
-    scheduleRefresh();
-  };
-
-  const changeSearch = (event: Event) => {
-    search = event.currentTarget instanceof HTMLInputElement ? event.currentTarget.value : '';
-    scheduleRefresh();
   };
 
   const revealDetailIfCompact = () => {
@@ -137,17 +87,6 @@
     selectedRunId = runId;
     mobilePanel = 'detail';
     revealDetailIfCompact();
-  };
-
-  const resetFilters = () => {
-    search = '';
-    area = 'all';
-    scheduleRefresh();
-  };
-
-  const clearSearch = () => {
-    search = '';
-    scheduleRefresh();
   };
 
   const labelFromSlug = (value: unknown) =>
@@ -340,14 +279,7 @@
   };
 
   onMount(() => {
-    mounted = true;
-    void refreshAssistant();
     void refreshAssistantRuns();
-    return () => {
-      if (searchTimer) {
-        window.clearTimeout(searchTimer);
-      }
-    };
   });
 </script>
 
@@ -359,13 +291,13 @@
 <div class="assistant-shell">
   <Navbar title="Assistant" subtitle="homelabd" current="/assistant" taskApiBase={apiBase} />
 
-  <main class="assistant-page" data-ready={!runsLoading && !loading ? 'true' : 'false'}>
+  <main class="assistant-page" data-ready={!runsLoading ? 'true' : 'false'}>
     <aside class="run-pane" data-mobile-hidden={mobilePanel !== 'runs'} aria-label="Assistant runs">
       <header class="run-header">
         <div>
           <p>Assistant runs</p>
           <h1>{openRunActions ? plural(openRunActions, 'decision') : 'Ready to review'}</h1>
-          <span>{lastSynced ? `Synced ${lastSynced}` : loading ? 'Loading reference' : 'Reference not synced'}</span>
+          <span>{lastSynced ? `Synced ${lastSynced}` : runsLoading ? 'Loading runs' : 'Not synced'}</span>
         </div>
         <button
           type="button"
@@ -434,89 +366,10 @@
         {/if}
       </section>
 
-      <details class="reference-panel" aria-label="Assistant reference">
-        <summary>
-          <span>Assistant reference</span>
-          <strong>{catalogue ? plural(catalogue.capabilities.length, 'capability', 'capabilities') : 'Loading'}</strong>
-        </summary>
-        {#if error}
-          <section class="notice error" role="alert">
-            <div>
-              <strong>Reference failed</strong>
-              <p>{error} Use Sync to retry.</p>
-            </div>
-          </section>
-        {:else if catalogue}
-          <p class="reference-summary">{catalogue.summary}</p>
-
-          <div class="reference-controls" aria-label="Assistant reference filters">
-            <label for="assistant-area">
-              <span>Area</span>
-              <select id="assistant-area" bind:value={area} on:change={changeArea}>
-                {#each catalogue.filters.areas as option}
-                  <option value={option.value}>{option.label} ({option.count})</option>
-                {/each}
-              </select>
-            </label>
-            <label for="assistant-search">
-              <span>Search</span>
-              <span class="search-control">
-                <input
-                  id="assistant-search"
-                  type="search"
-                  value={search}
-                  placeholder="Search capabilities"
-                  on:input={changeSearch}
-                />
-                {#if search}
-                  <button
-                    type="button"
-                    class="icon-button"
-                    aria-label="Clear search"
-                    title="Clear search"
-                    on:click={clearSearch}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <path d="M6 6l12 12M18 6 6 18" />
-                    </svg>
-                  </button>
-                {/if}
-              </span>
-            </label>
-          </div>
-
-          <div class="reference-rows" aria-label="Assistant capability reference">
-            {#if visibleCapabilities.length}
-              {#each visibleCapabilities as capability}
-                <article class="capability-reference">
-                  <span class={`dot ${assistantAutonomyTone(capability.autonomy)}`} aria-hidden="true"></span>
-                  <div>
-                    <strong>{capability.name}</strong>
-                    <small>{assistantAreaLabel(capability.area)} / {assistantAutonomyLabel(capability.autonomy)}</small>
-                    <p>{capability.promise || capability.summary}</p>
-                    {#if capability.surfaces.length}
-                      <div class="surface-links" aria-label={`Related surfaces for ${capability.name}`}>
-                        {#each capability.surfaces as surface}
-                          <a href={surface.href}>{surface.label}</a>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                </article>
-              {/each}
-            {:else}
-              <div class="empty">
-                <p>No capabilities match this view.</p>
-                {#if hasActiveFilters}
-                  <button type="button" class="text-action" on:click={resetFilters}>Clear filters</button>
-                {/if}
-              </div>
-            {/if}
-          </div>
-        {:else}
-          <p class="empty">Loading Assistant reference...</p>
-        {/if}
-      </details>
+      <a class="docs-link" href="/docs/dashboard#assistant" aria-label="Open Assistant documentation">
+        <span>Assistant docs</span>
+        <strong>Capabilities, triggers, and safeguards</strong>
+      </a>
     </aside>
 
     <section
@@ -944,9 +797,7 @@
     --assistant-primary-text: #e0f2fe;
   }
 
-  button,
-  input,
-  select {
+  button {
     font: inherit;
   }
 
@@ -1014,8 +865,7 @@
   .notice,
   .section-heading,
   .recommendation-card header,
-  .action-toolbar,
-  .surface-links {
+  .action-toolbar {
     display: flex;
     align-items: center;
     gap: 0.7rem;
@@ -1049,8 +899,7 @@
   .decision-copy p,
   .section-heading p,
   .detail-section > summary > span,
-  .reference-controls span,
-  .reference-panel summary span,
+  .docs-link span,
   h4 {
     color: var(--assistant-muted, #475569);
     font-size: 0.72rem;
@@ -1075,9 +924,6 @@
   .decision-copy span,
   .run-copy em,
   .run-copy small,
-  .reference-summary,
-  .capability-reference p,
-  .capability-reference small,
   .detail-section p,
   .signal-card p,
   .signal-card small,
@@ -1095,8 +941,6 @@
   .record-header > div > span,
   .decision-copy span,
   .run-copy em,
-  .reference-summary,
-  .capability-reference p,
   .detail-section p,
   .signal-card p,
   .recommendation-card p,
@@ -1110,8 +954,7 @@
   button,
   .text-action,
   .danger-action,
-  .back-to-runs,
-  .reference-panel summary {
+  .back-to-runs {
     min-height: 2.45rem;
     border: 1px solid var(--border, #cbd5e1);
     border-radius: 8px;
@@ -1127,8 +970,7 @@
 
   button:hover:not(:disabled),
   .text-action:hover,
-  .danger-action:hover:not(:disabled),
-  .reference-panel summary:hover {
+  .danger-action:hover:not(:disabled) {
     border-color: var(--accent, #2563eb);
     background: var(--surface-hover, #eef5ff);
   }
@@ -1152,8 +994,7 @@
   }
 
   .run-button svg,
-  .back-to-runs svg,
-  .icon-button svg {
+  .back-to-runs svg {
     width: 1rem;
     height: 1rem;
     fill: none;
@@ -1167,7 +1008,6 @@
     color: var(--assistant-primary-text, #ffffff);
   }
 
-  .run-metrics,
   .record-summary {
     display: grid;
     gap: 0.65rem;
@@ -1175,14 +1015,14 @@
 
   .run-metrics {
     grid-area: metrics;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    padding: 0.65rem;
-    border: 1px solid var(--border-soft, #dbe3ef);
-    border-radius: 8px;
-    background: var(--surface, #ffffff);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+    min-width: 0;
+    padding: 0.1rem 0.05rem 0;
+    color: var(--assistant-muted, #475569);
   }
 
-  .run-metrics strong,
   .record-summary dd {
     display: block;
     color: var(--text-strong, #0f172a);
@@ -1191,16 +1031,22 @@
   }
 
   .run-metrics span {
-    min-width: 0;
-    overflow: hidden;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.22rem;
     color: var(--assistant-muted, #475569);
-    font-size: 0.78rem;
-    text-overflow: ellipsis;
+    font-size: 0.76rem;
+    font-weight: 800;
     white-space: nowrap;
   }
 
+  .run-metrics strong {
+    color: var(--text, #172033);
+    font-size: 0.82rem;
+    font-weight: 850;
+  }
+
   .run-list,
-  .reference-rows,
   .recommendation-list,
   .record-list,
   .receipt-list {
@@ -1224,11 +1070,14 @@
     min-width: 0;
     padding: 0.75rem;
     text-align: left;
+    box-shadow: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .run-row.selected {
-    border-color: var(--accent, #2563eb);
-    box-shadow: 0 0 0 1px var(--accent, #2563eb);
+    border-color: var(--border-soft, #dbe3ef);
+    background: var(--surface-hover, #eef5ff);
+    box-shadow: inset 3px 0 0 var(--accent, #2563eb);
   }
 
   .run-copy {
@@ -1238,7 +1087,6 @@
   }
 
   .run-copy strong,
-  .capability-reference strong,
   .recommendation-card strong,
   .signal-card strong,
   .object-list strong,
@@ -1522,8 +1370,7 @@
   .recommendation-card a,
   .signal-card a,
   .object-list a,
-  .receipt-list a,
-  .surface-links a {
+  .receipt-list a {
     color: var(--accent, #2563eb);
     font-weight: 850;
     text-decoration: none;
@@ -1617,118 +1464,27 @@
     padding-left: 0.9rem;
   }
 
-  .reference-panel {
+  .docs-link {
     grid-area: reference;
+    display: grid;
+    gap: 0.15rem;
     min-width: 0;
-    border: 1px solid var(--border-soft, #dbe3ef);
-    border-radius: 8px;
-    background: var(--surface, #ffffff);
+    padding: 0.65rem 0.05rem 0;
+    border-top: 1px solid var(--border-soft, #dbe3ef);
+    color: var(--assistant-muted, #475569);
+    text-decoration: none;
   }
 
-  .reference-panel summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.65rem;
-    padding: 0.7rem;
-    border: 0;
-    cursor: pointer;
-    list-style: none;
+  .docs-link strong {
+    color: var(--accent, #2563eb);
+    font-size: 0.84rem;
+    font-weight: 850;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
   }
 
-  .reference-panel summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .reference-panel[open] {
-    padding-bottom: 0.7rem;
-  }
-
-  .reference-panel[open] > :not(summary) {
-    margin: 0 0.7rem 0.7rem;
-  }
-
-  .reference-summary {
-    max-width: 36rem;
-  }
-
-  .reference-controls {
-    display: grid;
-    grid-template-columns: minmax(8rem, 0.8fr) minmax(0, 1.2fr);
-    gap: 0.65rem;
-  }
-
-  .reference-controls label {
-    display: grid;
-    gap: 0.35rem;
-    color: var(--text-strong, #0f172a);
-    font-weight: 800;
-  }
-
-  input,
-  select {
-    width: 100%;
-    min-height: 2.45rem;
-    box-sizing: border-box;
-    border: 1px solid var(--border, #cbd5e1);
-    border-radius: 8px;
-    color: var(--text, #172033);
-    background: var(--surface, #ffffff);
-    padding: 0 0.7rem;
-  }
-
-  .search-control {
-    position: relative;
-    display: block;
-  }
-
-  .search-control input {
-    padding-right: 2.8rem;
-  }
-
-  .icon-button {
-    position: absolute;
-    top: 0.25rem;
-    right: 0.25rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 2rem;
-    min-height: 2rem;
-    padding: 0;
-  }
-
-  .capability-reference {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 0.55rem;
-    min-width: 0;
-    padding: 0.7rem;
-    border: 1px solid var(--border-soft, #dbe3ef);
-    border-radius: 8px;
-    background: var(--surface-muted, #f8fafc);
-  }
-
-  .capability-reference > div {
-    display: grid;
-    min-width: 0;
-    gap: 0.18rem;
-  }
-
-  .surface-links {
-    flex-wrap: wrap;
-    margin-top: 0.2rem;
-  }
-
-  .surface-links a {
-    min-height: 1.9rem;
-    display: inline-flex;
-    align-items: center;
-    padding: 0 0.55rem;
-    border: 1px solid var(--border-soft, #dbe3ef);
-    border-radius: 999px;
-    background: var(--surface, #ffffff);
-    font-size: 0.78rem;
+  .docs-link:hover strong {
+    text-decoration: underline;
   }
 
   .empty,
@@ -1758,8 +1514,6 @@
   :global(html[data-theme='dark'] .decision-panel),
   :global(html[data-theme='dark'] .record-summary),
   :global(html[data-theme='dark'] .detail-section),
-  :global(html[data-theme='dark'] .reference-panel),
-  :global(html[data-theme='dark'] .run-metrics),
   :global(html[data-theme='dark'] .empty-record) {
     color: var(--text) !important;
     border-color: var(--border-soft) !important;
@@ -1771,9 +1525,7 @@
   :global(html[data-theme='dark'] .signal-card),
   :global(html[data-theme='dark'] .object-list article),
   :global(html[data-theme='dark'] .receipt-list li),
-  :global(html[data-theme='dark'] .capability-reference),
   :global(html[data-theme='dark'] .token-list li),
-  :global(html[data-theme='dark'] .surface-links a),
   :global(html[data-theme='dark'] .section-heading > span) {
     color: var(--text) !important;
     border-color: var(--border-soft) !important;
@@ -1783,6 +1535,15 @@
   :global(html[data-theme='dark'] .run-row:hover),
   :global(html[data-theme='dark'] .run-row.selected) {
     background: var(--surface-hover) !important;
+  }
+
+  :global(html[data-theme='dark'] .docs-link) {
+    border-color: var(--border-soft) !important;
+    color: var(--assistant-muted) !important;
+  }
+
+  :global(html[data-theme='dark'] .docs-link strong) {
+    color: #93c5fd !important;
   }
 
   :global(html[data-theme='dark'] .text-action) {
@@ -1855,12 +1616,10 @@
       display: inline-flex;
     }
 
-    .run-metrics,
     .record-summary,
     .signal-grid,
     .snapshot-grid,
-    .system-grid,
-    .reference-controls {
+    .system-grid {
       grid-template-columns: 1fr;
     }
 

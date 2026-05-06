@@ -156,9 +156,14 @@ go run ./cmd/homelabctl assistant list --all
 go run ./cmd/homelabctl assistant show arun_123
 go run ./cmd/homelabctl assistant archive arun_123 "no longer required"
 go run ./cmd/homelabctl assistant restore arun_123
+go run ./cmd/homelabctl assistant signals
+go run ./cmd/homelabctl assistant signal sig_chat useful
+go run ./cmd/homelabctl assistant signal sig_chat create-task "follow up"
 ```
 
 `assistant archive` calls `PATCH /assistant/runs/<run_id>` with `archived: true`, records `homelabctl` as the actor, preserves the run, and moves it out of the active Assistant UI. `assistant restore` clears the archive metadata and returns the run to the active decision space. Use this when an agent has established that an old recommendation is no longer useful and no task, snooze, or dismissal is needed.
+
+`assistant signals` calls `GET /assistant/signals` for the current signal inbox. `assistant signal` calls `PATCH /assistant/signals/<fingerprint>` with `useful`, `dismiss`, `snooze`, or `create_task`, so operators and agents can feed the Assistant learning loop or create a bounded follow-up task without ad hoc HTTP calls.
 
 ## Knowledge Space Commands
 

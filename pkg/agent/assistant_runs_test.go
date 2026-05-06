@@ -59,6 +59,100 @@ func TestAssistantRunCreateTasksAutonomyCreatesFollowUpTask(t *testing.T) {
 	}
 }
 
+func TestAssistantRunCreateTaskBudgetCapsExecuteSafeActions(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.cfg.Assistant.CreateTasksMaxPerRun = 1
+	run := assistantstore.Run{
+		Autonomy: assistantstore.RunAutonomyExecuteSafe,
+		Decision: assistantstore.RunDecisionRecommend,
+		RecommendedActions: []assistantstore.RunAction{
+			{
+				ID:        "action_1",
+				Kind:      "task",
+				Title:     "Review first signal",
+				Rationale: "The first signal is safe to turn into work.",
+				TaskGoal:  "Review the first proactive signal.",
+			},
+			{
+				ID:        "action_2",
+				Kind:      "task",
+				Title:     "Review second signal",
+				Rationale: "This should wait for the next run budget.",
+				TaskGoal:  "Review the second proactive signal.",
+			},
+		},
+	}
+
+	orch.applyAssistantRunActions(context.Background(), &run)
+
+	if run.Decision != assistantstore.RunDecisionCreated {
+		t.Fatalf("decision = %q, want created_tasks", run.Decision)
+	}
+	if run.RecommendedActions[0].Status != assistantstore.SignalStatusCreatedTask || run.RecommendedActions[0].CreatedTaskID == "" {
+		t.Fatalf("first action = %#v, want created task", run.RecommendedActions[0])
+	}
+	if run.RecommendedActions[1].Status != "skipped" || run.RecommendedActions[1].CreatedTaskID != "" {
+		t.Fatalf("second action = %#v, want skipped by budget", run.RecommendedActions[1])
+	}
+	var budgetReceipt bool
+	for _, receipt := range run.Receipts {
+		if receipt.Kind == "task_budget_exhausted" && receipt.ObjectID == "action_2" {
+			budgetReceipt = true
+		}
+	}
+	if !budgetReceipt {
+		t.Fatalf("receipts = %#v, want task_budget_exhausted receipt", run.Receipts)
+	}
+	tasks, err := orch.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %d, want one task created within budget", len(tasks))
+	}
+}
+
+func TestAssistantCapabilityRouterLabelsSurfaceAndApprovalNeed(t *testing.T) {
+	proposeTask := assistantCapabilityRouteForRun(assistantstore.Run{
+		Status:   assistantstore.RunStatusCompleted,
+		Autonomy: assistantstore.RunAutonomyPropose,
+		Summary:  "Task follow-up recommended.",
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:        "action_1",
+			Kind:      "task",
+			Title:     "Review task",
+			Rationale: "A task needs operator review.",
+			Status:    "recommended",
+		}},
+	})
+	if proposeTask.Capability != "tasks" || proposeTask.Decision != "propose_task" || !proposeTask.RequiresApproval {
+		t.Fatalf("task route = %#v, want task proposal requiring approval", proposeTask)
+	}
+
+	runWorkflow := assistantCapabilityRouteForRun(assistantstore.Run{
+		Status:   assistantstore.RunStatusCompleted,
+		Autonomy: assistantstore.RunAutonomyRunWorkflows,
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:           "action_2",
+			Kind:         "workflow",
+			Title:        "Run workflow",
+			WorkflowHint: "Run the approved workflow template.",
+			Status:       "recommended",
+		}},
+	})
+	if runWorkflow.Capability != "workflows" || runWorkflow.Decision != "prepare_workflow" || runWorkflow.RequiresApproval {
+		t.Fatalf("workflow route = %#v, want workflow route without extra approval", runWorkflow)
+	}
+
+	failed := assistantCapabilityRouteForRun(assistantstore.Run{
+		Status: assistantstore.RunStatusFailed,
+		Error:  "provider returned invalid content",
+	})
+	if failed.Capability != "diagnose" || failed.Decision != "review_error" || !strings.Contains(failed.Reason, "invalid content") {
+		t.Fatalf("failed route = %#v, want diagnose route", failed)
+	}
+}
+
 func TestAssistantWatchlistSignalsScoreAndRespectFeedback(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	now := time.Date(2026, 5, 6, 9, 0, 0, 0, time.UTC)
@@ -223,6 +317,49 @@ func TestSubmitAssistantSignalAppliesSourceControlsAndCooldown(t *testing.T) {
 	}
 	if assistantStringSliceContains(first.SafeActions, "create_task") || !assistantStringSliceContains(first.SafeActions, "useful") {
 		t.Fatalf("safe actions = %#v, want source-controlled actions", first.SafeActions)
+	}
+}
+
+func TestUpdateAssistantSignalCandidateStoresFeedbackAndCreatesTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	candidate, err := orch.SubmitAssistantSignal(context.Background(), assistantstore.SignalSubmitRequest{
+		Source:            "chat",
+		Kind:              "chat_quality_feedback",
+		Title:             "Review subpar chat answer",
+		Surface:           "chat",
+		ObjectID:          "evt_chat",
+		Score:             88,
+		ActionKind:        "task",
+		Rationale:         "Operator feedback flagged a poor answer.",
+		TaskGoal:          "Review the chat exchange and improve the response path.",
+		SafeActions:       []string{"create_task", "useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Create follow-up work for the chat exchange.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	useful, reply, err := orch.UpdateAssistantSignalCandidate(context.Background(), candidate.Fingerprint, assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackUseful})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Marked signal as useful." || useful.UsefulCount != 1 {
+		t.Fatalf("useful signal = %#v reply %q, want useful count", useful, reply)
+	}
+
+	created, reply, err := orch.UpdateAssistantSignalCandidate(context.Background(), candidate.Fingerprint, assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackCreateTask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Created task from signal." || created.CreatedTaskID == "" || !created.Suppressed {
+		t.Fatalf("created signal = %#v reply %q, want created task suppression", created, reply)
+	}
+	tasks, err := orch.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != created.CreatedTaskID {
+		t.Fatalf("tasks = %#v, want one created signal task", tasks)
 	}
 }
 
@@ -523,6 +660,69 @@ func TestAssistantRunActionCreateTaskFeedbackDedupesBySignal(t *testing.T) {
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %d, want one deduped task", len(tasks))
+	}
+}
+
+func TestAssistantRunLifecycleAutoArchivesOldResolvedDecisions(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.cfg.Assistant.DecisionNoopAutoArchiveSeconds = 60
+	orch.cfg.Assistant.DecisionSettledAutoArchiveSeconds = 60
+	store, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 5, 6, 8, 0, 0, 0, time.UTC)
+	if err := store.Save(assistantstore.Run{
+		ID:         "arun_noop",
+		Status:     assistantstore.RunStatusCompleted,
+		Decision:   assistantstore.RunDecisionNoop,
+		Trigger:    assistantstore.RunTrigger{Kind: "schedule", Label: "Old no-op"},
+		Autonomy:   assistantstore.RunAutonomyObserve,
+		Summary:    "No action.",
+		Snapshot:   assistantstore.RunSnapshot{GeneratedAt: old},
+		CreatedAt:  old,
+		FinishedAt: old,
+		UpdatedAt:  old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(assistantstore.Run{
+		ID:       "arun_settled",
+		Status:   assistantstore.RunStatusCompleted,
+		Decision: assistantstore.RunDecisionRecommend,
+		Trigger:  assistantstore.RunTrigger{Kind: "manual", Label: "Old settled"},
+		Autonomy: assistantstore.RunAutonomyPropose,
+		Summary:  "Action settled.",
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:        "action_1",
+			Kind:      "task",
+			Title:     "Review old item",
+			Rationale: "Already dismissed.",
+			Status:    assistantstore.SignalStatusDismissed,
+		}},
+		Snapshot:   assistantstore.RunSnapshot{GeneratedAt: old},
+		CreatedAt:  old,
+		FinishedAt: old,
+		UpdatedAt:  old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := orch.maintainAssistantRuns(context.Background(), store, old.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived != 2 {
+		t.Fatalf("archived = %d, want 2", archived)
+	}
+	for _, id := range []string{"arun_noop", "arun_settled"} {
+		run, err := store.Load(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !run.Archived || run.ArchivedBy != "assistant-lifecycle" || len(run.Receipts) == 0 {
+			t.Fatalf("run %s = %#v, want lifecycle archive receipt", id, run)
+		}
 	}
 }
 

@@ -21,9 +21,11 @@ const (
 	RunDecisionRecommend = "recommend"
 	RunDecisionCreated   = "created_tasks"
 
-	RunAutonomyObserve     = "observe"
-	RunAutonomyPropose     = "propose"
-	RunAutonomyCreateTasks = "create_tasks"
+	RunAutonomyObserve      = "observe"
+	RunAutonomyPropose      = "propose"
+	RunAutonomyCreateTasks  = "create_tasks"
+	RunAutonomyRunWorkflows = "run_workflows"
+	RunAutonomyExecuteSafe  = "execute_safe"
 )
 
 type RunRequest struct {
@@ -40,31 +42,41 @@ type RunArchiveRequest struct {
 }
 
 type Run struct {
-	ID                 string       `json:"id"`
-	Status             string       `json:"status"`
-	Decision           string       `json:"decision"`
-	Trigger            RunTrigger   `json:"trigger"`
-	Autonomy           string       `json:"autonomy"`
-	Goal               string       `json:"goal,omitempty"`
-	Summary            string       `json:"summary"`
-	Changed            []string     `json:"changed,omitempty"`
-	Concerns           []RunFinding `json:"concerns,omitempty"`
-	Opportunities      []RunFinding `json:"opportunities,omitempty"`
-	RecommendedActions []RunAction  `json:"recommended_actions,omitempty"`
-	Receipts           []RunReceipt `json:"receipts,omitempty"`
-	Snapshot           RunSnapshot  `json:"snapshot"`
-	Error              string       `json:"error,omitempty"`
-	Provider           string       `json:"provider,omitempty"`
-	Model              string       `json:"model,omitempty"`
-	Usage              RunUsage     `json:"usage,omitempty"`
-	Archived           bool         `json:"archived,omitempty"`
-	ArchivedAt         *time.Time   `json:"archived_at,omitempty"`
-	ArchivedBy         string       `json:"archived_by,omitempty"`
-	ArchivedReason     string       `json:"archived_reason,omitempty"`
-	CreatedAt          time.Time    `json:"created_at"`
-	StartedAt          time.Time    `json:"started_at,omitempty"`
-	FinishedAt         time.Time    `json:"finished_at,omitempty"`
-	UpdatedAt          time.Time    `json:"updated_at"`
+	ID                 string              `json:"id"`
+	Status             string              `json:"status"`
+	Decision           string              `json:"decision"`
+	Trigger            RunTrigger          `json:"trigger"`
+	Autonomy           string              `json:"autonomy"`
+	Goal               string              `json:"goal,omitempty"`
+	Summary            string              `json:"summary"`
+	Changed            []string            `json:"changed,omitempty"`
+	Concerns           []RunFinding        `json:"concerns,omitempty"`
+	Opportunities      []RunFinding        `json:"opportunities,omitempty"`
+	RecommendedActions []RunAction         `json:"recommended_actions,omitempty"`
+	Route              *RunCapabilityRoute `json:"route,omitempty"`
+	Receipts           []RunReceipt        `json:"receipts,omitempty"`
+	Snapshot           RunSnapshot         `json:"snapshot"`
+	Error              string              `json:"error,omitempty"`
+	Provider           string              `json:"provider,omitempty"`
+	Model              string              `json:"model,omitempty"`
+	Usage              RunUsage            `json:"usage,omitempty"`
+	Archived           bool                `json:"archived,omitempty"`
+	ArchivedAt         *time.Time          `json:"archived_at,omitempty"`
+	ArchivedBy         string              `json:"archived_by,omitempty"`
+	ArchivedReason     string              `json:"archived_reason,omitempty"`
+	CreatedAt          time.Time           `json:"created_at"`
+	StartedAt          time.Time           `json:"started_at,omitempty"`
+	FinishedAt         time.Time           `json:"finished_at,omitempty"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+}
+
+type RunCapabilityRoute struct {
+	Capability       string `json:"capability"`
+	Decision         string `json:"decision,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	NextStep         string `json:"next_step,omitempty"`
+	Autonomy         string `json:"autonomy,omitempty"`
+	RequiresApproval bool   `json:"requires_approval,omitempty"`
 }
 
 type RunTrigger struct {
@@ -341,6 +353,14 @@ func NormalizeRun(run Run) Run {
 	run.Model = strings.TrimSpace(run.Model)
 	run.ArchivedBy = strings.TrimSpace(run.ArchivedBy)
 	run.ArchivedReason = strings.TrimSpace(run.ArchivedReason)
+	if run.Route != nil {
+		route := normalizeRunCapabilityRoute(*run.Route)
+		if route.Capability == "" && route.Decision == "" && route.NextStep == "" {
+			run.Route = nil
+		} else {
+			run.Route = &route
+		}
+	}
 	if !run.Archived {
 		run.ArchivedAt = nil
 		run.ArchivedBy = ""
@@ -535,6 +555,19 @@ func normalizeRunAction(value RunAction, index int) RunAction {
 	return value
 }
 
+func normalizeRunCapabilityRoute(value RunCapabilityRoute) RunCapabilityRoute {
+	rawAutonomy := strings.TrimSpace(value.Autonomy)
+	value.Capability = strings.TrimSpace(value.Capability)
+	value.Decision = strings.TrimSpace(value.Decision)
+	value.Reason = strings.TrimSpace(value.Reason)
+	value.NextStep = strings.TrimSpace(value.NextStep)
+	value.Autonomy = normalizeRunAutonomy(value.Autonomy)
+	if rawAutonomy == "" {
+		value.Autonomy = ""
+	}
+	return value
+}
+
 func normalizeRunStatus(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case RunStatusRunning:
@@ -559,6 +592,10 @@ func normalizeRunDecision(value string) string {
 
 func normalizeRunAutonomy(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case RunAutonomyExecuteSafe:
+		return RunAutonomyExecuteSafe
+	case RunAutonomyRunWorkflows:
+		return RunAutonomyRunWorkflows
 	case RunAutonomyCreateTasks:
 		return RunAutonomyCreateTasks
 	case RunAutonomyPropose:

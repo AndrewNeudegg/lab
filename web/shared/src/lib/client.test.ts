@@ -314,6 +314,21 @@ describe('homelabd client', () => {
             updated_at: '2026-04-30T21:00:00Z'
           });
         }
+        if (init?.method === 'PATCH') {
+          return jsonResponse({
+            reply: 'Marked signal as useful.',
+            signal: {
+              id: 'sig_chat',
+              fingerprint: 'sig_chat',
+              source: 'chat',
+              kind: 'chat_quality_feedback',
+              title: 'Review subpar chat answer',
+              surface: 'chat',
+              score: 88,
+              useful_count: 1
+            }
+          });
+        }
         if (init?.method === 'POST') {
           return jsonResponse({
             reply: 'Assistant run completed.',
@@ -402,6 +417,21 @@ describe('homelabd client', () => {
           init,
           body: init?.body ? JSON.parse(String(init.body)) : undefined
         });
+        if (init?.method === 'PATCH') {
+          return jsonResponse({
+            signal: {
+              id: 'sig_chat',
+              fingerprint: 'sig_chat',
+              source: 'chat',
+              kind: 'chat_quality_feedback',
+              title: 'Review subpar chat answer',
+              surface: 'chat',
+              score: 88,
+              useful_count: 1
+            },
+            reply: 'Marked signal as useful.'
+          });
+        }
         if (init?.method === 'POST') {
           return jsonResponse({
             signal: {
@@ -444,12 +474,15 @@ describe('homelabd client', () => {
       evidence: [{ source: 'chat', kind: 'user_feedback', title: 'Operator feedback' }],
       safe_actions: ['create_task', 'useful']
     });
+    const updated = await client.updateAssistantSignal('sig_chat', { feedback: 'useful' });
 
     expect(listed.signals[0].source).toBe('chat');
     expect(submitted.signal.action_kind).toBe('task');
+    expect(updated.signal.useful_count).toBe(1);
     expect(requests.map((request) => request.url)).toEqual([
       'http://homelabd/assistant/signals',
-      'http://homelabd/assistant/signals'
+      'http://homelabd/assistant/signals',
+      'http://homelabd/assistant/signals/sig_chat'
     ]);
     expect(requests[1].init?.method).toBe('POST');
     expect(requests[1].body).toEqual({
@@ -461,6 +494,8 @@ describe('homelabd client', () => {
       evidence: [{ source: 'chat', kind: 'user_feedback', title: 'Operator feedback' }],
       safe_actions: ['create_task', 'useful']
     });
+    expect(requests[2].init?.method).toBe('PATCH');
+    expect(requests[2].body).toEqual({ feedback: 'useful' });
   });
 
   test('uses typed task and approval action endpoints', async () => {

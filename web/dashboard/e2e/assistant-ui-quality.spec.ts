@@ -153,6 +153,14 @@ const assistantRun = {
       snoozed_until: ''
     }
   ],
+  route: {
+    capability: 'tasks',
+    decision: 'propose_task',
+    reason: 'The deploy is blocked and has a clear operator decision point.',
+    next_step: 'Operator review is required before work is created.',
+    autonomy: 'propose',
+    requires_approval: true
+  },
   receipts: [
     {
       kind: 'trigger',
@@ -210,6 +218,45 @@ const assistantRun = {
   updated_at: now
 };
 
+const assistantSignal = {
+  id: 'sig_chat_quality',
+  fingerprint: 'sig_chat_quality',
+  source: 'chat',
+  kind: 'chat_quality_feedback',
+  title: 'Review subpar chat answer',
+  detail: 'Operator feedback flagged a poor answer.',
+  why_now: 'The operator marked the reply as not useful.',
+  severity: 'warning',
+  surface: 'chat',
+  object_id: 'message_assistant_1',
+  object_url: '/chat#message-assistant-1',
+  score: 88,
+  confidence: 'high',
+  priority: 'high',
+  action_kind: 'task',
+  rationale: 'Poor Assistant replies should feed improvement work.',
+  task_goal: 'Review the chat exchange and improve the response path.',
+  evidence: [
+    {
+      source: 'chat',
+      kind: 'user_feedback',
+      title: 'Operator feedback',
+      detail: 'The response was marked as not useful.',
+      object_id: 'message_assistant_1',
+      weight: 88
+    }
+  ],
+  safe_actions: ['create_task', 'useful', 'snooze', 'dismiss'],
+  suggested_next_step: 'Create follow-up work to inspect the exchange.',
+  seen_count: 2,
+  useful_count: 0,
+  first_observed_at: now,
+  last_observed_at: now,
+  expires_at: '2026-05-05T12:00:00.000Z',
+  created_at: now,
+  updated_at: now
+};
+
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const freezeTime = async (page: Page) => {
@@ -261,6 +308,7 @@ const mockAssistantApis = async (page: Page) => {
     ]
   };
   const runs = [clone(assistantRun), archivedRun];
+  const signals: any[] = [clone(assistantSignal)];
   await page.route(/\/api\/assistant\/runs(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const parts = url.pathname.split('/').filter(Boolean);
@@ -347,6 +395,43 @@ const mockAssistantApis = async (page: Page) => {
       return;
     }
     await route.fulfill({ json: { runs } });
+  });
+  await page.route(/\/api\/assistant\/signals(?:\/.*)?(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const fingerprint = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+    if (route.request().method() === 'PATCH' && fingerprint && fingerprint !== 'signals') {
+      const body = route.request().postDataJSON() as { feedback?: string };
+      const signal = signals.find((candidate) => candidate.fingerprint === fingerprint) || signals[0];
+      if (body.feedback === 'create_task') {
+        signal.created_task_id = 'task_from_signal';
+        signal.suppressed = true;
+        signal.suppression_reason = 'Task already created for this signal.';
+      } else if (body.feedback === 'useful') {
+        signal.useful_count = (signal.useful_count || 0) + 1;
+      } else if (body.feedback === 'snooze') {
+        signal.suppressed = true;
+        signal.suppression_reason = 'Snoozed until 2026-04-29T12:00:00Z.';
+        signal.snoozed_until = '2026-04-29T12:00:00Z';
+      } else if (body.feedback === 'dismiss') {
+        signal.suppressed = true;
+        signal.suppression_reason = 'Dismissed by operator feedback.';
+      }
+      await route.fulfill({
+        json: {
+          reply:
+            body.feedback === 'create_task'
+              ? 'Created task from signal.'
+              : body.feedback === 'snooze'
+                ? 'Snoozed signal.'
+                : body.feedback === 'dismiss'
+                  ? 'Dismissed signal.'
+                  : 'Marked signal as useful.',
+          signal
+        }
+      });
+      return;
+    }
+    await route.fulfill({ json: { signals } });
   });
   await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -521,6 +606,7 @@ const expectAssistantThemeSurfaces = async (page: Page, mode: 'light' | 'dark') 
     '.assistant-workbench',
     '.assistant-record .record-header',
     '.decision-panel',
+    '.route-strip',
     '.recommendation-card',
     '.detail-section'
   ]);
@@ -570,6 +656,15 @@ for (const viewport of [
       await expect(runTotals.getByText('1 active', { exact: true })).toBeVisible();
       await expect(runTotals.getByText('1 archived', { exact: true })).toBeVisible();
       await expect(runTotals.getByText('1 open', { exact: true })).toBeVisible();
+      await expect(runTotals.getByText('1 signals', { exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Signal inbox' })).toBeVisible();
+      await expect(page.getByText('Review subpar chat answer')).toBeVisible();
+      const signalActions = page.getByRole('group', { name: 'Signal actions for Review subpar chat answer' });
+      await signalActions.getByRole('button', { name: 'Useful' }).click();
+      await expect(page.getByRole('status', { name: 'Assistant signal status' })).toContainText(
+        'Marked signal as useful.'
+      );
+      await expect(signalActions.locator('.status').filter({ hasText: /^Useful$/ })).toBeVisible();
       const decisionSpaces = page.getByLabel('Assistant decision spaces');
       await expect(decisionSpaces.getByRole('button', { name: /Active/ })).toHaveAttribute(
         'aria-pressed',
@@ -599,17 +694,20 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeInViewport();
       await expect(page.getByRole('heading', { name: '1 recommendation to decide' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
-      await expect(page.getByText('Review blocked deploy')).toBeVisible();
-      await expect(page.getByText('2 sightings')).toBeVisible();
+      await expect(page.getByLabel('Assistant capability route')).toContainText('Tasks');
+      const recommendationCard = page.locator('.recommendation-card').filter({ hasText: 'Review blocked deploy' });
+      await expect(recommendationCard).toBeVisible();
+      await expect(recommendationCard).toContainText('2 sightings');
       await expect(page.getByRole('heading', { name: 'What it noticed' })).toBeVisible();
+      const selectedRunRegion = page.getByLabel('Selected Assistant run');
       const recommendationActions = page.getByRole('group', {
         name: 'Recommendation actions for Review blocked deploy'
       });
       await recommendationActions.getByRole('button', { name: 'Useful' }).click();
-      await expect(page.getByRole('status')).toContainText('Marked recommendation as useful.');
+      await expect(selectedRunRegion.getByRole('status')).toContainText('Marked recommendation as useful.');
       await expect(page.getByText('Marked useful')).toBeVisible();
       await recommendationActions.getByRole('button', { name: 'Create task' }).click();
-      await expect(page.getByRole('status')).toContainText('Created task from recommendation.');
+      await expect(selectedRunRegion.getByRole('status')).toContainText('Created task from recommendation.');
       await expect(page.getByRole('link', { name: 'Open created task' })).toHaveAttribute(
         'href',
         '/tasks?task=task_from_assistant'

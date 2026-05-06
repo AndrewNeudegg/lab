@@ -10,9 +10,11 @@
     Navbar,
     type AssistantRun,
     type AssistantRunAction,
-    type AssistantRunFinding
+    type AssistantRunFinding,
+    type AssistantSignalCandidate
   } from '@homelab/shared';
   import {
+    assistantRouteLabel,
     assistantRunActionCount,
     assistantRunActionStatusLabel,
     assistantRunActionStatusTone,
@@ -20,6 +22,8 @@
     assistantRunsForView,
     assistantRunView,
     assistantRunStatusTone,
+    assistantSignalStatusLabel,
+    assistantSignalStatusTone,
     selectAssistantRun,
     type AssistantRunView
   } from './assistant-model';
@@ -29,14 +33,17 @@
   type MobilePanel = 'runs' | 'detail';
 
   let runs: AssistantRun[] = [];
+  let signals: AssistantSignalCandidate[] = [];
   let selectedRunId = '';
   let selectedRun: AssistantRun | undefined;
   let runsLoading = true;
   let runStarting = false;
   let runArchiving = false;
+  let signalUpdating: string[] = [];
   let actionUpdating: string[] = [];
   let runsError = '';
   let runNotice = '';
+  let signalNotice = '';
   let lastSynced = '';
   let detailEl: HTMLElement | undefined;
   let mobilePanel: MobilePanel = 'runs';
@@ -44,6 +51,7 @@
   let activeRuns: AssistantRun[] = [];
   let archivedRuns: AssistantRun[] = [];
   let visibleRuns: AssistantRun[] = [];
+  let activeSignals: AssistantSignalCandidate[] = [];
   let lastAppliedRouteRunId = '';
   let pendingRouteRunId = '';
   let pendingOverviewRoute = false;
@@ -53,6 +61,7 @@
   $: visibleRuns = runView === 'archived' ? archivedRuns : activeRuns;
   $: selectedRun = selectAssistantRun(runs, selectedRunId);
   $: openRunActions = activeRuns.reduce((total, run) => total + runOpenActionCount(run), 0);
+  $: activeSignals = signals.filter((signal) => !signal.suppressed && !signal.created_task_id);
   $: runSpaces = [
     {
       id: 'active' as AssistantRunView,
@@ -79,8 +88,12 @@
     runsLoading = true;
     runsError = '';
     try {
-      const response = await client.listAssistantRuns({ archived: 'include' });
-      runs = response.runs || [];
+      const [runResponse, signalResponse] = await Promise.all([
+        client.listAssistantRuns({ archived: 'include' }),
+        client.listAssistantSignals()
+      ]);
+      runs = runResponse.runs || [];
+      signals = signalResponse.signals || [];
       applySyncedRunSelection();
       lastSynced = syncTimeLabel();
     } catch (err) {
@@ -357,6 +370,29 @@
       .map(labelFromSlug)
       .join(' / ');
 
+  const signalMeta = (signal: AssistantSignalCandidate) =>
+    [
+      signal.source || signal.surface,
+      signal.kind,
+      signal.score ? `${signal.score} score` : '',
+      signal.seen_count && signal.seen_count > 1 ? `${signal.seen_count} sightings` : ''
+    ]
+      .filter(Boolean)
+      .map(labelFromSlug)
+      .join(' / ');
+
+  const signalEvidenceSummary = (signal: AssistantSignalCandidate) =>
+    signal.evidence?.[0]?.detail || signal.evidence?.[0]?.title || signal.why_now || signal.detail || '';
+
+  const signalMutationKey = (signal: AssistantSignalCandidate) => signal.fingerprint || signal.id || signal.title;
+
+  const isSignalUpdating = (signal: AssistantSignalCandidate) =>
+    signalUpdating.includes(signalMutationKey(signal));
+
+  const signalAllows = (signal: AssistantSignalCandidate, action: string) =>
+    !signal.safe_actions?.length ||
+    signal.safe_actions.some((value) => value.toLowerCase() === action.toLowerCase());
+
   const actionSupportText = (action: AssistantRunAction) =>
     action.task_goal || action.knowledge_query || action.workflow_hint || '';
 
@@ -364,6 +400,7 @@
     runStarting = true;
     runsError = '';
     runNotice = '';
+    signalNotice = '';
     try {
       const response = await client.startAssistantRun({
         trigger_kind: 'manual',
@@ -399,6 +436,7 @@
     actionUpdating = [...actionUpdating, key];
     runsError = '';
     runNotice = '';
+    signalNotice = '';
     try {
       const response = await client.updateAssistantRunAction(selectedRun.id, action.id, {
         feedback,
@@ -425,6 +463,7 @@
     runArchiving = true;
     runsError = '';
     runNotice = '';
+    signalNotice = '';
     try {
       const response = await client.updateAssistantRunArchive(selectedRun.id, {
         archived,
@@ -441,6 +480,30 @@
       runsError = err instanceof Error ? err.message : 'Unable to update Assistant archive.';
     } finally {
       runArchiving = false;
+    }
+  };
+
+  const updateSignal = async (
+    signal: AssistantSignalCandidate,
+    feedback: 'useful' | 'dismiss' | 'snooze' | 'create_task'
+  ) => {
+    const key = signalMutationKey(signal);
+    signalUpdating = [...signalUpdating, key];
+    runsError = '';
+    signalNotice = '';
+    try {
+      const response = await client.updateAssistantSignal(signal.fingerprint, {
+        feedback,
+        snooze_seconds: feedback === 'snooze' ? 24 * 60 * 60 : undefined
+      });
+      signals = signals.map((candidate) =>
+        candidate.fingerprint === response.signal.fingerprint ? response.signal : candidate
+      );
+      signalNotice = response.reply || 'Signal updated.';
+    } catch (err) {
+      runsError = err instanceof Error ? err.message : 'Unable to update Assistant signal.';
+    } finally {
+      signalUpdating = signalUpdating.filter((value) => value !== key);
     }
   };
 
@@ -545,6 +608,7 @@
         <span><strong>{activeRuns.length}</strong> active</span>
         <span><strong>{archivedRuns.length}</strong> archived</span>
         <span><strong>{openRunActions}</strong> open</span>
+        <span><strong>{activeSignals.length}</strong> signals</span>
       </div>
 
       <section class="run-spaces" aria-label="Assistant decision spaces">
@@ -560,6 +624,83 @@
             <span>{space.count} {space.count === 1 ? 'run' : 'runs'} / {space.detail}</span>
           </button>
         {/each}
+      </section>
+
+      <section class="signal-inbox" aria-label="Assistant signal inbox">
+        <header>
+          <div>
+            <h2>Signal inbox</h2>
+            <span>{activeSignals.length ? plural(activeSignals.length, 'active signal') : 'No active signals'}</span>
+          </div>
+        </header>
+        {#if signalNotice}
+          <section class="notice success" role="status" aria-live="polite" aria-label="Assistant signal status">
+            <div>
+              <strong>Signal updated</strong>
+              <p>{signalNotice}</p>
+            </div>
+          </section>
+        {/if}
+        {#if signals.length}
+          <div class="signal-inbox-list">
+            {#each signals.slice(0, 6) as signal}
+              <article class="signal-inbox-row">
+                <span class={`dot ${assistantSignalStatusTone(signal)}`} aria-hidden="true"></span>
+                <div>
+                  <strong>{signal.title}</strong>
+                  <small>{signalMeta(signal)}</small>
+                  {#if signalEvidenceSummary(signal)}
+                    <p>{signalEvidenceSummary(signal)}</p>
+                  {/if}
+                  {#if signal.suppression_reason}
+                    <em>{signal.suppression_reason}</em>
+                  {/if}
+                  <div class="signal-toolbar" role="group" aria-label={`Signal actions for ${signal.title}`}>
+                    <span class={`status ${assistantSignalStatusTone(signal)}`}>
+                      {assistantSignalStatusLabel(signal)}
+                    </span>
+                    {#if signalAllows(signal, 'create_task')}
+                      <button
+                        type="button"
+                        class="text-action"
+                        disabled={isSignalUpdating(signal) || Boolean(signal.created_task_id)}
+                        on:click={() => void updateSignal(signal, 'create_task')}
+                      >
+                        Follow up
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="text-action"
+                      disabled={isSignalUpdating(signal)}
+                      on:click={() => void updateSignal(signal, 'useful')}
+                    >
+                      Useful
+                    </button>
+                    <button
+                      type="button"
+                      class="text-action"
+                      disabled={isSignalUpdating(signal)}
+                      on:click={() => void updateSignal(signal, 'snooze')}
+                    >
+                      Snooze
+                    </button>
+                    <button
+                      type="button"
+                      class="danger-action"
+                      disabled={isSignalUpdating(signal)}
+                      on:click={() => void updateSignal(signal, 'dismiss')}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {:else}
+          <p class="empty">Signals from chat, tasks, health, workflows, and future sources will appear here.</p>
+        {/if}
       </section>
 
       {#if runsError}
@@ -729,7 +870,24 @@
               <dt>Actions</dt>
               <dd>{assistantRunActionCount(selectedRun)}</dd>
             </div>
+            <div>
+              <dt>Route</dt>
+              <dd>{assistantRouteLabel(selectedRun.route?.capability)}</dd>
+            </div>
           </dl>
+
+          {#if selectedRun.route}
+            <section class="route-strip" aria-label="Assistant capability route">
+              <span class="status blue">{assistantRouteLabel(selectedRun.route.capability)}</span>
+              <div>
+                <strong>{labelFromSlug(selectedRun.route.decision || 'selected')}</strong>
+                <p>{selectedRun.route.next_step || selectedRun.route.reason || 'Assistant selected a harness capability for this decision.'}</p>
+              </div>
+              {#if selectedRun.route.requires_approval}
+                <span class="status amber">approval needed</span>
+              {/if}
+            </section>
+          {/if}
 
           {#if selectedRun.error}
             <section class="notice error" role="alert">
@@ -1347,6 +1505,82 @@
     line-height: 1.25;
   }
 
+  .signal-inbox {
+    display: grid;
+    gap: 0.55rem;
+    min-width: 0;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--surface, #ffffff);
+  }
+
+  .signal-inbox header,
+  .signal-toolbar,
+  .route-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  .signal-inbox header {
+    justify-content: space-between;
+  }
+
+  .signal-inbox h2 {
+    color: var(--text, #172033);
+    font-size: 0.84rem;
+  }
+
+  .signal-inbox header span,
+  .signal-inbox-row small,
+  .signal-inbox-row p,
+  .signal-inbox-row em,
+  .route-strip p {
+    color: var(--assistant-muted, #475569);
+    font-size: 0.75rem;
+    line-height: 1.3;
+  }
+
+  .signal-inbox-list {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .signal-inbox-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.5rem;
+    min-width: 0;
+    padding: 0.6rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .signal-inbox-row > div,
+  .route-strip > div {
+    display: grid;
+    gap: 0.22rem;
+    min-width: 0;
+  }
+
+  .signal-inbox-row strong,
+  .route-strip strong {
+    color: var(--text-strong, #0f172a);
+    overflow-wrap: anywhere;
+  }
+
+  .signal-inbox-row em {
+    font-style: normal;
+  }
+
+  .signal-toolbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    margin-top: 0.15rem;
+  }
+
   .run-list,
   .recommendation-list,
   .record-list,
@@ -1633,6 +1867,15 @@
     font-size: 0.8rem;
   }
 
+  .route-strip {
+    justify-content: space-between;
+    min-width: 0;
+    padding: 0.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--surface, #ffffff);
+  }
+
   .detail-section[open] > summary::before {
     content: "▾";
   }
@@ -1822,6 +2065,8 @@
   :global(html[data-theme='dark'] .record-header),
   :global(html[data-theme='dark'] .decision-panel),
   :global(html[data-theme='dark'] .record-summary),
+  :global(html[data-theme='dark'] .route-strip),
+  :global(html[data-theme='dark'] .signal-inbox),
   :global(html[data-theme='dark'] .detail-section),
   :global(html[data-theme='dark'] .empty-record) {
     color: var(--text) !important;
@@ -1831,6 +2076,7 @@
 
   :global(html[data-theme='dark'] .run-row),
   :global(html[data-theme='dark'] .run-spaces button),
+  :global(html[data-theme='dark'] .signal-inbox-row),
   :global(html[data-theme='dark'] .recommendation-card),
   :global(html[data-theme='dark'] .signal-card),
   :global(html[data-theme='dark'] .object-list article),
@@ -1919,6 +2165,7 @@
     .record-header,
     .record-actions,
     .decision-header,
+    .route-strip,
     .section-heading,
     .recommendation-card header {
       align-items: flex-start;
@@ -1947,7 +2194,14 @@
       width: 100%;
     }
 
-    .action-toolbar button {
+    .signal-toolbar {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      width: 100%;
+    }
+
+    .action-toolbar button,
+    .signal-toolbar button {
       width: 100%;
     }
   }

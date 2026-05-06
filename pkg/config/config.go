@@ -86,13 +86,17 @@ type RemoteAgentWorkdirConfig struct {
 }
 
 type AssistantConfig struct {
-	ProactiveEnabled              bool                                   `json:"proactive_enabled"`
-	ProactiveIntervalSeconds      int                                    `json:"proactive_interval_seconds"`
-	ProactiveAutonomy             string                                 `json:"proactive_autonomy,omitempty"`
-	ProactiveEventWatchEnabled    *bool                                  `json:"proactive_event_watch_enabled,omitempty"`
-	ProactiveEventPollSeconds     int                                    `json:"proactive_event_poll_seconds"`
-	ProactiveEventCooldownSeconds int                                    `json:"proactive_event_cooldown_seconds"`
-	SignalSources                 map[string]AssistantSignalSourceConfig `json:"signal_sources,omitempty"`
+	ProactiveEnabled                  bool                                   `json:"proactive_enabled"`
+	ProactiveIntervalSeconds          int                                    `json:"proactive_interval_seconds"`
+	ProactiveAutonomy                 string                                 `json:"proactive_autonomy,omitempty"`
+	ProactiveEventWatchEnabled        *bool                                  `json:"proactive_event_watch_enabled,omitempty"`
+	ProactiveEventPollSeconds         int                                    `json:"proactive_event_poll_seconds"`
+	ProactiveEventCooldownSeconds     int                                    `json:"proactive_event_cooldown_seconds"`
+	ProactiveMaxRunsPerHour           int                                    `json:"proactive_max_runs_per_hour,omitempty"`
+	CreateTasksMaxPerRun              int                                    `json:"create_tasks_max_per_run,omitempty"`
+	DecisionNoopAutoArchiveSeconds    int                                    `json:"decision_noop_auto_archive_seconds,omitempty"`
+	DecisionSettledAutoArchiveSeconds int                                    `json:"decision_settled_auto_archive_seconds,omitempty"`
+	SignalSources                     map[string]AssistantSignalSourceConfig `json:"signal_sources,omitempty"`
 }
 
 type AssistantSignalSourceConfig struct {
@@ -290,12 +294,16 @@ func Default() Config {
 			PollIntervalSeconds:      5,
 		},
 		Assistant: AssistantConfig{
-			ProactiveEnabled:              false,
-			ProactiveIntervalSeconds:      3600,
-			ProactiveAutonomy:             "observe",
-			ProactiveEventWatchEnabled:    boolPtr(true),
-			ProactiveEventPollSeconds:     15,
-			ProactiveEventCooldownSeconds: 300,
+			ProactiveEnabled:                  false,
+			ProactiveIntervalSeconds:          3600,
+			ProactiveAutonomy:                 "observe",
+			ProactiveEventWatchEnabled:        boolPtr(true),
+			ProactiveEventPollSeconds:         15,
+			ProactiveEventCooldownSeconds:     300,
+			ProactiveMaxRunsPerHour:           12,
+			CreateTasksMaxPerRun:              3,
+			DecisionNoopAutoArchiveSeconds:    24 * 60 * 60,
+			DecisionSettledAutoArchiveSeconds: 7 * 24 * 60 * 60,
 			SignalSources: map[string]AssistantSignalSourceConfig{
 				"chat": {
 					Enabled:         boolPtr(true),
@@ -542,6 +550,18 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Assistant.ProactiveEventCooldownSeconds == 0 {
 		c.Assistant.ProactiveEventCooldownSeconds = d.Assistant.ProactiveEventCooldownSeconds
+	}
+	if c.Assistant.ProactiveMaxRunsPerHour == 0 {
+		c.Assistant.ProactiveMaxRunsPerHour = d.Assistant.ProactiveMaxRunsPerHour
+	}
+	if c.Assistant.CreateTasksMaxPerRun == 0 {
+		c.Assistant.CreateTasksMaxPerRun = d.Assistant.CreateTasksMaxPerRun
+	}
+	if c.Assistant.DecisionNoopAutoArchiveSeconds == 0 {
+		c.Assistant.DecisionNoopAutoArchiveSeconds = d.Assistant.DecisionNoopAutoArchiveSeconds
+	}
+	if c.Assistant.DecisionSettledAutoArchiveSeconds == 0 {
+		c.Assistant.DecisionSettledAutoArchiveSeconds = d.Assistant.DecisionSettledAutoArchiveSeconds
 	}
 	if c.Assistant.SignalSources == nil {
 		c.Assistant.SignalSources = d.Assistant.SignalSources

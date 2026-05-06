@@ -2,6 +2,7 @@ import type {
   AssistantActivity,
   AssistantCapability,
   AssistantRun,
+  AssistantSignalCandidate,
   AssistantUXPattern
 } from '@homelab/shared';
 
@@ -152,5 +153,45 @@ export const assistantRunActionStatusTone = (status = '') => {
       return 'amber';
     default:
       return 'blue';
+  }
+};
+
+export const assistantSignalStatusLabel = (signal: AssistantSignalCandidate) => {
+  if (signal.created_task_id) {
+    return 'Task created';
+  }
+  if (signal.suppressed) {
+    return signal.suppression_reason?.toLowerCase().includes('snoozed') ? 'Snoozed' : 'Suppressed';
+  }
+  if ((signal.useful_count || 0) > 0) {
+    return 'Useful';
+  }
+  return 'Active';
+};
+
+export const assistantSignalStatusTone = (signal: AssistantSignalCandidate) => {
+  if (signal.created_task_id || (signal.useful_count || 0) > 0) {
+    return 'green';
+  }
+  if (signal.suppressed) {
+    return signal.suppression_reason?.toLowerCase().includes('snoozed') ? 'amber' : 'gray';
+  }
+  return signal.score >= 80 ? 'amber' : 'blue';
+};
+
+export const assistantRouteLabel = (capability = '') => {
+  switch (capability) {
+    case 'tasks':
+      return 'Tasks';
+    case 'knowledge':
+      return 'Knowledge';
+    case 'workflows':
+      return 'Workflows';
+    case 'diagnose':
+      return 'Diagnosis';
+    case 'observe':
+      return 'Observe';
+    default:
+      return capability.replaceAll('_', ' ') || 'Assistant';
   }
 };

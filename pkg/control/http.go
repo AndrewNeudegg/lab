@@ -71,6 +71,7 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/assistant", s.withCORS(s.handleAssistant))
 	mux.HandleFunc("/assistant/signals", s.withCORS(s.handleAssistantSignals))
+	mux.HandleFunc("/assistant/signals/", s.withCORS(s.handleAssistantSignal))
 	mux.HandleFunc("/assistant/runs", s.withCORS(s.handleAssistantRuns))
 	mux.HandleFunc("/assistant/runs/", s.withCORS(s.handleAssistantRun))
 	mux.HandleFunc("/chat/clear", s.withCORS(s.handleChatClear))
@@ -168,6 +169,35 @@ func (s *Server) handleAssistantSignals(rw http.ResponseWriter, req *http.Reques
 	default:
 		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (s *Server) handleAssistantSignal(rw http.ResponseWriter, req *http.Request) {
+	if s.Orchestrator == nil {
+		writeError(rw, http.StatusServiceUnavailable, "orchestrator is not configured")
+		return
+	}
+	fingerprint := strings.Trim(strings.TrimPrefix(req.URL.Path, "/assistant/signals/"), "/")
+	if fingerprint == "" {
+		writeError(rw, http.StatusNotFound, "assistant signal not found")
+		return
+	}
+	if req.Method != http.MethodPatch {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var in assistant.SignalFeedbackRequest
+	if req.Body != nil {
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	signal, reply, err := s.Orchestrator.UpdateAssistantSignalCandidate(req.Context(), fingerprint, in)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"signal": signal, "reply": reply})
 }
 
 func (s *Server) handleAssistantRun(rw http.ResponseWriter, req *http.Request) {

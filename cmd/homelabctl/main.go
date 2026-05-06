@@ -182,7 +182,7 @@ func (c cli) dispatch(args []string) error {
 
 func (c cli) assistant(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl assistant <list|show|archive|restore>")
+		return fmt.Errorf("usage: homelabctl assistant <list|show|archive|restore|signals|signal>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -225,6 +225,32 @@ func (c cli) assistant(args []string) error {
 			"archived": false,
 			"actor":    "homelabctl",
 		})
+	case "signals", "inbox":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl assistant signals")
+		}
+		return c.do(http.MethodGet, "/assistant/signals", nil)
+	case "signal":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: homelabctl assistant signal <fingerprint> <useful|dismiss|snooze|create-task> [reason]")
+		}
+		feedback := commandWord(args[2])
+		switch feedback {
+		case "useful":
+		case "dismiss", "dismissed":
+			feedback = "dismiss"
+		case "snooze", "snoozed":
+			feedback = "snooze"
+		case "create-task", "create_task", "follow-up", "followup":
+			feedback = "create_task"
+		default:
+			return fmt.Errorf("usage: homelabctl assistant signal <fingerprint> <useful|dismiss|snooze|create-task> [reason]")
+		}
+		body := map[string]any{"feedback": feedback}
+		if reason := strings.TrimSpace(strings.Join(args[3:], " ")); reason != "" {
+			body["reason"] = reason
+		}
+		return c.do(http.MethodPatch, path("assistant", "signals", args[1]), body)
 	default:
 		return fmt.Errorf("unknown assistant command %q", args[0])
 	}
@@ -1440,6 +1466,8 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] assistant show <run_id>
   homelabctl [-addr http://127.0.0.1:18080] assistant archive <run_id> [reason]
   homelabctl [-addr http://127.0.0.1:18080] assistant restore <run_id>
+  homelabctl [-addr http://127.0.0.1:18080] assistant signals
+  homelabctl [-addr http://127.0.0.1:18080] assistant signal <fingerprint> <useful|dismiss|snooze|create-task> [reason]
 
   homelabctl [-addr http://127.0.0.1:18080] agent list
   homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>

@@ -176,6 +176,24 @@ func (s *SignalCandidateStore) Upsert(req SignalSubmitRequest, now time.Time) (S
 	return candidate, nil
 }
 
+func (s *SignalCandidateStore) Save(candidate SignalCandidate, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	candidate.UpdatedAt = now
+	candidate = NormalizeSignalCandidate(candidate, now)
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(candidate, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.dir, signalCandidateFileName(candidate.Fingerprint)+".json"), append(b, '\n'), 0o644)
+}
+
 func (s *SignalCandidateStore) loadLocked(fingerprint string, now time.Time) (SignalCandidate, error) {
 	return s.loadPathLocked(filepath.Join(s.dir, signalCandidateFileName(fingerprint)+".json"), now)
 }

@@ -151,6 +151,26 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantBody:   map[string]any{"archived": false, "actor": "homelabctl"},
 		},
 		{
+			name:       "assistant signal inbox",
+			args:       []string{"assistant", "signals"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/assistant/signals",
+		},
+		{
+			name:       "assistant useful signal",
+			args:       []string{"assistant", "signal", "sig_chat", "useful"},
+			wantMethod: http.MethodPatch,
+			wantPath:   "/assistant/signals/sig_chat",
+			wantBody:   map[string]any{"feedback": "useful"},
+		},
+		{
+			name:       "assistant create signal task",
+			args:       []string{"assistant", "signal", "sig_chat", "create-task", "follow", "up"},
+			wantMethod: http.MethodPatch,
+			wantPath:   "/assistant/signals/sig_chat",
+			wantBody:   map[string]any{"feedback": "create_task", "reason": "follow up"},
+		},
+		{
 			name:       "workflow create",
 			args:       []string{"workflow", "new", "Research", "bundle:", "Find", "sources"},
 			wantMethod: http.MethodPost,

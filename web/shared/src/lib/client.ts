@@ -11,6 +11,7 @@ import type {
   AssistantSignalResponse,
   AssistantSignalsResponse,
   AssistantSignalSubmitRequest,
+  AssistantSignalUpdateRequest,
   FetchClient,
   FetchClientOptions,
   HomelabdApprovalsResponse,
@@ -232,6 +233,17 @@ export const createHomelabdClient = (
         method: 'POST',
         body: JSON.stringify(request)
       });
+    },
+    updateAssistantSignal(fingerprint: string, request: AssistantSignalUpdateRequest) {
+      return apiFetch<AssistantSignalResponse>(
+        `/assistant/signals/${encodeURIComponent(fingerprint)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'PATCH',
+          body: JSON.stringify(request)
+        }
+      );
     },
     updateAssistantRunAction(
       runId: string,

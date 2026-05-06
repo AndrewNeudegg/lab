@@ -347,6 +347,16 @@ func TestAssistantSignalEndpointsSubmitAndListCandidates(t *testing.T) {
 	if !strings.Contains(listed.Body.String(), createResponse.Signal.Fingerprint) || !strings.Contains(listed.Body.String(), `"kind":"chat_quality_feedback"`) {
 		t.Fatalf("list response missing created signal: %s", listed.Body.String())
 	}
+
+	updated := requestJSON(t, mux, http.MethodPatch, "/assistant/signals/"+createResponse.Signal.Fingerprint, `{"feedback":"useful"}`, "", http.StatusOK)
+	if !strings.Contains(updated.Body.String(), `"reply":"Marked signal as useful."`) || !strings.Contains(updated.Body.String(), `"useful_count":1`) {
+		t.Fatalf("signal feedback response did not mark useful: %s", updated.Body.String())
+	}
+
+	afterFeedback := requestJSON(t, mux, http.MethodGet, "/assistant/signals", "", "", http.StatusOK)
+	if !strings.Contains(afterFeedback.Body.String(), `"useful_count":1`) {
+		t.Fatalf("signal list did not include feedback memory: %s", afterFeedback.Body.String())
+	}
 }
 
 func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {

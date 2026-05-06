@@ -59,6 +59,10 @@
     "proactive_event_watch_enabled": true,
     "proactive_event_poll_seconds": 15,
     "proactive_event_cooldown_seconds": 300,
+    "proactive_max_runs_per_hour": 12,
+    "create_tasks_max_per_run": 3,
+    "decision_noop_auto_archive_seconds": 86400,
+    "decision_settled_auto_archive_seconds": 604800,
     "signal_sources": {
       "chat": {
         "enabled": true,

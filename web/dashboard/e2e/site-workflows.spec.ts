@@ -902,16 +902,20 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   await expectTaskNavAttention(page, mobile);
   if (route === '/assistant') {
     await expect(page.getByRole('heading', { name: '1 decision' })).toBeVisible();
-    await page.getByRole('button', { name: /Scheduled proactive check/ }).click();
+    await page.getByRole('link', { name: /Scheduled proactive check/ }).click();
+    await expect(page).toHaveURL(/\/assistant\?run=arun_site$/);
     await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
     if (mobile) {
       await page.getByRole('button', { name: 'Back to runs' }).click();
+      await expect(page).toHaveURL(/\/assistant$/);
     }
     await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
+    await expect(page).toHaveURL(/\/assistant\?run=arun_site_manual$/);
     await expect(page.getByRole('status')).toContainText('Assistant run completed.');
     if (mobile) {
       await page.getByRole('button', { name: 'Back to runs' }).click();
+      await expect(page).toHaveURL(/\/assistant$/);
     }
     await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toHaveAttribute(
       'href',

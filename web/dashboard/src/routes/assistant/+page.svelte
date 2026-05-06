@@ -1,6 +1,10 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
+  import { afterNavigate, goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { onMount, tick } from 'svelte';
   import {
+    assistantRunURL,
     createHomelabdClient,
     Navbar,
     type AssistantRun,
@@ -31,6 +35,9 @@
   let lastSynced = '';
   let detailEl: HTMLElement | undefined;
   let mobilePanel: MobilePanel = 'runs';
+  let lastAppliedRouteRunId = '';
+  let pendingRouteRunId = '';
+  let pendingOverviewRoute = false;
 
   $: selectedRun = selectAssistantRun(runs, selectedRunId);
   $: totalRunActions = runs.reduce((total, run) => total + assistantRunActionCount(run), 0);
@@ -49,11 +56,7 @@
     try {
       const response = await client.listAssistantRuns();
       runs = response.runs || [];
-      if (selectedRunId && !runs.some((run) => run.id === selectedRunId)) {
-        selectedRunId = runs[0]?.id || '';
-      } else if (!selectedRunId) {
-        selectedRunId = runs[0]?.id || '';
-      }
+      applySyncedRunSelection();
       lastSynced = syncTimeLabel();
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to load proactive Assistant runs.';
@@ -61,6 +64,11 @@
       runsLoading = false;
     }
   };
+
+  const currentRunRouteId = () => (browser ? $page.url.searchParams.get('run') || '' : '');
+
+  const currentRoutePath = () =>
+    browser ? `${$page.url.pathname}${$page.url.search}${$page.url.hash}` : '';
 
   const revealDetailIfCompact = () => {
     if (typeof window === 'undefined' || !window.matchMedia('(max-width: 760px)').matches) {
@@ -83,10 +91,84 @@
     }
   };
 
-  const selectRun = (runId: string) => {
+  const applyRouteRunSelection = (runId: string) => {
+    if (!runId) {
+      return;
+    }
     selectedRunId = runId;
     mobilePanel = 'detail';
     revealDetailIfCompact();
+  };
+
+  const applySyncedRunSelection = () => {
+    const routeRunId = currentRunRouteId();
+    if (routeRunId && runs.some((run) => run.id === routeRunId)) {
+      selectedRunId = routeRunId;
+      lastAppliedRouteRunId = routeRunId;
+      mobilePanel = 'detail';
+      return;
+    }
+    if (selectedRunId && !runs.some((run) => run.id === selectedRunId)) {
+      selectedRunId = runs[0]?.id || '';
+    } else if (!selectedRunId) {
+      selectedRunId = runs[0]?.id || '';
+    }
+    if (!routeRunId) {
+      lastAppliedRouteRunId = '';
+    }
+  };
+
+  const navigateToRun = (runId: string, replaceState = false) => {
+    if (!browser || !runId) {
+      return;
+    }
+    const next = assistantRunURL(runId);
+    if (currentRoutePath() === next) {
+      return;
+    }
+    pendingOverviewRoute = false;
+    pendingRouteRunId = runId;
+    void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
+      if (pendingRouteRunId === runId) {
+        pendingRouteRunId = '';
+      }
+    });
+  };
+
+  const navigateToRunOverview = (replaceState = true) => {
+    showRunList();
+    if (!browser || currentRoutePath() === '/assistant') {
+      pendingOverviewRoute = false;
+      pendingRouteRunId = '';
+      lastAppliedRouteRunId = '';
+      return;
+    }
+    pendingOverviewRoute = true;
+    pendingRouteRunId = '';
+    lastAppliedRouteRunId = '';
+    void goto('/assistant', { keepFocus: true, noScroll: true, replaceState }).catch(() => {
+      pendingOverviewRoute = false;
+    });
+  };
+
+  const selectRun = (runId: string, replaceState = false) => {
+    applyRouteRunSelection(runId);
+    navigateToRun(runId, replaceState);
+  };
+
+  const handleRunRowClick = (event: MouseEvent, runId: string) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    event.preventDefault();
+    selectRun(runId);
   };
 
   const labelFromSlug = (value: unknown) =>
@@ -233,10 +315,8 @@
         autonomy: 'propose'
       });
       runs = [response.run, ...runs.filter((run) => run.id !== response.run.id)];
-      selectedRunId = response.run.id;
-      mobilePanel = 'detail';
+      selectRun(response.run.id);
       runNotice = response.reply || 'Assistant proactive check completed.';
-      revealDetailIfCompact();
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to start proactive Assistant run.';
     } finally {
@@ -270,6 +350,9 @@
       runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
       selectedRunId = response.run.id;
       mobilePanel = 'detail';
+      if (currentRunRouteId() !== response.run.id) {
+        navigateToRun(response.run.id, true);
+      }
       runNotice = response.reply;
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to update Assistant recommendation.';
@@ -277,6 +360,49 @@
       actionUpdating = actionUpdating.filter((value) => value !== key);
     }
   };
+
+  afterNavigate(({ to }) => {
+    if (!browser || to?.url.pathname !== '/assistant') {
+      return;
+    }
+    const runId = to.url.searchParams.get('run') || '';
+    if (!runId) {
+      pendingOverviewRoute = false;
+      pendingRouteRunId = '';
+      lastAppliedRouteRunId = '';
+      showRunList();
+      return;
+    }
+    pendingOverviewRoute = false;
+    if (pendingRouteRunId === runId) {
+      lastAppliedRouteRunId = runId;
+      pendingRouteRunId = '';
+      return;
+    }
+    if (runId === selectedRunId) {
+      lastAppliedRouteRunId = runId;
+      mobilePanel = 'detail';
+      return;
+    }
+    if (runs.some((run) => run.id === runId)) {
+      applyRouteRunSelection(runId);
+      lastAppliedRouteRunId = runId;
+    }
+  });
+
+  $: if (browser) {
+    const routeRunId = currentRunRouteId();
+    if (
+      routeRunId &&
+      runs.some((run) => run.id === routeRunId) &&
+      !pendingOverviewRoute &&
+      routeRunId !== lastAppliedRouteRunId &&
+      routeRunId !== pendingRouteRunId
+    ) {
+      applyRouteRunSelection(routeRunId);
+      lastAppliedRouteRunId = routeRunId;
+    }
+  }
 
   onMount(() => {
     void refreshAssistantRuns();
@@ -334,12 +460,12 @@
           <p class="empty">Loading proactive runs...</p>
         {:else if runs.length}
           {#each runs as run}
-            <button
-              type="button"
+            <a
+              href={assistantRunURL(run.id)}
               class="run-row"
               class:selected={selectedRun?.id === run.id}
-              aria-pressed={selectedRun?.id === run.id}
-              on:click={() => selectRun(run.id)}
+              aria-current={selectedRun?.id === run.id ? 'page' : undefined}
+              on:click={(event) => handleRunRowClick(event, run.id)}
             >
               <span
                 class={`dot ${assistantRunStatusTone(run.status)}`}
@@ -354,7 +480,7 @@
                 </small>
                 <em>{run.summary || run.goal || 'Snapshot captured for Assistant review.'}</em>
               </span>
-            </button>
+            </a>
           {/each}
         {:else}
           <div class="empty">
@@ -381,7 +507,7 @@
       {#if selectedRun}
         <article class="assistant-record">
           <header class="record-header">
-            <button type="button" class="back-to-runs" aria-label="Back to runs" on:click={showRunList}>
+            <button type="button" class="back-to-runs" aria-label="Back to runs" on:click={() => navigateToRunOverview()}>
               <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <path d="M12.5 4.5 7 10l5.5 5.5" />
               </svg>
@@ -952,6 +1078,7 @@
   }
 
   button,
+  .run-row,
   .text-action,
   .danger-action,
   .back-to-runs {
@@ -969,6 +1096,7 @@
   }
 
   button:hover:not(:disabled),
+  .run-row:hover,
   .text-action:hover,
   .danger-action:hover:not(:disabled) {
     border-color: var(--accent, #2563eb);
@@ -1063,6 +1191,7 @@
 
   .run-row {
     display: grid;
+    box-sizing: border-box;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: flex-start;
     gap: 0.65rem;
@@ -1070,6 +1199,7 @@
     min-width: 0;
     padding: 0.75rem;
     text-align: left;
+    text-decoration: none;
     box-shadow: none;
     -webkit-tap-highlight-color: transparent;
   }

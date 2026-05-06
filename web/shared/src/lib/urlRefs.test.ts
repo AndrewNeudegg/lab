@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  assistantRunURL,
   chatMessageElementID,
   chatMessageURL,
   docsURL,
@@ -12,6 +13,9 @@ describe('dashboard URL references', () => {
   test('builds stable selected-record URLs', () => {
     expect(taskURL('task_20260428_120000_11111111')).toBe(
       '/tasks?task=task_20260428_120000_11111111'
+    );
+    expect(assistantRunURL('arun_20260506_120000_abc123')).toBe(
+      '/assistant?run=arun_20260506_120000_abc123'
     );
     expect(workflowURL('workflow_20260428_120000_22222222')).toBe(
       '/workflows?workflow=workflow_20260428_120000_22222222'

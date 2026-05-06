@@ -528,7 +528,13 @@ for (const viewport of [
       if (viewport.mobile) {
         await expect(page.locator('.run-row.selected').first()).toHaveCSS('box-shadow', /inset/);
       }
-      await page.getByRole('button', { name: /Scheduled proactive check/ }).click();
+      await page.getByRole('link', { name: /Scheduled proactive check/ }).click();
+      await expect(page).toHaveURL(/\/assistant\?run=arun_focus$/);
+      await page.goBack();
+      await expect(page).toHaveURL(/\/assistant$/);
+      await expect(page.getByRole('link', { name: /Scheduled proactive check/ })).toBeVisible();
+      await page.getByRole('link', { name: /Scheduled proactive check/ }).click();
+      await expect(page).toHaveURL(/\/assistant\?run=arun_focus$/);
       await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeInViewport();
       await expect(page.getByRole('heading', { name: '1 recommendation to decide' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
@@ -576,12 +582,15 @@ for (const viewport of [
 
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to runs' }).click();
+        await expect(page).toHaveURL(/\/assistant$/);
       }
       await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
+      await expect(page).toHaveURL(/\/assistant\?run=arun_manual$/);
       await expect(page.getByRole('status')).toContainText('Assistant run completed.');
       await expect(page.getByRole('heading', { name: 'Operator requested proactive check' })).toBeInViewport();
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to runs' }).click();
+        await expect(page).toHaveURL(/\/assistant$/);
       }
       await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toBeVisible();
 

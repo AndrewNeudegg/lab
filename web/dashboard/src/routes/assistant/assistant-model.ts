@@ -106,6 +106,14 @@ export const assistantRunDecisionLabel = (decision = '') => {
 export const selectAssistantRun = (runs: AssistantRun[], selectedRunId: string) =>
   runs.find((run) => run.id === selectedRunId);
 
+export type AssistantRunView = 'active' | 'archived';
+
+export const assistantRunView = (run: AssistantRun | undefined): AssistantRunView =>
+  run?.archived ? 'archived' : 'active';
+
+export const assistantRunsForView = (runs: AssistantRun[], view: AssistantRunView) =>
+  runs.filter((run) => assistantRunView(run) === view);
+
 export const assistantRunActionCount = (run: AssistantRun | undefined) =>
   run?.recommended_actions?.length || 0;
 

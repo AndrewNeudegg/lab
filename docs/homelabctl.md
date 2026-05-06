@@ -1,6 +1,6 @@
 # homelabctl
 
-`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, workflow, approval, event, chat, terminal, and supervisor interactions.
+`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, Assistant, workflow, approval, event, chat, terminal, and supervisor interactions.
 
 Start `homelabd` in HTTP mode before using the CLI:
 
@@ -21,7 +21,7 @@ Supervisord also has its own API address. Override it for supervisor commands wi
 
 ## Operator Rule
 
-Keep this document, `cmd/homelabctl`, and the `homelabd`, `healthd`, and `supervisord` HTTP APIs in sync. When a new operator interaction is added to one of those APIs, add or update the matching `homelabctl` command and tests in the same change. If a workflow requires repeated chat, task, approval, event, terminal, or supervisor interaction and `homelabctl` is not useful enough, extend the CLI rather than bypassing it.
+Keep this document, `cmd/homelabctl`, and the `homelabd`, `healthd`, and `supervisord` HTTP APIs in sync. When a new operator interaction is added to one of those APIs, add or update the matching `homelabctl` command and tests in the same change. If a workflow requires repeated chat, task, Assistant, approval, event, terminal, or supervisor interaction and `homelabctl` is not useful enough, extend the CLI rather than bypassing it.
 
 ## Interactive Shell
 
@@ -144,6 +144,21 @@ Plain `homelabctl message` output prints the reply and any suggested chat button
 Agent UI validation must not restart production services. For focused desktop/mobile accessibility and visual checks, workers and reviewers use `nix develop -c bun run --cwd web uat:ui`; for dashboard task-page changes, use `nix develop -c bun run --cwd web uat:tasks`; for broad dashboard shell, navigation, theme, terminal, docs, workflow, health, or supervisor changes, use `nix develop -c bun run --cwd web uat:site`. These commands start an isolated Playwright/Vite server from the task worktree and mock production APIs. See `docs/agentic-testing.md`.
 
 When `homelabd` review invokes `bun.check`, `bun.build`, `bun.test`, `bun.uat.ui`, `bun.uat.tasks`, or `bun.uat.site`, the tool enters the repo's Nix dev shell whenever `flake.nix` is available. This keeps automated review aligned with the documented worker commands and avoids browser-library drift in supervised processes.
+
+## Assistant Commands
+
+Assistant commands wrap proactive run records and decision archive state. Active runs are the default so agents can keep the decision queue short without deleting receipts:
+
+```bash
+go run ./cmd/homelabctl assistant list
+go run ./cmd/homelabctl assistant list --archived
+go run ./cmd/homelabctl assistant list --all
+go run ./cmd/homelabctl assistant show arun_123
+go run ./cmd/homelabctl assistant archive arun_123 "no longer required"
+go run ./cmd/homelabctl assistant restore arun_123
+```
+
+`assistant archive` calls `PATCH /assistant/runs/<run_id>` with `archived: true`, records `homelabctl` as the actor, preserves the run, and moves it out of the active Assistant UI. `assistant restore` clears the archive metadata and returns the run to the active decision space. Use this when an agent has established that an old recommendation is no longer useful and no task, snooze, or dismissal is needed.
 
 ## Knowledge Space Commands
 

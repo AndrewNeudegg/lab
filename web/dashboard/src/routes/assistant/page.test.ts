@@ -6,12 +6,19 @@ const pageSource = readFileSync(new URL('./+page.svelte', import.meta.url), 'utf
 describe('assistant page composition', () => {
   test('keeps run selection URL-addressable like other record pages', () => {
     expect(pageSource).toContain('assistantRunURL');
+    expect(pageSource).toContain('assistantRunsURL');
     expect(pageSource).toContain('const currentRunRouteId = () =>');
-    expect(pageSource).toContain('const navigateToRun = (runId: string, replaceState = false) =>');
+    expect(pageSource).toContain('const currentRunRouteView = (): AssistantRunView =>');
+    expect(pageSource).toContain(
+      'const navigateToRun = (runId: string, replaceState = false, view: AssistantRunView = runView) =>'
+    );
     expect(pageSource).toContain("void goto(next, { keepFocus: true, noScroll: true, replaceState })");
-    expect(pageSource).toContain('const navigateToRunOverview = (replaceState = true) =>');
-    expect(pageSource).toContain("void goto('/assistant', { keepFocus: true, noScroll: true, replaceState })");
-    expect(pageSource).toContain('href={assistantRunURL(run.id)}');
-    expect(pageSource).toContain("on:click={() => navigateToRunOverview()}");
+    expect(pageSource).toContain(
+      'const navigateToRunOverview = (replaceState = true, view: AssistantRunView = runView) =>'
+    );
+    expect(pageSource).toContain('const next = assistantRunsURL(view)');
+    expect(pageSource).toContain('href={assistantRunURL(run.id, assistantRunView(run))}');
+    expect(pageSource).toContain('on:click={() => void updateSelectedRunArchive(!selectedRun.archived)}');
+    expect(pageSource).toContain('on:click={() => setRunView(space.id)}');
   });
 });

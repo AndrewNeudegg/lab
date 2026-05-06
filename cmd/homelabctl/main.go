@@ -132,6 +132,8 @@ func (c cli) dispatch(args []string) error {
 		return c.settings(args[1:])
 	case "auto-merge", "automerge":
 		return c.settings(withAction("auto-merge", args[1:]))
+	case "assistant", "assist":
+		return c.assistant(args[1:])
 	case "agent":
 		return c.agent(args[1:])
 	case "tasks":
@@ -175,6 +177,56 @@ func (c cli) dispatch(args []string) error {
 		return c.message(strings.Join(args, " "))
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func (c cli) assistant(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl assistant <list|show|archive|restore>")
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "list", "ls", "runs", "decisions":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: homelabctl assistant list [--all|--archived]")
+		}
+		endpoint := "/assistant/runs"
+		if len(args) == 2 {
+			switch commandWord(args[1]) {
+			case "--all", "all":
+				endpoint += "?archived=include"
+			case "--archived", "archived":
+				endpoint += "?archived=only"
+			default:
+				return fmt.Errorf("usage: homelabctl assistant list [--all|--archived]")
+			}
+		}
+		return c.do(http.MethodGet, endpoint, nil)
+	case "show", "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl assistant show <run_id>")
+		}
+		return c.do(http.MethodGet, path("assistant", "runs", args[1]), nil)
+	case "archive":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: homelabctl assistant archive <run_id> [reason]")
+		}
+		body := map[string]any{
+			"archived": true,
+			"actor":    "homelabctl",
+			"reason":   strings.TrimSpace(strings.Join(args[2:], " ")),
+		}
+		return c.do(http.MethodPatch, path("assistant", "runs", args[1]), body)
+	case "restore", "unarchive":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl assistant restore <run_id>")
+		}
+		return c.do(http.MethodPatch, path("assistant", "runs", args[1]), map[string]any{
+			"archived": false,
+			"actor":    "homelabctl",
+		})
+	default:
+		return fmt.Errorf("unknown assistant command %q", args[0])
 	}
 }
 
@@ -1383,6 +1435,11 @@ func usage(out io.Writer) {
 
   homelabctl [-addr http://127.0.0.1:18080] settings
   homelabctl [-addr http://127.0.0.1:18080] settings auto-merge <on|off>
+
+  homelabctl [-addr http://127.0.0.1:18080] assistant list [--all|--archived]
+  homelabctl [-addr http://127.0.0.1:18080] assistant show <run_id>
+  homelabctl [-addr http://127.0.0.1:18080] assistant archive <run_id> [reason]
+  homelabctl [-addr http://127.0.0.1:18080] assistant restore <run_id>
 
   homelabctl [-addr http://127.0.0.1:18080] agent list
   homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>

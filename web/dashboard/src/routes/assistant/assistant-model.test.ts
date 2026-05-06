@@ -13,6 +13,8 @@ import {
   assistantRunActionStatusLabel,
   assistantRunActionStatusTone,
   assistantRunDecisionLabel,
+  assistantRunsForView,
+  assistantRunView,
   assistantRunStatusTone,
   assistantAutonomyLabel,
   assistantAutonomyTone,
@@ -124,7 +126,8 @@ describe('assistant model', () => {
   });
 
   test('labels and selects proactive assistant runs', () => {
-    const runs = [run('arun_1'), run('arun_2', 2)];
+    const archived = { ...run('arun_archived', 1), archived: true };
+    const runs = [run('arun_1'), run('arun_2', 2), archived];
 
     expect(assistantRunStatusTone('failed')).toBe('red');
     expect(assistantRunStatusTone('running')).toBe('blue');
@@ -137,5 +140,8 @@ describe('assistant model', () => {
     expect(selectAssistantRun(runs, 'missing')).toBeUndefined();
     expect(assistantRunActionCount(runs[1])).toBe(2);
     expect(assistantRunActionCount(undefined)).toBe(0);
+    expect(assistantRunView(archived)).toBe('archived');
+    expect(assistantRunsForView(runs, 'active').map((value) => value.id)).toEqual(['arun_1', 'arun_2']);
+    expect(assistantRunsForView(runs, 'archived').map((value) => value.id)).toEqual(['arun_archived']);
   });
 });

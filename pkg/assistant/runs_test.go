@@ -50,9 +50,47 @@ func TestRunStoreListsRunsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestRunStoreArchivesAndRestoresRuns(t *testing.T) {
+	store := NewRunStore(filepath.Join(t.TempDir(), "assistant_runs"))
+	createdAt := time.Date(2026, 5, 6, 9, 0, 0, 0, time.UTC)
+	archiveAt := createdAt.Add(time.Hour)
+
+	if err := store.Save(Run{
+		ID:        "arun_old_decision",
+		Status:    RunStatusCompleted,
+		Decision:  RunDecisionRecommend,
+		Trigger:   RunTrigger{Kind: "event", Label: "Old decision"},
+		Autonomy:  RunAutonomyPropose,
+		Summary:   "Action recommended.",
+		Snapshot:  RunSnapshot{GeneratedAt: createdAt},
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := store.SetArchived("arun_old_decision", true, "codex", "No longer required.", archiveAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Archived || archived.ArchivedBy != "codex" || archived.ArchivedReason != "No longer required." || archived.ArchivedAt == nil || !archived.ArchivedAt.Equal(archiveAt) {
+		t.Fatalf("archived run = %#v, want archive metadata", archived)
+	}
+
+	restored, err := store.SetArchived("arun_old_decision", false, "codex", "", archiveAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Archived || restored.ArchivedAt != nil || restored.ArchivedBy != "" || restored.ArchivedReason != "" {
+		t.Fatalf("restored run = %#v, want archive metadata cleared", restored)
+	}
+}
+
 func TestNormalizeRunFillsDefaultsAndActionIDs(t *testing.T) {
 	run := NormalizeRun(Run{
-		ID: " arun_1 ",
+		ID:             " arun_1 ",
+		ArchivedBy:     " codex ",
+		ArchivedReason: " no longer needed ",
 		Snapshot: RunSnapshot{Signals: []RunSignal{{
 			Title:       " Review blocked task ",
 			Fingerprint: "watchlist|tasks|blocked|task_1",
@@ -73,6 +111,9 @@ func TestNormalizeRunFillsDefaultsAndActionIDs(t *testing.T) {
 
 	if run.ID != "arun_1" {
 		t.Fatalf("id = %q, want trimmed id", run.ID)
+	}
+	if run.ArchivedBy != "" || run.ArchivedReason != "" {
+		t.Fatalf("archive metadata = %q/%q, want cleared when run is active", run.ArchivedBy, run.ArchivedReason)
 	}
 	if run.Status != RunStatusCompleted || run.Decision != RunDecisionNoop {
 		t.Fatalf("status/decision = %q/%q, want completed/no-op", run.Status, run.Decision)

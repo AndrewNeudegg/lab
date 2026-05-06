@@ -2,9 +2,11 @@ import type {
   AssistantCatalogue,
   AssistantCatalogueOptions,
   AssistantRun,
+  AssistantRunArchiveRequest,
   AssistantRunActionResponse,
   AssistantRunActionUpdateRequest,
   AssistantRunRequest,
+  AssistantRunsOptions,
   AssistantRunsResponse,
   AssistantSignalResponse,
   AssistantSignalsResponse,
@@ -182,8 +184,15 @@ export const createHomelabdClient = (
         fetcher
       });
     },
-    listAssistantRuns() {
-      return apiFetch<AssistantRunsResponse>('/assistant/runs', {
+    listAssistantRuns(options: AssistantRunsOptions = {}) {
+      const params = new URLSearchParams();
+      if (options.archived === 'include') {
+        params.set('archived', 'include');
+      } else if (options.archived === 'archived') {
+        params.set('archived', 'only');
+      }
+      const query = params.toString() ? `?${params.toString()}` : '';
+      return apiFetch<AssistantRunsResponse>(`/assistant/runs${query}`, {
         baseUrl,
         fetcher
       });
@@ -199,6 +208,14 @@ export const createHomelabdClient = (
         baseUrl,
         fetcher,
         method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
+    updateAssistantRunArchive(runId: string, request: AssistantRunArchiveRequest) {
+      return apiFetch<AssistantRunActionResponse>(`/assistant/runs/${encodeURIComponent(runId)}`, {
+        baseUrl,
+        fetcher,
+        method: 'PATCH',
         body: JSON.stringify(request)
       });
     },

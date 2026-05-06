@@ -33,6 +33,12 @@ type RunRequest struct {
 	Autonomy     string `json:"autonomy,omitempty"`
 }
 
+type RunArchiveRequest struct {
+	Archived *bool  `json:"archived,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Actor    string `json:"actor,omitempty"`
+}
+
 type Run struct {
 	ID                 string       `json:"id"`
 	Status             string       `json:"status"`
@@ -51,6 +57,10 @@ type Run struct {
 	Provider           string       `json:"provider,omitempty"`
 	Model              string       `json:"model,omitempty"`
 	Usage              RunUsage     `json:"usage,omitempty"`
+	Archived           bool         `json:"archived,omitempty"`
+	ArchivedAt         *time.Time   `json:"archived_at,omitempty"`
+	ArchivedBy         string       `json:"archived_by,omitempty"`
+	ArchivedReason     string       `json:"archived_reason,omitempty"`
 	CreatedAt          time.Time    `json:"created_at"`
 	StartedAt          time.Time    `json:"started_at,omitempty"`
 	FinishedAt         time.Time    `json:"finished_at,omitempty"`
@@ -275,6 +285,48 @@ func (s *RunStore) List() ([]Run, error) {
 	return runs, nil
 }
 
+func (s *RunStore) SetArchived(id string, archived bool, actor, reason string, now time.Time) (Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, err := s.loadLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "agent"
+	}
+	run.Archived = archived
+	if archived {
+		archivedAt := now
+		run.ArchivedAt = &archivedAt
+		run.ArchivedBy = actor
+		run.ArchivedReason = strings.TrimSpace(reason)
+	} else {
+		run.ArchivedAt = nil
+		run.ArchivedBy = ""
+		run.ArchivedReason = ""
+	}
+	run.UpdatedAt = now
+	run = NormalizeRun(run)
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return Run{}, err
+	}
+	b, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return Run{}, err
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, run.ID+".json"), append(b, '\n'), 0o644); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
 func NormalizeRun(run Run) Run {
 	run.ID = strings.TrimSpace(run.ID)
 	run.Status = normalizeRunStatus(run.Status)
@@ -287,6 +339,20 @@ func NormalizeRun(run Run) Run {
 	run.Error = strings.TrimSpace(run.Error)
 	run.Provider = strings.TrimSpace(run.Provider)
 	run.Model = strings.TrimSpace(run.Model)
+	run.ArchivedBy = strings.TrimSpace(run.ArchivedBy)
+	run.ArchivedReason = strings.TrimSpace(run.ArchivedReason)
+	if !run.Archived {
+		run.ArchivedAt = nil
+		run.ArchivedBy = ""
+		run.ArchivedReason = ""
+	} else if run.ArchivedAt != nil {
+		archivedAt := run.ArchivedAt.UTC()
+		if archivedAt.IsZero() {
+			run.ArchivedAt = nil
+		} else {
+			run.ArchivedAt = &archivedAt
+		}
+	}
 	if run.Snapshot.TaskCounts == nil {
 		run.Snapshot.TaskCounts = map[string]int{}
 	}

@@ -124,6 +124,33 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantBody:   map[string]any{"all": true},
 		},
 		{
+			name:       "assistant list active",
+			args:       []string{"assistant", "list"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/assistant/runs",
+		},
+		{
+			name:       "assistant list archived",
+			args:       []string{"assistant", "list", "--archived"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/assistant/runs",
+			wantQuery:  "archived=only",
+		},
+		{
+			name:       "assistant archive decision",
+			args:       []string{"assistant", "archive", "arun_123", "no", "longer", "required"},
+			wantMethod: http.MethodPatch,
+			wantPath:   "/assistant/runs/arun_123",
+			wantBody:   map[string]any{"archived": true, "actor": "homelabctl", "reason": "no longer required"},
+		},
+		{
+			name:       "assistant restore decision",
+			args:       []string{"assistant", "restore", "arun_123"},
+			wantMethod: http.MethodPatch,
+			wantPath:   "/assistant/runs/arun_123",
+			wantBody:   map[string]any{"archived": false, "actor": "homelabctl"},
+		},
+		{
 			name:       "workflow create",
 			args:       []string{"workflow", "new", "Research", "bundle:", "Find", "sources"},
 			wantMethod: http.MethodPost,

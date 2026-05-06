@@ -5,6 +5,7 @@
   import { onMount, tick } from 'svelte';
   import {
     assistantRunURL,
+    assistantRunsURL,
     createHomelabdClient,
     Navbar,
     type AssistantRun,
@@ -16,8 +17,11 @@
     assistantRunActionStatusLabel,
     assistantRunActionStatusTone,
     assistantRunDecisionLabel,
+    assistantRunsForView,
+    assistantRunView,
     assistantRunStatusTone,
-    selectAssistantRun
+    selectAssistantRun,
+    type AssistantRunView
   } from './assistant-model';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
@@ -29,19 +33,40 @@
   let selectedRun: AssistantRun | undefined;
   let runsLoading = true;
   let runStarting = false;
+  let runArchiving = false;
   let actionUpdating: string[] = [];
   let runsError = '';
   let runNotice = '';
   let lastSynced = '';
   let detailEl: HTMLElement | undefined;
   let mobilePanel: MobilePanel = 'runs';
+  let runView: AssistantRunView = 'active';
+  let activeRuns: AssistantRun[] = [];
+  let archivedRuns: AssistantRun[] = [];
+  let visibleRuns: AssistantRun[] = [];
   let lastAppliedRouteRunId = '';
   let pendingRouteRunId = '';
   let pendingOverviewRoute = false;
 
+  $: activeRuns = assistantRunsForView(runs, 'active');
+  $: archivedRuns = assistantRunsForView(runs, 'archived');
+  $: visibleRuns = runView === 'archived' ? archivedRuns : activeRuns;
   $: selectedRun = selectAssistantRun(runs, selectedRunId);
-  $: totalRunActions = runs.reduce((total, run) => total + assistantRunActionCount(run), 0);
-  $: openRunActions = runs.reduce((total, run) => total + runOpenActionCount(run), 0);
+  $: openRunActions = activeRuns.reduce((total, run) => total + runOpenActionCount(run), 0);
+  $: runSpaces = [
+    {
+      id: 'active' as AssistantRunView,
+      label: 'Active',
+      count: activeRuns.length,
+      detail: openRunActions ? plural(openRunActions, 'open decision') : 'No open decisions'
+    },
+    {
+      id: 'archived' as AssistantRunView,
+      label: 'Archived',
+      count: archivedRuns.length,
+      detail: 'Stored for review'
+    }
+  ];
 
   const syncTimeLabel = () =>
     new Date().toLocaleTimeString([], {
@@ -54,7 +79,7 @@
     runsLoading = true;
     runsError = '';
     try {
-      const response = await client.listAssistantRuns();
+      const response = await client.listAssistantRuns({ archived: 'include' });
       runs = response.runs || [];
       applySyncedRunSelection();
       lastSynced = syncTimeLabel();
@@ -66,6 +91,8 @@
   };
 
   const currentRunRouteId = () => (browser ? $page.url.searchParams.get('run') || '' : '');
+  const currentRunRouteView = (): AssistantRunView =>
+    browser && $page.url.searchParams.get('view') === 'archived' ? 'archived' : 'active';
 
   const currentRoutePath = () =>
     browser ? `${$page.url.pathname}${$page.url.search}${$page.url.hash}` : '';
@@ -91,10 +118,12 @@
     }
   };
 
-  const applyRouteRunSelection = (runId: string) => {
+  const applyRouteRunSelection = (runId: string, preferredView: AssistantRunView = runView) => {
     if (!runId) {
       return;
     }
+    const routedRun = runs.find((run) => run.id === runId);
+    runView = routedRun ? assistantRunView(routedRun) : preferredView;
     selectedRunId = runId;
     mobilePanel = 'detail';
     revealDetailIfCompact();
@@ -102,30 +131,38 @@
 
   const applySyncedRunSelection = () => {
     const routeRunId = currentRunRouteId();
-    if (routeRunId && runs.some((run) => run.id === routeRunId)) {
+    const routeView = currentRunRouteView();
+    runView = routeView;
+    const routeRun = runs.find((run) => run.id === routeRunId);
+    if (routeRunId && routeRun) {
+      runView = assistantRunView(routeRun);
       selectedRunId = routeRunId;
       lastAppliedRouteRunId = routeRunId;
       mobilePanel = 'detail';
       return;
     }
-    if (selectedRunId && !runs.some((run) => run.id === selectedRunId)) {
-      selectedRunId = runs[0]?.id || '';
+    const candidates = assistantRunsForView(runs, runView);
+    if (selectedRunId && !candidates.some((run) => run.id === selectedRunId)) {
+      selectedRunId = candidates[0]?.id || '';
     } else if (!selectedRunId) {
-      selectedRunId = runs[0]?.id || '';
+      selectedRunId = candidates[0]?.id || '';
     }
     if (!routeRunId) {
       lastAppliedRouteRunId = '';
     }
   };
 
-  const navigateToRun = (runId: string, replaceState = false) => {
+  const navigateToRun = (runId: string, replaceState = false, view: AssistantRunView = runView) => {
     if (!browser || !runId) {
       return;
     }
-    const next = assistantRunURL(runId);
+    const routedRun = runs.find((run) => run.id === runId);
+    const nextView = routedRun ? assistantRunView(routedRun) : view;
+    const next = assistantRunURL(runId, nextView);
     if (currentRoutePath() === next) {
       return;
     }
+    runView = nextView;
     pendingOverviewRoute = false;
     pendingRouteRunId = runId;
     void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
@@ -135,9 +172,11 @@
     });
   };
 
-  const navigateToRunOverview = (replaceState = true) => {
+  const navigateToRunOverview = (replaceState = true, view: AssistantRunView = runView) => {
+    runView = view;
     showRunList();
-    if (!browser || currentRoutePath() === '/assistant') {
+    const next = assistantRunsURL(view);
+    if (!browser || currentRoutePath() === next) {
       pendingOverviewRoute = false;
       pendingRouteRunId = '';
       lastAppliedRouteRunId = '';
@@ -146,14 +185,21 @@
     pendingOverviewRoute = true;
     pendingRouteRunId = '';
     lastAppliedRouteRunId = '';
-    void goto('/assistant', { keepFocus: true, noScroll: true, replaceState }).catch(() => {
+    void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
       pendingOverviewRoute = false;
     });
   };
 
-  const selectRun = (runId: string, replaceState = false) => {
-    applyRouteRunSelection(runId);
-    navigateToRun(runId, replaceState);
+  const selectRun = (runId: string, replaceState = false, view: AssistantRunView = runView) => {
+    applyRouteRunSelection(runId, view);
+    navigateToRun(runId, replaceState, view);
+  };
+
+  const setRunView = (view: AssistantRunView) => {
+    runView = view;
+    const candidates = assistantRunsForView(runs, view);
+    selectedRunId = candidates[0]?.id || '';
+    navigateToRunOverview(false, view);
   };
 
   const handleRunRowClick = (event: MouseEvent, runId: string) => {
@@ -168,7 +214,7 @@
       return;
     }
     event.preventDefault();
-    selectRun(runId);
+    selectRun(runId, false, runView);
   };
 
   const labelFromSlug = (value: unknown) =>
@@ -236,6 +282,9 @@
     if (!run || run.status === 'failed' || run.error) {
       return 'red';
     }
+    if (run.archived) {
+      return 'gray';
+    }
     if (runOpenActionCount(run) > 0) {
       return 'amber';
     }
@@ -251,6 +300,9 @@
     }
     if (run.status === 'failed' || run.error) {
       return 'Run needs diagnosis';
+    }
+    if (run.archived) {
+      return 'Archived decision';
     }
     const open = runOpenActionCount(run);
     if (open > 0) {
@@ -271,6 +323,11 @@
     }
     if (run.error) {
       return run.error;
+    }
+    if (run.archived) {
+      return run.archived_reason
+        ? `Archived: ${run.archived_reason}`
+        : 'Stored outside the active decision queue. Restore it if the Assistant should surface it again.';
     }
     if (runOpenActionCount(run) > 0) {
       return 'Review the evidence, then create work, mark useful, snooze, or dismiss the recommendation.';
@@ -315,7 +372,7 @@
         autonomy: 'propose'
       });
       runs = [response.run, ...runs.filter((run) => run.id !== response.run.id)];
-      selectRun(response.run.id);
+      selectRun(response.run.id, false, 'active');
       runNotice = response.reply || 'Assistant proactive check completed.';
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to start proactive Assistant run.';
@@ -351,7 +408,7 @@
       selectedRunId = response.run.id;
       mobilePanel = 'detail';
       if (currentRunRouteId() !== response.run.id) {
-        navigateToRun(response.run.id, true);
+        navigateToRun(response.run.id, true, assistantRunView(response.run));
       }
       runNotice = response.reply;
     } catch (err) {
@@ -361,12 +418,46 @@
     }
   };
 
+  const updateSelectedRunArchive = async (archived: boolean) => {
+    if (!selectedRun) {
+      return;
+    }
+    runArchiving = true;
+    runsError = '';
+    runNotice = '';
+    try {
+      const response = await client.updateAssistantRunArchive(selectedRun.id, {
+        archived,
+        actor: 'dashboard',
+        reason: archived ? 'No longer required.' : undefined
+      });
+      runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
+      const nextView = assistantRunView(response.run);
+      selectedRunId = response.run.id;
+      mobilePanel = 'detail';
+      navigateToRun(response.run.id, true, nextView);
+      runNotice = response.reply;
+    } catch (err) {
+      runsError = err instanceof Error ? err.message : 'Unable to update Assistant archive.';
+    } finally {
+      runArchiving = false;
+    }
+  };
+
   afterNavigate(({ to }) => {
     if (!browser || to?.url.pathname !== '/assistant') {
       return;
     }
     const runId = to.url.searchParams.get('run') || '';
+    const routeView: AssistantRunView = to.url.searchParams.get('view') === 'archived' ? 'archived' : 'active';
     if (!runId) {
+      runView = routeView;
+      const candidates = assistantRunsForView(runs, runView);
+      if (selectedRunId && !candidates.some((run) => run.id === selectedRunId)) {
+        selectedRunId = candidates[0]?.id || '';
+      } else if (!selectedRunId) {
+        selectedRunId = candidates[0]?.id || '';
+      }
       pendingOverviewRoute = false;
       pendingRouteRunId = '';
       lastAppliedRouteRunId = '';
@@ -375,17 +466,21 @@
     }
     pendingOverviewRoute = false;
     if (pendingRouteRunId === runId) {
+      const pendingRun = runs.find((run) => run.id === runId);
+      runView = pendingRun ? assistantRunView(pendingRun) : routeView;
       lastAppliedRouteRunId = runId;
       pendingRouteRunId = '';
       return;
     }
     if (runId === selectedRunId) {
+      const selected = runs.find((run) => run.id === runId);
+      runView = selected ? assistantRunView(selected) : routeView;
       lastAppliedRouteRunId = runId;
       mobilePanel = 'detail';
       return;
     }
     if (runs.some((run) => run.id === runId)) {
-      applyRouteRunSelection(runId);
+      applyRouteRunSelection(runId, routeView);
       lastAppliedRouteRunId = runId;
     }
   });
@@ -399,7 +494,7 @@
       routeRunId !== lastAppliedRouteRunId &&
       routeRunId !== pendingRouteRunId
     ) {
-      applyRouteRunSelection(routeRunId);
+      applyRouteRunSelection(routeRunId, currentRunRouteView());
       lastAppliedRouteRunId = routeRunId;
     }
   }
@@ -422,7 +517,13 @@
       <header class="run-header">
         <div>
           <p>Assistant runs</p>
-          <h1>{openRunActions ? plural(openRunActions, 'decision') : 'Ready to review'}</h1>
+          <h1>
+            {runView === 'archived'
+              ? 'Archived decisions'
+              : openRunActions
+                ? plural(openRunActions, 'decision')
+                : 'Ready to review'}
+          </h1>
           <span>{lastSynced ? `Synced ${lastSynced}` : runsLoading ? 'Loading runs' : 'Not synced'}</span>
         </div>
         <button
@@ -441,10 +542,25 @@
       </header>
 
       <div class="run-metrics" aria-label="Assistant run totals">
-        <span><strong>{runs.length}</strong> {runs.length === 1 ? 'run' : 'runs'}</span>
-        <span><strong>{totalRunActions}</strong> {totalRunActions === 1 ? 'action' : 'actions'}</span>
+        <span><strong>{activeRuns.length}</strong> active</span>
+        <span><strong>{archivedRuns.length}</strong> archived</span>
         <span><strong>{openRunActions}</strong> open</span>
       </div>
+
+      <section class="run-spaces" aria-label="Assistant decision spaces">
+        <h2>Decision spaces</h2>
+        {#each runSpaces as space}
+          <button
+            type="button"
+            class:active={runView === space.id}
+            aria-pressed={runView === space.id}
+            on:click={() => setRunView(space.id)}
+          >
+            <strong>{space.label}</strong>
+            <span>{space.count} {space.count === 1 ? 'run' : 'runs'} / {space.detail}</span>
+          </button>
+        {/each}
+      </section>
 
       {#if runsError}
         <section class="notice error" role="alert">
@@ -455,13 +571,13 @@
         </section>
       {/if}
 
-      <section class="run-list" aria-label="Proactive Assistant runs">
+      <section class="run-list" aria-label={runView === 'archived' ? 'Archived Assistant runs' : 'Active Assistant runs'}>
         {#if runsLoading}
           <p class="empty">Loading proactive runs...</p>
-        {:else if runs.length}
-          {#each runs as run}
+        {:else if visibleRuns.length}
+          {#each visibleRuns as run}
             <a
-              href={assistantRunURL(run.id)}
+              href={assistantRunURL(run.id, assistantRunView(run))}
               class="run-row"
               class:selected={selectedRun?.id === run.id}
               aria-current={selectedRun?.id === run.id ? 'page' : undefined}
@@ -484,10 +600,14 @@
           {/each}
         {:else}
           <div class="empty">
-            <p>No proactive runs yet.</p>
-            <button type="button" class="text-action" on:click={() => void startProactiveRun()}>
-              Run first check
-            </button>
+            {#if runView === 'archived'}
+              <p>No archived decisions yet.</p>
+            {:else}
+              <p>No active proactive runs.</p>
+              <button type="button" class="text-action" on:click={() => void startProactiveRun()}>
+                Run first check
+              </button>
+            {/if}
           </div>
         {/if}
       </section>
@@ -518,9 +638,20 @@
               <h2>{selectedRun.trigger.label}</h2>
               <span>{selectedRun.summary || selectedRun.goal || 'Assistant run is waiting for output.'}</span>
             </div>
-            <span class={`status ${assistantRunStatusTone(selectedRun.status)}`}>
-              {labelFromSlug(selectedRun.status)}
-            </span>
+            <div class="record-actions">
+              <span class={`status ${selectedRun.archived ? 'gray' : assistantRunStatusTone(selectedRun.status)}`}>
+                {selectedRun.archived ? 'archived' : labelFromSlug(selectedRun.status)}
+              </span>
+              <button
+                type="button"
+                class="text-action"
+                disabled={runArchiving}
+                aria-label={selectedRun.archived ? 'Restore Assistant decision' : 'Archive Assistant decision'}
+                on:click={() => void updateSelectedRunArchive(!selectedRun.archived)}
+              >
+                {selectedRun.archived ? 'Restore' : 'Archive'}
+              </button>
+            </div>
           </header>
 
           {#if runNotice}
@@ -959,10 +1090,11 @@
     grid-template-areas:
       "header"
       "metrics"
+      "spaces"
       "notice"
       "list"
       "reference";
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
     gap: 0.8rem;
     min-width: 0;
     padding: 1rem;
@@ -986,6 +1118,7 @@
 
   .run-header,
   .record-header,
+  .record-actions,
   .decision-header,
   .decision-copy,
   .notice,
@@ -1011,6 +1144,7 @@
 
   .run-header > div,
   .record-header > div,
+  .record-actions,
   .decision-copy > div,
   .section-heading > div,
   .recommendation-card header > div {
@@ -1079,6 +1213,7 @@
 
   button,
   .run-row,
+  .run-spaces button,
   .text-action,
   .danger-action,
   .back-to-runs {
@@ -1097,6 +1232,7 @@
 
   button:hover:not(:disabled),
   .run-row:hover,
+  .run-spaces button:hover,
   .text-action:hover,
   .danger-action:hover:not(:disabled) {
     border-color: var(--accent, #2563eb);
@@ -1172,6 +1308,43 @@
     color: var(--text, #172033);
     font-size: 0.82rem;
     font-weight: 850;
+  }
+
+  .run-spaces {
+    grid-area: spaces;
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .run-spaces h2 {
+    margin: 0;
+    color: var(--text, #172033);
+    font-size: 0.84rem;
+  }
+
+  .run-spaces button {
+    display: grid;
+    gap: 0.15rem;
+    min-height: 3rem;
+    padding: 0.55rem 0.65rem;
+    text-align: left;
+  }
+
+  .run-spaces button.active {
+    border-color: var(--accent, #2563eb);
+    color: var(--accent, #2563eb);
+    background: var(--surface-hover, #eef5ff);
+  }
+
+  .run-spaces strong {
+    color: var(--text-strong, #0f172a);
+    font-size: 0.84rem;
+  }
+
+  .run-spaces span {
+    color: var(--assistant-muted, #475569);
+    font-size: 0.72rem;
+    line-height: 1.25;
   }
 
   .run-list,
@@ -1372,6 +1545,12 @@
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 8px;
     background: var(--surface, #ffffff);
+  }
+
+  .record-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
 
   .back-to-runs {
@@ -1651,6 +1830,7 @@
   }
 
   :global(html[data-theme='dark'] .run-row),
+  :global(html[data-theme='dark'] .run-spaces button),
   :global(html[data-theme='dark'] .recommendation-card),
   :global(html[data-theme='dark'] .signal-card),
   :global(html[data-theme='dark'] .object-list article),
@@ -1663,7 +1843,9 @@
   }
 
   :global(html[data-theme='dark'] .run-row:hover),
-  :global(html[data-theme='dark'] .run-row.selected) {
+  :global(html[data-theme='dark'] .run-row.selected),
+  :global(html[data-theme='dark'] .run-spaces button:hover),
+  :global(html[data-theme='dark'] .run-spaces button.active) {
     background: var(--surface-hover) !important;
   }
 
@@ -1735,6 +1917,7 @@
     }
 
     .record-header,
+    .record-actions,
     .decision-header,
     .section-heading,
     .recommendation-card header {

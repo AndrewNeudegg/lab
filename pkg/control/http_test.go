@@ -286,6 +286,23 @@ func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
 	if !strings.Contains(feedback.Body.String(), `"status":"useful"`) || !strings.Contains(feedback.Body.String(), `"fingerprint":"`+startResponse.Run.RecommendedActions[0].Fingerprint+`"`) {
 		t.Fatalf("feedback response did not mark action useful: %s", feedback.Body.String())
 	}
+
+	archived := requestJSON(t, mux, http.MethodPatch, "/assistant/runs/"+startResponse.Run.ID, `{"archived":true,"actor":"codex","reason":"No longer required."}`, "", http.StatusOK)
+	if !strings.Contains(archived.Body.String(), `"archived":true`) || !strings.Contains(archived.Body.String(), `"archived_by":"codex"`) {
+		t.Fatalf("archive response did not include archive metadata: %s", archived.Body.String())
+	}
+	activeOnly := requestJSON(t, mux, http.MethodGet, "/assistant/runs", "", "", http.StatusOK)
+	if strings.Contains(activeOnly.Body.String(), startResponse.Run.ID) {
+		t.Fatalf("active list included archived run %q: %s", startResponse.Run.ID, activeOnly.Body.String())
+	}
+	archivedOnly := requestJSON(t, mux, http.MethodGet, "/assistant/runs?archived=only", "", "", http.StatusOK)
+	if !strings.Contains(archivedOnly.Body.String(), startResponse.Run.ID) {
+		t.Fatalf("archived list did not include run %q: %s", startResponse.Run.ID, archivedOnly.Body.String())
+	}
+	restored := requestJSON(t, mux, http.MethodPatch, "/assistant/runs/"+startResponse.Run.ID, `{"archived":false,"actor":"codex"}`, "", http.StatusOK)
+	if strings.Contains(restored.Body.String(), `"archived":true`) || !strings.Contains(restored.Body.String(), `"run_restored"`) {
+		t.Fatalf("restore response did not clear archive metadata or receipt: %s", restored.Body.String())
+	}
 }
 
 func TestAssistantSignalEndpointsSubmitAndListCandidates(t *testing.T) {

@@ -243,11 +243,29 @@ const mockShellApis = async (page: Page) => {
 
 const mockAssistantApis = async (page: Page) => {
   await mockShellApis(page);
-  const runs = [clone(assistantRun)];
+  const archivedRun = {
+    ...clone(assistantRun),
+    id: 'arun_archived',
+    trigger: { kind: 'event', label: 'Archived proactive check' },
+    summary: 'Old decision was kept for audit.',
+    archived: true,
+    archived_at: now,
+    archived_by: 'codex',
+    archived_reason: 'No longer required.',
+    recommended_actions: [
+      {
+        ...clone(assistantRun.recommended_actions[0]),
+        id: 'action_archived',
+        status: 'dismissed'
+      }
+    ]
+  };
+  const runs = [clone(assistantRun), archivedRun];
   await page.route(/\/api\/assistant\/runs(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const parts = url.pathname.split('/').filter(Boolean);
     const actionIndex = parts.indexOf('actions');
+    const runID = parts[parts.length - 1] || '';
     if (actionIndex > 0 && route.request().method() === 'POST') {
       const runID = parts[actionIndex - 1];
       const actionID = parts[actionIndex + 1];
@@ -278,6 +296,40 @@ const mockAssistantApis = async (page: Page) => {
       });
       return;
     }
+    if (route.request().method() === 'PATCH' && runID && runID !== 'runs') {
+      const body = route.request().postDataJSON() as {
+        archived?: boolean;
+        actor?: string;
+        reason?: string;
+      };
+      const run = runs.find((candidate) => candidate.id === runID) || runs[0];
+      run.archived = Boolean(body.archived);
+      if (run.archived) {
+        run.archived_at = now;
+        run.archived_by = body.actor || 'dashboard';
+        run.archived_reason = body.reason || '';
+      } else {
+        delete run.archived_at;
+        delete run.archived_by;
+        delete run.archived_reason;
+      }
+      run.updated_at = now;
+      run.receipts = [
+        ...(run.receipts || []),
+        {
+          kind: run.archived ? 'run_archived' : 'run_restored',
+          message: run.archived ? 'Archived Assistant decision.' : 'Restored Assistant decision.',
+          created_at: now
+        }
+      ];
+      await route.fulfill({
+        json: {
+          reply: run.archived ? 'Archived Assistant decision.' : 'Restored Assistant decision.',
+          run
+        }
+      });
+      return;
+    }
     if (route.request().method() === 'POST' && url.pathname.endsWith('/assistant/runs')) {
       const created = {
         ...clone(assistantRun),
@@ -290,7 +342,6 @@ const mockAssistantApis = async (page: Page) => {
       await route.fulfill({ status: 201, json: { reply: 'Assistant run completed.', run: created } });
       return;
     }
-    const runID = parts[parts.length - 1] || '';
     if (runID && runID !== 'runs') {
       await route.fulfill({ json: runs.find((run) => run.id === runID) || runs[0] });
       return;
@@ -516,9 +567,19 @@ for (const viewport of [
 
       await expect(page.getByRole('heading', { name: '1 decision' })).toBeVisible();
       const runTotals = page.getByLabel('Assistant run totals');
-      await expect(runTotals.getByText('1 run', { exact: true })).toBeVisible();
-      await expect(runTotals.getByText('1 action', { exact: true })).toBeVisible();
+      await expect(runTotals.getByText('1 active', { exact: true })).toBeVisible();
+      await expect(runTotals.getByText('1 archived', { exact: true })).toBeVisible();
       await expect(runTotals.getByText('1 open', { exact: true })).toBeVisible();
+      const decisionSpaces = page.getByLabel('Assistant decision spaces');
+      await expect(decisionSpaces.getByRole('button', { name: /Active/ })).toHaveAttribute(
+        'aria-pressed',
+        'true'
+      );
+      await decisionSpaces.getByRole('button', { name: /Archived/ }).click();
+      await expect(page).toHaveURL(/\/assistant\?view=archived$/);
+      await expect(page.getByRole('link', { name: /Archived proactive check/ })).toBeVisible();
+      await decisionSpaces.getByRole('button', { name: /Active/ }).click();
+      await expect(page).toHaveURL(/\/assistant$/);
       await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toHaveAttribute(
         'href',
         '/docs/dashboard#assistant'
@@ -579,6 +640,14 @@ for (const viewport of [
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
         await waitForThemeRuntime(page, 'light');
       }
+
+      await page.getByRole('button', { name: 'Archive Assistant decision' }).click();
+      await expect(page.getByRole('status')).toContainText('Archived Assistant decision.');
+      await expect(page).toHaveURL(/\/assistant\?view=archived&run=arun_focus$/);
+      await expect(page.getByRole('button', { name: 'Restore Assistant decision' })).toBeVisible();
+      await page.getByRole('button', { name: 'Restore Assistant decision' }).click();
+      await expect(page.getByRole('status')).toContainText('Restored Assistant decision.');
+      await expect(page).toHaveURL(/\/assistant\?run=arun_focus$/);
 
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to runs' }).click();

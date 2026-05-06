@@ -257,6 +257,52 @@ func (o *Orchestrator) LoadAssistantRun(runID string) (assistantstore.Run, error
 	return store.Load(runID)
 }
 
+func (o *Orchestrator) UpdateAssistantRunArchive(ctx context.Context, runID string, req assistantstore.RunArchiveRequest) (assistantstore.Run, string, error) {
+	store, err := o.assistantRunStore()
+	if err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	if req.Archived == nil {
+		return assistantstore.Run{}, "", fmt.Errorf("archived must be provided")
+	}
+	now := time.Now().UTC()
+	run, err := store.SetArchived(runID, *req.Archived, req.Actor, req.Reason, now)
+	if err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	reply := "Restored Assistant decision."
+	eventType := "assistant.run.restored"
+	receipt := assistantstore.RunReceipt{
+		Kind:      "run_restored",
+		Message:   "Restored Assistant decision to the active queue.",
+		CreatedAt: now,
+	}
+	if run.Archived {
+		reply = "Archived Assistant decision."
+		eventType = "assistant.run.archived"
+		receipt = assistantstore.RunReceipt{
+			Kind:      "run_archived",
+			Message:   "Archived Assistant decision.",
+			CreatedAt: now,
+		}
+		if run.ArchivedReason != "" {
+			receipt.Message += " Reason: " + run.ArchivedReason
+		}
+	}
+	run.Receipts = append(run.Receipts, receipt)
+	run.UpdatedAt = now
+	if err := store.Save(run); err != nil {
+		return assistantstore.Run{}, "", err
+	}
+	run, _ = store.Load(run.ID)
+	o.appendAssistantRunEvent(ctx, eventType, run, map[string]any{
+		"archived": run.Archived,
+		"actor":    run.ArchivedBy,
+		"reason":   run.ArchivedReason,
+	})
+	return run, reply, nil
+}
+
 func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore.RunRequest) (assistantstore.Run, string, error) {
 	store, err := o.assistantRunStore()
 	if err != nil {

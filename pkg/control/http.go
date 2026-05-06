@@ -117,6 +117,7 @@ func (s *Server) handleAssistantRuns(rw http.ResponseWriter, req *http.Request) 
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
 		}
+		runs = filterAssistantRunsByArchive(runs, req.URL.Query().Get("archived"))
 		writeJSON(rw, http.StatusOK, map[string]any{"runs": runs})
 	case http.MethodPost:
 		var in assistant.RunRequest
@@ -180,6 +181,10 @@ func (s *Server) handleAssistantRun(rw http.ResponseWriter, req *http.Request) {
 		s.handleAssistantRunAction(rw, req, parts[0], parts[2])
 		return
 	}
+	if len(parts) == 1 && parts[0] != "" && req.Method == http.MethodPatch {
+		s.handleAssistantRunArchive(rw, req, parts[0])
+		return
+	}
 	if len(parts) != 1 || parts[0] == "" || req.Method != http.MethodGet {
 		writeError(rw, http.StatusNotFound, "assistant run not found")
 		return
@@ -190,6 +195,47 @@ func (s *Server) handleAssistantRun(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(rw, http.StatusOK, run)
+}
+
+func filterAssistantRunsByArchive(runs []assistant.Run, mode string) []assistant.Run {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "include" || mode == "all" {
+		return runs
+	}
+	out := make([]assistant.Run, 0, len(runs))
+	onlyArchived := mode == "only" || mode == "archived" || mode == "true" || mode == "1"
+	for _, run := range runs {
+		if onlyArchived {
+			if run.Archived {
+				out = append(out, run)
+			}
+			continue
+		}
+		if !run.Archived {
+			out = append(out, run)
+		}
+	}
+	return out
+}
+
+func (s *Server) handleAssistantRunArchive(rw http.ResponseWriter, req *http.Request, runID string) {
+	var in assistant.RunArchiveRequest
+	if req.Body != nil {
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			writeError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if in.Archived == nil {
+		writeError(rw, http.StatusBadRequest, "archived must be provided")
+		return
+	}
+	run, reply, err := s.Orchestrator.UpdateAssistantRunArchive(req.Context(), runID, in)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"run": run, "reply": reply})
 }
 
 func (s *Server) handleAssistantRunAction(rw http.ResponseWriter, req *http.Request, runID, actionID string) {

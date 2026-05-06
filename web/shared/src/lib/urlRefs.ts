@@ -3,8 +3,20 @@ const encodeRef = (value: string) => encodeURIComponent(value.trim());
 export const taskURL = (taskId: string) =>
   taskId.trim() ? `/tasks?task=${encodeRef(taskId)}` : '/tasks';
 
-export const assistantRunURL = (runId: string) =>
-  runId.trim() ? `/assistant?run=${encodeRef(runId)}` : '/assistant';
+export const assistantRunsURL = (view: 'active' | 'archived' = 'active') =>
+  view === 'archived' ? '/assistant?view=archived' : '/assistant';
+
+export const assistantRunURL = (runId: string, view: 'active' | 'archived' = 'active') => {
+  if (!runId.trim()) {
+    return assistantRunsURL(view);
+  }
+  const params = new URLSearchParams();
+  if (view === 'archived') {
+    params.set('view', 'archived');
+  }
+  params.set('run', runId.trim());
+  return `/assistant?${params.toString()}`;
+};
 
 export const workflowURL = (workflowId: string) =>
   workflowId.trim() ? `/workflows?workflow=${encodeRef(workflowId)}` : '/workflows';

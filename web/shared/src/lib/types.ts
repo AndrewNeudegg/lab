@@ -414,6 +414,18 @@ export interface AssistantRunRequest {
   autonomy?: string;
 }
 
+export type AssistantRunArchiveMode = 'active' | 'include' | 'archived';
+
+export interface AssistantRunsOptions {
+  archived?: AssistantRunArchiveMode;
+}
+
+export interface AssistantRunArchiveRequest {
+  archived: boolean;
+  reason?: string;
+  actor?: string;
+}
+
 export interface AssistantRunTrigger {
   kind: string;
   label: string;
@@ -598,6 +610,10 @@ export interface AssistantRun {
   provider?: string;
   model?: string;
   usage?: AssistantRunUsage;
+  archived?: boolean;
+  archived_at?: string;
+  archived_by?: string;
+  archived_reason?: string;
   created_at: string;
   started_at?: string;
   finished_at?: string;
@@ -1206,9 +1222,13 @@ export interface SupervisorSnapshot {
 export interface HomelabdClient {
   sendMessage(request: HomelabdMessageRequest): Promise<HomelabdMessageResponse>;
   getAssistant(options?: AssistantCatalogueOptions): Promise<AssistantCatalogue>;
-  listAssistantRuns(): Promise<AssistantRunsResponse>;
+  listAssistantRuns(options?: AssistantRunsOptions): Promise<AssistantRunsResponse>;
   getAssistantRun(runId: string): Promise<AssistantRun>;
   startAssistantRun(request?: AssistantRunRequest): Promise<AssistantRunActionResponse>;
+  updateAssistantRunArchive(
+    runId: string,
+    request: AssistantRunArchiveRequest
+  ): Promise<AssistantRunActionResponse>;
   listAssistantSignals(): Promise<AssistantSignalsResponse>;
   submitAssistantSignal(request: AssistantSignalSubmitRequest): Promise<AssistantSignalResponse>;
   updateAssistantRunAction(

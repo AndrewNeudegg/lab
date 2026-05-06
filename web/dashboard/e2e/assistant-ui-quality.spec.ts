@@ -567,6 +567,13 @@ for (const viewport of [
         animations: 'disabled'
       });
 
+      if (!viewport.mobile) {
+        const lightToggle = await readyThemeToggle(page, 'Switch to light mode');
+        await lightToggle.click();
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+        await waitForThemeRuntime(page, 'light');
+      }
+
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to runs' }).click();
       }

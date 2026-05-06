@@ -59,6 +59,12 @@ func TestNormalizeRunFillsDefaultsAndActionIDs(t *testing.T) {
 			Score:       120,
 			SeenCount:   -3,
 			UsefulCount: -2,
+			Evidence: []RunSignalEvidence{
+				{Source: " chat ", Kind: " quality ", Title: " Subpar response ", Detail: " Needs review ", Weight: 130},
+				{Source: "empty"},
+			},
+			SafeActions:       []string{" create_task ", "snooze", "create_task", ""},
+			SuggestedNextStep: " Review the source conversation. ",
 		}}},
 		RecommendedActions: []RunAction{
 			{Kind: "task", Title: "Review findings", Rationale: "Needs attention."},
@@ -91,6 +97,18 @@ func TestNormalizeRunFillsDefaultsAndActionIDs(t *testing.T) {
 	}
 	if run.Snapshot.Signals[0].SeenCount != 0 || run.Snapshot.Signals[0].UsefulCount != 0 {
 		t.Fatalf("signal counts = %#v, want non-negative counts", run.Snapshot.Signals[0])
+	}
+	if run.Snapshot.Signals[0].Evidence[0].Source != "chat" || run.Snapshot.Signals[0].Evidence[0].Kind != "quality" || run.Snapshot.Signals[0].Evidence[0].Weight != 100 {
+		t.Fatalf("signal evidence = %#v, want trimmed and clamped evidence", run.Snapshot.Signals[0].Evidence)
+	}
+	if len(run.Snapshot.Signals[0].Evidence) != 1 {
+		t.Fatalf("signal evidence = %#v, want empty evidence omitted", run.Snapshot.Signals[0].Evidence)
+	}
+	if got := run.Snapshot.Signals[0].SafeActions; len(got) != 2 || got[0] != "create_task" || got[1] != "snooze" {
+		t.Fatalf("safe actions = %#v, want trimmed deduped actions", got)
+	}
+	if run.Snapshot.Signals[0].SuggestedNextStep != "Review the source conversation." {
+		t.Fatalf("suggested next step = %q, want trimmed text", run.Snapshot.Signals[0].SuggestedNextStep)
 	}
 }
 

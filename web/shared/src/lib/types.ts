@@ -484,6 +484,7 @@ export interface AssistantRunSignal {
   kind: string;
   title: string;
   detail?: string;
+  why_now?: string;
   severity?: string;
   surface?: string;
   object_id?: string;
@@ -494,12 +495,26 @@ export interface AssistantRunSignal {
   action_kind?: string;
   rationale?: string;
   task_goal?: string;
+  evidence?: AssistantRunSignalEvidence[];
+  safe_actions?: string[];
+  suggested_next_step?: string;
   suppressed?: boolean;
   suppression_reason?: string;
   seen_count?: number;
   useful_count?: number;
   created_task_id?: string;
   snoozed_until?: string;
+}
+
+export interface AssistantRunSignalEvidence {
+  source?: string;
+  kind?: string;
+  title: string;
+  detail?: string;
+  object_id?: string;
+  object_url?: string;
+  observed_at?: string;
+  weight?: number;
 }
 
 export interface AssistantRunSnapshot {

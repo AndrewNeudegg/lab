@@ -120,27 +120,42 @@ type RunSnapshot struct {
 }
 
 type RunSignal struct {
-	ID                string    `json:"id"`
-	Fingerprint       string    `json:"fingerprint"`
-	Kind              string    `json:"kind"`
-	Title             string    `json:"title"`
-	Detail            string    `json:"detail,omitempty"`
-	Severity          string    `json:"severity,omitempty"`
-	Surface           string    `json:"surface,omitempty"`
-	ObjectID          string    `json:"object_id,omitempty"`
-	ObjectURL         string    `json:"object_url,omitempty"`
-	Score             int       `json:"score"`
-	Confidence        string    `json:"confidence,omitempty"`
-	Priority          string    `json:"priority,omitempty"`
-	ActionKind        string    `json:"action_kind,omitempty"`
-	Rationale         string    `json:"rationale,omitempty"`
-	TaskGoal          string    `json:"task_goal,omitempty"`
-	Suppressed        bool      `json:"suppressed,omitempty"`
-	SuppressionReason string    `json:"suppression_reason,omitempty"`
-	SeenCount         int       `json:"seen_count,omitempty"`
-	UsefulCount       int       `json:"useful_count,omitempty"`
-	CreatedTaskID     string    `json:"created_task_id,omitempty"`
-	SnoozedUntil      time.Time `json:"snoozed_until,omitempty"`
+	ID                string              `json:"id"`
+	Fingerprint       string              `json:"fingerprint"`
+	Kind              string              `json:"kind"`
+	Title             string              `json:"title"`
+	Detail            string              `json:"detail,omitempty"`
+	WhyNow            string              `json:"why_now,omitempty"`
+	Severity          string              `json:"severity,omitempty"`
+	Surface           string              `json:"surface,omitempty"`
+	ObjectID          string              `json:"object_id,omitempty"`
+	ObjectURL         string              `json:"object_url,omitempty"`
+	Score             int                 `json:"score"`
+	Confidence        string              `json:"confidence,omitempty"`
+	Priority          string              `json:"priority,omitempty"`
+	ActionKind        string              `json:"action_kind,omitempty"`
+	Rationale         string              `json:"rationale,omitempty"`
+	TaskGoal          string              `json:"task_goal,omitempty"`
+	Evidence          []RunSignalEvidence `json:"evidence,omitempty"`
+	SafeActions       []string            `json:"safe_actions,omitempty"`
+	SuggestedNextStep string              `json:"suggested_next_step,omitempty"`
+	Suppressed        bool                `json:"suppressed,omitempty"`
+	SuppressionReason string              `json:"suppression_reason,omitempty"`
+	SeenCount         int                 `json:"seen_count,omitempty"`
+	UsefulCount       int                 `json:"useful_count,omitempty"`
+	CreatedTaskID     string              `json:"created_task_id,omitempty"`
+	SnoozedUntil      time.Time           `json:"snoozed_until,omitempty"`
+}
+
+type RunSignalEvidence struct {
+	Source     string     `json:"source,omitempty"`
+	Kind       string     `json:"kind,omitempty"`
+	Title      string     `json:"title"`
+	Detail     string     `json:"detail,omitempty"`
+	ObjectID   string     `json:"object_id,omitempty"`
+	ObjectURL  string     `json:"object_url,omitempty"`
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
+	Weight     int        `json:"weight,omitempty"`
 }
 
 type RunObjectRef struct {
@@ -317,6 +332,7 @@ func normalizeRunSignal(value RunSignal, index int) RunSignal {
 		value.Title = "Assistant signal"
 	}
 	value.Detail = strings.TrimSpace(value.Detail)
+	value.WhyNow = strings.TrimSpace(value.WhyNow)
 	value.Severity = strings.TrimSpace(value.Severity)
 	value.Surface = strings.TrimSpace(value.Surface)
 	value.ObjectID = strings.TrimSpace(value.ObjectID)
@@ -332,6 +348,9 @@ func normalizeRunSignal(value RunSignal, index int) RunSignal {
 	value.ActionKind = strings.TrimSpace(value.ActionKind)
 	value.Rationale = strings.TrimSpace(value.Rationale)
 	value.TaskGoal = strings.TrimSpace(value.TaskGoal)
+	value.SuggestedNextStep = strings.TrimSpace(value.SuggestedNextStep)
+	value.Evidence = normalizeRunSignalEvidenceList(value.Evidence)
+	value.SafeActions = normalizeRunSignalSafeActions(value.SafeActions)
 	value.SuppressionReason = strings.TrimSpace(value.SuppressionReason)
 	if value.SeenCount < 0 {
 		value.SeenCount = 0
@@ -341,6 +360,72 @@ func normalizeRunSignal(value RunSignal, index int) RunSignal {
 	}
 	value.CreatedTaskID = strings.TrimSpace(value.CreatedTaskID)
 	return value
+}
+
+func normalizeRunSignalEvidenceList(values []RunSignalEvidence) []RunSignalEvidence {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]RunSignalEvidence, 0, len(values))
+	for _, value := range values {
+		value.Source = strings.TrimSpace(value.Source)
+		value.Kind = strings.TrimSpace(value.Kind)
+		value.Title = strings.TrimSpace(value.Title)
+		value.Detail = strings.TrimSpace(value.Detail)
+		value.ObjectID = strings.TrimSpace(value.ObjectID)
+		value.ObjectURL = strings.TrimSpace(value.ObjectURL)
+		if value.ObservedAt != nil {
+			observedAt := value.ObservedAt.UTC()
+			if observedAt.IsZero() {
+				value.ObservedAt = nil
+			} else {
+				value.ObservedAt = &observedAt
+			}
+		}
+		if value.Weight < 0 {
+			value.Weight = 0
+		}
+		if value.Weight > 100 {
+			value.Weight = 100
+		}
+		if value.Title == "" && value.Detail == "" && value.ObjectID == "" && value.ObjectURL == "" {
+			continue
+		}
+		if value.Title == "" {
+			value.Title = firstRunValue(value.ObjectID, "Signal evidence")
+		}
+		out = append(out, value)
+		if len(out) >= 8 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeRunSignalSafeActions(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+		if len(out) >= 8 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeRunFinding(value RunFinding) RunFinding {

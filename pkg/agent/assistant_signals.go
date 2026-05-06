@@ -41,6 +41,8 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 		}
 		title := assistantTaskSignalTitle(task.Status, task.Title)
 		detail := firstNonEmptyString(task.Summary, "Task is "+labelAssistantSignalValue(task.Status)+".")
+		whyNow := "The task is in an operator attention state."
+		suggestedNextStep := "Review the task and decide whether to unblock, review, retry, accept, or leave it alone."
 		taskGoal := strings.TrimSpace(strings.Join([]string{
 			"Review the task that the proactive Assistant flagged.",
 			"Task: " + task.Title,
@@ -49,24 +51,27 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 			"Decide whether to unblock, review, retry, accept, or leave it alone.",
 		}, "\n"))
 		signals = append(signals, newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:          "task_" + strings.ToLower(strings.TrimSpace(task.Status)),
-			Title:         title,
-			Detail:        detail,
-			Severity:      severity,
-			Surface:       "tasks",
-			ObjectID:      task.ID,
-			ObjectURL:     firstNonEmptyString(task.URL, dashboardTaskURL(task.ID)),
-			Score:         score,
-			ActionKind:    "task",
-			Rationale:     "The task is in an operator attention state.",
-			TaskGoal:      taskGoal,
-			Fingerprint:   assistantSignalFingerprint("task", task.Status, task.ID, title),
-			Confidence:    assistantSignalConfidence(score),
-			Priority:      assistantSignalPriority(score),
-			Suppressed:    false,
-			SeenCount:     0,
-			UsefulCount:   0,
-			CreatedTaskID: "",
+			Kind:              "task_" + strings.ToLower(strings.TrimSpace(task.Status)),
+			Title:             title,
+			Detail:            detail,
+			WhyNow:            whyNow,
+			Severity:          severity,
+			Surface:           "tasks",
+			ObjectID:          task.ID,
+			ObjectURL:         firstNonEmptyString(task.URL, dashboardTaskURL(task.ID)),
+			Score:             score,
+			ActionKind:        "task",
+			Rationale:         whyNow,
+			TaskGoal:          taskGoal,
+			Evidence:          []assistantstore.RunSignalEvidence{assistantObjectEvidence("tasks", "task_status", task, score)},
+			SuggestedNextStep: suggestedNextStep,
+			Fingerprint:       assistantSignalFingerprint("task", task.Status, task.ID, title),
+			Confidence:        assistantSignalConfidence(score),
+			Priority:          assistantSignalPriority(score),
+			Suppressed:        false,
+			SeenCount:         0,
+			UsefulCount:       0,
+			CreatedTaskID:     "",
 		}))
 	}
 
@@ -76,18 +81,21 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 			countLabel += "s"
 		}
 		signals = append(signals, newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:        "pending_approvals",
-			Title:       "Review pending approvals",
-			Detail:      countLabel + " need an operator decision.",
-			Severity:    "warning",
-			Surface:     "tasks",
-			ObjectID:    "pending_approvals",
-			ObjectURL:   "/tasks",
-			Score:       82,
-			ActionKind:  "task",
-			Rationale:   "Pending approvals block work until the operator decides.",
-			TaskGoal:    "Review pending approvals in Tasks and approve, deny, or edit each request.",
-			Fingerprint: assistantSignalFingerprint("tasks", "pending_approvals", "all", "Review pending approvals"),
+			Kind:              "pending_approvals",
+			Title:             "Review pending approvals",
+			Detail:            countLabel + " need an operator decision.",
+			WhyNow:            "Pending approvals block work until the operator decides.",
+			Severity:          "warning",
+			Surface:           "tasks",
+			ObjectID:          "pending_approvals",
+			ObjectURL:         "/tasks",
+			Score:             82,
+			ActionKind:        "task",
+			Rationale:         "Pending approvals block work until the operator decides.",
+			TaskGoal:          "Review pending approvals in Tasks and approve, deny, or edit each request.",
+			Evidence:          []assistantstore.RunSignalEvidence{assistantSignalEvidence("tasks", "count", countLabel, "Approval requests awaiting an operator decision.", "pending_approvals", "/tasks", time.Time{}, 82)},
+			SuggestedNextStep: "Open Tasks and decide each pending approval.",
+			Fingerprint:       assistantSignalFingerprint("tasks", "pending_approvals", "all", "Review pending approvals"),
 		}))
 	}
 
@@ -96,18 +104,21 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 			continue
 		}
 		signals = append(signals, newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:        "workflow_failed",
-			Title:       "Review failed workflows",
-			Detail:      fmt.Sprintf("%d workflows are failed.", count),
-			Severity:    "warning",
-			Surface:     "workflows",
-			ObjectID:    "failed_workflows",
-			ObjectURL:   "/workflows",
-			Score:       74,
-			ActionKind:  "task",
-			Rationale:   "Failed workflows may mean a repeatable thinking path is stuck.",
-			TaskGoal:    "Review failed workflows, identify the failing step, and decide whether to repair or retire them.",
-			Fingerprint: assistantSignalFingerprint("workflows", "failed", "all", "Review failed workflows"),
+			Kind:              "workflow_failed",
+			Title:             "Review failed workflows",
+			Detail:            fmt.Sprintf("%d workflows are failed.", count),
+			WhyNow:            "Failed workflows may mean a repeatable thinking path is stuck.",
+			Severity:          "warning",
+			Surface:           "workflows",
+			ObjectID:          "failed_workflows",
+			ObjectURL:         "/workflows",
+			Score:             74,
+			ActionKind:        "task",
+			Rationale:         "Failed workflows may mean a repeatable thinking path is stuck.",
+			TaskGoal:          "Review failed workflows, identify the failing step, and decide whether to repair or retire them.",
+			Evidence:          []assistantstore.RunSignalEvidence{assistantSignalEvidence("workflows", "count", "Failed workflows", fmt.Sprintf("%d failed workflow records are present.", count), "failed_workflows", "/workflows", time.Time{}, 74)},
+			SuggestedNextStep: "Open Workflows and inspect the latest failed run before deciding whether to repair or retire it.",
+			Fingerprint:       assistantSignalFingerprint("workflows", "failed", "all", "Review failed workflows"),
 		}))
 	}
 
@@ -116,17 +127,20 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 			continue
 		}
 		signals = append(signals, newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:        "remote_agent_" + strings.ToLower(strings.TrimSpace(status)),
-			Title:       "Check remote agent availability",
-			Detail:      fmt.Sprintf("%d remote agents are %s.", count, labelAssistantSignalValue(status)),
-			Severity:    "warning",
-			Surface:     "agents",
-			ObjectID:    "remote_agents_" + strings.ToLower(strings.TrimSpace(status)),
-			Score:       70,
-			ActionKind:  "task",
-			Rationale:   "Unavailable remote agents reduce the harness capacity for delegated work.",
-			TaskGoal:    "Inspect remote agent availability and decide whether to reconnect, disable, or reroute work.",
-			Fingerprint: assistantSignalFingerprint("agents", status, "all", "Check remote agent availability"),
+			Kind:              "remote_agent_" + strings.ToLower(strings.TrimSpace(status)),
+			Title:             "Check remote agent availability",
+			Detail:            fmt.Sprintf("%d remote agents are %s.", count, labelAssistantSignalValue(status)),
+			WhyNow:            "Unavailable remote agents reduce the harness capacity for delegated work.",
+			Severity:          "warning",
+			Surface:           "agents",
+			ObjectID:          "remote_agents_" + strings.ToLower(strings.TrimSpace(status)),
+			Score:             70,
+			ActionKind:        "task",
+			Rationale:         "Unavailable remote agents reduce the harness capacity for delegated work.",
+			TaskGoal:          "Inspect remote agent availability and decide whether to reconnect, disable, or reroute work.",
+			Evidence:          []assistantstore.RunSignalEvidence{assistantSignalEvidence("agents", "count", "Remote agent availability", fmt.Sprintf("%d remote agents are %s.", count, labelAssistantSignalValue(status)), "remote_agents_"+strings.ToLower(strings.TrimSpace(status)), "", time.Time{}, 70)},
+			SuggestedNextStep: "Inspect remote agent availability and decide whether to reconnect, disable, or reroute work.",
+			Fingerprint:       assistantSignalFingerprint("agents", status, "all", "Check remote agent availability"),
 		}))
 	}
 
@@ -139,18 +153,21 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 func assistantHealthSignals(snapshot assistantstore.RunSystemSnapshot) []assistantstore.RunSignal {
 	if strings.TrimSpace(snapshot.Error) != "" {
 		return []assistantstore.RunSignal{newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:        "health_unreachable",
-			Title:       "Restore healthd visibility",
-			Detail:      snapshot.Error,
-			Severity:    "warning",
-			Surface:     "healthd",
-			ObjectID:    "healthd",
-			ObjectURL:   "/healthd",
-			Score:       78,
-			ActionKind:  "task",
-			Rationale:   "The Assistant cannot evaluate health signals while healthd is unreachable.",
-			TaskGoal:    "Restore healthd visibility and verify the dashboard Health page reports current checks.",
-			Fingerprint: assistantSignalFingerprint("healthd", "unreachable", "healthd", "Restore healthd visibility"),
+			Kind:              "health_unreachable",
+			Title:             "Restore healthd visibility",
+			Detail:            snapshot.Error,
+			WhyNow:            "The Assistant cannot evaluate source signals while healthd is unreachable.",
+			Severity:          "warning",
+			Surface:           "healthd",
+			ObjectID:          "healthd",
+			ObjectURL:         "/healthd",
+			Score:             78,
+			ActionKind:        "task",
+			Rationale:         "The Assistant cannot evaluate source signals while healthd is unreachable.",
+			TaskGoal:          "Restore healthd visibility and verify the dashboard Health page reports current checks.",
+			Evidence:          []assistantstore.RunSignalEvidence{assistantSignalEvidence("healthd", "source_error", "healthd unreachable", snapshot.Error, "healthd", "/healthd", time.Time{}, 78)},
+			SuggestedNextStep: "Restore healthd visibility, then re-run the proactive check.",
+			Fingerprint:       assistantSignalFingerprint("healthd", "unreachable", "healthd", "Restore healthd visibility"),
 		})}
 	}
 	status := strings.ToLower(strings.TrimSpace(snapshot.Status))
@@ -167,37 +184,49 @@ func assistantHealthSignals(snapshot assistantstore.RunSystemSnapshot) []assista
 	if len(snapshot.Items) > 0 {
 		detail = detail + " " + assistantSignalItemSummary(snapshot.Items, 3)
 	}
+	evidence := []assistantstore.RunSignalEvidence{
+		assistantSignalEvidence("healthd", "status", "healthd status", "healthd reported "+labelAssistantSignalValue(status)+".", "healthd", "/healthd", time.Time{}, score),
+	}
+	for _, item := range snapshot.Items {
+		evidence = append(evidence, assistantObjectEvidence("healthd", "check", item, score))
+	}
 	return []assistantstore.RunSignal{newAssistantRunSignal(assistantstore.RunSignal{
-		Kind:        "health_" + status,
-		Title:       "Review health warning",
-		Detail:      detail,
-		Severity:    severity,
-		Surface:     "healthd",
-		ObjectID:    "healthd",
-		ObjectURL:   "/healthd",
-		Score:       score,
-		ActionKind:  "task",
-		Rationale:   "Health warnings can become operational failures if left unresolved.",
-		TaskGoal:    "Review Health, identify the failing checks, and decide whether to create repair work.",
-		Fingerprint: assistantSignalFingerprint("healthd", status, "healthd", "Review health warning"),
+		Kind:              "health_" + status,
+		Title:             "Review health warning",
+		Detail:            detail,
+		WhyNow:            "A monitored source reported a non-healthy status.",
+		Severity:          severity,
+		Surface:           "healthd",
+		ObjectID:          "healthd",
+		ObjectURL:         "/healthd",
+		Score:             score,
+		ActionKind:        "task",
+		Rationale:         "Health warnings can become operational failures if left unresolved.",
+		TaskGoal:          "Review Health, identify the failing checks, and decide whether to create repair work.",
+		Evidence:          evidence,
+		SuggestedNextStep: "Open Health, inspect the failing checks, and decide whether to create repair work.",
+		Fingerprint:       assistantSignalFingerprint("healthd", status, "healthd", "Review health warning"),
 	})}
 }
 
 func assistantSupervisorSignals(snapshot assistantstore.RunSystemSnapshot) []assistantstore.RunSignal {
 	if strings.TrimSpace(snapshot.Error) != "" {
 		return []assistantstore.RunSignal{newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:        "supervisor_unreachable",
-			Title:       "Restore supervisord visibility",
-			Detail:      snapshot.Error,
-			Severity:    "warning",
-			Surface:     "supervisord",
-			ObjectID:    "supervisord",
-			ObjectURL:   "/supervisord",
-			Score:       84,
-			ActionKind:  "task",
-			Rationale:   "The Assistant cannot verify supervised components while supervisord is unreachable.",
-			TaskGoal:    "Restore supervisord visibility and verify supervised component health.",
-			Fingerprint: assistantSignalFingerprint("supervisord", "unreachable", "supervisord", "Restore supervisord visibility"),
+			Kind:              "supervisor_unreachable",
+			Title:             "Restore supervisord visibility",
+			Detail:            snapshot.Error,
+			WhyNow:            "The Assistant cannot verify source signals while supervisord is unreachable.",
+			Severity:          "warning",
+			Surface:           "supervisord",
+			ObjectID:          "supervisord",
+			ObjectURL:         "/supervisord",
+			Score:             84,
+			ActionKind:        "task",
+			Rationale:         "The Assistant cannot verify supervised components while supervisord is unreachable.",
+			TaskGoal:          "Restore supervisord visibility and verify supervised component health.",
+			Evidence:          []assistantstore.RunSignalEvidence{assistantSignalEvidence("supervisord", "source_error", "supervisord unreachable", snapshot.Error, "supervisord", "/supervisord", time.Time{}, 84)},
+			SuggestedNextStep: "Restore supervisord visibility, then verify supervised component health.",
+			Fingerprint:       assistantSignalFingerprint("supervisord", "unreachable", "supervisord", "Restore supervisord visibility"),
 		})}
 	}
 	var signals []assistantstore.RunSignal
@@ -212,18 +241,21 @@ func assistantSupervisorSignals(snapshot assistantstore.RunSystemSnapshot) []ass
 		}
 		title := "Restore supervised component: " + firstNonEmptyString(item.Title, "unknown")
 		signals = append(signals, newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:        "supervisor_" + status,
-			Title:       title,
-			Detail:      firstNonEmptyString(item.Summary, "Component is "+labelAssistantSignalValue(status)+"."),
-			Severity:    "warning",
-			Surface:     "supervisord",
-			ObjectID:    item.ID,
-			ObjectURL:   firstNonEmptyString(item.URL, "/supervisord"),
-			Score:       score,
-			ActionKind:  "task",
-			Rationale:   "A supervised component that should be running is not healthy.",
-			TaskGoal:    "Inspect supervisord for " + firstNonEmptyString(item.Title, "the component") + " and decide whether to restart, repair, or update its desired state.",
-			Fingerprint: assistantSignalFingerprint("supervisord", status, firstNonEmptyString(item.ID, item.Title), title),
+			Kind:              "supervisor_" + status,
+			Title:             title,
+			Detail:            firstNonEmptyString(item.Summary, "Component is "+labelAssistantSignalValue(status)+"."),
+			WhyNow:            "A supervised component that should be running is not healthy.",
+			Severity:          "warning",
+			Surface:           "supervisord",
+			ObjectID:          item.ID,
+			ObjectURL:         firstNonEmptyString(item.URL, "/supervisord"),
+			Score:             score,
+			ActionKind:        "task",
+			Rationale:         "A supervised component that should be running is not healthy.",
+			TaskGoal:          "Inspect supervisord for " + firstNonEmptyString(item.Title, "the component") + " and decide whether to restart, repair, or update its desired state.",
+			Evidence:          []assistantstore.RunSignalEvidence{assistantObjectEvidence("supervisord", "component_status", item, score)},
+			SuggestedNextStep: "Inspect the component and decide whether to restart, repair, or update its desired state.",
+			Fingerprint:       assistantSignalFingerprint("supervisord", status, firstNonEmptyString(item.ID, item.Title), title),
 		}))
 	}
 	return signals
@@ -244,19 +276,23 @@ func assistantEventSignals(events []assistantstore.RunEventRef, attentionTaskIDs
 		if event.TaskID != "" {
 			title = title + " for " + taskShortID(event.TaskID)
 		}
+		detail := firstNonEmptyString(event.Summary, "Recent event "+event.Type+" was recorded.")
 		signals = append(signals, newAssistantRunSignal(assistantstore.RunSignal{
-			Kind:        "event_" + strings.ReplaceAll(strings.ToLower(event.Type), ".", "_"),
-			Title:       title,
-			Detail:      firstNonEmptyString(event.Summary, "Recent event "+event.Type+" was recorded."),
-			Severity:    "warning",
-			Surface:     "events",
-			ObjectID:    firstNonEmptyString(event.TaskID, event.ID),
-			ObjectURL:   assistantEventObjectURL(event),
-			Score:       score,
-			ActionKind:  "task",
-			Rationale:   "A recent control-plane event may need operator follow-up.",
-			TaskGoal:    "Review the recent event " + event.Type + " and decide whether follow-up work is needed.",
-			Fingerprint: assistantSignalFingerprint("events", event.Type, firstNonEmptyString(event.TaskID, event.ID), title),
+			Kind:              "event_" + strings.ReplaceAll(strings.ToLower(event.Type), ".", "_"),
+			Title:             title,
+			Detail:            detail,
+			WhyNow:            "A recent control-plane event may need operator follow-up.",
+			Severity:          "warning",
+			Surface:           "events",
+			ObjectID:          firstNonEmptyString(event.TaskID, event.ID),
+			ObjectURL:         assistantEventObjectURL(event),
+			Score:             score,
+			ActionKind:        "task",
+			Rationale:         "A recent control-plane event may need operator follow-up.",
+			TaskGoal:          "Review the recent event " + event.Type + " and decide whether follow-up work is needed.",
+			Evidence:          []assistantstore.RunSignalEvidence{assistantSignalEvidence("events", event.Type, title, detail, firstNonEmptyString(event.TaskID, event.ID), assistantEventObjectURL(event), event.Time, score)},
+			SuggestedNextStep: "Review the event context and decide whether follow-up work is needed.",
+			Fingerprint:       assistantSignalFingerprint("events", event.Type, firstNonEmptyString(event.TaskID, event.ID), title),
 		}))
 	}
 	return signals
@@ -278,9 +314,79 @@ func newAssistantRunSignal(signal assistantstore.RunSignal) assistantstore.RunSi
 	if signal.ActionKind == "" && signal.Score >= assistantSignalActionScore {
 		signal.ActionKind = "task"
 	}
+	if strings.TrimSpace(signal.WhyNow) == "" {
+		signal.WhyNow = firstNonEmptyString(signal.Rationale, signal.Detail)
+	}
+	if strings.TrimSpace(signal.SuggestedNextStep) == "" {
+		signal.SuggestedNextStep = firstNonEmptyString(signal.TaskGoal, signal.Rationale, signal.Detail)
+	}
+	if len(signal.SafeActions) == 0 {
+		signal.SafeActions = assistantSignalSafeActions(signal.ActionKind)
+	}
+	if len(signal.Evidence) == 0 {
+		signal.Evidence = []assistantstore.RunSignalEvidence{
+			assistantSignalEvidence(
+				firstNonEmptyString(signal.Surface, "assistant"),
+				signal.Kind,
+				signal.Title,
+				signal.Detail,
+				signal.ObjectID,
+				signal.ObjectURL,
+				time.Time{},
+				signal.Score,
+			),
+		}
+	}
 	return assistantstore.NormalizeRun(assistantstore.Run{
 		Snapshot: assistantstore.RunSnapshot{Signals: []assistantstore.RunSignal{signal}},
 	}).Snapshot.Signals[0]
+}
+
+func assistantSignalEvidence(source, kind, title, detail, objectID, objectURL string, observedAt time.Time, weight int) assistantstore.RunSignalEvidence {
+	var observedAtRef *time.Time
+	if !observedAt.IsZero() {
+		observedAt = observedAt.UTC()
+		observedAtRef = &observedAt
+	}
+	return assistantstore.RunSignalEvidence{
+		Source:     source,
+		Kind:       kind,
+		Title:      title,
+		Detail:     detail,
+		ObjectID:   objectID,
+		ObjectURL:  objectURL,
+		ObservedAt: observedAtRef,
+		Weight:     weight,
+	}
+}
+
+func assistantObjectEvidence(source, kind string, item assistantstore.RunObjectRef, weight int) assistantstore.RunSignalEvidence {
+	detailParts := []string{}
+	if strings.TrimSpace(item.Status) != "" {
+		detailParts = append(detailParts, "Status: "+labelAssistantSignalValue(item.Status))
+	}
+	if strings.TrimSpace(item.Summary) != "" {
+		detailParts = append(detailParts, item.Summary)
+	}
+	return assistantSignalEvidence(
+		source,
+		kind,
+		firstNonEmptyString(item.Title, item.ID, "Observed item"),
+		strings.Join(detailParts, ". "),
+		item.ID,
+		item.URL,
+		time.Time{},
+		weight,
+	)
+}
+
+func assistantSignalSafeActions(actionKind string) []string {
+	switch strings.ToLower(strings.TrimSpace(actionKind)) {
+	case "task":
+		return []string{"create_task", "useful", "snooze", "dismiss"}
+	default:
+		return []string{"useful", "snooze", "dismiss"}
+	}
 }
 
 func applyAssistantSignalRecordToSignal(store *assistantstore.SignalStore, signal *assistantstore.RunSignal, now time.Time) {
@@ -381,6 +487,9 @@ func assistantRunDecisionWithSignals(run assistantstore.Run, decision assistantR
 		if len(decision.RecommendedActions) >= 6 || assistantDecisionHasActionForSignal(decision, signal) {
 			continue
 		}
+		if !assistantSignalAllowsRecommendation(signal, signal.ActionKind) {
+			continue
+		}
 		if len(decision.RecommendedActions) == 0 || signal.Score >= assistantSignalHighScore {
 			decision.RecommendedActions = append(decision.RecommendedActions, assistantActionFromSignal(signal, len(decision.RecommendedActions)))
 			addedAction = true
@@ -462,20 +571,47 @@ func assistantAlignDecisionActionsWithSignals(actions []assistantstore.RunAction
 	if len(actions) == 0 || len(signals) == 0 {
 		return actions
 	}
+	kept := actions[:0]
 	for index := range actions {
 		signal, ok := assistantBestSignalForAction(actions[index], signals)
-		if !ok {
-			continue
+		if ok {
+			if !assistantSignalAllowsRecommendation(signal, actions[index].Kind) {
+				continue
+			}
+			actions[index].Fingerprint = signal.Fingerprint
+			actions[index].TargetSurface = firstNonEmptyString(actions[index].TargetSurface, signal.Surface)
+			actions[index].Priority = firstNonEmptyString(actions[index].Priority, signal.Priority)
+			actions[index].Risk = firstNonEmptyString(actions[index].Risk, "low")
+			if strings.EqualFold(actions[index].Kind, "task") {
+				actions[index].TaskGoal = firstNonEmptyString(actions[index].TaskGoal, signal.TaskGoal, signal.SuggestedNextStep)
+			}
 		}
-		actions[index].Fingerprint = signal.Fingerprint
-		actions[index].TargetSurface = firstNonEmptyString(actions[index].TargetSurface, signal.Surface)
-		actions[index].Priority = firstNonEmptyString(actions[index].Priority, signal.Priority)
-		actions[index].Risk = firstNonEmptyString(actions[index].Risk, "low")
-		if strings.EqualFold(actions[index].Kind, "task") {
-			actions[index].TaskGoal = firstNonEmptyString(actions[index].TaskGoal, signal.TaskGoal)
+		kept = append(kept, actions[index])
+	}
+	return kept
+}
+
+func assistantSignalAllowsRecommendation(signal assistantstore.RunSignal, kind string) bool {
+	if len(signal.SafeActions) == 0 {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "task":
+		return assistantSignalHasSafeAction(signal, "create_task")
+	case "observe", "watch", "":
+		return true
+	default:
+		return assistantSignalHasSafeAction(signal, "useful")
+	}
+}
+
+func assistantSignalHasSafeAction(signal assistantstore.RunSignal, want string) bool {
+	for _, value := range signal.SafeActions {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
 		}
 	}
-	return actions
+	return false
 }
 
 func assistantBestSignalForAction(action assistantstore.RunAction, signals []assistantstore.RunSignal) (assistantstore.RunSignal, bool) {
@@ -518,7 +654,7 @@ func assistantBestSignalForAction(action assistantstore.RunAction, signals []ass
 func assistantFindingFromSignal(signal assistantstore.RunSignal) assistantstore.RunFinding {
 	return assistantstore.RunFinding{
 		Title:     signal.Title,
-		Detail:    firstNonEmptyString(signal.Detail, signal.Rationale),
+		Detail:    firstNonEmptyString(signal.Detail, signal.WhyNow, signal.Rationale),
 		Severity:  signal.Severity,
 		Surface:   signal.Surface,
 		ObjectID:  signal.ObjectID,
@@ -532,11 +668,11 @@ func assistantActionFromSignal(signal assistantstore.RunSignal, index int) assis
 		Fingerprint:   signal.Fingerprint,
 		Kind:          firstNonEmptyString(signal.ActionKind, "task"),
 		Title:         signal.Title,
-		Rationale:     firstNonEmptyString(signal.Rationale, signal.Detail),
+		Rationale:     firstNonEmptyString(signal.Rationale, signal.WhyNow, signal.Detail),
 		Priority:      signal.Priority,
 		Risk:          "low",
 		TargetSurface: signal.Surface,
-		TaskGoal:      signal.TaskGoal,
+		TaskGoal:      firstNonEmptyString(signal.TaskGoal, signal.SuggestedNextStep),
 		Status:        "recommended",
 	}
 	return assistantstore.NormalizeRun(assistantstore.Run{RecommendedActions: []assistantstore.RunAction{action}}).RecommendedActions[0]

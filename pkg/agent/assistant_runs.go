@@ -735,7 +735,8 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 				Content: strings.Join([]string{
 					"You are homelabd's proactive executive layer.",
 					"Use the harness: Tasks are for changing things, Knowledge is for durable research and memory, and Workflows are for repeatable thinking.",
-					"Treat snapshot.signals as the pre-scored watchlist. Prefer high-score, high-confidence signals, and do not recommend suppressed signals.",
+					"Treat snapshot.signals as the pre-scored watchlist. Each signal can include why_now, evidence, safe_actions, and suggested_next_step so any source can plug in without source-specific reasoning.",
+					"Prefer high-score, high-confidence signals, ground recommendations in their evidence, use only safe_actions, and do not recommend suppressed signals.",
 					"Do not claim to have executed actions unless the snapshot already proves they happened.",
 					"Prefer no-op when there is no actionable signal. Prefer recommendations over mutation.",
 					"Return exactly one JSON object matching the schema.",

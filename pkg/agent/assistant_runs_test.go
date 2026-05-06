@@ -86,6 +86,15 @@ func TestAssistantWatchlistSignalsScoreAndRespectFeedback(t *testing.T) {
 	if blocked.Fingerprint == "" {
 		t.Fatalf("blocked task signal not found in %#v", candidates)
 	}
+	if blocked.WhyNow == "" || len(blocked.Evidence) == 0 || len(blocked.SafeActions) == 0 || blocked.SuggestedNextStep == "" {
+		t.Fatalf("blocked task signal = %#v, want generic evidence packet", blocked)
+	}
+	if blocked.Evidence[0].Source != "tasks" || blocked.Evidence[0].Kind == "" {
+		t.Fatalf("blocked task evidence = %#v, want source-neutral evidence", blocked.Evidence)
+	}
+	if !assistantStringSliceContains(blocked.SafeActions, "create_task") || !assistantStringSliceContains(blocked.SafeActions, "snooze") {
+		t.Fatalf("blocked task safe actions = %#v, want create_task and snooze", blocked.SafeActions)
+	}
 	store, err := orch.assistantSignalStore()
 	if err != nil {
 		t.Fatal(err)
@@ -142,20 +151,26 @@ func TestAssistantRunDecisionUsesScoredSignalsWhenModelMisses(t *testing.T) {
 	}`}
 	orch.provider = provider
 	signal := newAssistantRunSignal(assistantstore.RunSignal{
-		Kind:        "task_blocked",
-		Title:       "Unblock task: Deploy dashboard",
-		Detail:      "The task is blocked on an operator decision.",
-		Severity:    "warning",
-		Surface:     "tasks",
-		ObjectID:    "task_blocked",
-		ObjectURL:   "/tasks?task=task_blocked",
-		Score:       90,
-		Confidence:  "high",
-		Priority:    "high",
-		ActionKind:  "task",
-		Rationale:   "The task is in an operator attention state.",
-		TaskGoal:    "Review task_blocked and decide the next step.",
-		Fingerprint: assistantSignalFingerprint("task", "blocked", "task_blocked", "Unblock task: Deploy dashboard"),
+		Kind:       "task_blocked",
+		Title:      "Unblock task: Deploy dashboard",
+		Detail:     "The task is blocked on an operator decision.",
+		Severity:   "warning",
+		Surface:    "tasks",
+		ObjectID:   "task_blocked",
+		ObjectURL:  "/tasks?task=task_blocked",
+		Score:      90,
+		Confidence: "high",
+		Priority:   "high",
+		ActionKind: "task",
+		Rationale:  "The task is in an operator attention state.",
+		TaskGoal:   "Review task_blocked and decide the next step.",
+		WhyNow:     "The task crossed the proactive attention threshold.",
+		Evidence: []assistantstore.RunSignalEvidence{
+			{Source: "tasks", Kind: "task_status", Title: "Blocked deploy", Detail: "Status: blocked", ObjectID: "task_blocked", ObjectURL: "/tasks?task=task_blocked", Weight: 90},
+		},
+		SafeActions:       []string{"create_task", "useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Review the blocked task and choose a recovery path.",
+		Fingerprint:       assistantSignalFingerprint("task", "blocked", "task_blocked", "Unblock task: Deploy dashboard"),
 	})
 	run := assistantstore.Run{
 		Trigger:  assistantstore.RunTrigger{Kind: "manual", Label: "Manual proactive check"},
@@ -183,6 +198,98 @@ func TestAssistantRunDecisionUsesScoredSignalsWhenModelMisses(t *testing.T) {
 	}
 	if len(provider.requests) != 1 || !strings.Contains(provider.requests[0].Messages[1].Content, `"signals"`) {
 		t.Fatalf("provider request did not include scored signals: %#v", provider.requests)
+	}
+	if !strings.Contains(provider.requests[0].Messages[1].Content, `"evidence"`) || !strings.Contains(provider.requests[0].Messages[1].Content, `"safe_actions"`) {
+		t.Fatalf("provider request did not include generic signal evidence fields: %s", provider.requests[0].Messages[1].Content)
+	}
+	if !strings.Contains(provider.requests[0].Messages[0].Content, "any source can plug in") {
+		t.Fatalf("provider system prompt did not describe generic signal sources: %s", provider.requests[0].Messages[0].Content)
+	}
+}
+
+func TestAssistantRunDecisionAcceptsGenericSignalSource(t *testing.T) {
+	signal := newAssistantRunSignal(assistantstore.RunSignal{
+		Kind:              "chat_quality_regression",
+		Title:             "Review subpar chat answer",
+		Detail:            "A chat message was marked as not useful after a tool-light response.",
+		WhyNow:            "Operator feedback identified a poor answer that may need follow-up work.",
+		Severity:          "warning",
+		Surface:           "chat",
+		ObjectID:          "message_assistant_42",
+		ObjectURL:         "/chat#message-assistant-42",
+		Score:             88,
+		ActionKind:        "task",
+		Rationale:         "Subpar assistant responses are useful signals for improving the harness.",
+		Evidence:          []assistantstore.RunSignalEvidence{{Source: "chat", Kind: "feedback", Title: "Negative chat feedback", Detail: "Marked not useful", ObjectID: "message_assistant_42", ObjectURL: "/chat#message-assistant-42", Weight: 88}},
+		SafeActions:       []string{"create_task", "useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Create follow-up work to review the conversation and improve the response path.",
+		Fingerprint:       assistantSignalFingerprint("chat", "quality", "message_assistant_42", "Review subpar chat answer"),
+	})
+	run := assistantstore.Run{
+		Snapshot: assistantstore.RunSnapshot{Signals: []assistantstore.RunSignal{signal}},
+	}
+
+	decision := assistantRunDecisionWithSignals(run, assistantRunDecision{
+		Decision:           assistantstore.RunDecisionNoop,
+		Summary:            "Nothing new.",
+		Changed:            []string{},
+		Concerns:           []assistantstore.RunFinding{},
+		Opportunities:      []assistantstore.RunFinding{},
+		RecommendedActions: []assistantstore.RunAction{},
+	})
+
+	if decision.Decision != assistantstore.RunDecisionRecommend {
+		t.Fatalf("decision = %q, want recommend", decision.Decision)
+	}
+	if len(decision.RecommendedActions) != 1 {
+		t.Fatalf("actions = %#v, want one generic-source action", decision.RecommendedActions)
+	}
+	action := decision.RecommendedActions[0]
+	if action.Fingerprint != signal.Fingerprint || action.TargetSurface != "chat" {
+		t.Fatalf("action = %#v, want chat signal fingerprint and surface", action)
+	}
+	if action.TaskGoal != signal.SuggestedNextStep {
+		t.Fatalf("task goal = %q, want suggested next step", action.TaskGoal)
+	}
+	if len(decision.Concerns) != 1 || decision.Concerns[0].ObjectURL != "/chat#message-assistant-42" {
+		t.Fatalf("concerns = %#v, want generic chat concern", decision.Concerns)
+	}
+}
+
+func TestAssistantRunDecisionRespectsSignalSafeActions(t *testing.T) {
+	signal := newAssistantRunSignal(assistantstore.RunSignal{
+		Kind:              "email_invoice_question",
+		Title:             "Review email before creating work",
+		Detail:            "An email may need follow-up, but the source only allows observation right now.",
+		Surface:           "email",
+		ObjectID:          "email_42",
+		ObjectURL:         "/email/email_42",
+		Score:             91,
+		ActionKind:        "task",
+		Rationale:         "Email context is not yet approved for task creation.",
+		Evidence:          []assistantstore.RunSignalEvidence{{Source: "email", Kind: "message", Title: "Email message", Detail: "Potential invoice follow-up", ObjectID: "email_42", Weight: 91}},
+		SafeActions:       []string{"useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Observe the email signal until task creation is allowed for this source.",
+		Fingerprint:       assistantSignalFingerprint("email", "invoice", "email_42", "Review email before creating work"),
+	})
+	run := assistantstore.Run{
+		Snapshot: assistantstore.RunSnapshot{Signals: []assistantstore.RunSignal{signal}},
+	}
+
+	decision := assistantRunDecisionWithSignals(run, assistantRunDecision{
+		Decision:           assistantstore.RunDecisionNoop,
+		Summary:            "Nothing new.",
+		Changed:            []string{},
+		Concerns:           []assistantstore.RunFinding{},
+		Opportunities:      []assistantstore.RunFinding{},
+		RecommendedActions: []assistantstore.RunAction{},
+	})
+
+	if len(decision.RecommendedActions) != 0 {
+		t.Fatalf("actions = %#v, want no task action without create_task safe action", decision.RecommendedActions)
+	}
+	if len(decision.Concerns) != 1 || decision.Concerns[0].Surface != "email" {
+		t.Fatalf("concerns = %#v, want visible email concern", decision.Concerns)
 	}
 }
 
@@ -301,4 +408,13 @@ func TestAssistantEventsAfterReadsAcrossMidnight(t *testing.T) {
 	if got[0].TaskID != "task_before" || got[1].TaskID != "task_after" {
 		t.Fatalf("events = %#v, want chronological cross-day events", got)
 	}
+}
+
+func assistantStringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

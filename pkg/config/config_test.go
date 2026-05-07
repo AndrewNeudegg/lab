@@ -17,8 +17,8 @@ func TestDefaultIncludesRemoteAgentAndControlPlaneConfig(t *testing.T) {
 	if cfg.RemoteAgent.APIBase == "" || cfg.RemoteAgent.Backend != "codex" {
 		t.Fatalf("remote agent config = %#v", cfg.RemoteAgent)
 	}
-	if cfg.Assistant.ProactiveEnabled || cfg.Assistant.ProactiveIntervalSeconds != 3600 || cfg.Assistant.ProactiveAutonomy != "observe" {
-		t.Fatalf("assistant config = %#v, want disabled hourly observe defaults", cfg.Assistant)
+	if !cfg.Assistant.ProactiveEnabled || cfg.Assistant.ProactiveIntervalSeconds != 3600 || cfg.Assistant.ProactiveAutonomy != "observe" {
+		t.Fatalf("assistant config = %#v, want enabled hourly observe defaults", cfg.Assistant)
 	}
 	if cfg.Assistant.ProactiveEventWatchEnabled == nil || !*cfg.Assistant.ProactiveEventWatchEnabled {
 		t.Fatalf("assistant event watch = %#v, want enabled default", cfg.Assistant.ProactiveEventWatchEnabled)

@@ -1,6 +1,6 @@
 # homelabctl
 
-`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, Assistant, workflow, approval, event, chat, terminal, and supervisor interactions.
+`homelabctl` is the supported command-line operator interface for `homelabd` HTTP mode. Use it instead of ad hoc `curl` for task, Assistant, Goal, workflow, approval, event, chat, terminal, and supervisor interactions.
 
 Start `homelabd` in HTTP mode before using the CLI:
 
@@ -21,7 +21,7 @@ Supervisord also has its own API address. Override it for supervisor commands wi
 
 ## Operator Rule
 
-Keep this document, `cmd/homelabctl`, and the `homelabd`, `healthd`, and `supervisord` HTTP APIs in sync. When a new operator interaction is added to one of those APIs, add or update the matching `homelabctl` command and tests in the same change. If a workflow requires repeated chat, task, Assistant, approval, event, terminal, or supervisor interaction and `homelabctl` is not useful enough, extend the CLI rather than bypassing it.
+Keep this document, `cmd/homelabctl`, and the `homelabd`, `healthd`, and `supervisord` HTTP APIs in sync. When a new operator interaction is added to one of those APIs, add or update the matching `homelabctl` command and tests in the same change. If a workflow requires repeated chat, task, Assistant, Goal, approval, event, terminal, or supervisor interaction and `homelabctl` is not useful enough, extend the CLI rather than bypassing it.
 
 ## Interactive Shell
 
@@ -39,6 +39,8 @@ tasks
 show task_123
 remember prefer distilled lessons over copied phrasing
 memories
+goal keep the daily brief current and point out unanswered mail
+goals
 delegate task_123 to codex fix the failing tests
 ux task_123 audit keyboard and mobile states
 approve app_123
@@ -147,7 +149,7 @@ When `homelabd` review invokes `bun.check`, `bun.build`, `bun.test`, `bun.uat.ui
 
 ## Assistant Commands
 
-Assistant commands wrap proactive run records and decision archive state. Active runs are the default so agents can keep the decision queue short without deleting receipts:
+Assistant commands wrap proactive run records, durable Goals, signal feedback, and decision archive state. Active runs are the default so agents can keep the decision queue short without deleting receipts:
 
 ```bash
 go run ./cmd/homelabctl assistant list
@@ -159,11 +161,21 @@ go run ./cmd/homelabctl assistant restore arun_123
 go run ./cmd/homelabctl assistant signals
 go run ./cmd/homelabctl assistant signal sig_chat useful
 go run ./cmd/homelabctl assistant signal sig_chat create-task "follow up"
+go run ./cmd/homelabctl goal create --title "Daily brief" --cadence daily --success "brief posted" "Keep the daily brief current and point out unanswered mail"
+go run ./cmd/homelabctl goals
+go run ./cmd/homelabctl goal show goal_123
+go run ./cmd/homelabctl goal check goal_123
+go run ./cmd/homelabctl goal pause goal_123
+go run ./cmd/homelabctl goal archive goal_123
+go run ./cmd/homelabctl goal note goal_123 "Waiting for mail connector credentials"
+go run ./cmd/homelabctl goal watch goal_123 --kind reminder --cadence "weekday 08:00" "Produce the morning brief"
 ```
 
 `assistant archive` calls `PATCH /assistant/runs/<run_id>` with `archived: true`, records `homelabctl` as the actor, preserves the run, and moves it out of the active Assistant UI. `assistant restore` clears the archive metadata and returns the run to the active decision space. Use this when an agent has established that an old recommendation is no longer useful and no task, snooze, or dismissal is needed.
 
 `assistant signals` calls `GET /assistant/signals` for the current unresolved signal inbox. `assistant signal` calls `PATCH /assistant/signals/<fingerprint>` with `useful`, `dismiss`, `snooze`, or `create_task`, so operators and agents can feed the Assistant learning loop or create a bounded follow-up task without ad hoc HTTP calls. `useful` records positive feedback and clears the current inbox item until a later new sighting reopens it.
+
+Goals are durable operator desires rather than one-off tasks. A Goal stores the objective, details, success criteria, constraints, autonomy, cadence, watches, linked tasks, progress notes, and run assessments. `goal create` calls `POST /assistant/goals`, `goal check` starts a Goal-scoped Assistant run through `POST /assistant/goals/<goal_id>/check`, `goal watch` records something the Assistant should keep an eye on, and Goal-linked tasks report progress back to the Goal when accepted. Chat accepts the same lifecycle through natural phrases such as `goal keep invoices reconciled` or `my goal is to keep the daily brief ready`.
 
 ## Knowledge Space Commands
 
@@ -353,6 +365,21 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks/{id}/cancel`
 - `POST /tasks/{id}/retry`
 - `POST /tasks/{id}/delete`
+- `GET /assistant/runs`
+- `POST /assistant/runs`
+- `GET /assistant/runs/{id}`
+- `PATCH /assistant/runs/{id}`
+- `POST /assistant/runs/{id}/actions/{action_id}`
+- `GET /assistant/signals`
+- `POST /assistant/signals`
+- `PATCH /assistant/signals/{fingerprint}`
+- `GET /assistant/goals`
+- `POST /assistant/goals`
+- `GET /assistant/goals/{id}`
+- `PATCH /assistant/goals/{id}`
+- `POST /assistant/goals/{id}/check`
+- `POST /assistant/goals/{id}/watches`
+- `POST /assistant/goals/{id}/notes`
 - `GET /workflows`
 - `POST /workflows`
 - `GET /workflows/{id}`

@@ -294,7 +294,7 @@ func Default() Config {
 			PollIntervalSeconds:      5,
 		},
 		Assistant: AssistantConfig{
-			ProactiveEnabled:                  false,
+			ProactiveEnabled:                  true,
 			ProactiveIntervalSeconds:          3600,
 			ProactiveAutonomy:                 "observe",
 			ProactiveEventWatchEnabled:        boolPtr(true),

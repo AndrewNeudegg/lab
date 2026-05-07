@@ -159,6 +159,7 @@ func compileAssistantRunDecisionSafety(run assistantstore.Run, decision assistan
 				continue
 			}
 			action.Fingerprint = signal.Fingerprint
+			action.GoalID = firstNonEmptyString(action.GoalID, signal.GoalID)
 			action.TargetSurface = firstNonEmptyString(action.TargetSurface, signal.Surface)
 			action.Priority = firstNonEmptyString(action.Priority, signal.Priority)
 			action.Risk = firstNonEmptyString(action.Risk, "low")
@@ -265,6 +266,7 @@ func assistantCompilerMissingActionInput(action assistantstore.RunAction) string
 func assistantCompilerActionKey(action assistantstore.RunAction) string {
 	return strings.ToLower(strings.Join([]string{
 		strings.TrimSpace(action.Kind),
+		strings.TrimSpace(action.GoalID),
 		strings.TrimSpace(action.Fingerprint),
 		strings.TrimSpace(action.TargetSurface),
 		strings.TrimSpace(action.Title),
@@ -292,6 +294,11 @@ func assistantSnapshotHasObjectRef(snapshot assistantstore.RunSnapshot, objectID
 	}
 	for _, ref := range append(append(append([]assistantstore.RunObjectRef{}, snapshot.AttentionTasks...), snapshot.RecentWorkflows...), snapshot.KnowledgeSpaces...) {
 		if assistantObjectRefMatches(ref.ID, ref.URL, objectID, objectURL) {
+			return true
+		}
+	}
+	for _, goal := range snapshot.Goals {
+		if assistantObjectRefMatches(goal.ID, goal.URL, objectID, objectURL) {
 			return true
 		}
 	}

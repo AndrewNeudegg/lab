@@ -359,6 +359,85 @@ func TestAssistantSignalEndpointsSubmitAndListCandidates(t *testing.T) {
 	}
 }
 
+func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t)
+	mux := http.NewServeMux()
+	server.register(mux)
+
+	created := requestJSON(t, mux, http.MethodPost, "/assistant/goals", `{
+		"title":"Daily brief",
+		"objective":"Keep the operator briefed every morning.",
+		"cadence":"daily",
+		"success_criteria":["Brief is ready"],
+		"constraints":["Do not send external messages without approval"]
+	}`, "", http.StatusCreated)
+	var timeline struct {
+		Goal struct {
+			ID       string `json:"id"`
+			Title    string `json:"title"`
+			Autonomy string `json:"autonomy"`
+		} `json:"goal"`
+		Watches []struct {
+			ID string `json:"id"`
+		} `json:"watches"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&timeline); err != nil {
+		t.Fatal(err)
+	}
+	if timeline.Goal.ID == "" || timeline.Goal.Title != "Daily brief" || timeline.Goal.Autonomy != "observe" || len(timeline.Watches) != 1 {
+		t.Fatalf("created timeline = %#v", timeline)
+	}
+
+	listed := requestJSON(t, mux, http.MethodGet, "/assistant/goals", "", "", http.StatusOK)
+	var listResponse struct {
+		Goals []struct {
+			ID string `json:"id"`
+		} `json:"goals"`
+	}
+	if err := json.NewDecoder(listed.Body).Decode(&listResponse); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResponse.Goals) != 1 || listResponse.Goals[0].ID != timeline.Goal.ID {
+		t.Fatalf("goals = %#v, want created goal", listResponse.Goals)
+	}
+
+	requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/notes", `{"body":"Watch the morning routine.","created_by":"test"}`, "", http.StatusCreated)
+	requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/watches", `{"title":"Morning brief readiness","source":"test"}`, "", http.StatusCreated)
+
+	loaded := requestJSON(t, mux, http.MethodGet, "/assistant/goals/"+timeline.Goal.ID, "", "", http.StatusOK)
+	var loadedTimeline struct {
+		Goal struct {
+			ID string `json:"id"`
+		} `json:"goal"`
+		Notes []struct {
+			Body string `json:"body"`
+		} `json:"notes"`
+		Watches []struct {
+			Title string `json:"title"`
+		} `json:"watches"`
+	}
+	if err := json.NewDecoder(loaded.Body).Decode(&loadedTimeline); err != nil {
+		t.Fatal(err)
+	}
+	if loadedTimeline.Goal.ID != timeline.Goal.ID || len(loadedTimeline.Notes) < 2 || len(loadedTimeline.Watches) < 2 {
+		t.Fatalf("loaded timeline = %#v, want notes and watches", loadedTimeline)
+	}
+
+	checked := requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/check", "", "", http.StatusCreated)
+	var checkResponse struct {
+		Run struct {
+			ID     string `json:"id"`
+			GoalID string `json:"goal_id"`
+		} `json:"run"`
+	}
+	if err := json.NewDecoder(checked.Body).Decode(&checkResponse); err != nil {
+		t.Fatal(err)
+	}
+	if checkResponse.Run.ID == "" || checkResponse.Run.GoalID != timeline.Goal.ID {
+		t.Fatalf("check response = %#v, want Goal-linked run", checkResponse)
+	}
+}
+
 func TestKnowledgeSpaceEndpointsProcessSourcesAndReports(t *testing.T) {
 	server := newKnowledgeHTTPTestServer(t, &scriptedControlProvider{contents: []string{
 		`{

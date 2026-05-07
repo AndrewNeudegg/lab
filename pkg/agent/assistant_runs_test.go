@@ -114,6 +114,59 @@ func TestAssistantRunCreateTaskBudgetCapsExecuteSafeActions(t *testing.T) {
 	}
 }
 
+func TestAssistantGoalDueSignalCreatesLinkedTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	timeline, err := orch.CreateGoal(context.Background(), assistantstore.GoalCreateRequest{
+		Title:           "Daily email brief",
+		Objective:       "Keep important email read and responded to.",
+		Cadence:         "daily",
+		Autonomy:        assistantstore.RunAutonomyCreateTasks,
+		SuccessCriteria: []string{"Brief is ready"},
+		Constraints:     []string{"Do not send without approval"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, _, err := orch.StartAssistantRun(context.Background(), assistantstore.RunRequest{
+		TriggerKind:  "goal",
+		TriggerLabel: "Goal check: Daily email brief",
+		GoalID:       timeline.Goal.ID,
+		Goal:         "Assess the daily email brief Goal.",
+		Autonomy:     assistantstore.RunAutonomyCreateTasks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if run.Decision != assistantstore.RunDecisionCreated {
+		t.Fatalf("decision = %q, want created_tasks; actions=%#v signals=%#v", run.Decision, run.RecommendedActions, run.Snapshot.Signals)
+	}
+	if len(run.Snapshot.Goals) == 0 || run.Snapshot.Goals[0].ID != timeline.Goal.ID {
+		t.Fatalf("snapshot goals = %#v, want linked Goal", run.Snapshot.Goals)
+	}
+	if len(run.RecommendedActions) == 0 || run.RecommendedActions[0].GoalID != timeline.Goal.ID || run.RecommendedActions[0].CreatedTaskID == "" {
+		t.Fatalf("actions = %#v, want Goal-linked created task", run.RecommendedActions)
+	}
+	created, err := orch.tasks.Load(run.RecommendedActions[0].CreatedTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.GoalID != timeline.Goal.ID || !strings.Contains(created.Goal, "Linked Assistant Goal") {
+		t.Fatalf("created task = %#v, want Goal metadata and context", created)
+	}
+	updated, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(updated.Goal.LinkedTasks, created.ID) {
+		t.Fatalf("linked tasks = %#v, want %s", updated.Goal.LinkedTasks, created.ID)
+	}
+	if len(updated.Assessments) == 0 || updated.Assessments[0].RunID != run.ID {
+		t.Fatalf("assessments = %#v, want run assessment", updated.Assessments)
+	}
+}
+
 func TestAssistantCapabilityRouterLabelsSurfaceAndApprovalNeed(t *testing.T) {
 	proposeTask := assistantCapabilityRouteForRun(assistantstore.Run{
 		Status:   assistantstore.RunStatusCompleted,
@@ -539,6 +592,19 @@ func TestAssistantRunFallsBackWhenModelReturnsInvalidJSON(t *testing.T) {
 			}
 			if stored.Status != assistantstore.RunStatusCompleted || len(stored.Changed) == 0 {
 				t.Fatalf("stored run = %#v, want persisted fallback decision", stored)
+			}
+			signals, err := orch.ListAssistantSignalCandidates()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var foundSelfRepair bool
+			for _, signal := range signals {
+				if signal.Kind == "assistant_self_repair" && signal.ActionKind == "task" {
+					foundSelfRepair = true
+				}
+			}
+			if !foundSelfRepair {
+				t.Fatalf("signals = %#v, want assistant_self_repair task signal", signals)
 			}
 		})
 	}

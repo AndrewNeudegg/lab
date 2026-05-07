@@ -1,6 +1,12 @@
 import type {
   AssistantCatalogue,
   AssistantCatalogueOptions,
+  AssistantGoalCreateRequest,
+  AssistantGoalNoteRequest,
+  AssistantGoalsResponse,
+  AssistantGoalTimeline,
+  AssistantGoalUpdateRequest,
+  AssistantGoalWatchRequest,
   AssistantRun,
   AssistantRunArchiveRequest,
   AssistantRunActionResponse,
@@ -252,6 +258,66 @@ export const createHomelabdClient = (
     ) {
       return apiFetch<AssistantRunActionResponse>(
         `/assistant/runs/${encodeURIComponent(runId)}/actions/${encodeURIComponent(actionId)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    listAssistantGoals() {
+      return apiFetch<AssistantGoalsResponse>('/assistant/goals', {
+        baseUrl,
+        fetcher
+      });
+    },
+    createAssistantGoal(request: AssistantGoalCreateRequest) {
+      return apiFetch<AssistantGoalTimeline>('/assistant/goals', {
+        baseUrl,
+        fetcher,
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+    },
+    getAssistantGoal(goalId: string) {
+      return apiFetch<AssistantGoalTimeline>(`/assistant/goals/${encodeURIComponent(goalId)}`, {
+        baseUrl,
+        fetcher
+      });
+    },
+    updateAssistantGoal(goalId: string, request: AssistantGoalUpdateRequest) {
+      return apiFetch<AssistantGoalTimeline>(`/assistant/goals/${encodeURIComponent(goalId)}`, {
+        baseUrl,
+        fetcher,
+        method: 'PATCH',
+        body: JSON.stringify(request)
+      });
+    },
+    checkAssistantGoal(goalId: string) {
+      return apiFetch<AssistantRunActionResponse>(
+        `/assistant/goals/${encodeURIComponent(goalId)}/check`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST'
+        }
+      );
+    },
+    addAssistantGoalWatch(goalId: string, request: AssistantGoalWatchRequest) {
+      return apiFetch<AssistantGoalTimeline>(
+        `/assistant/goals/${encodeURIComponent(goalId)}/watches`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    addAssistantGoalNote(goalId: string, request: AssistantGoalNoteRequest) {
+      return apiFetch<AssistantGoalTimeline>(
+        `/assistant/goals/${encodeURIComponent(goalId)}/notes`,
         {
           baseUrl,
           fetcher,

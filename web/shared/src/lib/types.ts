@@ -87,6 +87,7 @@ export type TaskStatus =
 
 export interface HomelabdTask {
   id: string;
+  goal_id?: string;
   title: string;
   goal: string;
   status: TaskStatus | string;
@@ -410,6 +411,7 @@ export type AssistantRunDecision = 'no_op' | 'recommend' | 'created_tasks' | str
 export interface AssistantRunRequest {
   trigger_kind?: string;
   trigger_label?: string;
+  goal_id?: string;
   goal?: string;
   autonomy?: string;
 }
@@ -433,6 +435,7 @@ export interface AssistantRunTrigger {
 
 export interface AssistantRunFinding {
   title: string;
+  goal_id?: string;
   detail?: string;
   severity?: string;
   surface?: string;
@@ -446,6 +449,7 @@ export interface AssistantRunAction {
   contract_id?: string;
   contract?: AssistantRunCapabilityContract;
   kind: string;
+  goal_id?: string;
   title: string;
   rationale: string;
   priority?: string;
@@ -534,6 +538,7 @@ export interface AssistantRunSignal {
   id: string;
   fingerprint: string;
   kind: string;
+  goal_id?: string;
   title: string;
   detail?: string;
   why_now?: string;
@@ -565,6 +570,7 @@ export interface AssistantSignalSubmitRequest {
   fingerprint?: string;
   source?: string;
   kind?: string;
+  goal_id?: string;
   title: string;
   detail?: string;
   why_now?: string;
@@ -618,6 +624,7 @@ export interface AssistantRunSignalEvidence {
 export interface AssistantRunSnapshot {
   generated_at: string;
   signals?: AssistantRunSignal[];
+  goals?: AssistantGoalSnapshotRef[];
   task_counts?: Record<string, number>;
   attention_tasks?: AssistantRunObjectRef[];
   pending_approvals?: number;
@@ -642,6 +649,7 @@ export interface AssistantRun {
   decision: AssistantRunDecision;
   trigger: AssistantRunTrigger;
   autonomy: string;
+  goal_id?: string;
   goal?: string;
   summary: string;
   changed?: string[];
@@ -732,6 +740,171 @@ export interface AssistantRunActionUpdateRequest {
 export interface AssistantSignalUpdateRequest {
   feedback: 'useful' | 'dismiss' | 'snooze' | 'create_task' | string;
   snooze_seconds?: number;
+}
+
+export interface AssistantGoal {
+  id: string;
+  title: string;
+  objective: string;
+  details?: string;
+  status: string;
+  kind?: string;
+  priority?: string;
+  autonomy: string;
+  cadence?: string;
+  next_check_at?: string;
+  success_criteria?: string[];
+  constraints?: string[];
+  linked_tasks?: string[];
+  linked_workflows?: string[];
+  progress_summary?: string;
+  open_questions?: string[];
+  last_checked_at?: string;
+  last_action_at?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string;
+}
+
+export interface AssistantGoalSnapshotRef {
+  id: string;
+  title: string;
+  objective?: string;
+  details?: string;
+  status?: string;
+  kind?: string;
+  priority?: string;
+  autonomy?: string;
+  cadence?: string;
+  next_check_at?: string;
+  last_checked_at?: string;
+  progress_summary?: string;
+  success_criteria?: string[];
+  constraints?: string[];
+  open_questions?: string[];
+  linked_tasks?: string[];
+  url?: string;
+  due?: boolean;
+}
+
+export interface AssistantGoalCreateRequest {
+  title: string;
+  objective?: string;
+  details?: string;
+  kind?: string;
+  priority?: string;
+  autonomy?: string;
+  cadence?: string;
+  next_check_at?: string;
+  success_criteria?: string[];
+  constraints?: string[];
+  open_questions?: string[];
+  created_by?: string;
+}
+
+export interface AssistantGoalUpdateRequest {
+  title?: string;
+  objective?: string;
+  details?: string;
+  status?: string;
+  kind?: string;
+  priority?: string;
+  autonomy?: string;
+  cadence?: string;
+  next_check_at?: string;
+  success_criteria?: string[];
+  constraints?: string[];
+  progress_summary?: string;
+  open_questions?: string[];
+}
+
+export interface AssistantGoalWatch {
+  id: string;
+  goal_id: string;
+  title: string;
+  condition?: string;
+  source?: string;
+  cadence?: string;
+  severity?: string;
+  status: string;
+  expires_at?: string;
+  on_trigger?: string;
+  suggested_action?: string;
+  last_checked_at?: string;
+  last_triggered_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantGoalWatchRequest {
+  title: string;
+  condition?: string;
+  source?: string;
+  cadence?: string;
+  severity?: string;
+  expires_at?: string;
+  on_trigger?: string;
+  suggested_action?: string;
+}
+
+export interface AssistantGoalSignal {
+  id: string;
+  goal_id: string;
+  watch_id?: string;
+  kind: string;
+  summary: string;
+  evidence?: AssistantRunSignalEvidence[];
+  severity?: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string;
+}
+
+export interface AssistantGoalNote {
+  id: string;
+  goal_id: string;
+  kind?: string;
+  title?: string;
+  body: string;
+  task_id?: string;
+  run_id?: string;
+  created_by?: string;
+  created_at: string;
+}
+
+export interface AssistantGoalNoteRequest {
+  kind?: string;
+  title?: string;
+  body: string;
+  task_id?: string;
+  run_id?: string;
+  created_by?: string;
+}
+
+export interface AssistantGoalAssessment {
+  id: string;
+  goal_id: string;
+  run_id?: string;
+  trigger?: string;
+  decision?: string;
+  summary?: string;
+  actions?: string[];
+  next_check_at?: string;
+  created_at: string;
+}
+
+export interface AssistantGoalTimeline {
+  goal: AssistantGoal;
+  watches?: AssistantGoalWatch[];
+  signals?: AssistantGoalSignal[];
+  notes?: AssistantGoalNote[];
+  assessments?: AssistantGoalAssessment[];
+}
+
+export interface AssistantGoalsResponse {
+  goals: AssistantGoal[];
 }
 
 export interface HomelabdKnowledgeSpace {
@@ -1340,6 +1513,19 @@ export interface HomelabdClient {
     actionId: string,
     request: AssistantRunActionUpdateRequest
   ): Promise<AssistantRunActionResponse>;
+  listAssistantGoals(): Promise<AssistantGoalsResponse>;
+  createAssistantGoal(request: AssistantGoalCreateRequest): Promise<AssistantGoalTimeline>;
+  getAssistantGoal(goalId: string): Promise<AssistantGoalTimeline>;
+  updateAssistantGoal(
+    goalId: string,
+    request: AssistantGoalUpdateRequest
+  ): Promise<AssistantGoalTimeline>;
+  checkAssistantGoal(goalId: string): Promise<AssistantRunActionResponse>;
+  addAssistantGoalWatch(
+    goalId: string,
+    request: AssistantGoalWatchRequest
+  ): Promise<AssistantGoalTimeline>;
+  addAssistantGoalNote(goalId: string, request: AssistantGoalNoteRequest): Promise<AssistantGoalTimeline>;
   clearChat(request: HomelabdClearChatRequest): Promise<HomelabdClearChatResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;

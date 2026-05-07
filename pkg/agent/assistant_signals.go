@@ -137,6 +137,9 @@ func mergeAssistantRunSignalEvidence(primary, secondary []assistantstore.RunSign
 
 func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) []assistantstore.RunSignal {
 	var signals []assistantstore.RunSignal
+	for _, goal := range snapshot.Goals {
+		signals = append(signals, assistantGoalSignals(goal)...)
+	}
 	attentionTaskIDs := map[string]bool{}
 	for _, task := range snapshot.AttentionTasks {
 		attentionTaskIDs[task.ID] = true
@@ -253,6 +256,114 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 	signals = append(signals, assistantSupervisorSignals(snapshot.Supervisor)...)
 	signals = append(signals, assistantEventSignals(snapshot.RecentEvents, attentionTaskIDs)...)
 	return signals
+}
+
+func assistantGoalSignals(goal assistantstore.GoalSnapshotRef) []assistantstore.RunSignal {
+	if strings.TrimSpace(goal.ID) == "" {
+		return nil
+	}
+	title := firstNonEmptyString(goal.Title, goal.ID)
+	url := firstNonEmptyString(goal.URL, "/assistant?goal="+goal.ID)
+	if strings.EqualFold(goal.Status, assistantstore.GoalStatusBlocked) {
+		return []assistantstore.RunSignal{newAssistantRunSignal(assistantstore.RunSignal{
+			Kind:       "goal_blocked",
+			GoalID:     goal.ID,
+			Title:      "Unblock Goal: " + title,
+			Detail:     firstNonEmptyString(goal.ProgressSummary, "Goal is marked blocked."),
+			WhyNow:     "Blocked Goals cannot make progress until the assistant or operator identifies the next move.",
+			Severity:   "warning",
+			Surface:    "goals",
+			ObjectID:   goal.ID,
+			ObjectURL:  url,
+			Score:      88,
+			ActionKind: "task",
+			Rationale:  "Blocked Goals need a concrete unblock step, question, or follow-up task.",
+			TaskGoal:   assistantGoalTaskGoal(goal, "Review this blocked Goal, identify the blocker, and create the smallest safe follow-up to unblock it."),
+			Evidence: []assistantstore.RunSignalEvidence{assistantSignalEvidence(
+				"goals",
+				"goal_blocked",
+				title,
+				firstNonEmptyString(goal.ProgressSummary, "Goal is blocked."),
+				goal.ID,
+				url,
+				time.Time{},
+				88,
+			)},
+			SuggestedNextStep: "Create a linked task or ask the operator for the missing decision.",
+			Fingerprint:       assistantSignalFingerprint("goals", "blocked", goal.ID, title),
+		})}
+	}
+	if !goal.Due {
+		return nil
+	}
+	score := 76
+	if goal.LastCheckedAt == nil {
+		score = 84
+	}
+	return []assistantstore.RunSignal{newAssistantRunSignal(assistantstore.RunSignal{
+		Kind:       "goal_due",
+		GoalID:     goal.ID,
+		Title:      "Check Goal: " + title,
+		Detail:     firstNonEmptyString(goal.ProgressSummary, goal.Objective, "Goal is due for an assistant check."),
+		WhyNow:     "The Goal's cadence or next check time says it needs attention now.",
+		Severity:   "info",
+		Surface:    "goals",
+		ObjectID:   goal.ID,
+		ObjectURL:  url,
+		Score:      score,
+		ActionKind: "task",
+		Rationale:  "Due Goals should produce either a concrete next task, a question, a progress update, or a no-op receipt with the next check time.",
+		TaskGoal:   assistantGoalTaskGoal(goal, "Assess this due Goal and perform the smallest useful next step within the Goal constraints."),
+		Evidence: []assistantstore.RunSignalEvidence{assistantSignalEvidence(
+			"goals",
+			"goal_due",
+			title,
+			firstNonEmptyString(goal.Objective, "Goal is due for review."),
+			goal.ID,
+			url,
+			time.Time{},
+			score,
+		)},
+		SuggestedNextStep: "Assess the Goal and create one linked task only if concrete work is needed.",
+		Fingerprint:       assistantSignalFingerprint("goals", "due", goal.ID, title),
+	})}
+}
+
+func assistantGoalTaskGoal(goal assistantstore.GoalSnapshotRef, instruction string) string {
+	var lines []string
+	lines = append(lines,
+		instruction,
+		"",
+		"Goal ID: "+goal.ID,
+		"Goal title: "+goal.Title,
+		"Objective: "+firstNonEmptyString(goal.Objective, goal.Title),
+	)
+	if strings.TrimSpace(goal.Details) != "" {
+		lines = append(lines, "", "Details:", strings.TrimSpace(goal.Details))
+	}
+	if strings.TrimSpace(goal.ProgressSummary) != "" {
+		lines = append(lines, "", "Current progress:", strings.TrimSpace(goal.ProgressSummary))
+	}
+	if len(goal.SuccessCriteria) > 0 {
+		lines = append(lines, "", "Success criteria:")
+		for _, criterion := range goal.SuccessCriteria {
+			lines = append(lines, "- "+criterion)
+		}
+	}
+	if len(goal.Constraints) > 0 {
+		lines = append(lines, "", "Constraints:")
+		for _, constraint := range goal.Constraints {
+			lines = append(lines, "- "+constraint)
+		}
+	}
+	if len(goal.OpenQuestions) > 0 {
+		lines = append(lines, "", "Open questions:")
+		for _, question := range goal.OpenQuestions {
+			lines = append(lines, "- "+question)
+		}
+	}
+	lines = append(lines, "", "Report back with Goal progress, blockers, follow-up recommendations, and any watch that should keep monitoring this Goal.")
+	return strings.Join(lines, "\n")
 }
 
 func assistantHealthSignals(snapshot assistantstore.RunSystemSnapshot) []assistantstore.RunSignal {
@@ -696,6 +807,7 @@ func assistantAlignDecisionActionsWithSignals(actions []assistantstore.RunAction
 				continue
 			}
 			actions[index].Fingerprint = signal.Fingerprint
+			actions[index].GoalID = firstNonEmptyString(actions[index].GoalID, signal.GoalID)
 			actions[index].TargetSurface = firstNonEmptyString(actions[index].TargetSurface, signal.Surface)
 			actions[index].Priority = firstNonEmptyString(actions[index].Priority, signal.Priority)
 			actions[index].Risk = firstNonEmptyString(actions[index].Risk, "low")
@@ -751,6 +863,9 @@ func assistantBestSignalForAction(action assistantstore.RunAction, signals []ass
 		if action.TargetSurface != "" && strings.EqualFold(action.TargetSurface, signal.Surface) {
 			score += 2
 		}
+		if action.GoalID != "" && strings.EqualFold(action.GoalID, signal.GoalID) {
+			score += 4
+		}
 		if signal.ObjectID != "" && strings.Contains(actionText, strings.ToLower(signal.ObjectID)) {
 			score += 4
 		}
@@ -771,6 +886,7 @@ func assistantBestSignalForAction(action assistantstore.RunAction, signals []ass
 func assistantFindingFromSignal(signal assistantstore.RunSignal) assistantstore.RunFinding {
 	return assistantstore.RunFinding{
 		Title:     signal.Title,
+		GoalID:    signal.GoalID,
 		Detail:    firstNonEmptyString(signal.Detail, signal.WhyNow, signal.Rationale),
 		Severity:  signal.Severity,
 		Surface:   signal.Surface,
@@ -784,6 +900,7 @@ func assistantActionFromSignal(signal assistantstore.RunSignal, index int) assis
 		ID:            fmt.Sprintf("action_%d", index+1),
 		Fingerprint:   signal.Fingerprint,
 		Kind:          firstNonEmptyString(signal.ActionKind, "task"),
+		GoalID:        signal.GoalID,
 		Title:         signal.Title,
 		Rationale:     firstNonEmptyString(signal.Rationale, signal.WhyNow, signal.Detail),
 		Priority:      signal.Priority,

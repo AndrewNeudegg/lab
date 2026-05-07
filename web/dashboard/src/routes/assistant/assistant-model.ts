@@ -1,6 +1,7 @@
 import type {
   AssistantActivity,
   AssistantCapability,
+  AssistantGoal,
   AssistantRun,
   AssistantSignalCandidate,
   AssistantUXPattern
@@ -195,3 +196,52 @@ export const assistantRouteLabel = (capability = '') => {
       return capability.replaceAll('_', ' ') || 'Assistant';
   }
 };
+
+export const assistantGoalStatusLabel = (status = '') => {
+  switch (status) {
+    case 'active':
+      return 'Active';
+    case 'blocked':
+      return 'Blocked';
+    case 'paused':
+      return 'Paused';
+    case 'completed':
+      return 'Completed';
+    case 'archived':
+      return 'Archived';
+    default:
+      return status.replaceAll('_', ' ') || 'Unknown';
+  }
+};
+
+export const assistantGoalStatusTone = (status = '') => {
+  switch (status) {
+    case 'active':
+      return 'green';
+    case 'blocked':
+      return 'amber';
+    case 'paused':
+      return 'gray';
+    case 'completed':
+      return 'blue';
+    case 'archived':
+      return 'gray';
+    default:
+      return 'blue';
+  }
+};
+
+export const activeAssistantGoals = (goals: AssistantGoal[]) =>
+  goals.filter((goal) => goal.status === 'active' || goal.status === 'blocked');
+
+export const dueAssistantGoals = (goals: AssistantGoal[], now = new Date()) =>
+  activeAssistantGoals(goals).filter((goal) => {
+    if (!goal.next_check_at) {
+      return true;
+    }
+    const dueAt = new Date(goal.next_check_at);
+    return Number.isNaN(dueAt.valueOf()) || dueAt <= now;
+  });
+
+export const selectAssistantGoal = (goals: AssistantGoal[], selectedGoalId: string) =>
+  goals.find((goal) => goal.id === selectedGoalId);

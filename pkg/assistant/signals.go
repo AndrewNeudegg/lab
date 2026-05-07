@@ -61,6 +61,7 @@ type SignalSubmitRequest struct {
 	Fingerprint       string              `json:"fingerprint,omitempty"`
 	Source            string              `json:"source,omitempty"`
 	Kind              string              `json:"kind,omitempty"`
+	GoalID            string              `json:"goal_id,omitempty"`
 	Title             string              `json:"title"`
 	Detail            string              `json:"detail,omitempty"`
 	WhyNow            string              `json:"why_now,omitempty"`
@@ -247,6 +248,7 @@ func SignalCandidateFromSubmitRequest(req SignalSubmitRequest, now time.Time) Si
 	signal := RunSignal{
 		Fingerprint:       req.Fingerprint,
 		Kind:              req.Kind,
+		GoalID:            req.GoalID,
 		Title:             req.Title,
 		Detail:            req.Detail,
 		WhyNow:            req.WhyNow,

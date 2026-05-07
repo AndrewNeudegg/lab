@@ -463,6 +463,9 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 	if isNoActionNotice(message) {
 		return programResult(noActionNoticeReply(), nil)
 	}
+	if req, ok := goalCreationIntent(message); ok {
+		return programResult(o.createGoalFromChat(ctx, req))
+	}
 	if goal, ok := taskCreationGoal(message); ok {
 		return programResult(o.createTaskOrPlanningBriefWithAttachments(ctx, goal, attachments, true))
 	}
@@ -512,6 +515,8 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 			return programResult("usage: new <goal>", nil)
 		}
 		return programResult(o.createTaskOrPlanningBriefWithAttachments(ctx, cleanupTaskCreationGoal(goal), attachments, true))
+	case "goal", "goals":
+		return programResult(o.handleGoalCommand(ctx, fields, message))
 	case "tasks":
 		return programResult(o.listTasks())
 	case "restart":
@@ -2765,6 +2770,9 @@ func help() string {
 		"commands:",
 		"  new <goal>                 create task and isolated worktree",
 		"                             large homelabd features first create a design brief approval",
+		"  goal <objective>           create a durable Assistant Goal",
+		"  goals                      list Assistant Goals",
+		"  goal show|check <goal_id>  inspect or proactively assess a Goal",
 		"  tasks                      list tasks",
 		"  workflows                  list durable LLM/tool workflows",
 		"  workflow new <name>: <goal> create a simple workflow",
@@ -4345,6 +4353,10 @@ func (o *Orchestrator) createTaskRecord(ctx context.Context, goal string) (creat
 }
 
 func (o *Orchestrator) createTaskRecordWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (createdTask, error) {
+	return o.createTaskRecordWithOptions(ctx, goal, attachments, taskCreateOptions{})
+}
+
+func (o *Orchestrator) createTaskRecordWithOptions(ctx context.Context, goal string, attachments []taskstore.Attachment, opts taskCreateOptions) (createdTask, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return createdTask{}, nil
@@ -4354,6 +4366,7 @@ func (o *Orchestrator) createTaskRecordWithAttachments(ctx context.Context, goal
 	attachments = prepareTaskAttachments(attachments)
 	t := taskstore.Task{
 		ID:          taskID,
+		GoalID:      strings.TrimSpace(opts.GoalID),
 		Title:       o.summarizeTaskTitle(ctx, taskID, goal),
 		Goal:        goal,
 		Status:      taskstore.StatusQueued,
@@ -5980,6 +5993,7 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 		return "", err
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.completed", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"result": t.Result})})
+	o.reflectGoalTaskCompletion(ctx, t)
 	released, releaseErr := o.releaseGraphDependents(ctx, taskID)
 	if releaseErr != nil {
 		return "", releaseErr

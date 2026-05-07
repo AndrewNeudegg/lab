@@ -34,6 +34,7 @@ const assistantRunDecisionSchema = `{
         "additionalProperties": false,
         "properties": {
           "title": {"type": "string"},
+          "goal_id": {"type": "string"},
           "detail": {"type": "string"},
           "severity": {"type": "string"},
           "surface": {"type": "string"},
@@ -51,6 +52,7 @@ const assistantRunDecisionSchema = `{
         "additionalProperties": false,
         "properties": {
           "title": {"type": "string"},
+          "goal_id": {"type": "string"},
           "detail": {"type": "string"},
           "severity": {"type": "string"},
           "surface": {"type": "string"},
@@ -69,6 +71,7 @@ const assistantRunDecisionSchema = `{
         "properties": {
           "id": {"type": "string"},
           "kind": {"type": "string", "enum": ["task", "research", "workflow", "watch", "observe"]},
+          "goal_id": {"type": "string"},
           "fingerprint": {"type": "string"},
           "title": {"type": "string"},
           "rationale": {"type": "string"},
@@ -463,12 +466,13 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 		Decision:  assistantstore.RunDecisionNoop,
 		Trigger:   assistantstore.RunTrigger{Kind: req.TriggerKind, Label: req.TriggerLabel},
 		Autonomy:  req.Autonomy,
+		GoalID:    req.GoalID,
 		Goal:      req.Goal,
 		CreatedAt: now,
 		StartedAt: now,
 		UpdatedAt: now,
 	}
-	run.Snapshot = o.assistantRunSnapshot(ctx, now)
+	run.Snapshot = o.assistantRunSnapshot(ctx, now, req)
 	run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
 		Kind:      "trigger",
 		Message:   "Assistant run started from " + run.Trigger.Label + ".",
@@ -507,6 +511,7 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 	run.RecommendedActions = decision.RecommendedActions
 	run.Compiler = decision.Compiler
 	run = assistantstore.NormalizeRun(run)
+	o.submitAssistantSelfRepairSignal(ctx, run)
 	o.applyAssistantSignalMemory(ctx, &run)
 	suppressedActions := pruneAssistantSuppressedRunActions(&run)
 	if suppressedActions > 0 {
@@ -518,6 +523,7 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 	}
 	o.applyAssistantRunActions(ctx, &run)
 	applyAssistantCapabilityRouter(&run)
+	o.recordGoalRunAssessment(ctx, &run)
 	run.Provider = response.Provider
 	run.Model = response.Model
 	run.Usage = assistantstore.RunUsage{
@@ -570,6 +576,50 @@ func (o *Orchestrator) applyAssistantSignalMemory(ctx context.Context, run *assi
 	}
 }
 
+func (o *Orchestrator) submitAssistantSelfRepairSignal(ctx context.Context, run assistantstore.Run) {
+	if run.Compiler == nil || run.Compiler.Scorecard == nil || !run.Compiler.Scorecard.FallbackUsed {
+		return
+	}
+	diagnostic := strings.ToLower(strings.Join(append(append([]string{}, run.Compiler.Rejections...), run.Compiler.Repairs...), " ") + " " + run.Compiler.Summary)
+	if !strings.Contains(diagnostic, "invalid json") && !strings.Contains(diagnostic, "empty model response") && !strings.Contains(diagnostic, "structured") {
+		return
+	}
+	_, err := o.SubmitAssistantSignal(ctx, assistantstore.SignalSubmitRequest{
+		Fingerprint: "assistant:self_repair:structured_output",
+		Source:      "assistant",
+		Kind:        "assistant_self_repair",
+		Title:       "Repair Assistant structured-output handling",
+		Detail:      "A proactive Assistant run fell back because the model did not return valid structured output.",
+		WhyNow:      "The Assistant cannot be trusted to drive Goals if failed reasoning is hidden as a no-op.",
+		Severity:    "warning",
+		Surface:     "assistant",
+		ObjectID:    run.ID,
+		ObjectURL:   "/assistant?run=" + run.ID,
+		Score:       92,
+		ActionKind:  "task",
+		Rationale:   "Provider or parser failures should create self-repair work instead of disappearing into a fallback receipt.",
+		TaskGoal: strings.Join([]string{
+			"Investigate and repair proactive Assistant structured-output handling.",
+			"Use the failed run as evidence: " + run.ID + ".",
+			"Ensure invalid or empty model output creates visible self-repair signals and add regression coverage.",
+		}, "\n"),
+		Evidence: []assistantstore.RunSignalEvidence{{
+			Source:    "assistant",
+			Kind:      "compiler_rejection",
+			Title:     "Assistant compiler fallback",
+			Detail:    truncateAssistantRunText(run.Compiler.Summary, 320),
+			ObjectID:  run.ID,
+			ObjectURL: "/assistant?run=" + run.ID,
+			Weight:    92,
+		}},
+		SafeActions:       []string{"create_task", "useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Create a repair task for Assistant run structured-output handling.",
+	})
+	if err != nil {
+		o.log().Warn("assistant self-repair signal failed", "error", err, "run", run.ID)
+	}
+}
+
 func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assistantstore.Run) {
 	if run == nil {
 		return
@@ -613,6 +663,9 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		if goal == "" {
 			goal = strings.TrimSpace(strings.Join([]string{action.Title, "", "Rationale: " + action.Rationale}, "\n"))
 		}
+		if action.GoalID == "" && run.GoalID != "" {
+			action.GoalID = run.GoalID
+		}
 		if goal == "" || strings.TrimSpace(action.Title) == "" {
 			action.Status = "skipped"
 			markAssistantActionPlanBlocked(action, "Task goal or title was empty.")
@@ -624,7 +677,18 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 			})
 			continue
 		}
-		created, err := o.createTaskRecord(ctx, goal)
+		var created createdTask
+		var err error
+		if action.GoalID != "" {
+			goalTimeline, loadErr := o.LoadGoal(action.GoalID)
+			if loadErr == nil {
+				created, err = o.createTaskRecordForGoal(ctx, goal, goalTimeline.Goal)
+			} else {
+				err = loadErr
+			}
+		} else {
+			created, err = o.createTaskRecord(ctx, goal)
+		}
 		if err != nil {
 			action.Status = "failed"
 			markAssistantActionPlanBlocked(action, err.Error())
@@ -647,6 +711,9 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		createdCount++
 		if signalStore != nil {
 			o.saveAssistantCreatedTaskSignal(signalStore, run.ID, *action, created.Task.ID)
+		}
+		if action.GoalID != "" {
+			o.linkTaskToGoal(ctx, action.GoalID, created.Task.ID, run.ID, action.Title)
 		}
 		run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
 			Kind:      "task_created",
@@ -1098,12 +1165,26 @@ func (o *Orchestrator) createTaskFromAssistantAction(ctx context.Context, action
 	if goal == "" {
 		return "", fmt.Errorf("assistant recommendation has no task goal")
 	}
-	created, err := o.createTaskRecord(ctx, goal)
+	var created createdTask
+	var err error
+	if action.GoalID != "" {
+		timeline, loadErr := o.LoadGoal(action.GoalID)
+		if loadErr == nil {
+			created, err = o.createTaskRecordForGoal(ctx, goal, timeline.Goal)
+		} else {
+			err = loadErr
+		}
+	} else {
+		created, err = o.createTaskRecord(ctx, goal)
+	}
 	if err != nil {
 		return "", err
 	}
 	if created.Task.ID == "" {
 		return "", fmt.Errorf("task was not created")
+	}
+	if action.GoalID != "" {
+		o.linkTaskToGoal(ctx, action.GoalID, created.Task.ID, "", action.Title)
 	}
 	return created.Task.ID, nil
 }
@@ -1158,6 +1239,19 @@ func (o *Orchestrator) StartAssistantProactiveLoop(ctx context.Context) {
 	autonomy := o.cfg.Assistant.ProactiveAutonomy
 	eventWatchEnabled := o.cfg.Assistant.ProactiveEventWatchEnabled == nil || *o.cfg.Assistant.ProactiveEventWatchEnabled
 	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if _, _, err := o.StartAssistantRun(ctx, assistantstore.RunRequest{
+			TriggerKind:  "startup",
+			TriggerLabel: "Startup proactive check",
+			Goal:         "Review active Goals and current homelabd state after daemon startup.",
+			Autonomy:     autonomy,
+		}); err != nil {
+			o.log().Warn("startup assistant run failed", "error", err)
+		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -1342,6 +1436,7 @@ func normalizeAssistantRunRequest(req assistantstore.RunRequest) assistantstore.
 	if req.TriggerLabel == "" {
 		req.TriggerLabel = "Manual proactive check"
 	}
+	req.GoalID = strings.TrimSpace(req.GoalID)
 	req.Goal = strings.TrimSpace(req.Goal)
 	if req.Goal == "" {
 		req.Goal = "Review current homelabd state and recommend useful next actions."
@@ -1374,6 +1469,7 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 				Content: strings.Join([]string{
 					"You are homelabd's proactive executive layer.",
 					"Use the harness: Tasks are for changing things, Knowledge is for durable research and memory, and Workflows are for repeatable thinking.",
+					"Goals are durable operator desires. Each goal can include objective, details, success criteria, constraints, cadence, autonomy, progress, and linked tasks. Keep Goals moving with one small next action when evidence supports it.",
 					"Treat snapshot.signals as the pre-scored watchlist. Each signal can include why_now, evidence, safe_actions, and suggested_next_step so any source can plug in without source-specific reasoning.",
 					"Prefer high-score, high-confidence signals, ground recommendations in their evidence, use only safe_actions, and do not recommend suppressed signals.",
 					"Do not claim to have executed actions unless the snapshot already proves they happened.",
@@ -1493,13 +1589,14 @@ func assistantTaskGoalFromFindings(findings []assistantstore.RunFinding) string 
 	return strings.Join(lines, "\n")
 }
 
-func (o *Orchestrator) assistantRunSnapshot(ctx context.Context, now time.Time) assistantstore.RunSnapshot {
+func (o *Orchestrator) assistantRunSnapshot(ctx context.Context, now time.Time, req assistantstore.RunRequest) assistantstore.RunSnapshot {
 	snapshot := assistantstore.RunSnapshot{
 		GeneratedAt:       now,
 		TaskCounts:        map[string]int{},
 		WorkflowCounts:    map[string]int{},
 		RemoteAgentCounts: map[string]int{},
 	}
+	snapshot.Goals = o.assistantGoalSnapshotRefs(now, req.GoalID)
 	if tasks, err := o.ListTasks(); err == nil {
 		for _, task := range tasks {
 			snapshot.TaskCounts[task.Status]++

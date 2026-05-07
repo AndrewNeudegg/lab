@@ -31,6 +31,7 @@ const (
 type RunRequest struct {
 	TriggerKind  string `json:"trigger_kind,omitempty"`
 	TriggerLabel string `json:"trigger_label,omitempty"`
+	GoalID       string `json:"goal_id,omitempty"`
 	Goal         string `json:"goal,omitempty"`
 	Autonomy     string `json:"autonomy,omitempty"`
 }
@@ -47,6 +48,7 @@ type Run struct {
 	Decision           string               `json:"decision"`
 	Trigger            RunTrigger           `json:"trigger"`
 	Autonomy           string               `json:"autonomy"`
+	GoalID             string               `json:"goal_id,omitempty"`
 	Goal               string               `json:"goal,omitempty"`
 	Summary            string               `json:"summary"`
 	Changed            []string             `json:"changed,omitempty"`
@@ -143,6 +145,7 @@ type RunTrigger struct {
 
 type RunFinding struct {
 	Title     string `json:"title"`
+	GoalID    string `json:"goal_id,omitempty"`
 	Detail    string `json:"detail,omitempty"`
 	Severity  string `json:"severity,omitempty"`
 	Surface   string `json:"surface,omitempty"`
@@ -156,6 +159,7 @@ type RunAction struct {
 	ContractID     string                 `json:"contract_id,omitempty"`
 	Contract       *RunCapabilityContract `json:"contract,omitempty"`
 	Kind           string                 `json:"kind"`
+	GoalID         string                 `json:"goal_id,omitempty"`
 	Title          string                 `json:"title"`
 	Rationale      string                 `json:"rationale"`
 	Priority       string                 `json:"priority,omitempty"`
@@ -210,6 +214,7 @@ type RunUsage struct {
 type RunSnapshot struct {
 	GeneratedAt       time.Time         `json:"generated_at"`
 	Signals           []RunSignal       `json:"signals,omitempty"`
+	Goals             []GoalSnapshotRef `json:"goals,omitempty"`
 	TaskCounts        map[string]int    `json:"task_counts,omitempty"`
 	AttentionTasks    []RunObjectRef    `json:"attention_tasks,omitempty"`
 	PendingApprovals  int               `json:"pending_approvals,omitempty"`
@@ -226,6 +231,7 @@ type RunSignal struct {
 	ID                string              `json:"id"`
 	Fingerprint       string              `json:"fingerprint"`
 	Kind              string              `json:"kind"`
+	GoalID            string              `json:"goal_id,omitempty"`
 	Title             string              `json:"title"`
 	Detail            string              `json:"detail,omitempty"`
 	WhyNow            string              `json:"why_now,omitempty"`
@@ -430,6 +436,7 @@ func NormalizeRun(run Run) Run {
 	run.Autonomy = normalizeRunAutonomy(run.Autonomy)
 	run.Trigger.Kind = firstRunValue(run.Trigger.Kind, "manual")
 	run.Trigger.Label = firstRunValue(run.Trigger.Label, "Manual proactive check")
+	run.GoalID = strings.TrimSpace(run.GoalID)
 	run.Goal = strings.TrimSpace(run.Goal)
 	run.Summary = strings.TrimSpace(run.Summary)
 	run.Error = strings.TrimSpace(run.Error)
@@ -505,6 +512,7 @@ func normalizeRunSignal(value RunSignal, index int) RunSignal {
 	if value.Kind == "" {
 		value.Kind = "watchlist"
 	}
+	value.GoalID = strings.TrimSpace(value.GoalID)
 	value.Title = strings.TrimSpace(value.Title)
 	if value.Title == "" {
 		value.Title = "Assistant signal"
@@ -615,6 +623,7 @@ func normalizeRunSignalSafeActions(values []string) []string {
 
 func normalizeRunFinding(value RunFinding) RunFinding {
 	value.Title = strings.TrimSpace(value.Title)
+	value.GoalID = strings.TrimSpace(value.GoalID)
 	value.Detail = strings.TrimSpace(value.Detail)
 	value.Severity = strings.TrimSpace(value.Severity)
 	value.Surface = strings.TrimSpace(value.Surface)
@@ -630,6 +639,7 @@ func normalizeRunAction(value RunAction, index int) RunAction {
 	}
 	value.ContractID = strings.TrimSpace(value.ContractID)
 	value.Kind = firstRunValue(value.Kind, "observe")
+	value.GoalID = strings.TrimSpace(value.GoalID)
 	value.Title = strings.TrimSpace(value.Title)
 	value.Rationale = strings.TrimSpace(value.Rationale)
 	value.Priority = strings.TrimSpace(value.Priority)

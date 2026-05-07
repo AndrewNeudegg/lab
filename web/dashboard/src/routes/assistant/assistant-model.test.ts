@@ -2,13 +2,17 @@ import { describe, expect, test } from 'bun:test';
 import type {
   AssistantActivity,
   AssistantCapability,
+  AssistantGoal,
   AssistantRun,
   AssistantUXPattern
 } from '@homelab/shared';
 import {
   activityCountForCapability,
   activityForCapability,
+  activeAssistantGoals,
   assistantAreaLabel,
+  assistantGoalStatusLabel,
+  assistantGoalStatusTone,
   assistantRunActionCount,
   assistantRunActionStatusLabel,
   assistantRunActionStatusTone,
@@ -18,9 +22,11 @@ import {
   assistantRunStatusTone,
   assistantAutonomyLabel,
   assistantAutonomyTone,
+  dueAssistantGoals,
   patternsForCapability,
   primaryCapabilityForActivity,
   selectAssistantCapability,
+  selectAssistantGoal,
   selectAssistantRun
 } from './assistant-model';
 
@@ -70,6 +76,17 @@ const run = (id: string, actions = 0): AssistantRun => ({
   snapshot: { generated_at: '2026-04-30T21:00:00Z' },
   created_at: '2026-04-30T21:00:00Z',
   updated_at: '2026-04-30T21:00:00Z'
+});
+
+const goal = (id: string, status = 'active', nextCheckAt = '2026-05-07T08:00:00Z'): AssistantGoal => ({
+  id,
+  title: id,
+  objective: 'objective',
+  status,
+  autonomy: 'observe',
+  next_check_at: nextCheckAt,
+  created_at: '2026-05-07T07:00:00Z',
+  updated_at: '2026-05-07T07:00:00Z'
 });
 
 describe('assistant model', () => {
@@ -143,5 +160,29 @@ describe('assistant model', () => {
     expect(assistantRunView(archived)).toBe('archived');
     expect(assistantRunsForView(runs, 'active').map((value) => value.id)).toEqual(['arun_1', 'arun_2']);
     expect(assistantRunsForView(runs, 'archived').map((value) => value.id)).toEqual(['arun_archived']);
+  });
+
+  test('labels and selects Assistant Goals', () => {
+    const goals = [
+      goal('goal_due'),
+      goal('goal_future', 'active', '2026-05-08T08:00:00Z'),
+      goal('goal_blocked', 'blocked'),
+      goal('goal_paused', 'paused')
+    ];
+
+    expect(assistantGoalStatusLabel('blocked')).toBe('Blocked');
+    expect(assistantGoalStatusTone('active')).toBe('green');
+    expect(assistantGoalStatusTone('paused')).toBe('gray');
+    expect(activeAssistantGoals(goals).map((value) => value.id)).toEqual([
+      'goal_due',
+      'goal_future',
+      'goal_blocked'
+    ]);
+    expect(dueAssistantGoals(goals, new Date('2026-05-07T09:00:00Z')).map((value) => value.id)).toEqual([
+      'goal_due',
+      'goal_blocked'
+    ]);
+    expect(selectAssistantGoal(goals, 'goal_future')?.id).toBe('goal_future');
+    expect(selectAssistantGoal(goals, 'missing')).toBeUndefined();
   });
 });

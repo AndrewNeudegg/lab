@@ -309,6 +309,61 @@ const assistantSignal = {
   updated_at: now
 };
 
+const assistantGoal = {
+  id: 'goal_daily_brief',
+  title: 'Daily brief',
+  objective: 'Keep the daily brief current and point out unanswered mail.',
+  details: 'Respect focus blocks, cite evidence, and do not send mail without approval.',
+  kind: 'ongoing',
+  status: 'active',
+  priority: 'high',
+  autonomy: 'observe',
+  cadence: 'daily',
+  success_criteria: ['Brief is ready before 08:30.', 'Unanswered mail is surfaced.'],
+  constraints: ['Do not send messages without approval.'],
+  linked_tasks: ['task_goal_brief'],
+  progress_summary: 'Last brief was reviewed; the next check is due.',
+  created_by: 'operator',
+  created_at: now,
+  updated_at: now,
+  last_checked_at: now,
+  next_check_at: now
+};
+
+const assistantGoalWatch = {
+  id: 'gwatch_daily_mail',
+  goal_id: assistantGoal.id,
+  title: 'Morning mail watch',
+  kind: 'reminder',
+  source: 'operator',
+  status: 'active',
+  severity: 'info',
+  cadence: 'daily',
+  condition: 'Look for unanswered mail before the daily brief.',
+  suggested_action: 'Prepare the morning brief with unanswered mail called out.',
+  created_at: now,
+  updated_at: now
+};
+
+const assistantGoalNote = {
+  id: 'gnote_daily_progress',
+  goal_id: assistantGoal.id,
+  kind: 'progress',
+  title: 'Progress update',
+  body: 'The first brief watch is active and waiting for the next check.',
+  created_by: 'assistant',
+  created_at: now
+};
+
+const assistantGoalAssessment = {
+  id: 'gassess_daily_brief',
+  goal_id: assistantGoal.id,
+  run_id: assistantRun.id,
+  status: 'on_track',
+  summary: 'Daily brief Goal is ready for the next proactive check.',
+  created_at: now
+};
+
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const freezeTime = async (page: Page) => {
@@ -391,6 +446,17 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
   };
   const runs = options.includeFailedRun ? [failedRun, clone(assistantRun), archivedRun] : [clone(assistantRun), archivedRun];
   const signals: any[] = [clone(assistantSignal)];
+  const goals: any[] = [clone(assistantGoal)];
+  const watches: any[] = [clone(assistantGoalWatch)];
+  const notes: any[] = [clone(assistantGoalNote)];
+  const assessments: any[] = [clone(assistantGoalAssessment)];
+  const timelineForGoal = (goal: any) => ({
+    goal,
+    watches: watches.filter((watch) => watch.goal_id === goal.id),
+    signals: [],
+    notes: notes.filter((note) => note.goal_id === goal.id),
+    assessments: assessments.filter((assessment) => assessment.goal_id === goal.id)
+  });
   const actionIsSettled = (action: any) =>
     ['created_task', 'dismissed', 'snoozed', 'useful', 'skipped', 'failed'].includes(action.status || '');
   const archiveIfSettled = (run: any) => {
@@ -545,6 +611,121 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
     await route.fulfill({
       json: { signals: signals.filter((signal) => !signal.suppressed && !signal.created_task_id) }
     });
+  });
+  await page.route(/\/api\/assistant\/goals(?:\/.*)?(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const parts = url.pathname.split('/').filter(Boolean);
+    const goalIndex = parts.indexOf('goals');
+    const goalID = goalIndex >= 0 ? parts[goalIndex + 1] || '' : '';
+    const suffix = goalIndex >= 0 ? parts[goalIndex + 2] || '' : '';
+    const goal = goals.find((candidate) => candidate.id === goalID) || goals[0];
+
+    if (route.request().method() === 'POST' && !goalID) {
+      const body = route.request().postDataJSON() as { title?: string; objective?: string; cadence?: string; autonomy?: string };
+      const created = {
+        ...clone(assistantGoal),
+        id: 'goal_created',
+        title: body.title || 'Created Goal',
+        objective: body.objective || body.title || 'Keep the new Goal alive.',
+        cadence: body.cadence || 'daily',
+        autonomy: body.autonomy || 'observe',
+        linked_tasks: [],
+        progress_summary: 'Goal is waiting for its first Assistant assessment.',
+        created_by: 'dashboard',
+        created_at: now,
+        updated_at: now,
+        last_checked_at: '',
+        next_check_at: now
+      };
+      const createdNote = {
+        ...clone(assistantGoalNote),
+        id: 'gnote_created',
+        goal_id: created.id,
+        title: 'Goal created',
+        body: 'Dashboard created this Goal for proactive review.'
+      };
+      goals.unshift(created);
+      notes.unshift(createdNote);
+      await route.fulfill({ status: 201, json: timelineForGoal(created) });
+      return;
+    }
+
+    if (route.request().method() === 'POST' && suffix === 'check') {
+      const createdRun = {
+        ...clone(assistantRun),
+        id: 'arun_goal_check',
+        goal_id: goal.id,
+        trigger: { kind: 'goal', label: `Goal check: ${goal.title}` },
+        goal: goal.objective,
+        summary: `Goal check completed for ${goal.title}.`,
+        updated_at: now
+      };
+      runs.unshift(createdRun);
+      goal.last_checked_at = now;
+      goal.next_check_at = '2026-04-29T12:00:00.000Z';
+      goal.progress_summary = `Checked by ${createdRun.id}; next review is scheduled.`;
+      goal.updated_at = now;
+      assessments.unshift({
+        ...clone(assistantGoalAssessment),
+        id: 'gassess_goal_check',
+        goal_id: goal.id,
+        run_id: createdRun.id,
+        summary: `Goal check completed for ${goal.title}.`
+      });
+      await route.fulfill({ json: { reply: 'Goal check completed.', run: createdRun } });
+      return;
+    }
+
+    if (route.request().method() === 'POST' && suffix === 'watches') {
+      const body = route.request().postDataJSON() as { title?: string; condition?: string; cadence?: string; kind?: string };
+      const createdWatch = {
+        ...clone(assistantGoalWatch),
+        id: 'gwatch_created',
+        goal_id: goal.id,
+        title: body.title || body.condition || 'Created watch',
+        kind: body.kind || 'watch',
+        cadence: body.cadence || '',
+        condition: body.condition || '',
+        created_at: now,
+        updated_at: now
+      };
+      watches.unshift(createdWatch);
+      await route.fulfill({ status: 201, json: timelineForGoal(goal) });
+      return;
+    }
+
+    if (route.request().method() === 'POST' && suffix === 'notes') {
+      const body = route.request().postDataJSON() as { title?: string; body?: string; kind?: string };
+      const createdNote = {
+        ...clone(assistantGoalNote),
+        id: 'gnote_created_manual',
+        goal_id: goal.id,
+        title: body.title || 'Goal note',
+        body: body.body || '',
+        kind: body.kind || 'note',
+        created_at: now
+      };
+      notes.unshift(createdNote);
+      await route.fulfill({ status: 201, json: timelineForGoal(goal) });
+      return;
+    }
+
+    if (route.request().method() === 'PATCH' && goalID) {
+      const body = route.request().postDataJSON() as { status?: string };
+      if (body.status) {
+        goal.status = body.status;
+        goal.updated_at = now;
+      }
+      await route.fulfill({ json: timelineForGoal(goal) });
+      return;
+    }
+
+    if (goalID) {
+      await route.fulfill({ json: timelineForGoal(goal) });
+      return;
+    }
+
+    await route.fulfill({ json: { goals } });
   });
   await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -770,6 +951,37 @@ for (const viewport of [
       await expect(runTotals.getByText('1 archived', { exact: true })).toBeVisible();
       await expect(runTotals.getByText('1 open', { exact: true })).toBeVisible();
       await expect(runTotals.getByText('1 signals', { exact: true })).toBeVisible();
+      const goalsPanel = page.getByLabel('Assistant Goals');
+      await expect(goalsPanel.getByRole('heading', { name: 'Goals' })).toBeVisible();
+      await expect(goalsPanel.getByText('1 active / 1 due')).toBeVisible();
+      await expect(goalsPanel.getByText('Daily brief')).toBeVisible();
+      await goalsPanel.getByRole('button', { name: /Daily brief/ }).click();
+      const selectedGoalRegion = page.getByLabel('Selected Assistant Goal');
+      await expect(selectedGoalRegion.getByRole('heading', { name: 'Daily brief' })).toBeVisible();
+      await expect(selectedGoalRegion.getByLabel('Goal objective')).toContainText(
+        'Keep the daily brief current'
+      );
+      await expect(selectedGoalRegion.getByLabel('Goal watches')).toContainText('Morning mail watch');
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'Back to Goal list' }).click();
+      }
+      await goalsPanel.getByRole('button', { name: 'Create Goal' }).click();
+      const goalForm = goalsPanel.locator('form[aria-label="Create Assistant Goal"]');
+      await goalForm.getByLabel('Title').fill('Inbox follow-up');
+      await goalForm.getByLabel('Objective').fill('Keep unanswered inbox items visible until resolved.');
+      await goalForm.getByLabel('Autonomy').selectOption('create_tasks');
+      await goalForm.getByLabel('Details').fill('Create bounded tasks only when a response needs work.');
+      await goalForm.getByRole('button', { name: 'Create Goal' }).click();
+      await expect(page.getByLabel('Selected Assistant Goal')).toContainText(
+        'Keep unanswered inbox items visible until resolved.'
+      );
+      if (viewport.mobile) {
+        await page.getByRole('button', { name: 'Back to Goal list' }).click();
+      }
+      await expect(goalsPanel.getByRole('status')).toContainText(
+        'Goal created and added to proactive review.'
+      );
+      await expect(goalsPanel.getByText('Inbox follow-up')).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Signal inbox' })).toBeVisible();
       await expect(page.getByText('Review subpar chat answer')).toBeVisible();
       const signalActions = page.getByRole('group', { name: 'Signal actions for Review subpar chat answer' });
@@ -863,7 +1075,9 @@ for (const viewport of [
 
       await expect(page.getByRole('button', { name: 'Restore Assistant decision' })).toBeVisible();
       await page.getByRole('button', { name: 'Restore Assistant decision' }).click();
-      await expect(page.getByRole('status')).toContainText('Restored Assistant decision.');
+      await expect(page.getByRole('status', { name: 'Assistant run status' })).toContainText(
+        'Restored Assistant decision.'
+      );
       await expect(page).toHaveURL(/\/assistant\?run=arun_focus$/);
 
       if (viewport.mobile) {
@@ -872,7 +1086,9 @@ for (const viewport of [
       }
       await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
       await expect(page).toHaveURL(/\/assistant\?run=arun_manual$/);
-      await expect(page.getByRole('status')).toContainText('Assistant run completed.');
+      await expect(page.getByRole('status', { name: 'Assistant run status' })).toContainText(
+        'Assistant run completed.'
+      );
       await expect(page.getByRole('heading', { name: 'Operator requested proactive check' })).toBeInViewport();
       const manualActions = page.getByRole('group', {
         name: 'Recommendation actions for Review blocked deploy'

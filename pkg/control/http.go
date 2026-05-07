@@ -70,6 +70,8 @@ func (s *Server) register(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("/message", s.withCORS(s.handleMessage))
 	mux.HandleFunc("/assistant", s.withCORS(s.handleAssistant))
+	mux.HandleFunc("/assistant/goals", s.withCORS(s.handleAssistantGoals))
+	mux.HandleFunc("/assistant/goals/", s.withCORS(s.handleAssistantGoal))
 	mux.HandleFunc("/assistant/signals", s.withCORS(s.handleAssistantSignals))
 	mux.HandleFunc("/assistant/signals/", s.withCORS(s.handleAssistantSignal))
 	mux.HandleFunc("/assistant/runs", s.withCORS(s.handleAssistantRuns))
@@ -104,6 +106,133 @@ func (s *Server) handleAssistant(rw http.ResponseWriter, req *http.Request) {
 		Area:   req.URL.Query().Get("area"),
 	})
 	writeJSON(rw, http.StatusOK, catalogue)
+}
+
+func (s *Server) handleAssistantGoals(rw http.ResponseWriter, req *http.Request) {
+	if s.Orchestrator == nil {
+		writeError(rw, http.StatusServiceUnavailable, "orchestrator is not configured")
+		return
+	}
+	switch req.Method {
+	case http.MethodGet:
+		goals, err := s.Orchestrator.ListGoals()
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		status := strings.TrimSpace(req.URL.Query().Get("status"))
+		if status != "" && status != "all" {
+			filtered := goals[:0]
+			for _, goal := range goals {
+				if strings.EqualFold(goal.Status, status) {
+					filtered = append(filtered, goal)
+				}
+			}
+			goals = filtered
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"goals": goals})
+	case http.MethodPost:
+		var in assistant.GoalCreateRequest
+		if req.Body != nil {
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		timeline, err := s.Orchestrator.CreateGoal(req.Context(), in)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusCreated, timeline)
+	default:
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) {
+	if s.Orchestrator == nil {
+		writeError(rw, http.StatusServiceUnavailable, "orchestrator is not configured")
+		return
+	}
+	rest := strings.TrimPrefix(req.URL.Path, "/assistant/goals/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(rw, http.StatusNotFound, "assistant goal not found")
+		return
+	}
+	goalID := parts[0]
+	if len(parts) == 1 {
+		switch req.Method {
+		case http.MethodGet:
+			timeline, err := s.Orchestrator.LoadGoal(goalID)
+			if err != nil {
+				writeError(rw, http.StatusNotFound, err.Error())
+				return
+			}
+			writeJSON(rw, http.StatusOK, timeline)
+		case http.MethodPatch:
+			var in assistant.GoalUpdateRequest
+			if req.Body != nil {
+				if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+					writeError(rw, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+			timeline, err := s.Orchestrator.UpdateGoal(req.Context(), goalID, in)
+			if err != nil {
+				writeError(rw, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(rw, http.StatusOK, timeline)
+		default:
+			writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+	if len(parts) != 2 || req.Method != http.MethodPost {
+		writeError(rw, http.StatusNotFound, "assistant goal action not found")
+		return
+	}
+	switch parts[1] {
+	case "check":
+		run, reply, err := s.Orchestrator.CheckGoal(req.Context(), goalID)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusCreated, map[string]any{"run": run, "reply": reply})
+	case "watches":
+		var in assistant.GoalWatchRequest
+		if req.Body != nil {
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		timeline, err := s.Orchestrator.AddGoalWatch(req.Context(), goalID, in)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusCreated, timeline)
+	case "notes":
+		var in assistant.GoalNoteRequest
+		if req.Body != nil {
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		timeline, err := s.Orchestrator.AddGoalNote(req.Context(), goalID, in)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusCreated, timeline)
+	default:
+		writeError(rw, http.StatusNotFound, "assistant goal action not found")
+	}
 }
 
 func (s *Server) handleAssistantRuns(rw http.ResponseWriter, req *http.Request) {

@@ -263,6 +263,52 @@ const assistantRun = {
   updated_at: now
 };
 
+const assistantGoal = {
+  id: 'goal_site_daily',
+  title: 'Daily brief',
+  objective: 'Keep the daily brief current and point out unanswered mail.',
+  details: 'Respect focus blocks and ask before sending messages.',
+  kind: 'ongoing',
+  status: 'active',
+  priority: 'high',
+  autonomy: 'observe',
+  cadence: 'daily',
+  success_criteria: ['Brief is ready before 08:30.'],
+  constraints: ['Do not send messages without approval.'],
+  linked_tasks: ['task_goal_site'],
+  progress_summary: 'Daily brief Goal is due for review.',
+  created_by: 'operator',
+  created_at: now,
+  updated_at: now,
+  last_checked_at: now,
+  next_check_at: now
+};
+
+const assistantGoalWatch = {
+  id: 'gwatch_site_daily',
+  goal_id: assistantGoal.id,
+  title: 'Morning mail watch',
+  kind: 'reminder',
+  source: 'operator',
+  status: 'active',
+  severity: 'info',
+  cadence: 'daily',
+  condition: 'Look for unanswered mail before the daily brief.',
+  suggested_action: 'Prepare the morning brief with unanswered mail called out.',
+  created_at: now,
+  updated_at: now
+};
+
+const assistantGoalNote = {
+  id: 'gnote_site_daily',
+  goal_id: assistantGoal.id,
+  kind: 'progress',
+  title: 'Progress update',
+  body: 'The first brief watch is active and waiting for the next check.',
+  created_by: 'assistant',
+  created_at: now
+};
+
 const knowledgeSource = {
   id: 'ksrc_20260428_120000_33333333',
   title: 'Source transparency notes',
@@ -448,6 +494,16 @@ const mockDashboardApis = async (page: Page) => {
     });
   });
   const assistantRuns = [assistantRun];
+  const assistantGoals: any[] = [assistantGoal];
+  const assistantGoalWatches: any[] = [assistantGoalWatch];
+  const assistantGoalNotes: any[] = [assistantGoalNote];
+  const assistantGoalTimeline = (goal: any) => ({
+    goal,
+    watches: assistantGoalWatches.filter((watch) => watch.goal_id === goal.id),
+    signals: [],
+    notes: assistantGoalNotes.filter((note) => note.goal_id === goal.id),
+    assessments: []
+  });
   await page.route(/\/api\/assistant\/runs(?:\/[^?]+)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const runID = url.pathname.split('/').pop() || '';
@@ -468,6 +524,77 @@ const mockDashboardApis = async (page: Page) => {
       return;
     }
     await route.fulfill({ json: { runs: assistantRuns } });
+  });
+  await page.route(/\/api\/assistant\/signals(?:\/.*)?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { signals: [] } });
+  });
+  await page.route(/\/api\/assistant\/goals(?:\/.*)?(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const parts = url.pathname.split('/').filter(Boolean);
+    const goalIndex = parts.indexOf('goals');
+    const goalID = goalIndex >= 0 ? parts[goalIndex + 1] || '' : '';
+    const suffix = goalIndex >= 0 ? parts[goalIndex + 2] || '' : '';
+    const goal = assistantGoals.find((candidate) => candidate.id === goalID) || assistantGoals[0];
+    if (route.request().method() === 'POST' && !goalID) {
+      const body = route.request().postDataJSON() as { title?: string; objective?: string; cadence?: string; autonomy?: string };
+      const created = {
+        ...assistantGoal,
+        id: 'goal_site_created',
+        title: body.title || 'Created Goal',
+        objective: body.objective || body.title || 'Keep this Goal alive.',
+        cadence: body.cadence || 'daily',
+        autonomy: body.autonomy || 'observe',
+        linked_tasks: [],
+        progress_summary: 'Goal is waiting for its first Assistant assessment.',
+        created_by: 'dashboard',
+        created_at: now,
+        updated_at: now,
+        last_checked_at: '',
+        next_check_at: now
+      };
+      assistantGoals.unshift(created);
+      assistantGoalNotes.unshift({
+        ...assistantGoalNote,
+        id: 'gnote_site_created',
+        goal_id: created.id,
+        title: 'Goal created',
+        body: 'Dashboard created this Goal for proactive review.'
+      });
+      await route.fulfill({ status: 201, json: assistantGoalTimeline(created) });
+      return;
+    }
+    if (route.request().method() === 'POST' && suffix === 'check') {
+      const created = {
+        ...assistantRun,
+        id: 'arun_site_goal',
+        goal_id: goal.id,
+        trigger: { kind: 'goal', label: `Goal check: ${goal.title}` },
+        goal: goal.objective,
+        summary: `Goal check completed for ${goal.title}.`,
+        updated_at: now
+      };
+      assistantRuns.unshift(created);
+      goal.last_checked_at = now;
+      goal.next_check_at = '2026-04-29T12:00:00.000Z';
+      goal.progress_summary = `Checked by ${created.id}; next review is scheduled.`;
+      goal.updated_at = now;
+      await route.fulfill({ json: { reply: 'Goal check completed.', run: created } });
+      return;
+    }
+    if (route.request().method() === 'PATCH' && goalID) {
+      const body = route.request().postDataJSON() as { status?: string };
+      if (body.status) {
+        goal.status = body.status;
+        goal.updated_at = now;
+      }
+      await route.fulfill({ json: assistantGoalTimeline(goal) });
+      return;
+    }
+    if (goalID) {
+      await route.fulfill({ json: assistantGoalTimeline(goal) });
+      return;
+    }
+    await route.fulfill({ json: { goals: assistantGoals } });
   });
   await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -902,6 +1029,28 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
   await expectTaskNavAttention(page, mobile);
   if (route === '/assistant') {
     await expect(page.getByRole('heading', { name: '1 decision' })).toBeVisible();
+    const goalsPanel = page.getByLabel('Assistant Goals');
+    await expect(goalsPanel.getByRole('heading', { name: 'Goals' })).toBeVisible();
+    const dailyGoal = goalsPanel.getByRole('button', { name: /Daily brief/ });
+    await expect(dailyGoal).toBeVisible();
+    await dailyGoal.click();
+    await expect(page.getByLabel('Selected Assistant Goal')).toContainText('Morning mail watch');
+    if (mobile) {
+      await page.getByRole('button', { name: 'Back to Goal list' }).click();
+    }
+    await goalsPanel.getByRole('button', { name: 'Create Goal' }).click();
+    const goalForm = goalsPanel.locator('form[aria-label="Create Assistant Goal"]');
+    await goalForm.getByLabel('Title').fill('Inbox follow-up');
+    await goalForm.getByLabel('Objective').fill('Keep unanswered inbox items visible until resolved.');
+    await goalForm.getByRole('button', { name: 'Create Goal' }).click();
+    await expect(page.getByLabel('Selected Assistant Goal')).toContainText(
+      'Keep unanswered inbox items visible until resolved.'
+    );
+    if (mobile) {
+      await page.getByRole('button', { name: 'Back to Goal list' }).click();
+    }
+    await expect(goalsPanel.getByRole('status')).toContainText('Goal created and added to proactive review.');
+    await expect(goalsPanel.getByText('Inbox follow-up')).toBeVisible();
     await page.getByRole('link', { name: /Scheduled proactive check/ }).click();
     await expect(page).toHaveURL(/\/assistant\?run=arun_site$/);
     await expect(page.getByRole('heading', { name: 'Scheduled proactive check' })).toBeVisible();
@@ -912,7 +1061,9 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     }
     await page.getByRole('button', { name: 'Run proactive Assistant check' }).click();
     await expect(page).toHaveURL(/\/assistant\?run=arun_site_manual$/);
-    await expect(page.getByRole('status')).toContainText('Assistant run completed.');
+    await expect(page.getByRole('status', { name: 'Assistant run status' })).toContainText(
+      'Assistant run completed.'
+    );
     if (mobile) {
       await page.getByRole('button', { name: 'Back to runs' }).click();
       await expect(page).toHaveURL(/\/assistant$/);

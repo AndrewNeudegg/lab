@@ -53,7 +53,7 @@
     "agent_stale_seconds": 30
   },
   "assistant": {
-    "proactive_enabled": false,
+    "proactive_enabled": true,
     "proactive_interval_seconds": 3600,
     "proactive_autonomy": "observe",
     "proactive_event_watch_enabled": true,

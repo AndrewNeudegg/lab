@@ -134,6 +134,13 @@ func (c cli) dispatch(args []string) error {
 		return c.settings(withAction("auto-merge", args[1:]))
 	case "assistant", "assist":
 		return c.assistant(args[1:])
+	case "goal":
+		return c.goal(args[1:])
+	case "goals":
+		if len(args) == 1 {
+			return c.goal([]string{"list"})
+		}
+		return c.goal(args[1:])
 	case "agent":
 		return c.agent(args[1:])
 	case "tasks":
@@ -254,6 +261,114 @@ func (c cli) assistant(args []string) error {
 	default:
 		return fmt.Errorf("unknown assistant command %q", args[0])
 	}
+}
+
+func (c cli) goal(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homelabctl goal <create|list|show|check|pause|archive|note|watch>")
+	}
+	action := commandWord(args[0])
+	switch action {
+	case "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl goal list")
+		}
+		return c.do(http.MethodGet, "/assistant/goals", nil)
+	case "show", "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl goal show <goal_id>")
+		}
+		return c.do(http.MethodGet, path("assistant", "goals", args[1]), nil)
+	case "check":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl goal check <goal_id>")
+		}
+		return c.do(http.MethodPost, path("assistant", "goals", args[1], "check"), nil)
+	case "pause":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl goal pause <goal_id>")
+		}
+		return c.do(http.MethodPatch, path("assistant", "goals", args[1]), map[string]any{"status": "paused"})
+	case "archive":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: homelabctl goal archive <goal_id>")
+		}
+		return c.do(http.MethodPatch, path("assistant", "goals", args[1]), map[string]any{"status": "archived"})
+	case "note":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: homelabctl goal note <goal_id> <body>")
+		}
+		return c.do(http.MethodPost, path("assistant", "goals", args[1], "notes"), map[string]any{
+			"body":       strings.TrimSpace(strings.Join(args[2:], " ")),
+			"created_by": "homelabctl",
+		})
+	case "watch":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: homelabctl goal watch <goal_id> <title>")
+		}
+		return c.do(http.MethodPost, path("assistant", "goals", args[1], "watches"), map[string]any{
+			"title":      strings.TrimSpace(strings.Join(args[2:], " ")),
+			"source":     "homelabctl",
+			"on_trigger": "create_signal",
+		})
+	case "create", "new", "add":
+		return c.goalCreate(args[1:])
+	default:
+		return c.goalCreate(args)
+	}
+}
+
+func (c cli) goalCreate(args []string) error {
+	flags := flag.NewFlagSet("goal create", flag.ContinueOnError)
+	flags.SetOutput(c.err)
+	title := flags.String("title", "", "goal title")
+	details := flags.String("details", "", "long-form goal details")
+	kind := flags.String("kind", "", "goal kind, such as project or routine")
+	priority := flags.String("priority", "", "goal priority")
+	autonomy := flags.String("autonomy", "", "goal autonomy")
+	cadence := flags.String("cadence", "", "goal cadence, such as daily, hourly, or 4h")
+	var successCriteria stringListFlag
+	var constraints stringListFlag
+	flags.Var(&successCriteria, "success", "success criterion; repeat for multiple criteria")
+	flags.Var(&constraints, "constraint", "constraint; repeat for multiple constraints")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	objective := strings.TrimSpace(strings.Join(flags.Args(), " "))
+	if objective == "" {
+		return fmt.Errorf("usage: homelabctl goal create [--title TITLE] [--details TEXT] [--cadence daily] [--success TEXT] [--constraint TEXT] <objective>")
+	}
+	body := map[string]any{
+		"objective":  objective,
+		"created_by": "homelabctl",
+	}
+	if value := strings.TrimSpace(*title); value != "" {
+		body["title"] = value
+	} else {
+		body["title"] = objective
+	}
+	if value := strings.TrimSpace(*details); value != "" {
+		body["details"] = value
+	}
+	if value := strings.TrimSpace(*kind); value != "" {
+		body["kind"] = value
+	}
+	if value := strings.TrimSpace(*priority); value != "" {
+		body["priority"] = value
+	}
+	if value := strings.TrimSpace(*autonomy); value != "" {
+		body["autonomy"] = value
+	}
+	if value := strings.TrimSpace(*cadence); value != "" {
+		body["cadence"] = value
+	}
+	if len(successCriteria) > 0 {
+		body["success_criteria"] = []string(successCriteria)
+	}
+	if len(constraints) > 0 {
+		body["constraints"] = []string(constraints)
+	}
+	return c.do(http.MethodPost, "/assistant/goals", body)
 }
 
 func (c cli) chat(args []string) error {

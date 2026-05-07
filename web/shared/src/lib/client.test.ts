@@ -498,6 +498,90 @@ describe('homelabd client', () => {
     expect(requests[2].body).toEqual({ feedback: 'useful' });
   });
 
+  test('uses typed assistant goal endpoints', async () => {
+    const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
+    const timeline = {
+      goal: {
+        id: 'goal_1',
+        title: 'Daily brief',
+        objective: 'Keep the operator briefed.',
+        status: 'active',
+        autonomy: 'observe',
+        created_at: '2026-05-07T08:00:00Z',
+        updated_at: '2026-05-07T08:00:00Z'
+      },
+      watches: [],
+      notes: [],
+      assessments: []
+    };
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input, init) => {
+        requests.push({
+          url: String(input),
+          init,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined
+        });
+        if (String(input).endsWith('/check')) {
+          return jsonResponse({
+            reply: 'Assistant run completed.',
+            run: {
+              id: 'arun_goal',
+              status: 'completed',
+              decision: 'no_op',
+              trigger: { kind: 'goal', label: 'Goal check: Daily brief' },
+              autonomy: 'observe',
+              goal_id: 'goal_1',
+              summary: 'Checked.',
+              snapshot: { generated_at: '2026-05-07T08:01:00Z' },
+              created_at: '2026-05-07T08:01:00Z',
+              updated_at: '2026-05-07T08:01:00Z'
+            }
+          });
+        }
+        if (String(input).endsWith('/assistant/goals') && !init?.method) {
+          return jsonResponse({ goals: [timeline.goal] });
+        }
+        return jsonResponse(timeline);
+      }
+    });
+
+    const listed = await client.listAssistantGoals();
+    const created = await client.createAssistantGoal({
+      title: 'Daily brief',
+      objective: 'Keep the operator briefed.',
+      cadence: 'daily'
+    });
+    const loaded = await client.getAssistantGoal('goal_1');
+    const updated = await client.updateAssistantGoal('goal_1', { status: 'paused' });
+    const checked = await client.checkAssistantGoal('goal_1');
+    await client.addAssistantGoalWatch('goal_1', { title: 'Morning readiness' });
+    await client.addAssistantGoalNote('goal_1', { body: 'Operator preference.' });
+
+    expect(listed.goals[0].id).toBe('goal_1');
+    expect(created.goal.id).toBe('goal_1');
+    expect(loaded.goal.id).toBe('goal_1');
+    expect(updated.goal.id).toBe('goal_1');
+    expect(checked.run.goal_id).toBe('goal_1');
+    expect(requests.map((request) => request.url)).toEqual([
+      'http://homelabd/assistant/goals',
+      'http://homelabd/assistant/goals',
+      'http://homelabd/assistant/goals/goal_1',
+      'http://homelabd/assistant/goals/goal_1',
+      'http://homelabd/assistant/goals/goal_1/check',
+      'http://homelabd/assistant/goals/goal_1/watches',
+      'http://homelabd/assistant/goals/goal_1/notes'
+    ]);
+    expect(requests[1].init?.method).toBe('POST');
+    expect(requests[1].body).toEqual({
+      title: 'Daily brief',
+      objective: 'Keep the operator briefed.',
+      cadence: 'daily'
+    });
+    expect(requests[3].init?.method).toBe('PATCH');
+    expect(requests[3].body).toEqual({ status: 'paused' });
+  });
+
   test('uses typed task and approval action endpoints', async () => {
     const requests: { url: string; init?: RequestInit; body?: unknown }[] = [];
     const client = createHomelabdClient({

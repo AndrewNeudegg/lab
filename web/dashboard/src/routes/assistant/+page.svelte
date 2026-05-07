@@ -8,12 +8,17 @@
     assistantRunsURL,
     createHomelabdClient,
     Navbar,
+    type AssistantGoal,
+    type AssistantGoalTimeline,
     type AssistantRun,
     type AssistantRunAction,
     type AssistantRunFinding,
     type AssistantSignalCandidate
   } from '@homelab/shared';
   import {
+    activeAssistantGoals,
+    assistantGoalStatusLabel,
+    assistantGoalStatusTone,
     assistantRouteLabel,
     assistantRunActionCount,
     assistantRunActionStatusLabel,
@@ -24,6 +29,8 @@
     assistantRunStatusTone,
     assistantSignalStatusLabel,
     assistantSignalStatusTone,
+    dueAssistantGoals,
+    selectAssistantGoal,
     selectAssistantRun,
     type AssistantRunView
   } from './assistant-model';
@@ -31,28 +38,46 @@
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
   const client = createHomelabdClient({ baseUrl: apiBase });
   type MobilePanel = 'runs' | 'detail';
+  type DetailKind = 'goal' | 'run';
 
   let runs: AssistantRun[] = [];
   let signals: AssistantSignalCandidate[] = [];
+  let goals: AssistantGoal[] = [];
+  let selectedGoalId = '';
+  let selectedGoal: AssistantGoal | undefined;
+  let selectedGoalTimeline: AssistantGoalTimeline | undefined;
   let selectedRunId = '';
   let selectedRun: AssistantRun | undefined;
   let runsLoading = true;
   let runStarting = false;
+  let goalCreating = false;
+  let goalChecking = false;
   let runArchiving = false;
   let signalUpdating: string[] = [];
   let actionUpdating: string[] = [];
   let runsError = '';
   let runNotice = '';
   let signalNotice = '';
+  let goalNotice = '';
+  let goalError = '';
   let lastSynced = '';
   let detailEl: HTMLElement | undefined;
   let mobilePanel: MobilePanel = 'runs';
+  let selectedDetailKind: DetailKind = 'run';
   let runView: AssistantRunView = 'active';
   let activeRuns: AssistantRun[] = [];
   let archivedRuns: AssistantRun[] = [];
   let visibleRuns: AssistantRun[] = [];
   let displayedActions: AssistantRunAction[] = [];
   let activeSignals: AssistantSignalCandidate[] = [];
+  let activeGoals: AssistantGoal[] = [];
+  let dueGoals: AssistantGoal[] = [];
+  let goalFormOpen = false;
+  let goalTitle = '';
+  let goalObjective = '';
+  let goalCadence = 'daily';
+  let goalAutonomy = 'observe';
+  let goalDetails = '';
   let lastAppliedRouteRunId = '';
   let pendingRouteRunId = '';
   let pendingOverviewRoute = false;
@@ -61,9 +86,12 @@
   $: archivedRuns = assistantRunsForView(runs, 'archived');
   $: visibleRuns = runView === 'archived' ? archivedRuns : activeRuns;
   $: selectedRun = selectAssistantRun(runs, selectedRunId);
+  $: selectedGoal = selectAssistantGoal(goals, selectedGoalId);
   $: displayedActions = visibleRecommendedActions(selectedRun);
   $: openRunActions = activeRuns.reduce((total, run) => total + runOpenActionCount(run), 0);
   $: activeSignals = signals.filter((signal) => !signal.suppressed && !signal.created_task_id);
+  $: activeGoals = activeAssistantGoals(goals);
+  $: dueGoals = dueAssistantGoals(goals);
   $: runSpaces = [
     {
       id: 'active' as AssistantRunView,
@@ -90,18 +118,52 @@
     runsLoading = true;
     runsError = '';
     try {
-      const [runResponse, signalResponse] = await Promise.all([
+      const [runResponse, signalResponse, goalResponse] = await Promise.all([
         client.listAssistantRuns({ archived: 'include' }),
-        client.listAssistantSignals()
+        client.listAssistantSignals(),
+        client.listAssistantGoals()
       ]);
       runs = runResponse.runs || [];
       signals = signalResponse.signals || [];
+      goals = goalResponse.goals || [];
       applySyncedRunSelection();
+      await refreshSelectedGoalAfterGoalList();
       lastSynced = syncTimeLabel();
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to load proactive Assistant runs.';
     } finally {
       runsLoading = false;
+    }
+  };
+
+  const refreshSelectedGoalAfterGoalList = async () => {
+    const due = dueAssistantGoals(goals);
+    const active = activeAssistantGoals(goals);
+    const nextGoalId =
+      selectedGoalId && goals.some((goal) => goal.id === selectedGoalId)
+        ? selectedGoalId
+        : due[0]?.id || active[0]?.id || goals[0]?.id || '';
+    selectedGoalId = nextGoalId;
+    if (!nextGoalId) {
+      selectedGoalTimeline = undefined;
+      return;
+    }
+    try {
+      selectedGoalTimeline = await client.getAssistantGoal(nextGoalId);
+    } catch {
+      selectedGoalTimeline = undefined;
+    }
+  };
+
+  const refreshGoalTimeline = async (goalId = selectedGoalId) => {
+    if (!goalId) {
+      selectedGoalTimeline = undefined;
+      return;
+    }
+    try {
+      selectedGoalTimeline = await client.getAssistantGoal(goalId);
+    } catch (err) {
+      goalError = err instanceof Error ? err.message : 'Unable to load Goal details.';
     }
   };
 
@@ -140,6 +202,7 @@
     const routedRun = runs.find((run) => run.id === runId);
     runView = routedRun ? assistantRunView(routedRun) : preferredView;
     selectedRunId = runId;
+    selectedDetailKind = 'run';
     mobilePanel = 'detail';
     revealDetailIfCompact();
   };
@@ -152,6 +215,7 @@
     if (routeRunId && routeRun) {
       runView = assistantRunView(routeRun);
       selectedRunId = routeRunId;
+      selectedDetailKind = 'run';
       lastAppliedRouteRunId = routeRunId;
       mobilePanel = 'detail';
       return;
@@ -212,6 +276,7 @@
 
   const setRunView = (view: AssistantRunView) => {
     runView = view;
+    selectedDetailKind = 'run';
     const candidates = assistantRunsForView(runs, view);
     selectedRunId = candidates[0]?.id || '';
     navigateToRunOverview(false, view);
@@ -400,6 +465,21 @@
   const signalEvidenceSummary = (signal: AssistantSignalCandidate) =>
     signal.evidence?.[0]?.detail || signal.evidence?.[0]?.title || signal.why_now || signal.detail || '';
 
+  const goalSubtitle = (goal: AssistantGoal) =>
+    [
+      assistantGoalStatusLabel(goal.status),
+      goal.cadence ? labelFromSlug(goal.cadence) : '',
+      goal.next_check_at ? `next ${formatAssistantTime(goal.next_check_at)}` : 'due'
+    ]
+      .filter(Boolean)
+      .join(' / ');
+
+  const goalProgress = (goal: AssistantGoal | undefined) =>
+    goal?.progress_summary || goal?.objective || 'Goal is waiting for its first Assistant assessment.';
+
+  const goalTimelineCount = (kind: 'watches' | 'notes' | 'assessments') =>
+    selectedGoalTimeline?.[kind]?.length || 0;
+
   const compilerStatusTone = (run: AssistantRun | undefined) => {
     switch (run?.compiler?.status) {
       case 'fallback':
@@ -512,6 +592,94 @@
       runsError = err instanceof Error ? err.message : 'Unable to start proactive Assistant run.';
     } finally {
       runStarting = false;
+    }
+  };
+
+  const selectGoal = async (goalId: string) => {
+    if (!goalId) {
+      return;
+    }
+    selectedGoalId = goalId;
+    selectedDetailKind = 'goal';
+    mobilePanel = 'detail';
+    goalNotice = '';
+    goalError = '';
+    await refreshGoalTimeline(goalId);
+    revealDetailIfCompact();
+  };
+
+  const createGoal = async () => {
+    const objective = goalObjective.trim();
+    const title = goalTitle.trim() || objective;
+    if (!objective || !title) {
+      goalError = 'Goal title or objective is required.';
+      return;
+    }
+    goalCreating = true;
+    goalError = '';
+    goalNotice = '';
+    try {
+      const timeline = await client.createAssistantGoal({
+        title,
+        objective,
+        details: goalDetails.trim() || undefined,
+        cadence: goalCadence.trim() || undefined,
+        autonomy: goalAutonomy.trim() || undefined,
+        created_by: 'dashboard'
+      });
+      goals = [timeline.goal, ...goals.filter((goal) => goal.id !== timeline.goal.id)];
+      selectedGoalId = timeline.goal.id;
+      selectedGoalTimeline = timeline;
+      selectedDetailKind = 'goal';
+      goalFormOpen = false;
+      goalTitle = '';
+      goalObjective = '';
+      goalDetails = '';
+      goalNotice = 'Goal created and added to proactive review.';
+      mobilePanel = 'detail';
+    } catch (err) {
+      goalError = err instanceof Error ? err.message : 'Unable to create Goal.';
+    } finally {
+      goalCreating = false;
+    }
+  };
+
+  const checkSelectedGoal = async () => {
+    if (!selectedGoalId) {
+      return;
+    }
+    goalChecking = true;
+    goalError = '';
+    goalNotice = '';
+    try {
+      const response = await client.checkAssistantGoal(selectedGoalId);
+      runs = [response.run, ...runs.filter((run) => run.id !== response.run.id)];
+      await refreshGoalTimeline(selectedGoalId);
+      selectRun(response.run.id, false, 'active');
+      goalNotice = response.reply || 'Goal check completed.';
+    } catch (err) {
+      goalError = err instanceof Error ? err.message : 'Unable to check Goal.';
+    } finally {
+      goalChecking = false;
+    }
+  };
+
+  const updateSelectedGoalStatus = async (status: string) => {
+    if (!selectedGoalId) {
+      return;
+    }
+    goalChecking = true;
+    goalError = '';
+    goalNotice = '';
+    try {
+      const timeline = await client.updateAssistantGoal(selectedGoalId, { status });
+      goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
+      selectedGoalTimeline = timeline;
+      goalNotice = `Goal ${assistantGoalStatusLabel(status).toLowerCase()}.`;
+    } catch (err) {
+      goalError = err instanceof Error ? err.message : 'Unable to update Goal.';
+    } finally {
+      goalChecking = false;
     }
   };
 
@@ -706,6 +874,117 @@
         <span><strong>{activeSignals.length}</strong> signals</span>
       </div>
 
+      <section class="goals-panel" aria-label="Assistant Goals">
+        <header>
+          <div>
+            <h2>Goals</h2>
+            <span>{activeGoals.length ? `${activeGoals.length} active / ${dueGoals.length} due` : 'No active Goals'}</span>
+          </div>
+          <button
+            type="button"
+            class="icon-action"
+            aria-label={goalFormOpen ? 'Close Goal form' : 'Create Goal'}
+            title={goalFormOpen ? 'Close Goal form' : 'Create Goal'}
+            on:click={() => (goalFormOpen = !goalFormOpen)}
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M10 4v12M4 10h12" />
+            </svg>
+          </button>
+        </header>
+
+        {#if goalNotice}
+          <section class="notice success compact-notice" role="status" aria-live="polite">
+            <div>
+              <strong>Goal updated</strong>
+              <p>{goalNotice}</p>
+            </div>
+            <button type="button" class="notice-dismiss" aria-label="Clear Goal notice" on:click={() => (goalNotice = '')}>
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M6 6l8 8M14 6l-8 8" />
+              </svg>
+            </button>
+          </section>
+        {/if}
+
+        {#if goalError}
+          <section class="notice error compact-notice" role="alert">
+            <div>
+              <strong>Goal action failed</strong>
+              <p>{goalError}</p>
+            </div>
+            <button type="button" class="notice-dismiss" aria-label="Clear Goal error" on:click={() => (goalError = '')}>
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M6 6l8 8M14 6l-8 8" />
+              </svg>
+            </button>
+          </section>
+        {/if}
+
+        {#if goalFormOpen}
+          <form class="goal-form" aria-label="Create Assistant Goal" on:submit|preventDefault={() => void createGoal()}>
+            <label>
+              <span>Title</span>
+              <input bind:value={goalTitle} autocomplete="off" placeholder="Daily brief" />
+            </label>
+            <label>
+              <span>Objective</span>
+              <textarea bind:value={goalObjective} rows="3" placeholder="Keep caring about this outcome over time."></textarea>
+            </label>
+            <div class="form-grid">
+              <label>
+                <span>Cadence</span>
+                <select bind:value={goalCadence}>
+                  <option value="daily">Daily</option>
+                  <option value="hourly">Hourly</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="">Manual</option>
+                </select>
+              </label>
+              <label>
+                <span>Autonomy</span>
+                <select bind:value={goalAutonomy}>
+                  <option value="observe">Observe</option>
+                  <option value="propose">Propose</option>
+                  <option value="create_tasks">Create tasks</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              <span>Details</span>
+              <textarea bind:value={goalDetails} rows="2" placeholder="Constraints, preferences, examples, and what done means."></textarea>
+            </label>
+            <button type="submit" class="primary-action" disabled={goalCreating || !goalObjective.trim()}>
+              {goalCreating ? 'Creating' : 'Create Goal'}
+            </button>
+          </form>
+        {/if}
+
+        {#if goals.length}
+          <div class="goal-list">
+            {#each goals.slice(0, 8) as goal}
+              <button
+                type="button"
+                class:selected={selectedGoalId === goal.id}
+                aria-pressed={selectedGoalId === goal.id}
+                on:click={() => void selectGoal(goal.id)}
+              >
+                <span class={`dot ${assistantGoalStatusTone(goal.status)}`} aria-hidden="true"></span>
+                <span>
+                  <strong>{goal.title}</strong>
+                  <small>{goalSubtitle(goal)}</small>
+                  <em>{goalProgress(goal)}</em>
+                </span>
+              </button>
+            {/each}
+          </div>
+        {:else if runsLoading}
+          <p class="empty">Loading Goals...</p>
+        {:else}
+          <p class="empty">Create a Goal to give the Assistant something durable to pursue.</p>
+        {/if}
+      </section>
+
       <section class="run-spaces" aria-label="Assistant decision spaces">
         <h2>Decision spaces</h2>
         {#each runSpaces as space}
@@ -877,11 +1156,168 @@
     <section
       class="assistant-workbench"
       data-mobile-hidden={mobilePanel !== 'detail'}
-      aria-label="Selected Assistant run"
+      aria-label="Assistant workbench"
       bind:this={detailEl}
     >
-      {#if selectedRun}
-        <article class="assistant-record">
+      {#if selectedGoal && selectedDetailKind === 'goal'}
+        <article class="assistant-record goal-record" aria-label="Selected Assistant Goal">
+          <header class="record-header">
+            <button type="button" class="back-to-runs" aria-label="Back to Goal list" on:click={() => showRunList()}>
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M12.5 4.5 7 10l5.5 5.5" />
+              </svg>
+              <span>Back</span>
+            </button>
+            <div>
+              <p>{selectedGoal.kind ? labelFromSlug(selectedGoal.kind) : 'Goal'}</p>
+              <h2>{selectedGoal.title}</h2>
+              <span>{goalProgress(selectedGoal)}</span>
+            </div>
+            <div class="record-actions">
+              <span class={`status ${assistantGoalStatusTone(selectedGoal.status)}`}>
+                {assistantGoalStatusLabel(selectedGoal.status)}
+              </span>
+              <button
+                type="button"
+                class="primary-action"
+                disabled={goalChecking}
+                on:click={() => void checkSelectedGoal()}
+              >
+                {goalChecking ? 'Checking' : 'Check now'}
+              </button>
+              <button
+                type="button"
+                class="text-action"
+                disabled={goalChecking || selectedGoal.status === 'paused'}
+                on:click={() => void updateSelectedGoalStatus('paused')}
+              >
+                Pause
+              </button>
+              <button
+                type="button"
+                class="danger-action"
+                disabled={goalChecking || selectedGoal.status === 'archived'}
+                on:click={() => void updateSelectedGoalStatus('archived')}
+              >
+                Archive
+              </button>
+            </div>
+          </header>
+
+          <dl class="record-summary goal-summary" aria-label="Assistant Goal summary">
+            <div>
+              <dt>ID</dt>
+              <dd>{shortAssistantId(selectedGoal.id)}</dd>
+            </div>
+            <div>
+              <dt>Autonomy</dt>
+              <dd>{labelFromSlug(selectedGoal.autonomy)}</dd>
+            </div>
+            <div>
+              <dt>Cadence</dt>
+              <dd>{selectedGoal.cadence ? labelFromSlug(selectedGoal.cadence) : 'manual'}</dd>
+            </div>
+            <div>
+              <dt>Next</dt>
+              <dd>{formatAssistantTime(selectedGoal.next_check_at) || 'due'}</dd>
+            </div>
+            <div>
+              <dt>Tasks</dt>
+              <dd>{selectedGoal.linked_tasks?.length || 0}</dd>
+            </div>
+            <div>
+              <dt>Watches</dt>
+              <dd>{goalTimelineCount('watches')}</dd>
+            </div>
+          </dl>
+
+          <section class="route-strip goal-strip" aria-label="Goal objective">
+            <span class={`status ${assistantGoalStatusTone(selectedGoal.status)}`}>
+              {assistantGoalStatusLabel(selectedGoal.status)}
+            </span>
+            <div>
+              <strong>{selectedGoal.objective}</strong>
+              {#if selectedGoal.details}
+                <p>{selectedGoal.details}</p>
+              {/if}
+            </div>
+          </section>
+
+          <div class="goal-detail-grid">
+            <section class="detail-section" aria-label="Goal watches">
+              <header class="section-heading">
+                <div>
+                  <p>Attention</p>
+                  <h3>Watches</h3>
+                </div>
+                <span>{plural(goalTimelineCount('watches'), 'watch', 'watches')}</span>
+              </header>
+              {#if selectedGoalTimeline?.watches?.length}
+                <div class="record-list">
+                  {#each selectedGoalTimeline.watches.slice(0, 4) as watch}
+                    <article class="signal-card">
+                      <span class={`dot ${assistantGoalStatusTone(watch.status)}`} aria-hidden="true"></span>
+                      <div>
+                        <strong>{watch.title}</strong>
+                        <p>{watch.suggested_action || watch.condition || 'Stored watch.'}</p>
+                        <small>{[watch.source, watch.cadence, watch.severity].filter(Boolean).map(labelFromSlug).join(' / ')}</small>
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              {:else}
+                <p>No watches recorded for this Goal.</p>
+              {/if}
+            </section>
+
+            <section class="detail-section" aria-label="Goal recent notes">
+              <header class="section-heading">
+                <div>
+                  <p>Memory</p>
+                  <h3>Notes</h3>
+                </div>
+                <span>{plural(goalTimelineCount('notes'), 'note')}</span>
+              </header>
+              {#if selectedGoalTimeline?.notes?.length}
+                <ol class="receipt-list compact-receipts">
+                  {#each selectedGoalTimeline.notes.slice(0, 4) as note}
+                    <li>
+                      <strong>{note.title || labelFromSlug(note.kind || 'note')}</strong>
+                      <span>{formatAssistantTime(note.created_at)}</span>
+                      <p>{note.body}</p>
+                      {#if note.task_id}
+                        <a href={`/tasks?task=${note.task_id}`}>Open linked task</a>
+                      {/if}
+                    </li>
+                  {/each}
+                </ol>
+              {:else}
+                <p>No notes recorded for this Goal.</p>
+              {/if}
+            </section>
+          </div>
+
+          {#if selectedGoal.linked_tasks?.length}
+            <section class="detail-section" aria-label="Goal linked tasks">
+              <header class="section-heading">
+                <div>
+                  <p>Execution</p>
+                  <h3>Linked tasks</h3>
+                </div>
+                <span>{plural(selectedGoal.linked_tasks.length, 'task')}</span>
+              </header>
+              <div class="task-link-list">
+                {#each selectedGoal.linked_tasks.slice(0, 8) as taskId}
+                  <a href={`/tasks?task=${taskId}`}>{shortAssistantId(taskId)}</a>
+                {/each}
+              </div>
+            </section>
+          {/if}
+        </article>
+      {/if}
+
+      {#if selectedRun && selectedDetailKind === 'run'}
+        <article class="assistant-record" aria-label="Selected Assistant run">
           <header class="record-header">
             <button type="button" class="back-to-runs" aria-label="Back to runs" on:click={() => navigateToRunOverview()}>
               <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
@@ -1435,11 +1871,12 @@
     grid-template-areas:
       "header"
       "metrics"
+      "goals"
       "spaces"
       "notice"
       "list"
       "reference";
-    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
     gap: 0.8rem;
     min-width: 0;
     padding: 1rem;
@@ -1559,6 +1996,8 @@
   button,
   .run-row,
   .run-spaces button,
+  .goal-list button,
+  .icon-action,
   .text-action,
   .danger-action,
   .back-to-runs {
@@ -1578,6 +2017,8 @@
   button:hover:not(:disabled),
   .run-row:hover,
   .run-spaces button:hover,
+  .goal-list button:hover,
+  .icon-action:hover,
   .text-action:hover,
   .danger-action:hover:not(:disabled) {
     border-color: var(--accent, #2563eb);
@@ -1603,6 +2044,7 @@
   }
 
   .run-button svg,
+  .icon-action svg,
   .back-to-runs svg {
     width: 1rem;
     height: 1rem;
@@ -1659,6 +2101,128 @@
     grid-area: spaces;
     display: grid;
     gap: 0.45rem;
+  }
+
+  .goals-panel {
+    grid-area: goals;
+    display: grid;
+    gap: 0.55rem;
+    min-width: 0;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--surface, #ffffff);
+  }
+
+  .goals-panel header,
+  .goal-list button,
+  .goal-list button > span:last-child {
+    display: flex;
+    min-width: 0;
+  }
+
+  .goals-panel header {
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.55rem;
+  }
+
+  .goals-panel h2 {
+    color: var(--text, #172033);
+    font-size: 0.84rem;
+  }
+
+  .goals-panel header span,
+  .goal-list small,
+  .goal-list em,
+  .goal-form span {
+    color: var(--assistant-muted, #475569);
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+
+  .icon-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.45rem;
+    padding: 0;
+  }
+
+  .goal-form {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .goal-form label {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
+  .goal-form input,
+  .goal-form textarea,
+  .goal-form select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 8px;
+    padding: 0.55rem 0.6rem;
+    color: var(--text, #172033);
+    background: var(--surface, #ffffff);
+    font: inherit;
+    font-size: 0.84rem;
+  }
+
+  .goal-form textarea {
+    resize: vertical;
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.55rem;
+  }
+
+  .goal-list {
+    display: grid;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .goal-list button {
+    align-items: flex-start;
+    gap: 0.55rem;
+    min-height: 4rem;
+    padding: 0.55rem 0.65rem;
+    text-align: left;
+  }
+
+  .goal-list button.selected {
+    border-color: var(--accent, #2563eb);
+    background: var(--surface-hover, #eef5ff);
+  }
+
+  .goal-list button > span:last-child {
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .goal-list strong {
+    color: var(--text-strong, #0f172a);
+    font-size: 0.84rem;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+  }
+
+  .goal-list em {
+    display: -webkit-box;
+    overflow: hidden;
+    font-style: normal;
+    line-clamp: 2;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
   .run-spaces h2 {
@@ -1767,6 +2331,49 @@
 
   .compiler-strip {
     align-items: flex-start;
+  }
+
+  .goal-record {
+    margin-bottom: 1rem;
+  }
+
+  .goal-strip {
+    align-items: flex-start;
+  }
+
+  .goal-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem;
+    min-width: 0;
+  }
+
+  .task-link-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .task-link-list a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2rem;
+    padding: 0 0.65rem;
+    border: 1px solid var(--border, #cbd5e1);
+    border-radius: 8px;
+    color: var(--accent, #2563eb);
+    background: var(--surface, #ffffff);
+    font-size: 0.82rem;
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .compact-receipts {
+    padding-left: 1.15rem;
+  }
+
+  .compact-notice {
+    padding: 0.55rem;
   }
 
   .compiler-list {
@@ -2325,6 +2932,7 @@
   :global(html[data-theme='dark'] .decision-panel),
   :global(html[data-theme='dark'] .record-summary),
   :global(html[data-theme='dark'] .route-strip),
+  :global(html[data-theme='dark'] .goals-panel),
   :global(html[data-theme='dark'] .signal-inbox),
   :global(html[data-theme='dark'] .detail-section),
   :global(html[data-theme='dark'] .empty-record) {
@@ -2335,6 +2943,8 @@
 
   :global(html[data-theme='dark'] .run-row),
   :global(html[data-theme='dark'] .run-spaces button),
+  :global(html[data-theme='dark'] .goal-list button),
+  :global(html[data-theme='dark'] .task-link-list a),
   :global(html[data-theme='dark'] .signal-inbox-row),
   :global(html[data-theme='dark'] .recommendation-card),
   :global(html[data-theme='dark'] .signal-card),
@@ -2350,8 +2960,18 @@
   :global(html[data-theme='dark'] .run-row:hover),
   :global(html[data-theme='dark'] .run-row.selected),
   :global(html[data-theme='dark'] .run-spaces button:hover),
-  :global(html[data-theme='dark'] .run-spaces button.active) {
+  :global(html[data-theme='dark'] .run-spaces button.active),
+  :global(html[data-theme='dark'] .goal-list button:hover),
+  :global(html[data-theme='dark'] .goal-list button.selected) {
     background: var(--surface-hover) !important;
+  }
+
+  :global(html[data-theme='dark'] .goal-form input),
+  :global(html[data-theme='dark'] .goal-form textarea),
+  :global(html[data-theme='dark'] .goal-form select) {
+    color: var(--text) !important;
+    border-color: var(--border-soft) !important;
+    background: var(--surface-muted) !important;
   }
 
   :global(html[data-theme='dark'] .docs-link) {
@@ -2436,6 +3056,8 @@
     }
 
     .record-summary,
+    .goal-detail-grid,
+    .form-grid,
     .signal-grid,
     .snapshot-grid,
     .system-grid {

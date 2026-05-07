@@ -400,6 +400,38 @@
   const signalEvidenceSummary = (signal: AssistantSignalCandidate) =>
     signal.evidence?.[0]?.detail || signal.evidence?.[0]?.title || signal.why_now || signal.detail || '';
 
+  const compilerStatusTone = (run: AssistantRun | undefined) => {
+    switch (run?.compiler?.status) {
+      case 'fallback':
+        return 'amber';
+      case 'repaired':
+        return 'blue';
+      case 'accepted':
+        return 'green';
+      default:
+        return 'gray';
+    }
+  };
+
+  const compilerTitle = (run: AssistantRun | undefined) => {
+    switch (run?.compiler?.status) {
+      case 'fallback':
+        return 'Deterministic fallback';
+      case 'repaired':
+        return 'Repaired decision';
+      case 'accepted':
+        return 'Accepted decision';
+      default:
+        return 'Decision compiler';
+    }
+  };
+
+  const compilerDetail = (run: AssistantRun | undefined) =>
+    run?.compiler?.summary || 'Harness checks constrained the model output before this decision was stored.';
+
+  const compilerMessages = (run: AssistantRun | undefined) =>
+    [...(run?.compiler?.rejections || []), ...(run?.compiler?.repairs || [])].slice(0, 3);
+
   const signalMutationKey = (signal: AssistantSignalCandidate) => signal.fingerprint || signal.id || signal.title;
 
   const isSignalUpdating = (signal: AssistantSignalCandidate) =>
@@ -941,6 +973,23 @@
               {#if selectedRun.route.requires_approval}
                 <span class="status amber">approval needed</span>
               {/if}
+            </section>
+          {/if}
+
+          {#if selectedRun.compiler}
+            <section class="route-strip compiler-strip" aria-label="Assistant decision compiler">
+              <span class={`status ${compilerStatusTone(selectedRun)}`}>{labelFromSlug(selectedRun.compiler.status || 'checked')}</span>
+              <div>
+                <strong>{compilerTitle(selectedRun)}</strong>
+                <p>{compilerDetail(selectedRun)}</p>
+                {#if compilerMessages(selectedRun).length}
+                  <ul class="compiler-list">
+                    {#each compilerMessages(selectedRun) as message}
+                      <li>{message}</li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
             </section>
           {/if}
 
@@ -1610,7 +1659,8 @@
   .signal-inbox-row small,
   .signal-inbox-row p,
   .signal-inbox-row em,
-  .route-strip p {
+  .route-strip p,
+  .compiler-list {
     color: var(--assistant-muted, #475569);
     font-size: 0.75rem;
     line-height: 1.3;
@@ -1647,6 +1697,17 @@
 
   .signal-inbox-row em {
     font-style: normal;
+  }
+
+  .compiler-strip {
+    align-items: flex-start;
+  }
+
+  .compiler-list {
+    display: grid;
+    gap: 0.12rem;
+    margin: 0.1rem 0 0;
+    padding-left: 1rem;
   }
 
   .signal-toolbar {

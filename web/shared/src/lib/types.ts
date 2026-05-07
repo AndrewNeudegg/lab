@@ -606,6 +606,7 @@ export interface AssistantRun {
   opportunities?: AssistantRunFinding[];
   recommended_actions?: AssistantRunAction[];
   route?: AssistantRunCapabilityRoute;
+  compiler?: AssistantRunDecisionCompiler;
   receipts?: AssistantRunReceipt[];
   snapshot: AssistantRunSnapshot;
   error?: string;
@@ -620,6 +621,15 @@ export interface AssistantRun {
   started_at?: string;
   finished_at?: string;
   updated_at: string;
+}
+
+export interface AssistantRunDecisionCompiler {
+  status?: string;
+  source?: string;
+  summary?: string;
+  checks?: string[];
+  repairs?: string[];
+  rejections?: string[];
 }
 
 export interface AssistantRunCapabilityRoute {

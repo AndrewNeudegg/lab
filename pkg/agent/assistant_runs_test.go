@@ -520,6 +520,9 @@ func TestAssistantRunFallsBackWhenModelReturnsInvalidJSON(t *testing.T) {
 			if len(run.Changed) == 0 || !strings.Contains(run.Changed[0], "model output was not valid JSON") {
 				t.Fatalf("changed = %#v, want invalid JSON fallback note", run.Changed)
 			}
+			if run.Compiler == nil || run.Compiler.Status != "fallback" || len(run.Compiler.Rejections) == 0 {
+				t.Fatalf("compiler = %#v, want fallback audit with rejection", run.Compiler)
+			}
 			for _, receipt := range run.Receipts {
 				if receipt.Kind == "error" {
 					t.Fatalf("receipts = %#v, want no error receipt for fallback", run.Receipts)
@@ -536,6 +539,68 @@ func TestAssistantRunFallsBackWhenModelReturnsInvalidJSON(t *testing.T) {
 				t.Fatalf("stored run = %#v, want persisted fallback decision", stored)
 			}
 		})
+	}
+}
+
+func TestAssistantRunCompilerRepairsTrailingJSONAndAccepts(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = &staticProvider{content: `{
+		"decision":"no_op",
+		"summary":"All systems nominal.",
+		"changed":[],
+		"concerns":[],
+		"opportunities":[],
+		"recommended_actions":[],
+	}`}
+
+	run, _, err := orch.StartAssistantRun(context.Background(), assistantstore.RunRequest{
+		TriggerLabel: "JSON repair check",
+	})
+	if err != nil {
+		t.Fatalf("StartAssistantRun returned error: %v", err)
+	}
+	if run.Compiler == nil || run.Compiler.Status != "repaired" {
+		t.Fatalf("compiler = %#v, want repaired audit", run.Compiler)
+	}
+	if len(run.Compiler.Repairs) == 0 || !strings.Contains(run.Compiler.Repairs[0], "JSON") {
+		t.Fatalf("compiler repairs = %#v, want JSON repair note", run.Compiler.Repairs)
+	}
+	if run.Decision != assistantstore.RunDecisionNoop || run.Status != assistantstore.RunStatusCompleted {
+		t.Fatalf("run = %#v, want completed no-op after repaired JSON", run)
+	}
+}
+
+func TestAssistantRunCompilerRejectsUncitedUnsafeAction(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = &staticProvider{content: `{
+		"decision":"recommend",
+		"summary":"Create work without evidence.",
+		"changed":[],
+		"concerns":[],
+		"opportunities":[],
+		"recommended_actions":[{
+			"id":"action_bad",
+			"kind":"task",
+			"title":"Create vague task",
+			"rationale":"The model thinks something might be wrong.",
+			"task_goal":"Investigate a vague issue."
+		}]
+	}`}
+
+	run, _, err := orch.StartAssistantRun(context.Background(), assistantstore.RunRequest{
+		TriggerLabel: "Uncited action check",
+	})
+	if err != nil {
+		t.Fatalf("StartAssistantRun returned error: %v", err)
+	}
+	if len(run.RecommendedActions) != 0 || run.Decision != assistantstore.RunDecisionNoop {
+		t.Fatalf("run = %#v, want uncited action removed and no-op decision", run)
+	}
+	if run.Compiler == nil || run.Compiler.Status != "repaired" || len(run.Compiler.Rejections) == 0 {
+		t.Fatalf("compiler = %#v, want repaired audit with rejection", run.Compiler)
+	}
+	if !strings.Contains(strings.Join(run.Compiler.Rejections, " "), "did not cite known snapshot evidence") {
+		t.Fatalf("compiler rejections = %#v, want uncited evidence rejection", run.Compiler.Rejections)
 	}
 }
 

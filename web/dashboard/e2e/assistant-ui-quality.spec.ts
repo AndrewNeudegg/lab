@@ -161,6 +161,12 @@ const assistantRun = {
     autonomy: 'propose',
     requires_approval: true
   },
+  compiler: {
+    status: 'accepted',
+    source: 'model',
+    summary: 'Harness accepted the model decision after schema, evidence, safety, and routing checks.',
+    checks: ['schema_parse', 'signal_enrichment', 'evidence_citations', 'safe_actions', 'duplicate_actions', 'capability_route']
+  },
   receipts: [
     {
       kind: 'trigger',
@@ -322,6 +328,12 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
       reason: 'The run did not produce a valid decision.',
       next_step: 'Archive after the failure is understood.',
       autonomy: 'propose'
+    },
+    compiler: {
+      status: 'fallback',
+      source: 'deterministic',
+      summary: 'Model output was rejected; deterministic fallback produced the decision.',
+      rejections: ['model output rejected: assistant run returned invalid JSON']
     },
     receipts: [
       {
@@ -748,6 +760,7 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: '1 recommendation to decide' })).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
       await expect(page.getByLabel('Assistant capability route')).toContainText('Tasks');
+      await expect(page.getByLabel('Assistant decision compiler')).toContainText('Accepted decision');
       const recommendationCard = page.locator('.recommendation-card').filter({ hasText: 'Review blocked deploy' });
       await expect(recommendationCard).toBeVisible();
       await expect(recommendationCard).toContainText('2 sightings');
@@ -843,6 +856,7 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Failed proactive check' })).toBeVisible();
       const selectedRunRegion = page.getByLabel('Selected Assistant run');
       await expect(selectedRunRegion.getByRole('alert')).toContainText('invalid JSON');
+      await expect(selectedRunRegion.getByLabel('Assistant decision compiler')).toContainText('Deterministic fallback');
       await selectedRunRegion.getByRole('button', { name: 'Archive', exact: true }).click();
       await expect(page).toHaveURL(/\/assistant\?view=archived&run=arun_failed$/);
       await expect(selectedRunRegion.getByRole('status', { name: 'Assistant run status' })).toContainText(

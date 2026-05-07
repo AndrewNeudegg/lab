@@ -88,12 +88,13 @@ const assistantRunDecisionSchema = `{
 }`
 
 type assistantRunDecision struct {
-	Decision           string                      `json:"decision"`
-	Summary            string                      `json:"summary"`
-	Changed            []string                    `json:"changed"`
-	Concerns           []assistantstore.RunFinding `json:"concerns"`
-	Opportunities      []assistantstore.RunFinding `json:"opportunities"`
-	RecommendedActions []assistantstore.RunAction  `json:"recommended_actions"`
+	Decision           string                              `json:"decision"`
+	Summary            string                              `json:"summary"`
+	Changed            []string                            `json:"changed"`
+	Concerns           []assistantstore.RunFinding         `json:"concerns"`
+	Opportunities      []assistantstore.RunFinding         `json:"opportunities"`
+	RecommendedActions []assistantstore.RunAction          `json:"recommended_actions"`
+	Compiler           *assistantstore.RunDecisionCompiler `json:"-"`
 }
 
 func (o *Orchestrator) assistantRunStore() (*assistantstore.RunStore, error) {
@@ -500,6 +501,7 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 	run.Concerns = decision.Concerns
 	run.Opportunities = decision.Opportunities
 	run.RecommendedActions = decision.RecommendedActions
+	run.Compiler = decision.Compiler
 	run = assistantstore.NormalizeRun(run)
 	o.applyAssistantSignalMemory(ctx, &run)
 	suppressedActions := pruneAssistantSuppressedRunActions(&run)
@@ -1318,7 +1320,8 @@ func normalizeAssistantRunRequest(req assistantstore.RunRequest) assistantstore.
 
 func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantstore.Run) (assistantRunDecision, llm.CompletionResponse, error) {
 	if o.provider == nil {
-		return assistantRunDecisionWithSignals(run, fallbackAssistantRunDecision(run)), llm.CompletionResponse{}, nil
+		reason := "Fallback deterministic scan used because no language model provider is configured."
+		return o.compileAssistantRunDecision(run, "", "deterministic", reason), llm.CompletionResponse{}, nil
 	}
 	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
 		Model:       o.model,
@@ -1355,27 +1358,10 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 		},
 	})
 	if err != nil {
-		fallback := fallbackAssistantRunDecisionWithReason(run, assistantFallbackReason("Deterministic fallback scan used because the model call failed", err))
-		return assistantRunDecisionWithSignals(run, fallback), llm.CompletionResponse{Provider: o.provider.Name(), Model: o.model}, nil
+		reason := assistantFallbackReason("Deterministic fallback scan used because the model call failed", err)
+		return o.compileAssistantRunDecision(run, "", "deterministic", reason), llm.CompletionResponse{Provider: o.provider.Name(), Model: o.model}, nil
 	}
-	decision, err := parseAssistantRunDecision(resp.Message.Content)
-	if err != nil {
-		fallback := fallbackAssistantRunDecisionWithReason(run, assistantFallbackReason("Deterministic fallback scan used because the model output was not valid JSON", err))
-		return assistantRunDecisionWithSignals(run, fallback), resp, nil
-	}
-	return assistantRunDecisionWithSignals(run, decision), resp, nil
-}
-
-func parseAssistantRunDecision(content string) (assistantRunDecision, error) {
-	raw := strings.TrimSpace(extractJSON(content))
-	if raw == "" {
-		return assistantRunDecision{}, fmt.Errorf("empty model response")
-	}
-	var decision assistantRunDecision
-	if err := json.Unmarshal([]byte(raw), &decision); err != nil {
-		return assistantRunDecision{}, fmt.Errorf("assistant run returned invalid JSON: %w", err)
-	}
-	return decision, nil
+	return o.compileAssistantRunDecision(run, resp.Message.Content, "model", ""), resp, nil
 }
 
 func assistantFallbackReason(prefix string, err error) string {

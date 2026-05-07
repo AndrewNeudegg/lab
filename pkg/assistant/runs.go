@@ -42,32 +42,42 @@ type RunArchiveRequest struct {
 }
 
 type Run struct {
-	ID                 string              `json:"id"`
-	Status             string              `json:"status"`
-	Decision           string              `json:"decision"`
-	Trigger            RunTrigger          `json:"trigger"`
-	Autonomy           string              `json:"autonomy"`
-	Goal               string              `json:"goal,omitempty"`
-	Summary            string              `json:"summary"`
-	Changed            []string            `json:"changed,omitempty"`
-	Concerns           []RunFinding        `json:"concerns,omitempty"`
-	Opportunities      []RunFinding        `json:"opportunities,omitempty"`
-	RecommendedActions []RunAction         `json:"recommended_actions,omitempty"`
-	Route              *RunCapabilityRoute `json:"route,omitempty"`
-	Receipts           []RunReceipt        `json:"receipts,omitempty"`
-	Snapshot           RunSnapshot         `json:"snapshot"`
-	Error              string              `json:"error,omitempty"`
-	Provider           string              `json:"provider,omitempty"`
-	Model              string              `json:"model,omitempty"`
-	Usage              RunUsage            `json:"usage,omitempty"`
-	Archived           bool                `json:"archived,omitempty"`
-	ArchivedAt         *time.Time          `json:"archived_at,omitempty"`
-	ArchivedBy         string              `json:"archived_by,omitempty"`
-	ArchivedReason     string              `json:"archived_reason,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	StartedAt          time.Time           `json:"started_at,omitempty"`
-	FinishedAt         time.Time           `json:"finished_at,omitempty"`
-	UpdatedAt          time.Time           `json:"updated_at"`
+	ID                 string               `json:"id"`
+	Status             string               `json:"status"`
+	Decision           string               `json:"decision"`
+	Trigger            RunTrigger           `json:"trigger"`
+	Autonomy           string               `json:"autonomy"`
+	Goal               string               `json:"goal,omitempty"`
+	Summary            string               `json:"summary"`
+	Changed            []string             `json:"changed,omitempty"`
+	Concerns           []RunFinding         `json:"concerns,omitempty"`
+	Opportunities      []RunFinding         `json:"opportunities,omitempty"`
+	RecommendedActions []RunAction          `json:"recommended_actions,omitempty"`
+	Route              *RunCapabilityRoute  `json:"route,omitempty"`
+	Compiler           *RunDecisionCompiler `json:"compiler,omitempty"`
+	Receipts           []RunReceipt         `json:"receipts,omitempty"`
+	Snapshot           RunSnapshot          `json:"snapshot"`
+	Error              string               `json:"error,omitempty"`
+	Provider           string               `json:"provider,omitempty"`
+	Model              string               `json:"model,omitempty"`
+	Usage              RunUsage             `json:"usage,omitempty"`
+	Archived           bool                 `json:"archived,omitempty"`
+	ArchivedAt         *time.Time           `json:"archived_at,omitempty"`
+	ArchivedBy         string               `json:"archived_by,omitempty"`
+	ArchivedReason     string               `json:"archived_reason,omitempty"`
+	CreatedAt          time.Time            `json:"created_at"`
+	StartedAt          time.Time            `json:"started_at,omitempty"`
+	FinishedAt         time.Time            `json:"finished_at,omitempty"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+}
+
+type RunDecisionCompiler struct {
+	Status     string   `json:"status,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	Summary    string   `json:"summary,omitempty"`
+	Checks     []string `json:"checks,omitempty"`
+	Repairs    []string `json:"repairs,omitempty"`
+	Rejections []string `json:"rejections,omitempty"`
 }
 
 type RunCapabilityRoute struct {

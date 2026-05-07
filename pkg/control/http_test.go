@@ -2005,8 +2005,35 @@ func TestWorkspacesEndpointReturnsRemoteProjectInventory(t *testing.T) {
 	if workspace.ProjectID != "remote1" || workspace.AgentID != "desk" || workspace.Workdir != "/srv/remote1" || workspace.RepoURL != "git@example.com:remote1.git" || workspace.Branch != "main" {
 		t.Fatalf("workspace = %#v, want remote project metadata", workspace)
 	}
+	if workspace.Backend != "codex" {
+		t.Fatalf("workspace backend = %q, want codex", workspace.Backend)
+	}
 	if len(workspace.Labels) == 0 || !strings.Contains(strings.Join(workspace.Labels, ","), "uat") {
 		t.Fatalf("labels = %#v, want advertised labels", workspace.Labels)
+	}
+}
+
+func TestWorkspacesEndpointUsesCustomRemoteBackendCapability(t *testing.T) {
+	_, _, _, mux := newRemoteControlTestServer(t)
+	requestJSON(t, mux, http.MethodPost, "/agents/desk/heartbeat", `{
+		"name":"Desk",
+		"machine":"desk.local",
+		"workdirs":[{"id":"remote1","path":"/srv/remote1","project_id":"remote1"}],
+		"capabilities":["task.claim","task.complete","directory-context","noop"]
+	}`, "secret", http.StatusOK)
+
+	response := requestJSON(t, mux, http.MethodGet, "/workspaces", "", "", http.StatusOK)
+	var body struct {
+		Workspaces []agent.RemoteWorkspace `json:"workspaces"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Workspaces) != 1 {
+		t.Fatalf("workspaces = %#v, want one workspace", body.Workspaces)
+	}
+	if body.Workspaces[0].Backend != "noop" {
+		t.Fatalf("workspace backend = %q, want noop", body.Workspaces[0].Backend)
 	}
 }
 

@@ -366,7 +366,23 @@ func firstRemoteBackend(agent remoteagent.Agent) string {
 			return capability
 		}
 	}
+	for _, capability := range agent.Capabilities {
+		capability = strings.TrimSpace(capability)
+		if capability == "" || genericRemoteCapability(capability) {
+			continue
+		}
+		return capability
+	}
 	return "codex"
+}
+
+func genericRemoteCapability(capability string) bool {
+	switch capability {
+	case "task.claim", "task.complete", "directory-context", "terminal":
+		return true
+	default:
+		return false
+	}
 }
 
 func localSelfImprovementGoal(goal string) bool {

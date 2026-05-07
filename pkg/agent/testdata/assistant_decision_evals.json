@@ -1,0 +1,101 @@
+[
+  {
+    "name": "blocked task signal becomes bounded task plan",
+    "run": {
+      "autonomy": "propose",
+      "snapshot": {
+        "signals": [
+          {
+            "id": "sig_blocked_deploy",
+            "fingerprint": "sig_blocked_deploy",
+            "kind": "task_blocked",
+            "title": "Review blocked deploy",
+            "detail": "The deploy task is blocked on an operator decision.",
+            "why_now": "The task is in an operator attention state.",
+            "severity": "warning",
+            "surface": "tasks",
+            "object_id": "task_blocked",
+            "object_url": "/tasks?task=task_blocked",
+            "score": 91,
+            "confidence": "high",
+            "priority": "high",
+            "action_kind": "task",
+            "rationale": "Blocked deployment work needs an operator decision.",
+            "task_goal": "Review the blocked deploy and decide the next step.",
+            "safe_actions": ["create_task", "useful", "snooze", "dismiss"],
+            "suggested_next_step": "Review the blocked deploy and decide the next step.",
+            "evidence": [
+              {
+                "source": "tasks",
+                "kind": "task_status",
+                "title": "Blocked deploy",
+                "detail": "Status: blocked.",
+                "object_id": "task_blocked",
+                "object_url": "/tasks?task=task_blocked",
+                "weight": 91
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "model_output": "{\"decision\":\"recommend\",\"summary\":\"Blocked deploy needs review.\",\"changed\":[],\"concerns\":[],\"opportunities\":[],\"recommended_actions\":[{\"kind\":\"task\",\"fingerprint\":\"sig_blocked_deploy\",\"title\":\"Review blocked deploy\",\"rationale\":\"The deploy task is blocked on an operator decision.\",\"task_goal\":\"Review the blocked deploy and decide the next step.\"}]}",
+    "expected_compiler_status": "repaired",
+    "expected_decision": "recommend",
+    "expected_action_count": 1,
+    "expected_contract_ids": ["task"]
+  },
+  {
+    "name": "source without create task permission stays evidence only",
+    "run": {
+      "autonomy": "propose",
+      "snapshot": {
+        "signals": [
+          {
+            "id": "sig_email_invoice",
+            "fingerprint": "sig_email_invoice",
+            "kind": "email_invoice",
+            "title": "Review email before creating work",
+            "detail": "An email might need follow-up, but the source is observation-only.",
+            "surface": "email",
+            "object_id": "email_42",
+            "object_url": "/email/email_42",
+            "score": 90,
+            "action_kind": "task",
+            "rationale": "Email context is not approved for automatic task creation.",
+            "safe_actions": ["useful", "snooze", "dismiss"],
+            "suggested_next_step": "Observe the email signal until task creation is allowed.",
+            "evidence": [
+              {
+                "source": "email",
+                "kind": "message",
+                "title": "Email message",
+                "detail": "Potential invoice follow-up.",
+                "object_id": "email_42",
+                "object_url": "/email/email_42",
+                "weight": 90
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "model_output": "{\"decision\":\"no_op\",\"summary\":\"Nothing to do yet.\",\"changed\":[],\"concerns\":[],\"opportunities\":[],\"recommended_actions\":[]}",
+    "expected_compiler_status": "repaired",
+    "expected_decision": "recommend",
+    "expected_action_count": 0
+  },
+  {
+    "name": "uncited task recommendation is rejected",
+    "run": {
+      "autonomy": "propose",
+      "snapshot": {
+        "signals": []
+      }
+    },
+    "model_output": "{\"decision\":\"recommend\",\"summary\":\"Create vague work.\",\"changed\":[],\"concerns\":[],\"opportunities\":[],\"recommended_actions\":[{\"kind\":\"task\",\"title\":\"Create vague task\",\"rationale\":\"Something may be wrong.\",\"task_goal\":\"Investigate something vague.\"}]}",
+    "expected_compiler_status": "repaired",
+    "expected_decision": "no_op",
+    "expected_action_count": 0
+  }
+]

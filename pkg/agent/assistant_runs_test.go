@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -601,6 +603,160 @@ func TestAssistantRunCompilerRejectsUncitedUnsafeAction(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(run.Compiler.Rejections, " "), "did not cite known snapshot evidence") {
 		t.Fatalf("compiler rejections = %#v, want uncited evidence rejection", run.Compiler.Rejections)
+	}
+}
+
+func TestAssistantRunCompilerAttachesContractScorecardPolicyAndPlan(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	signal := newAssistantRunSignal(assistantstore.RunSignal{
+		Kind:         "chat_quality_feedback",
+		Title:        "Review subpar chat answer",
+		Detail:       "Operator marked a chat answer as not useful.",
+		WhyNow:       "Recent feedback identified a poor answer.",
+		Surface:      "chat",
+		ObjectID:     "message_assistant_42",
+		ObjectURL:    "/chat#message-assistant-42",
+		Score:        92,
+		ActionKind:   "task",
+		Rationale:    "Poor answers should feed harness improvement work.",
+		TaskGoal:     "Review the poor chat answer and improve the response path.",
+		Evidence:     []assistantstore.RunSignalEvidence{{Source: "chat", Kind: "feedback", Title: "Operator feedback", ObjectID: "message_assistant_42", ObjectURL: "/chat#message-assistant-42", Weight: 92}},
+		SafeActions:  []string{"create_task", "useful", "snooze", "dismiss"},
+		FeedbackHint: "Prior useful feedback makes new sightings more likely to be worth surfacing.",
+		UsefulCount:  2,
+		Fingerprint:  assistantSignalFingerprint("chat", "quality", "message_assistant_42", "Review subpar chat answer"),
+	})
+	run := assistantstore.Run{
+		Autonomy: assistantstore.RunAutonomyPropose,
+		Snapshot: assistantstore.RunSnapshot{Signals: []assistantstore.RunSignal{signal}},
+	}
+	decision := orch.compileAssistantRunDecision(run, `{
+		"decision":"recommend",
+		"summary":"Chat feedback needs follow-up.",
+		"changed":[],
+		"concerns":[],
+		"opportunities":[],
+		"recommended_actions":[{
+			"kind":"task",
+			"fingerprint":"`+signal.Fingerprint+`",
+			"title":"Review subpar chat answer",
+			"rationale":"The operator marked a poor answer as not useful.",
+			"task_goal":"Review the poor chat answer and improve the response path."
+		}]
+	}`, "model", "")
+
+	if decision.Compiler == nil {
+		t.Fatal("compiler is nil")
+	}
+	if len(decision.Compiler.Contracts) == 0 {
+		t.Fatalf("contracts = %#v, want capability contracts", decision.Compiler.Contracts)
+	}
+	if len(decision.Compiler.PolicyHints) != 1 || decision.Compiler.PolicyHints[0].Effect != "boost_new_sightings" {
+		t.Fatalf("policy hints = %#v, want useful feedback hint", decision.Compiler.PolicyHints)
+	}
+	if decision.Compiler.Scorecard == nil || decision.Compiler.Scorecard.KeptActionCount != 1 || decision.Compiler.Scorecard.PlanPreviewCount != 1 {
+		t.Fatalf("scorecard = %#v, want kept action and plan preview counts", decision.Compiler.Scorecard)
+	}
+	if len(decision.RecommendedActions) != 1 {
+		t.Fatalf("actions = %#v, want one action", decision.RecommendedActions)
+	}
+	action := decision.RecommendedActions[0]
+	if action.ContractID != "task" || action.Contract == nil {
+		t.Fatalf("action contract = %#v/%#v, want task contract", action.ContractID, action.Contract)
+	}
+	if action.Plan == nil || action.Plan.Status != "approval_required" || !action.Plan.RequiresApproval {
+		t.Fatalf("plan = %#v, want approval-required dry-run plan", action.Plan)
+	}
+}
+
+func TestAssistantSignalFeedbackStoresPolicyHints(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Date(2026, 5, 7, 10, 0, 0, 0, time.UTC)
+	run := assistantstore.NormalizeRun(assistantstore.Run{
+		ID:        "arun_policy",
+		Status:    assistantstore.RunStatusCompleted,
+		Decision:  assistantstore.RunDecisionRecommend,
+		Trigger:   assistantstore.RunTrigger{Kind: "manual", Label: "Policy check"},
+		Autonomy:  assistantstore.RunAutonomyPropose,
+		Summary:   "Action recommended.",
+		CreatedAt: now,
+		UpdatedAt: now,
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:            "action_1",
+			Kind:          "task",
+			Title:         "Review chat answer",
+			Rationale:     "The chat answer was poor.",
+			TargetSurface: "chat",
+			TaskGoal:      "Review the chat answer and improve it.",
+		}},
+	})
+	store, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err := orch.UpdateAssistantRunAction(context.Background(), run.ID, "action_1", assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackDismiss})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RecommendedActions[0].Status != assistantstore.SignalStatusDismissed {
+		t.Fatalf("action = %#v, want dismissed", updated.RecommendedActions[0])
+	}
+	signalStore, err := orch.assistantSignalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := signalStore.Load(updated.RecommendedActions[0].Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.DismissedCount != 1 || record.LastFeedback != assistantstore.SignalFeedbackDismiss || !strings.Contains(record.PolicyHint, "Suppress") {
+		t.Fatalf("record = %#v, want dismissal policy hint", record)
+	}
+}
+
+func TestAssistantDecisionEvaluationFixtures(t *testing.T) {
+	raw, err := os.ReadFile("testdata/assistant_decision_evals.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []struct {
+		Name                string             `json:"name"`
+		Run                 assistantstore.Run `json:"run"`
+		ModelOutput         string             `json:"model_output"`
+		ExpectedStatus      string             `json:"expected_compiler_status"`
+		ExpectedDecision    string             `json:"expected_decision"`
+		ExpectedActionCount int                `json:"expected_action_count"`
+		ExpectedContractIDs []string           `json:"expected_contract_ids,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			orch := newTestOrchestrator(t, nil)
+			fixture.Run = assistantstore.NormalizeRun(fixture.Run)
+			decision := orch.compileAssistantRunDecision(fixture.Run, fixture.ModelOutput, "model", "")
+			if decision.Compiler == nil {
+				t.Fatal("compiler is nil")
+			}
+			if decision.Compiler.Status != fixture.ExpectedStatus {
+				t.Fatalf("compiler status = %q, want %q: %#v", decision.Compiler.Status, fixture.ExpectedStatus, decision.Compiler)
+			}
+			if decision.Decision != fixture.ExpectedDecision {
+				t.Fatalf("decision = %q, want %q", decision.Decision, fixture.ExpectedDecision)
+			}
+			if len(decision.RecommendedActions) != fixture.ExpectedActionCount {
+				t.Fatalf("actions = %#v, want %d", decision.RecommendedActions, fixture.ExpectedActionCount)
+			}
+			for index, want := range fixture.ExpectedContractIDs {
+				if index >= len(decision.RecommendedActions) || decision.RecommendedActions[index].ContractID != want {
+					t.Fatalf("actions = %#v, want contract %q at index %d", decision.RecommendedActions, want, index)
+				}
+			}
+		})
 	}
 }
 

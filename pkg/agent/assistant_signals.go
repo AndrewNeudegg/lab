@@ -513,6 +513,15 @@ func applyAssistantSignalRecordToSignal(store *assistantstore.SignalStore, signa
 		signal.UsefulCount = record.UsefulCount
 		signal.Score += assistantMinInt(16, record.UsefulCount*8)
 	}
+	if record.DismissedCount > 0 {
+		signal.DismissedCount = record.DismissedCount
+		signal.Score -= assistantMinInt(20, record.DismissedCount*8)
+	}
+	if record.SnoozedCount > 0 {
+		signal.SnoozedCount = record.SnoozedCount
+		signal.Score -= assistantMinInt(10, record.SnoozedCount*4)
+	}
+	signal.FeedbackHint = record.PolicyHint
 	if record.SeenCount > 1 {
 		signal.Score += assistantMinInt(12, (record.SeenCount-1)*3)
 	}

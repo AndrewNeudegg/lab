@@ -251,12 +251,14 @@ func (o *Orchestrator) UpdateAssistantSignalCandidate(ctx context.Context, finge
 		record.Status = assistantstore.SignalStatusUseful
 		record.UsefulCount++
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		reply = "Marked signal as useful."
 	case assistantstore.SignalFeedbackDismiss:
 		record.Status = assistantstore.SignalStatusDismissed
 		record.DismissedAt = now
 		record.SnoozedUntil = time.Time{}
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		reply = "Dismissed signal."
 	case assistantstore.SignalFeedbackSnooze:
 		seconds := req.SnoozeSeconds
@@ -266,6 +268,7 @@ func (o *Orchestrator) UpdateAssistantSignalCandidate(ctx context.Context, finge
 		record.Status = assistantstore.SignalStatusSnoozed
 		record.SnoozedUntil = now.Add(time.Duration(seconds) * time.Second)
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		reply = "Snoozed signal."
 	case assistantstore.SignalFeedbackCreateTask:
 		if !assistantSignalAllowsRecommendation(candidate.ToRunSignal(), "task") {
@@ -282,6 +285,7 @@ func (o *Orchestrator) UpdateAssistantSignalCandidate(ctx context.Context, finge
 		record.Status = assistantstore.SignalStatusCreatedTask
 		record.CreatedTaskID = taskID
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		reply = "Created task from signal."
 	default:
 		return assistantstore.SignalCandidate{}, "", fmt.Errorf("unknown assistant signal feedback %q", req.Feedback)
@@ -575,6 +579,7 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		if action.Status == "" {
 			action.Status = "recommended"
 		}
+		ensureAssistantActionPlanPreview(*run, action)
 	}
 	if !assistantAutonomyAllowsTaskCreation(run.Autonomy) {
 		return
@@ -592,6 +597,7 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		}
 		if createdCount >= createLimit {
 			action.Status = "skipped"
+			markAssistantActionPlanBlocked(action, fmt.Sprintf("Run create-task budget is %d.", createLimit))
 			run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
 				Kind:      "task_budget_exhausted",
 				Message:   fmt.Sprintf("Skipped task action because the run create-task budget is %d.", createLimit),
@@ -609,6 +615,7 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		}
 		if goal == "" || strings.TrimSpace(action.Title) == "" {
 			action.Status = "skipped"
+			markAssistantActionPlanBlocked(action, "Task goal or title was empty.")
 			run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
 				Kind:      "task_skipped",
 				Message:   "Skipped a task action because the goal or title was empty.",
@@ -620,6 +627,7 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		created, err := o.createTaskRecord(ctx, goal)
 		if err != nil {
 			action.Status = "failed"
+			markAssistantActionPlanBlocked(action, err.Error())
 			run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
 				Kind:      "task_failed",
 				Message:   "Failed to create task for " + action.Title + ": " + err.Error(),
@@ -630,10 +638,12 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		}
 		if created.Task.ID == "" {
 			action.Status = "skipped"
+			markAssistantActionPlanBlocked(action, "Task creation returned no task id.")
 			continue
 		}
 		action.Status = assistantstore.SignalStatusCreatedTask
 		action.CreatedTaskID = created.Task.ID
+		markAssistantActionPlanExecuted(action, "Created task "+created.Task.ID+".")
 		createdCount++
 		if signalStore != nil {
 			o.saveAssistantCreatedTaskSignal(signalStore, run.ID, *action, created.Task.ID)
@@ -930,12 +940,14 @@ func (o *Orchestrator) UpdateAssistantRunAction(ctx context.Context, runID, acti
 		record.Status = assistantstore.SignalStatusUseful
 		record.UsefulCount++
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		reply = "Marked recommendation as useful."
 	case assistantstore.SignalFeedbackDismiss:
 		record.Status = assistantstore.SignalStatusDismissed
 		record.DismissedAt = now
 		record.SnoozedUntil = time.Time{}
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		reply = "Dismissed recommendation."
 	case assistantstore.SignalFeedbackSnooze:
 		seconds := req.SnoozeSeconds
@@ -945,6 +957,7 @@ func (o *Orchestrator) UpdateAssistantRunAction(ctx context.Context, runID, acti
 		record.Status = assistantstore.SignalStatusSnoozed
 		record.SnoozedUntil = now.Add(time.Duration(seconds) * time.Second)
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		reply = "Snoozed recommendation."
 	case assistantstore.SignalFeedbackCreateTask:
 		taskID := record.CreatedTaskID
@@ -957,6 +970,7 @@ func (o *Orchestrator) UpdateAssistantRunAction(ctx context.Context, runID, acti
 		record.Status = assistantstore.SignalStatusCreatedTask
 		record.CreatedTaskID = taskID
 		record.UpdatedAt = now
+		applyAssistantSignalRecordFeedback(&record, feedback, now)
 		run.Decision = assistantstore.RunDecisionCreated
 		reply = "Created task from recommendation."
 	default:
@@ -1016,6 +1030,26 @@ func assistantSignalRecordForAction(store *assistantstore.SignalStore, runID str
 		}
 	}
 	return assistantstore.NormalizeSignalRecord(record, now), nil
+}
+
+func applyAssistantSignalRecordFeedback(record *assistantstore.SignalRecord, feedback string, now time.Time) {
+	if record == nil {
+		return
+	}
+	feedback = strings.ToLower(strings.TrimSpace(feedback))
+	record.LastFeedback = feedback
+	record.PolicyHint = ""
+	switch feedback {
+	case assistantstore.SignalFeedbackDismiss:
+		record.DismissedCount++
+	case assistantstore.SignalFeedbackSnooze:
+		record.SnoozedCount++
+	case assistantstore.SignalFeedbackCreateTask:
+		record.CreatedTaskCount++
+	}
+	record.UpdatedAt = now
+	normalized := assistantstore.NormalizeSignalRecord(*record, now)
+	record.PolicyHint = normalized.PolicyHint
 }
 
 func applyAssistantSignalToAction(action *assistantstore.RunAction, record assistantstore.SignalRecord, now time.Time) {
@@ -1084,6 +1118,7 @@ func (o *Orchestrator) saveAssistantCreatedTaskSignal(store *assistantstore.Sign
 	record.Status = assistantstore.SignalStatusCreatedTask
 	record.CreatedTaskID = taskID
 	record.UpdatedAt = now
+	applyAssistantSignalRecordFeedback(&record, assistantstore.SignalFeedbackCreateTask, now)
 	if err := store.Save(record); err != nil {
 		o.log().Warn("assistant created task signal save failed", "error", err)
 	}

@@ -12,10 +12,15 @@ import (
 var assistantTrailingJSONCommaPattern = regexp.MustCompile(`,\s*([}\]])`)
 
 func (o *Orchestrator) compileAssistantRunDecision(run assistantstore.Run, content, source, fallbackReason string) assistantRunDecision {
+	scorecard := assistantCompilerScorecardFromRun(run)
 	audit := &assistantstore.RunDecisionCompiler{
-		Source: strings.TrimSpace(source),
-		Checks: []string{"schema_parse", "signal_enrichment", "evidence_citations", "safe_actions", "duplicate_actions", "capability_route"},
+		Source:      strings.TrimSpace(source),
+		Checks:      []string{"schema_parse", "signal_enrichment", "evidence_citations", "safe_actions", "duplicate_actions", "capability_contracts", "plan_preview", "feedback_policy", "capability_route", "scorecard"},
+		Contracts:   assistantCapabilityContracts(),
+		PolicyHints: assistantCompilerPolicyHints(run.Snapshot.Signals),
+		Scorecard:   &scorecard,
 	}
+	audit.Scorecard.PolicyHintCount = len(audit.PolicyHints)
 	if audit.Source == "" {
 		audit.Source = "model"
 	}
@@ -26,6 +31,7 @@ func (o *Orchestrator) compileAssistantRunDecision(run assistantstore.Run, conte
 		audit.Source = "deterministic"
 		audit.Summary = strings.TrimSpace(fallbackReason)
 		audit.Rejections = append(audit.Rejections, strings.TrimSpace(fallbackReason))
+		audit.Scorecard.FallbackUsed = true
 		decision = fallbackAssistantRunDecisionWithReason(run, fallbackReason)
 	} else {
 		parsed, repairs, err := parseAssistantRunDecisionWithRepair(content)
@@ -35,15 +41,28 @@ func (o *Orchestrator) compileAssistantRunDecision(run assistantstore.Run, conte
 			audit.Source = "deterministic"
 			audit.Summary = reason
 			audit.Rejections = append(audit.Rejections, "model output rejected: "+truncateAssistantRunText(err.Error(), 220))
+			audit.Scorecard.FallbackUsed = true
 			decision = fallbackAssistantRunDecisionWithReason(run, reason)
 		} else {
 			decision = parsed
 			audit.Repairs = append(audit.Repairs, repairs...)
+			audit.Scorecard.JSONValid = true
+			audit.Scorecard.JSONRepaired = len(repairs) > 0
+			audit.Scorecard.ModelActionCount = len(parsed.RecommendedActions)
 		}
 	}
 
+	beforeEnrichmentActions := len(decision.RecommendedActions)
+	beforeEnrichmentFindings := assistantDecisionFindingCount(decision)
+	beforeEnrichmentDecision := decision.Decision
 	decision = assistantRunDecisionWithSignals(run, decision)
+	if len(decision.RecommendedActions) != beforeEnrichmentActions ||
+		assistantDecisionFindingCount(decision) != beforeEnrichmentFindings ||
+		decision.Decision != beforeEnrichmentDecision {
+		audit.Repairs = append(audit.Repairs, "Enriched model decision with scored snapshot signals.")
+	}
 	decision = compileAssistantRunDecisionSafety(run, decision, audit)
+	assistantFinalizeCompilerScorecard(audit)
 	if audit.Status == "" {
 		if len(audit.Rejections) > 0 || len(audit.Repairs) > 0 {
 			audit.Status = "repaired"
@@ -106,8 +125,17 @@ func compileAssistantRunDecisionSafety(run assistantstore.Run, decision assistan
 	kept := make([]assistantstore.RunAction, 0, len(decision.RecommendedActions))
 	for _, action := range decision.RecommendedActions {
 		action = assistantstore.NormalizeRun(assistantstore.Run{RecommendedActions: []assistantstore.RunAction{action}}).RecommendedActions[0]
+		contract, hasContract := assistantCapabilityContractForAction(run, action)
+		if !hasContract {
+			audit.Rejections = append(audit.Rejections, fmt.Sprintf("Rejected action %q because no capability contract allows kind %q.", action.Title, action.Kind))
+			continue
+		}
 		if !assistantCompilerActionKindAllowed(action.Kind) {
 			audit.Rejections = append(audit.Rejections, fmt.Sprintf("Rejected action %q because kind %q is not allowed.", action.Title, action.Kind))
+			continue
+		}
+		if !assistantRiskWithinContract(action.Risk, contract.Risk) {
+			audit.Rejections = append(audit.Rejections, fmt.Sprintf("Rejected action %q because risk %q exceeds contract risk %q.", action.Title, action.Risk, contract.Risk))
 			continue
 		}
 		if strings.TrimSpace(action.Title) == "" || strings.TrimSpace(action.Rationale) == "" {
@@ -151,12 +179,22 @@ func compileAssistantRunDecisionSafety(run assistantstore.Run, decision assistan
 			audit.Rejections = append(audit.Rejections, fmt.Sprintf("Rejected action %q because %s was missing.", action.Title, missing))
 			continue
 		}
+		action.ContractID = contract.ID
+		action.Contract = &contract
+		plan := assistantActionPlanPreview(run, action, contract, hasSignal)
+		action.Plan = &plan
+		if audit.Scorecard != nil {
+			audit.Scorecard.PlanPreviewCount++
+		}
 		kept = append(kept, action)
 	}
 	if len(kept) != len(decision.RecommendedActions) {
 		audit.Repairs = append(audit.Repairs, fmt.Sprintf("Kept %d of %d model recommendations after harness checks.", len(kept), len(decision.RecommendedActions)))
 	}
 	decision.RecommendedActions = kept
+	if audit.Scorecard != nil {
+		audit.Scorecard.KeptActionCount = len(kept)
+	}
 	if len(decision.RecommendedActions) > 0 && decision.Decision == assistantstore.RunDecisionNoop {
 		audit.Repairs = append(audit.Repairs, "Changed no_op to recommend because verified actions remain.")
 		decision.Decision = assistantstore.RunDecisionRecommend
@@ -288,5 +326,112 @@ func assistantCompilerSummary(audit *assistantstore.RunDecisionCompiler) string 
 		return "Harness repaired or filtered the model decision before accepting it."
 	default:
 		return "Harness accepted the model decision after schema, evidence, safety, and routing checks."
+	}
+}
+
+func assistantCompilerScorecardFromRun(run assistantstore.Run) assistantstore.RunDecisionScorecard {
+	scorecard := assistantstore.RunDecisionScorecard{Score: 100, Grade: "high"}
+	scorecard.SignalCount = len(run.Snapshot.Signals)
+	for _, signal := range run.Snapshot.Signals {
+		if signal.Suppressed {
+			scorecard.SuppressedSignalCount++
+		} else {
+			scorecard.ActiveSignalCount++
+		}
+	}
+	return scorecard
+}
+
+func assistantCompilerPolicyHints(signals []assistantstore.RunSignal) []assistantstore.RunPolicyHint {
+	var hints []assistantstore.RunPolicyHint
+	for _, signal := range signals {
+		reason := strings.TrimSpace(signal.FeedbackHint)
+		effect := assistantCompilerPolicyEffect(signal)
+		if reason == "" && effect == "" {
+			continue
+		}
+		hints = append(hints, assistantstore.RunPolicyHint{
+			Fingerprint: signal.Fingerprint,
+			Source:      signal.Surface,
+			Kind:        signal.Kind,
+			Status:      assistantCompilerSignalPolicyStatus(signal),
+			Effect:      effect,
+			Reason:      firstNonEmptyString(reason, signal.SuppressionReason),
+			SeenCount:   signal.SeenCount,
+			UsefulCount: signal.UsefulCount,
+		})
+		if len(hints) >= 6 {
+			break
+		}
+	}
+	return hints
+}
+
+func assistantCompilerPolicyEffect(signal assistantstore.RunSignal) string {
+	switch {
+	case signal.CreatedTaskID != "":
+		return "dedupe_created_work"
+	case signal.Suppressed:
+		return "suppress"
+	case signal.UsefulCount > 0:
+		return "boost_new_sightings"
+	case signal.DismissedCount > 0:
+		return "lower_priority"
+	case signal.SnoozedCount > 0:
+		return "delay"
+	default:
+		return ""
+	}
+}
+
+func assistantCompilerSignalPolicyStatus(signal assistantstore.RunSignal) string {
+	switch {
+	case signal.CreatedTaskID != "":
+		return assistantstore.SignalStatusCreatedTask
+	case signal.Suppressed:
+		return "suppressed"
+	case signal.UsefulCount > 0:
+		return assistantstore.SignalStatusUseful
+	default:
+		return assistantstore.SignalStatusActive
+	}
+}
+
+func assistantFinalizeCompilerScorecard(audit *assistantstore.RunDecisionCompiler) {
+	if audit == nil || audit.Scorecard == nil {
+		return
+	}
+	scorecard := audit.Scorecard
+	scorecard.RejectedActionCount = len(audit.Rejections)
+	scorecard.RepairCount = len(audit.Repairs)
+	score := 100
+	if scorecard.FallbackUsed {
+		score -= 35
+	}
+	if scorecard.JSONRepaired {
+		score -= 5
+	}
+	score -= assistantMinInt(45, scorecard.RejectedActionCount*12)
+	score -= assistantMinInt(20, scorecard.RepairCount*4)
+	if scorecard.ActiveSignalCount > 0 && scorecard.KeptActionCount == 0 {
+		score -= 8
+	}
+	if scorecard.PlanPreviewCount > 0 {
+		score += 3
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	scorecard.Score = score
+	switch {
+	case score >= 85:
+		scorecard.Grade = "high"
+	case score >= 65:
+		scorecard.Grade = "medium"
+	default:
+		scorecard.Grade = "low"
 	}
 }

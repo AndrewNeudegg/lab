@@ -443,6 +443,8 @@ export interface AssistantRunFinding {
 export interface AssistantRunAction {
   id: string;
   fingerprint?: string;
+  contract_id?: string;
+  contract?: AssistantRunCapabilityContract;
   kind: string;
   title: string;
   rationale: string;
@@ -454,9 +456,47 @@ export interface AssistantRunAction {
   workflow_hint?: string;
   status?: string;
   created_task_id?: string;
+  plan?: AssistantRunActionPlanPreview;
   seen_count?: number;
   useful_count?: number;
   snoozed_until?: string;
+}
+
+export interface AssistantRunCapabilityContract {
+  id?: string;
+  capability?: string;
+  action_kind?: string;
+  allowed_safe_actions?: string[];
+  required_evidence?: string[];
+  required_inputs?: string[];
+  autonomy_ceiling?: string;
+  risk?: string;
+  requires_approval?: boolean;
+  duplicate_rule?: string;
+  suppression_rule?: string;
+  completion_rule?: string;
+  explanation?: string;
+}
+
+export interface AssistantRunActionPlanPreview {
+  status?: string;
+  summary?: string;
+  requires_approval?: boolean;
+  steps?: AssistantRunActionPlanStep[];
+  receipts?: AssistantRunActionPlanReceipt[];
+  blockers?: string[];
+}
+
+export interface AssistantRunActionPlanStep {
+  title: string;
+  surface?: string;
+  mode?: string;
+  status?: string;
+}
+
+export interface AssistantRunActionPlanReceipt {
+  kind: string;
+  message: string;
 }
 
 export interface AssistantRunReceipt {
@@ -512,6 +552,9 @@ export interface AssistantRunSignal {
   suggested_next_step?: string;
   suppressed?: boolean;
   suppression_reason?: string;
+  feedback_hint?: string;
+  dismissed_count?: number;
+  snoozed_count?: number;
   seen_count?: number;
   useful_count?: number;
   created_task_id?: string;
@@ -628,8 +671,39 @@ export interface AssistantRunDecisionCompiler {
   source?: string;
   summary?: string;
   checks?: string[];
+  contracts?: AssistantRunCapabilityContract[];
+  scorecard?: AssistantRunDecisionScorecard;
+  policy_hints?: AssistantRunPolicyHint[];
   repairs?: string[];
   rejections?: string[];
+}
+
+export interface AssistantRunDecisionScorecard {
+  score: number;
+  grade?: string;
+  json_valid: boolean;
+  json_repaired: boolean;
+  fallback_used: boolean;
+  signal_count?: number;
+  active_signal_count?: number;
+  suppressed_signal_count?: number;
+  policy_hint_count?: number;
+  model_action_count?: number;
+  kept_action_count?: number;
+  rejected_action_count?: number;
+  repair_count?: number;
+  plan_preview_count?: number;
+}
+
+export interface AssistantRunPolicyHint {
+  fingerprint?: string;
+  source?: string;
+  kind?: string;
+  status?: string;
+  effect?: string;
+  reason?: string;
+  seen_count?: number;
+  useful_count?: number;
 }
 
 export interface AssistantRunCapabilityRoute {

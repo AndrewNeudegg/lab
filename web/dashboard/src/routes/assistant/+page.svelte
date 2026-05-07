@@ -432,6 +432,22 @@
   const compilerMessages = (run: AssistantRun | undefined) =>
     [...(run?.compiler?.rejections || []), ...(run?.compiler?.repairs || [])].slice(0, 3);
 
+  const compilerScoreSummary = (run: AssistantRun | undefined) => {
+    const scorecard = run?.compiler?.scorecard;
+    if (!scorecard) {
+      return '';
+    }
+    return `${scorecard.score}/100 ${scorecard.grade || 'score'} / ${scorecard.kept_action_count || 0} kept / ${scorecard.rejected_action_count || 0} rejected / ${scorecard.plan_preview_count || 0} plans`;
+  };
+
+  const compilerPolicySummary = (run: AssistantRun | undefined) => {
+    const hint = run?.compiler?.policy_hints?.[0];
+    if (!hint) {
+      return '';
+    }
+    return hint.reason || [hint.effect, hint.source].filter(Boolean).map(labelFromSlug).join(' / ');
+  };
+
   const signalMutationKey = (signal: AssistantSignalCandidate) => signal.fingerprint || signal.id || signal.title;
 
   const isSignalUpdating = (signal: AssistantSignalCandidate) =>
@@ -443,6 +459,39 @@
 
   const actionSupportText = (action: AssistantRunAction) =>
     action.task_goal || action.knowledge_query || action.workflow_hint || '';
+
+  const actionContractSummary = (action: AssistantRunAction) => {
+    const contract = action.contract;
+    if (!contract) {
+      return action.contract_id ? `Contract: ${labelFromSlug(action.contract_id)}` : '';
+    }
+    const parts = [
+      labelFromSlug(contract.id || action.contract_id || contract.action_kind || action.kind),
+      contract.requires_approval ? 'approval required' : 'bounded',
+      contract.risk ? `${labelFromSlug(contract.risk)} risk` : ''
+    ].filter(Boolean);
+    return parts.join(' / ');
+  };
+
+  const actionPlanSummary = (action: AssistantRunAction) => {
+    if (!action.plan) {
+      return '';
+    }
+    return action.plan.summary || labelFromSlug(action.plan.status || 'planned');
+  };
+
+  const actionPlanTone = (action: AssistantRunAction) => {
+    switch (action.plan?.status) {
+      case 'executed':
+        return 'green';
+      case 'blocked':
+        return 'amber';
+      case 'approval_required':
+        return 'blue';
+      default:
+        return 'gray';
+    }
+  };
 
   const startProactiveRun = async () => {
     runStarting = true;
@@ -982,6 +1031,12 @@
               <div>
                 <strong>{compilerTitle(selectedRun)}</strong>
                 <p>{compilerDetail(selectedRun)}</p>
+                {#if compilerScoreSummary(selectedRun)}
+                  <p class="compiler-score">{compilerScoreSummary(selectedRun)}</p>
+                {/if}
+                {#if compilerPolicySummary(selectedRun)}
+                  <p class="compiler-policy">{compilerPolicySummary(selectedRun)}</p>
+                {/if}
                 {#if compilerMessages(selectedRun).length}
                   <ul class="compiler-list">
                     {#each compilerMessages(selectedRun) as message}
@@ -1036,6 +1091,15 @@
                     <p>{action.rationale}</p>
                     {#if actionSupportText(action)}
                       <small class="action-support">{actionSupportText(action)}</small>
+                    {/if}
+                    {#if actionContractSummary(action)}
+                      <small class="action-support">{actionContractSummary(action)}</small>
+                    {/if}
+                    {#if actionPlanSummary(action)}
+                      <div class="plan-preview">
+                        <span class={`status ${actionPlanTone(action)}`}>{labelFromSlug(action.plan?.status || 'planned')}</span>
+                        <small>{actionPlanSummary(action)}</small>
+                      </div>
                     {/if}
                     {#if action.created_task_id}
                       <a href={`/tasks?task=${action.created_task_id}`}>Open created task</a>
@@ -1660,6 +1724,8 @@
   .signal-inbox-row p,
   .signal-inbox-row em,
   .route-strip p,
+  .compiler-score,
+  .compiler-policy,
   .compiler-list {
     color: var(--assistant-muted, #475569);
     font-size: 0.75rem;
@@ -1708,6 +1774,11 @@
     gap: 0.12rem;
     margin: 0.1rem 0 0;
     padding-left: 1rem;
+  }
+
+  .compiler-score,
+  .compiler-policy {
+    overflow-wrap: anywhere;
   }
 
   .signal-toolbar {
@@ -2092,6 +2163,19 @@
 
   .action-support {
     display: block;
+  }
+
+  .plan-preview {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .plan-preview small {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .recommendation-card a,

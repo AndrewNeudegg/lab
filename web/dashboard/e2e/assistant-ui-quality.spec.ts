@@ -147,6 +147,29 @@ const assistantRun = {
       risk: 'low',
       target_surface: 'tasks',
       task_goal: 'Review the blocked deploy and decide the next step.',
+      contract_id: 'task',
+      contract: {
+        id: 'task',
+        capability: 'tasks',
+        action_kind: 'task',
+        autonomy_ceiling: 'create_tasks',
+        risk: 'low',
+        requires_approval: true,
+        explanation: 'Task actions are allowed only when grounded in known evidence and bounded by a clear task goal.'
+      },
+      plan: {
+        status: 'approval_required',
+        summary: 'Harness prepared this task action for operator approval.',
+        requires_approval: true,
+        steps: [
+          { title: 'Bind recommendation to snapshot evidence', surface: 'tasks', mode: 'check', status: 'passed' },
+          { title: 'Create bounded follow-up task', surface: 'tasks', mode: 'mutation', status: 'approval_required' }
+        ],
+        receipts: [
+          { kind: 'contract_checked', message: 'Contract "task" constrained action kind "task".' },
+          { kind: 'approval_required', message: 'Operator approval is required before execution.' }
+        ]
+      },
       status: 'recommended',
       seen_count: 2,
       created_task_id: '',
@@ -165,7 +188,30 @@ const assistantRun = {
     status: 'accepted',
     source: 'model',
     summary: 'Harness accepted the model decision after schema, evidence, safety, and routing checks.',
-    checks: ['schema_parse', 'signal_enrichment', 'evidence_citations', 'safe_actions', 'duplicate_actions', 'capability_route']
+    checks: ['schema_parse', 'signal_enrichment', 'evidence_citations', 'safe_actions', 'duplicate_actions', 'capability_route'],
+    scorecard: {
+      score: 96,
+      grade: 'high',
+      json_valid: true,
+      json_repaired: false,
+      fallback_used: false,
+      signal_count: 2,
+      active_signal_count: 2,
+      kept_action_count: 1,
+      rejected_action_count: 0,
+      plan_preview_count: 1
+    },
+    policy_hints: [
+      {
+        fingerprint: 'sig_blocked_deploy',
+        source: 'tasks',
+        kind: 'task_blocked',
+        effect: 'boost_new_sightings',
+        reason: 'Prior useful feedback makes new sightings more likely to be worth surfacing.',
+        seen_count: 2,
+        useful_count: 1
+      }
+    ]
   },
   receipts: [
     {
@@ -380,6 +426,12 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
         action.status = body.feedback === 'create_task' ? 'created_task' : body.feedback || 'recommended';
         if (body.feedback === 'create_task') {
           action.created_task_id = 'task_from_assistant';
+          action.plan = {
+            ...(action.plan || {}),
+            status: 'executed',
+            summary: 'Created task task_from_assistant.',
+            requires_approval: false
+          };
         }
         if (body.feedback === 'snooze') {
           action.snoozed_until = '2026-04-29T12:00:00.000Z';
@@ -761,9 +813,13 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Recommended actions' })).toBeVisible();
       await expect(page.getByLabel('Assistant capability route')).toContainText('Tasks');
       await expect(page.getByLabel('Assistant decision compiler')).toContainText('Accepted decision');
+      await expect(page.getByLabel('Assistant decision compiler')).toContainText('96/100 high');
+      await expect(page.getByLabel('Assistant decision compiler')).toContainText('Prior useful feedback');
       const recommendationCard = page.locator('.recommendation-card').filter({ hasText: 'Review blocked deploy' });
       await expect(recommendationCard).toBeVisible();
       await expect(recommendationCard).toContainText('2 sightings');
+      await expect(recommendationCard).toContainText('task / approval required / low risk');
+      await expect(recommendationCard).toContainText('Harness prepared this task action for operator approval.');
       await expect(page.getByRole('heading', { name: 'What it noticed' })).toBeVisible();
       const selectedRunRegion = page.getByLabel('Selected Assistant run');
       const recommendationActions = page.getByRole('group', {

@@ -30,21 +30,26 @@ const (
 )
 
 type SignalRecord struct {
-	Fingerprint   string    `json:"fingerprint"`
-	Status        string    `json:"status"`
-	Kind          string    `json:"kind,omitempty"`
-	Title         string    `json:"title"`
-	Surface       string    `json:"surface,omitempty"`
-	FirstSeenAt   time.Time `json:"first_seen_at"`
-	LastSeenAt    time.Time `json:"last_seen_at"`
-	SeenCount     int       `json:"seen_count"`
-	UsefulCount   int       `json:"useful_count,omitempty"`
-	SnoozedUntil  time.Time `json:"snoozed_until,omitempty"`
-	DismissedAt   time.Time `json:"dismissed_at,omitempty"`
-	CreatedTaskID string    `json:"created_task_id,omitempty"`
-	LastRunID     string    `json:"last_run_id,omitempty"`
-	LastActionID  string    `json:"last_action_id,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Fingerprint      string    `json:"fingerprint"`
+	Status           string    `json:"status"`
+	Kind             string    `json:"kind,omitempty"`
+	Title            string    `json:"title"`
+	Surface          string    `json:"surface,omitempty"`
+	FirstSeenAt      time.Time `json:"first_seen_at"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
+	SeenCount        int       `json:"seen_count"`
+	UsefulCount      int       `json:"useful_count,omitempty"`
+	DismissedCount   int       `json:"dismissed_count,omitempty"`
+	SnoozedCount     int       `json:"snoozed_count,omitempty"`
+	CreatedTaskCount int       `json:"created_task_count,omitempty"`
+	SnoozedUntil     time.Time `json:"snoozed_until,omitempty"`
+	DismissedAt      time.Time `json:"dismissed_at,omitempty"`
+	CreatedTaskID    string    `json:"created_task_id,omitempty"`
+	LastFeedback     string    `json:"last_feedback,omitempty"`
+	PolicyHint       string    `json:"policy_hint,omitempty"`
+	LastRunID        string    `json:"last_run_id,omitempty"`
+	LastActionID     string    `json:"last_action_id,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type SignalFeedbackRequest struct {
@@ -442,6 +447,8 @@ func NormalizeSignalRecord(record SignalRecord, now time.Time) SignalRecord {
 	record.Title = strings.TrimSpace(record.Title)
 	record.Surface = strings.TrimSpace(record.Surface)
 	record.CreatedTaskID = strings.TrimSpace(record.CreatedTaskID)
+	record.LastFeedback = strings.TrimSpace(record.LastFeedback)
+	record.PolicyHint = strings.TrimSpace(record.PolicyHint)
 	record.LastRunID = strings.TrimSpace(record.LastRunID)
 	record.LastActionID = strings.TrimSpace(record.LastActionID)
 	if record.Title == "" {
@@ -449,6 +456,15 @@ func NormalizeSignalRecord(record SignalRecord, now time.Time) SignalRecord {
 	}
 	if record.SeenCount < 0 {
 		record.SeenCount = 0
+	}
+	if record.DismissedCount < 0 {
+		record.DismissedCount = 0
+	}
+	if record.SnoozedCount < 0 {
+		record.SnoozedCount = 0
+	}
+	if record.CreatedTaskCount < 0 {
+		record.CreatedTaskCount = 0
 	}
 	if record.FirstSeenAt.IsZero() {
 		record.FirstSeenAt = now
@@ -462,7 +478,33 @@ func NormalizeSignalRecord(record SignalRecord, now time.Time) SignalRecord {
 	if record.CreatedTaskID != "" {
 		record.Status = SignalStatusCreatedTask
 	}
+	if record.PolicyHint == "" {
+		record.PolicyHint = signalRecordPolicyHint(record)
+	}
 	return record
+}
+
+func signalRecordPolicyHint(record SignalRecord) string {
+	switch record.Status {
+	case SignalStatusDismissed:
+		return "Suppress this recommendation until a materially new sighting appears."
+	case SignalStatusSnoozed:
+		return "Delay this recommendation until the snooze expires."
+	case SignalStatusUseful:
+		return "Clear the current item, but boost materially new sightings for the same signal."
+	case SignalStatusCreatedTask:
+		return "Do not create duplicate work; link back to the existing created task."
+	}
+	if record.UsefulCount > 0 {
+		return "Prior useful feedback makes new sightings more likely to be worth surfacing."
+	}
+	if record.DismissedCount > 0 {
+		return "Prior dismissals lower priority unless the signal has new evidence."
+	}
+	if record.SnoozedCount > 0 {
+		return "Prior snoozes require clear timing or new evidence before surfacing again."
+	}
+	return ""
 }
 
 func SignalFingerprint(value string) string {

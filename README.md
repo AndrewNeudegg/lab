@@ -623,14 +623,14 @@ Backend work:
 - add `execution_mode` to Goals: `guided` or `autopilot`
 - add Autopilot state and policy fields to Goals
 - add start, pause, stop, and resume endpoints
-- add `homelabctl goal autopilot start|pause|stop|resume <goal-id>`
+- add `homelabctl goal autopilot start|pause|stop|resume [--budget-tasks N] <goal-id>`
 - add an Autopilot loop that picks one Goal-linked task at a time
 - create the next task from the Goal assessment
 - start the worker
 - wait for review outcome
-- merge only after successful review and safe policy checks
-- restart affected components through `supervisord`
-- verify the changed workflow
+- approve Goal-linked Autopilot merges only after successful review and safe policy checks
+- run existing post-merge restart gates before acceptance
+- accept completed Autopilot tasks when verification state is reached
 - reflect into the Goal and decide whether to continue
 - stop on budget, blocker, failed review, failed restart, unclear requirement, or unsafe action
 
@@ -665,8 +665,9 @@ The first complete version is done when:
 - Dashboard UAT covers the Goal create/check/review workflow on desktop and mobile.
 - A build Goal can be set to Autopilot with an explicit budget.
 - Autopilot can create and start one Goal-linked task.
-- Autopilot records whether it is running, paused, blocked, or done.
-- Autopilot stops when a task reaches review, fails, asks a question, exhausts budget, or requires unsafe action in the MVP.
+- Autopilot records whether it is ready, running, paused, blocked, completed, stopped, or out of budget.
+- Autopilot can move its current task through review, merge approval, restart gates, and acceptance when checks succeed.
+- Autopilot stops when a task fails unrecoverably, asks a question, exhausts budget, or requires unsafe action.
 - UI and CLI clearly distinguish Goal type from execution mode.
 
 ## Suggested MVP
@@ -682,6 +683,7 @@ Build this first:
 7. Post-task Goal reflection.
 8. Dashboard Goal list/detail/create views.
 9. Assistant self-repair signal for invalid structured output.
+10. Autopilot mode for Build and Maintenance Goals with one active linked task, explicit budget, merge/restart/acceptance gates, and clear stop reasons.
 
 This MVP should make the assistant feel materially different: it will have standing objectives, check them on its own, create work from them, update progress, and explain what it is watching.
 

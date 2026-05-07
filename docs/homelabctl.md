@@ -161,21 +161,26 @@ go run ./cmd/homelabctl assistant restore arun_123
 go run ./cmd/homelabctl assistant signals
 go run ./cmd/homelabctl assistant signal sig_chat useful
 go run ./cmd/homelabctl assistant signal sig_chat create-task "follow up"
-go run ./cmd/homelabctl goal create --title "Daily brief" --cadence daily --success "brief posted" "Keep the daily brief current and point out unanswered mail"
+go run ./cmd/homelabctl goal create --title "Daily brief" --kind routine --mode guided --cadence daily --success "brief posted" "Keep the daily brief current and point out unanswered mail"
+go run ./cmd/homelabctl goal create --title "Build reporting" --kind build --mode autopilot --budget-tasks 4 "Build the reporting workflow end to end"
 go run ./cmd/homelabctl goals
 go run ./cmd/homelabctl goal show goal_123
 go run ./cmd/homelabctl goal check goal_123
+go run ./cmd/homelabctl goal autopilot start --budget-tasks 4 goal_123
+go run ./cmd/homelabctl goal autopilot pause goal_123
+go run ./cmd/homelabctl goal autopilot resume --budget-tasks 8 goal_123
+go run ./cmd/homelabctl goal autopilot stop goal_123
 go run ./cmd/homelabctl goal pause goal_123
 go run ./cmd/homelabctl goal archive goal_123
 go run ./cmd/homelabctl goal note goal_123 "Waiting for mail connector credentials"
-go run ./cmd/homelabctl goal watch goal_123 --kind reminder --cadence "weekday 08:00" "Produce the morning brief"
+go run ./cmd/homelabctl goal watch goal_123 "Produce the morning brief"
 ```
 
 `assistant archive` calls `PATCH /assistant/runs/<run_id>` with `archived: true`, records `homelabctl` as the actor, preserves the run, and moves it out of the active Assistant UI. `assistant restore` clears the archive metadata and returns the run to the active decision space. Use this when an agent has established that an old recommendation is no longer useful and no task, snooze, or dismissal is needed.
 
 `assistant signals` calls `GET /assistant/signals` for the current unresolved signal inbox. `assistant signal` calls `PATCH /assistant/signals/<fingerprint>` with `useful`, `dismiss`, `snooze`, or `create_task`, so operators and agents can feed the Assistant learning loop or create a bounded follow-up task without ad hoc HTTP calls. `useful` records positive feedback and clears the current inbox item until a later new sighting reopens it.
 
-Goals are durable operator desires rather than one-off tasks. A Goal stores the objective, details, success criteria, constraints, autonomy, cadence, watches, linked tasks, progress notes, and run assessments. `goal create` calls `POST /assistant/goals`, `goal check` starts a Goal-scoped Assistant run through `POST /assistant/goals/<goal_id>/check`, `goal watch` records something the Assistant should keep an eye on, and Goal-linked tasks report progress back to the Goal when accepted. Chat accepts the same lifecycle through natural phrases such as `goal keep invoices reconciled` or `my goal is to keep the daily brief ready`.
+Goals are durable operator desires rather than one-off tasks. A Goal stores the objective, type, execution mode, details, success criteria, constraints, autonomy, cadence, watches, linked tasks, progress notes, and run assessments. Goal types are `build`, `routine`, `watch`, and `maintenance`. `guided` mode keeps the human in the loop: `goal check` starts a Goal-scoped Assistant run through `POST /assistant/goals/<goal_id>/check` and the operator decides whether to create or accept work. `autopilot` mode lets the Goal create one bounded linked task at a time, use the normal review, merge, restart, and acceptance gates, and continue until its task budget, runtime budget, blocker, or stop command is reached. `goal autopilot start|pause|resume|stop` calls `POST /assistant/goals/<goal_id>/autopilot/<action>`. `goal watch` records something the Assistant should keep an eye on, and Goal-linked tasks report progress back to the Goal when accepted. Chat accepts the same lifecycle through natural phrases such as `goal keep invoices reconciled` or `my goal is to keep the daily brief ready`.
 
 ## Knowledge Space Commands
 
@@ -378,6 +383,10 @@ go run ./cmd/homelabctl terminal close term_123
 - `GET /assistant/goals/{id}`
 - `PATCH /assistant/goals/{id}`
 - `POST /assistant/goals/{id}/check`
+- `POST /assistant/goals/{id}/autopilot/start`
+- `POST /assistant/goals/{id}/autopilot/pause`
+- `POST /assistant/goals/{id}/autopilot/resume`
+- `POST /assistant/goals/{id}/autopilot/stop`
 - `POST /assistant/goals/{id}/watches`
 - `POST /assistant/goals/{id}/notes`
 - `GET /workflows`

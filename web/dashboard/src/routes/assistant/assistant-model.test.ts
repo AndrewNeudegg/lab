@@ -11,6 +11,11 @@ import {
   activityForCapability,
   activeAssistantGoals,
   assistantAreaLabel,
+  assistantGoalAutopilotStatusLabel,
+  assistantGoalAutopilotTone,
+  assistantGoalExecutionLabel,
+  assistantGoalKindLabel,
+  assistantGoalKindShortLabel,
   assistantGoalStatusLabel,
   assistantGoalStatusTone,
   assistantRunActionCount,
@@ -173,6 +178,11 @@ describe('assistant model', () => {
     expect(assistantGoalStatusLabel('blocked')).toBe('Blocked');
     expect(assistantGoalStatusTone('active')).toBe('green');
     expect(assistantGoalStatusTone('paused')).toBe('gray');
+    expect(assistantGoalKindLabel('build')).toBe('Build Goal');
+    expect(assistantGoalKindShortLabel('maintenance')).toBe('Maintenance');
+    expect(assistantGoalExecutionLabel('autopilot')).toBe('Autopilot');
+    expect(assistantGoalAutopilotStatusLabel('budget_exhausted')).toBe('Budget exhausted');
+    expect(assistantGoalAutopilotTone('blocked')).toBe('amber');
     expect(activeAssistantGoals(goals).map((value) => value.id)).toEqual([
       'goal_due',
       'goal_future',

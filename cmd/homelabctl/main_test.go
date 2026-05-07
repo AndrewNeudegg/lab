@@ -404,6 +404,46 @@ func TestTaskNewAttachesFiles(t *testing.T) {
 	}
 }
 
+func TestGoalCreateAndAutopilotCommandsUseTypedEndpoints(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		var observed observedRequest
+		_, stderr, code := runAgainstServer(t, []string{"goal", "create", "--kind", "build", "--mode", "autopilot", "--budget-tasks", "3", "build", "the", "thing"}, "", func(rw http.ResponseWriter, req *http.Request) {
+			observed = observeRequest(t, req)
+			writeTestJSON(t, rw, http.StatusCreated, map[string]any{"ok": true})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+		}
+		if observed.Method != http.MethodPost || observed.Path != "/assistant/goals" {
+			t.Fatalf("request = %s %s, want POST /assistant/goals", observed.Method, observed.Path)
+		}
+		if observed.Body["kind"] != "build" || observed.Body["execution_mode"] != "autopilot" {
+			t.Fatalf("body = %#v, want build autopilot Goal", observed.Body)
+		}
+		autopilot, ok := observed.Body["autopilot"].(map[string]any)
+		if !ok || autopilot["budget_tasks"] != float64(3) {
+			t.Fatalf("autopilot = %#v, want budget_tasks 3", observed.Body["autopilot"])
+		}
+	})
+
+	t.Run("autopilot start", func(t *testing.T) {
+		var observed observedRequest
+		_, stderr, code := runAgainstServer(t, []string{"goal", "autopilot", "start", "--budget-tasks", "5", "goal_123"}, "", func(rw http.ResponseWriter, req *http.Request) {
+			observed = observeRequest(t, req)
+			writeTestJSON(t, rw, http.StatusOK, map[string]any{"ok": true})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+		}
+		if observed.Method != http.MethodPost || observed.Path != "/assistant/goals/goal_123/autopilot/start" {
+			t.Fatalf("request = %s %s, want POST Autopilot start", observed.Method, observed.Path)
+		}
+		if observed.Body["budget_tasks"] != float64(5) {
+			t.Fatalf("body = %#v, want budget_tasks 5", observed.Body)
+		}
+	})
+}
+
 func TestAgentCommandsUseAgentEndpoints(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -19,6 +19,22 @@ const (
 	GoalStatusCompleted = "completed"
 	GoalStatusArchived  = "archived"
 
+	GoalKindBuild       = "build"
+	GoalKindRoutine     = "routine"
+	GoalKindWatch       = "watch"
+	GoalKindMaintenance = "maintenance"
+
+	GoalExecutionModeGuided    = "guided"
+	GoalExecutionModeAutopilot = "autopilot"
+
+	GoalAutopilotStatusReady           = "ready"
+	GoalAutopilotStatusRunning         = "running"
+	GoalAutopilotStatusPaused          = "paused"
+	GoalAutopilotStatusBlocked         = "blocked"
+	GoalAutopilotStatusCompleted       = "completed"
+	GoalAutopilotStatusBudgetExhausted = "budget_exhausted"
+	GoalAutopilotStatusStopped         = "stopped"
+
 	GoalSignalStatusActive    = "active"
 	GoalSignalStatusResolved  = "resolved"
 	GoalSignalStatusDismissed = "dismissed"
@@ -29,59 +45,83 @@ const (
 )
 
 type Goal struct {
-	ID              string     `json:"id"`
-	Title           string     `json:"title"`
-	Objective       string     `json:"objective"`
-	Details         string     `json:"details,omitempty"`
-	Status          string     `json:"status"`
-	Kind            string     `json:"kind,omitempty"`
-	Priority        string     `json:"priority,omitempty"`
-	Autonomy        string     `json:"autonomy"`
-	Cadence         string     `json:"cadence,omitempty"`
-	NextCheckAt     *time.Time `json:"next_check_at,omitempty"`
-	SuccessCriteria []string   `json:"success_criteria,omitempty"`
-	Constraints     []string   `json:"constraints,omitempty"`
-	LinkedTasks     []string   `json:"linked_tasks,omitempty"`
-	LinkedWorkflows []string   `json:"linked_workflows,omitempty"`
-	ProgressSummary string     `json:"progress_summary,omitempty"`
-	OpenQuestions   []string   `json:"open_questions,omitempty"`
-	LastCheckedAt   *time.Time `json:"last_checked_at,omitempty"`
-	LastActionAt    *time.Time `json:"last_action_at,omitempty"`
-	CreatedBy       string     `json:"created_by,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	ArchivedAt      *time.Time `json:"archived_at,omitempty"`
+	ID              string         `json:"id"`
+	Title           string         `json:"title"`
+	Objective       string         `json:"objective"`
+	Details         string         `json:"details,omitempty"`
+	Status          string         `json:"status"`
+	Kind            string         `json:"kind,omitempty"`
+	ExecutionMode   string         `json:"execution_mode,omitempty"`
+	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
+	Priority        string         `json:"priority,omitempty"`
+	Autonomy        string         `json:"autonomy"`
+	Cadence         string         `json:"cadence,omitempty"`
+	NextCheckAt     *time.Time     `json:"next_check_at,omitempty"`
+	SuccessCriteria []string       `json:"success_criteria,omitempty"`
+	Constraints     []string       `json:"constraints,omitempty"`
+	LinkedTasks     []string       `json:"linked_tasks,omitempty"`
+	LinkedWorkflows []string       `json:"linked_workflows,omitempty"`
+	ProgressSummary string         `json:"progress_summary,omitempty"`
+	OpenQuestions   []string       `json:"open_questions,omitempty"`
+	LastCheckedAt   *time.Time     `json:"last_checked_at,omitempty"`
+	LastActionAt    *time.Time     `json:"last_action_at,omitempty"`
+	CreatedBy       string         `json:"created_by,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	ArchivedAt      *time.Time     `json:"archived_at,omitempty"`
 }
 
 type GoalCreateRequest struct {
-	Title           string   `json:"title"`
-	Objective       string   `json:"objective,omitempty"`
-	Details         string   `json:"details,omitempty"`
-	Kind            string   `json:"kind,omitempty"`
-	Priority        string   `json:"priority,omitempty"`
-	Autonomy        string   `json:"autonomy,omitempty"`
-	Cadence         string   `json:"cadence,omitempty"`
-	NextCheckAt     string   `json:"next_check_at,omitempty"`
-	SuccessCriteria []string `json:"success_criteria,omitempty"`
-	Constraints     []string `json:"constraints,omitempty"`
-	OpenQuestions   []string `json:"open_questions,omitempty"`
-	CreatedBy       string   `json:"created_by,omitempty"`
+	Title           string         `json:"title"`
+	Objective       string         `json:"objective,omitempty"`
+	Details         string         `json:"details,omitempty"`
+	Kind            string         `json:"kind,omitempty"`
+	ExecutionMode   string         `json:"execution_mode,omitempty"`
+	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
+	Priority        string         `json:"priority,omitempty"`
+	Autonomy        string         `json:"autonomy,omitempty"`
+	Cadence         string         `json:"cadence,omitempty"`
+	NextCheckAt     string         `json:"next_check_at,omitempty"`
+	SuccessCriteria []string       `json:"success_criteria,omitempty"`
+	Constraints     []string       `json:"constraints,omitempty"`
+	OpenQuestions   []string       `json:"open_questions,omitempty"`
+	CreatedBy       string         `json:"created_by,omitempty"`
 }
 
 type GoalUpdateRequest struct {
-	Title           string   `json:"title,omitempty"`
-	Objective       string   `json:"objective,omitempty"`
-	Details         string   `json:"details,omitempty"`
-	Status          string   `json:"status,omitempty"`
-	Kind            string   `json:"kind,omitempty"`
-	Priority        string   `json:"priority,omitempty"`
-	Autonomy        string   `json:"autonomy,omitempty"`
-	Cadence         string   `json:"cadence,omitempty"`
-	NextCheckAt     string   `json:"next_check_at,omitempty"`
-	SuccessCriteria []string `json:"success_criteria,omitempty"`
-	Constraints     []string `json:"constraints,omitempty"`
-	ProgressSummary string   `json:"progress_summary,omitempty"`
-	OpenQuestions   []string `json:"open_questions,omitempty"`
+	Title           string         `json:"title,omitempty"`
+	Objective       string         `json:"objective,omitempty"`
+	Details         string         `json:"details,omitempty"`
+	Status          string         `json:"status,omitempty"`
+	Kind            string         `json:"kind,omitempty"`
+	ExecutionMode   string         `json:"execution_mode,omitempty"`
+	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
+	Priority        string         `json:"priority,omitempty"`
+	Autonomy        string         `json:"autonomy,omitempty"`
+	Cadence         string         `json:"cadence,omitempty"`
+	NextCheckAt     string         `json:"next_check_at,omitempty"`
+	SuccessCriteria []string       `json:"success_criteria,omitempty"`
+	Constraints     []string       `json:"constraints,omitempty"`
+	ProgressSummary string         `json:"progress_summary,omitempty"`
+	OpenQuestions   []string       `json:"open_questions,omitempty"`
+}
+
+type GoalAutopilot struct {
+	Status            string     `json:"status,omitempty"`
+	BudgetTasks       int        `json:"budget_tasks,omitempty"`
+	TasksStarted      int        `json:"tasks_started,omitempty"`
+	MaxRuntimeMinutes int        `json:"max_runtime_minutes,omitempty"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	LastStepAt        *time.Time `json:"last_step_at,omitempty"`
+	StopReasons       []string   `json:"stop_reasons,omitempty"`
+	AllowedActions    []string   `json:"allowed_actions,omitempty"`
+	CurrentTaskID     string     `json:"current_task_id,omitempty"`
+}
+
+type GoalAutopilotRequest struct {
+	BudgetTasks       int      `json:"budget_tasks,omitempty"`
+	MaxRuntimeMinutes int      `json:"max_runtime_minutes,omitempty"`
+	AllowedActions    []string `json:"allowed_actions,omitempty"`
 }
 
 type GoalWatch struct {
@@ -161,24 +201,26 @@ type GoalAssessment struct {
 }
 
 type GoalSnapshotRef struct {
-	ID              string     `json:"id"`
-	Title           string     `json:"title"`
-	Objective       string     `json:"objective,omitempty"`
-	Details         string     `json:"details,omitempty"`
-	Status          string     `json:"status,omitempty"`
-	Kind            string     `json:"kind,omitempty"`
-	Priority        string     `json:"priority,omitempty"`
-	Autonomy        string     `json:"autonomy,omitempty"`
-	Cadence         string     `json:"cadence,omitempty"`
-	NextCheckAt     *time.Time `json:"next_check_at,omitempty"`
-	LastCheckedAt   *time.Time `json:"last_checked_at,omitempty"`
-	ProgressSummary string     `json:"progress_summary,omitempty"`
-	SuccessCriteria []string   `json:"success_criteria,omitempty"`
-	Constraints     []string   `json:"constraints,omitempty"`
-	OpenQuestions   []string   `json:"open_questions,omitempty"`
-	LinkedTasks     []string   `json:"linked_tasks,omitempty"`
-	URL             string     `json:"url,omitempty"`
-	Due             bool       `json:"due,omitempty"`
+	ID              string         `json:"id"`
+	Title           string         `json:"title"`
+	Objective       string         `json:"objective,omitempty"`
+	Details         string         `json:"details,omitempty"`
+	Status          string         `json:"status,omitempty"`
+	Kind            string         `json:"kind,omitempty"`
+	ExecutionMode   string         `json:"execution_mode,omitempty"`
+	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
+	Priority        string         `json:"priority,omitempty"`
+	Autonomy        string         `json:"autonomy,omitempty"`
+	Cadence         string         `json:"cadence,omitempty"`
+	NextCheckAt     *time.Time     `json:"next_check_at,omitempty"`
+	LastCheckedAt   *time.Time     `json:"last_checked_at,omitempty"`
+	ProgressSummary string         `json:"progress_summary,omitempty"`
+	SuccessCriteria []string       `json:"success_criteria,omitempty"`
+	Constraints     []string       `json:"constraints,omitempty"`
+	OpenQuestions   []string       `json:"open_questions,omitempty"`
+	LinkedTasks     []string       `json:"linked_tasks,omitempty"`
+	URL             string         `json:"url,omitempty"`
+	Due             bool           `json:"due,omitempty"`
 }
 
 type GoalTimeline struct {
@@ -534,9 +576,16 @@ func NormalizeGoal(goal Goal) Goal {
 	}
 	goal.Details = strings.TrimSpace(goal.Details)
 	goal.Status = normalizeGoalStatus(goal.Status)
-	goal.Kind = strings.TrimSpace(goal.Kind)
-	if goal.Kind == "" {
-		goal.Kind = "project"
+	goal.Kind = normalizeGoalKind(goal.Kind)
+	if goal.Autopilot != nil && strings.TrimSpace(goal.ExecutionMode) == "" {
+		goal.ExecutionMode = GoalExecutionModeAutopilot
+	}
+	goal.ExecutionMode = normalizeGoalExecutionMode(goal.ExecutionMode)
+	if goal.ExecutionMode == GoalExecutionModeAutopilot {
+		autopilot := NormalizeGoalAutopilot(goal.Autopilot)
+		goal.Autopilot = &autopilot
+	} else {
+		goal.Autopilot = nil
 	}
 	goal.Priority = strings.TrimSpace(goal.Priority)
 	if goal.Priority == "" {
@@ -586,6 +635,56 @@ func NormalizeGoal(goal Goal) Goal {
 		}
 	}
 	return goal
+}
+
+func NormalizeGoalAutopilot(autopilot *GoalAutopilot) GoalAutopilot {
+	value := GoalAutopilot{}
+	if autopilot != nil {
+		value = *autopilot
+	}
+	value.Status = normalizeGoalAutopilotStatus(value.Status)
+	if value.BudgetTasks < 0 {
+		value.BudgetTasks = 0
+	}
+	if value.BudgetTasks == 0 {
+		value.BudgetTasks = 1
+	}
+	if value.TasksStarted < 0 {
+		value.TasksStarted = 0
+	}
+	if value.MaxRuntimeMinutes < 0 {
+		value.MaxRuntimeMinutes = 0
+	}
+	value.StopReasons = normalizeRunStringList(value.StopReasons, 16)
+	value.AllowedActions = normalizeRunStringList(value.AllowedActions, 16)
+	if len(value.AllowedActions) == 0 {
+		value.AllowedActions = []string{
+			"create_task",
+			"run_task",
+			"review_task",
+			"approve_merge",
+			"accept_task",
+			"reflect_goal",
+		}
+	}
+	value.CurrentTaskID = strings.TrimSpace(value.CurrentTaskID)
+	if value.StartedAt != nil {
+		started := value.StartedAt.UTC()
+		if started.IsZero() {
+			value.StartedAt = nil
+		} else {
+			value.StartedAt = &started
+		}
+	}
+	if value.LastStepAt != nil {
+		step := value.LastStepAt.UTC()
+		if step.IsZero() {
+			value.LastStepAt = nil
+		} else {
+			value.LastStepAt = &step
+		}
+	}
+	return value
 }
 
 func NormalizeGoalWatch(watch GoalWatch) GoalWatch {
@@ -704,6 +803,8 @@ func GoalToSnapshotRef(goal Goal, now time.Time) GoalSnapshotRef {
 		Details:         goal.Details,
 		Status:          goal.Status,
 		Kind:            goal.Kind,
+		ExecutionMode:   goal.ExecutionMode,
+		Autopilot:       cloneGoalAutopilot(goal.Autopilot),
 		Priority:        goal.Priority,
 		Autonomy:        goal.Autonomy,
 		Cadence:         goal.Cadence,
@@ -771,6 +872,49 @@ func normalizeGoalStatus(value string) string {
 		return GoalStatusArchived
 	default:
 		return GoalStatusActive
+	}
+}
+
+func normalizeGoalKind(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "project", "feature", "implementation", GoalKindBuild:
+		return GoalKindBuild
+	case "recurring", GoalKindRoutine:
+		return GoalKindRoutine
+	case "monitor", "monitoring", GoalKindWatch:
+		return GoalKindWatch
+	case "maintain", "upkeep", GoalKindMaintenance:
+		return GoalKindMaintenance
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func normalizeGoalExecutionMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalExecutionModeAutopilot, "auto", "autonomous", "human_out_of_loop", "human-out-of-loop":
+		return GoalExecutionModeAutopilot
+	default:
+		return GoalExecutionModeGuided
+	}
+}
+
+func normalizeGoalAutopilotStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalAutopilotStatusRunning:
+		return GoalAutopilotStatusRunning
+	case GoalAutopilotStatusPaused:
+		return GoalAutopilotStatusPaused
+	case GoalAutopilotStatusBlocked:
+		return GoalAutopilotStatusBlocked
+	case GoalAutopilotStatusCompleted:
+		return GoalAutopilotStatusCompleted
+	case GoalAutopilotStatusBudgetExhausted, "budget-exhausted":
+		return GoalAutopilotStatusBudgetExhausted
+	case GoalAutopilotStatusStopped:
+		return GoalAutopilotStatusStopped
+	default:
+		return GoalAutopilotStatusReady
 	}
 }
 
@@ -847,5 +991,15 @@ func cloneGoalTime(value *time.Time) *time.Time {
 		return nil
 	}
 	cloned := value.UTC()
+	return &cloned
+}
+
+func cloneGoalAutopilot(value *GoalAutopilot) *GoalAutopilot {
+	if value == nil {
+		return nil
+	}
+	cloned := NormalizeGoalAutopilot(value)
+	cloned.StopReasons = append([]string(nil), cloned.StopReasons...)
+	cloned.AllowedActions = append([]string(nil), cloned.AllowedActions...)
 	return &cloned
 }

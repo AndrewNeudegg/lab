@@ -27,6 +27,8 @@ const (
 type Task struct {
 	ID                   string                `json:"id"`
 	GoalID               string                `json:"goal_id,omitempty"`
+	ExecutionMode        string                `json:"execution_mode,omitempty"`
+	GoalKind             string                `json:"goal_kind,omitempty"`
 	Title                string                `json:"title"`
 	Goal                 string                `json:"goal"`
 	Status               string                `json:"status"`

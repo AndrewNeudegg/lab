@@ -80,3 +80,43 @@ func TestGoalDueAndCadenceHelpers(t *testing.T) {
 	}
 }
 
+func TestNormalizeGoalAutopilotDefaults(t *testing.T) {
+	now := time.Date(2026, 5, 7, 8, 0, 0, 0, time.UTC)
+	goal := NormalizeGoal(Goal{
+		ID:            "goal_build",
+		Title:         "Build feature",
+		Status:        GoalStatusActive,
+		Kind:          "project",
+		ExecutionMode: "auto",
+		Autopilot: &GoalAutopilot{
+			Status:       "budget-exhausted",
+			BudgetTasks:  0,
+			TasksStarted: -1,
+			StartedAt:    &now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if goal.Kind != GoalKindBuild || goal.ExecutionMode != GoalExecutionModeAutopilot {
+		t.Fatalf("goal type/mode = %s/%s, want build/autopilot", goal.Kind, goal.ExecutionMode)
+	}
+	if goal.Autopilot == nil {
+		t.Fatal("autopilot = nil, want normalised state")
+	}
+	if goal.Autopilot.Status != GoalAutopilotStatusBudgetExhausted || goal.Autopilot.BudgetTasks != 1 || goal.Autopilot.TasksStarted != 0 {
+		t.Fatalf("autopilot = %#v, want budget exhausted with default budget", goal.Autopilot)
+	}
+	if len(goal.Autopilot.AllowedActions) == 0 {
+		t.Fatalf("allowed actions = %#v, want defaults", goal.Autopilot.AllowedActions)
+	}
+
+	guided := NormalizeGoal(Goal{ID: "goal_guided", Title: "Guided", Autopilot: &GoalAutopilot{Status: GoalAutopilotStatusRunning}, CreatedAt: now, UpdatedAt: now})
+	if guided.ExecutionMode != GoalExecutionModeAutopilot || guided.Autopilot == nil {
+		t.Fatalf("guided with autopilot payload = %#v, want autopilot mode preserved", guided)
+	}
+	guided.ExecutionMode = GoalExecutionModeGuided
+	guided = NormalizeGoal(guided)
+	if guided.Autopilot != nil {
+		t.Fatalf("guided autopilot = %#v, want nil", guided.Autopilot)
+	}
+}

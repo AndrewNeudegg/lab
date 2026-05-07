@@ -231,6 +231,75 @@ export const assistantGoalStatusTone = (status = '') => {
   }
 };
 
+export const assistantGoalKindLabel = (kind = '') => {
+  switch (kind) {
+    case 'build':
+    case 'project':
+      return 'Build Goal';
+    case 'routine':
+      return 'Routine Goal';
+    case 'watch':
+      return 'Watch Goal';
+    case 'maintenance':
+      return 'Maintenance Goal';
+    default:
+      return kind.replaceAll('_', ' ') || 'Build Goal';
+  }
+};
+
+export const assistantGoalKindShortLabel = (kind = '') =>
+  assistantGoalKindLabel(kind).replace(' Goal', '');
+
+export const assistantGoalExecutionLabel = (mode = '') => {
+  switch (mode) {
+    case 'autopilot':
+      return 'Autopilot';
+    case 'guided':
+    case '':
+      return 'Guided';
+    default:
+      return mode.replaceAll('_', ' ');
+  }
+};
+
+export const assistantGoalAutopilotStatusLabel = (status = '') => {
+  switch (status) {
+    case 'ready':
+      return 'Ready';
+    case 'running':
+      return 'Running';
+    case 'paused':
+      return 'Paused';
+    case 'blocked':
+      return 'Blocked';
+    case 'completed':
+      return 'Completed';
+    case 'budget_exhausted':
+      return 'Budget exhausted';
+    case 'stopped':
+      return 'Stopped';
+    default:
+      return status.replaceAll('_', ' ') || 'Not started';
+  }
+};
+
+export const assistantGoalAutopilotTone = (status = '') => {
+  switch (status) {
+    case 'running':
+      return 'green';
+    case 'blocked':
+    case 'budget_exhausted':
+      return 'amber';
+    case 'paused':
+    case 'stopped':
+      return 'gray';
+    case 'completed':
+      return 'blue';
+    default:
+      return 'blue';
+  }
+};
+
 export const activeAssistantGoals = (goals: AssistantGoal[]) =>
   goals.filter((goal) => goal.status === 'active' || goal.status === 'blocked');
 

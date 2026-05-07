@@ -367,15 +367,24 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 	created := requestJSON(t, mux, http.MethodPost, "/assistant/goals", `{
 		"title":"Daily brief",
 		"objective":"Keep the operator briefed every morning.",
+		"kind":"routine",
+		"execution_mode":"autopilot",
+		"autopilot":{"budget_tasks":3},
 		"cadence":"daily",
 		"success_criteria":["Brief is ready"],
 		"constraints":["Do not send external messages without approval"]
 	}`, "", http.StatusCreated)
 	var timeline struct {
 		Goal struct {
-			ID       string `json:"id"`
-			Title    string `json:"title"`
-			Autonomy string `json:"autonomy"`
+			ID            string `json:"id"`
+			Title         string `json:"title"`
+			Kind          string `json:"kind"`
+			ExecutionMode string `json:"execution_mode"`
+			Autonomy      string `json:"autonomy"`
+			Autopilot     struct {
+				Status      string `json:"status"`
+				BudgetTasks int    `json:"budget_tasks"`
+			} `json:"autopilot"`
 		} `json:"goal"`
 		Watches []struct {
 			ID string `json:"id"`
@@ -384,7 +393,7 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 	if err := json.NewDecoder(created.Body).Decode(&timeline); err != nil {
 		t.Fatal(err)
 	}
-	if timeline.Goal.ID == "" || timeline.Goal.Title != "Daily brief" || timeline.Goal.Autonomy != "observe" || len(timeline.Watches) != 1 {
+	if timeline.Goal.ID == "" || timeline.Goal.Title != "Daily brief" || timeline.Goal.Kind != "routine" || timeline.Goal.ExecutionMode != "autopilot" || timeline.Goal.Autonomy != "observe" || timeline.Goal.Autopilot.Status != "ready" || timeline.Goal.Autopilot.BudgetTasks != 3 || len(timeline.Watches) != 1 {
 		t.Fatalf("created timeline = %#v", timeline)
 	}
 
@@ -435,6 +444,25 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 	}
 	if checkResponse.Run.ID == "" || checkResponse.Run.GoalID != timeline.Goal.ID {
 		t.Fatalf("check response = %#v, want Goal-linked run", checkResponse)
+	}
+
+	paused := requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/autopilot/pause", `{}`, "", http.StatusOK)
+	var pauseResponse struct {
+		Timeline struct {
+			Goal struct {
+				ExecutionMode string `json:"execution_mode"`
+				Autopilot     struct {
+					Status string `json:"status"`
+				} `json:"autopilot"`
+			} `json:"goal"`
+		} `json:"timeline"`
+		Reply string `json:"reply"`
+	}
+	if err := json.NewDecoder(paused.Body).Decode(&pauseResponse); err != nil {
+		t.Fatal(err)
+	}
+	if pauseResponse.Timeline.Goal.ExecutionMode != "autopilot" || pauseResponse.Timeline.Goal.Autopilot.Status != "paused" || !strings.Contains(pauseResponse.Reply, "Autopilot paused") {
+		t.Fatalf("pause response = %#v, want paused Autopilot", pauseResponse)
 	}
 }
 

@@ -1,6 +1,8 @@
 import type {
   AssistantCatalogue,
   AssistantCatalogueOptions,
+  AssistantGoalAutopilotRequest,
+  AssistantGoalAutopilotResponse,
   AssistantGoalCreateRequest,
   AssistantGoalNoteRequest,
   AssistantGoalsResponse,
@@ -301,6 +303,21 @@ export const createHomelabdClient = (
           baseUrl,
           fetcher,
           method: 'POST'
+        }
+      );
+    },
+    updateAssistantGoalAutopilot(
+      goalId: string,
+      action: string,
+      request: AssistantGoalAutopilotRequest = {}
+    ) {
+      return apiFetch<AssistantGoalAutopilotResponse>(
+        `/assistant/goals/${encodeURIComponent(goalId)}/autopilot/${encodeURIComponent(action)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
         }
       );
     },

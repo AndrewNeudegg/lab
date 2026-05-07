@@ -268,7 +268,8 @@ const assistantGoal = {
   title: 'Daily brief',
   objective: 'Keep the daily brief current and point out unanswered mail.',
   details: 'Respect focus blocks and ask before sending messages.',
-  kind: 'ongoing',
+  kind: 'routine',
+  execution_mode: 'guided',
   status: 'active',
   priority: 'high',
   autonomy: 'observe',
@@ -536,12 +537,22 @@ const mockDashboardApis = async (page: Page) => {
     const suffix = goalIndex >= 0 ? parts[goalIndex + 2] || '' : '';
     const goal = assistantGoals.find((candidate) => candidate.id === goalID) || assistantGoals[0];
     if (route.request().method() === 'POST' && !goalID) {
-      const body = route.request().postDataJSON() as { title?: string; objective?: string; cadence?: string; autonomy?: string };
+      const body = route.request().postDataJSON() as {
+        title?: string;
+        objective?: string;
+        cadence?: string;
+        autonomy?: string;
+        kind?: string;
+        execution_mode?: string;
+      };
       const created = {
         ...assistantGoal,
         id: 'goal_site_created',
         title: body.title || 'Created Goal',
         objective: body.objective || body.title || 'Keep this Goal alive.',
+        kind: body.kind || 'build',
+        execution_mode: body.execution_mode || 'guided',
+        autopilot: undefined,
         cadence: body.cadence || 'daily',
         autonomy: body.autonomy || 'observe',
         linked_tasks: [],
@@ -1049,7 +1060,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     if (mobile) {
       await page.getByRole('button', { name: 'Back to Goal list' }).click();
     }
-    await expect(goalsPanel.getByRole('status')).toContainText('Goal created and added to proactive review.');
+    await expect(goalsPanel.getByRole('status')).toContainText('Build Goal created in Guided mode.');
     await expect(goalsPanel.getByText('Inbox follow-up')).toBeVisible();
     await page.getByRole('link', { name: /Scheduled proactive check/ }).click();
     await expect(page).toHaveURL(/\/assistant\?run=arun_site$/);

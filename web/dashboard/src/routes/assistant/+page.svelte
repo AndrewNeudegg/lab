@@ -17,6 +17,11 @@
   } from '@homelab/shared';
   import {
     activeAssistantGoals,
+    assistantGoalAutopilotStatusLabel,
+    assistantGoalAutopilotTone,
+    assistantGoalExecutionLabel,
+    assistantGoalKindLabel,
+    assistantGoalKindShortLabel,
     assistantGoalStatusLabel,
     assistantGoalStatusTone,
     assistantRouteLabel,
@@ -52,6 +57,7 @@
   let runStarting = false;
   let goalCreating = false;
   let goalChecking = false;
+  let goalAutopilotUpdating = false;
   let runArchiving = false;
   let signalUpdating: string[] = [];
   let actionUpdating: string[] = [];
@@ -75,6 +81,9 @@
   let goalFormOpen = false;
   let goalTitle = '';
   let goalObjective = '';
+  let goalKind = 'build';
+  let goalExecutionMode = 'guided';
+  let goalAutopilotBudget = 4;
   let goalCadence = 'daily';
   let goalAutonomy = 'observe';
   let goalDetails = '';
@@ -467,12 +476,27 @@
 
   const goalSubtitle = (goal: AssistantGoal) =>
     [
+      assistantGoalKindShortLabel(goal.kind),
+      assistantGoalExecutionLabel(goal.execution_mode),
       assistantGoalStatusLabel(goal.status),
       goal.cadence ? labelFromSlug(goal.cadence) : '',
       goal.next_check_at ? `next ${formatAssistantTime(goal.next_check_at)}` : 'due'
     ]
       .filter(Boolean)
       .join(' / ');
+
+  const goalAutopilotStatus = (goal: AssistantGoal | undefined) =>
+    goal?.autopilot?.status || (goal?.execution_mode === 'autopilot' ? 'ready' : '');
+
+  const goalAutopilotBudgetLabel = (goal: AssistantGoal | undefined) => {
+    const autopilot = goal?.autopilot;
+    if (!autopilot) {
+      return 'Guided';
+    }
+    const started = autopilot.tasks_started || 0;
+    const budget = autopilot.budget_tasks || 1;
+    return `${started}/${budget} tasks`;
+  };
 
   const goalProgress = (goal: AssistantGoal | undefined) =>
     goal?.progress_summary || goal?.objective || 'Goal is waiting for its first Assistant assessment.';
@@ -623,6 +647,15 @@
         title,
         objective,
         details: goalDetails.trim() || undefined,
+        kind: goalKind,
+        execution_mode: goalExecutionMode,
+        autopilot:
+          goalExecutionMode === 'autopilot'
+            ? {
+                status: 'ready',
+                budget_tasks: Math.max(1, goalAutopilotBudget || 1)
+              }
+            : undefined,
         cadence: goalCadence.trim() || undefined,
         autonomy: goalAutonomy.trim() || undefined,
         created_by: 'dashboard'
@@ -635,7 +668,10 @@
       goalTitle = '';
       goalObjective = '';
       goalDetails = '';
-      goalNotice = 'Goal created and added to proactive review.';
+      goalKind = 'build';
+      goalExecutionMode = 'guided';
+      goalAutopilotBudget = 4;
+      goalNotice = `${assistantGoalKindLabel(timeline.goal.kind)} created in ${assistantGoalExecutionLabel(timeline.goal.execution_mode)} mode.`;
       mobilePanel = 'detail';
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to create Goal.';
@@ -680,6 +716,32 @@
       goalError = err instanceof Error ? err.message : 'Unable to update Goal.';
     } finally {
       goalChecking = false;
+    }
+  };
+
+  const updateSelectedGoalAutopilot = async (action: 'start' | 'pause' | 'resume' | 'stop') => {
+    if (!selectedGoalId) {
+      return;
+    }
+    goalAutopilotUpdating = true;
+    goalError = '';
+    goalNotice = '';
+    try {
+      const request =
+        action === 'start' || action === 'resume'
+          ? { budget_tasks: Math.max(1, selectedGoal?.autopilot?.budget_tasks || goalAutopilotBudget || 1) }
+          : {};
+      const response = await client.updateAssistantGoalAutopilot(selectedGoalId, action, request);
+      const timeline = response.timeline;
+      goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
+      selectedGoalTimeline = timeline;
+      goalNotice =
+        response.reply ||
+        `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(timeline.goal)).toLowerCase()}.`;
+    } catch (err) {
+      goalError = err instanceof Error ? err.message : 'Unable to update Autopilot.';
+    } finally {
+      goalAutopilotUpdating = false;
     }
   };
 
@@ -933,6 +995,22 @@
             </label>
             <div class="form-grid">
               <label>
+                <span>Goal type</span>
+                <select bind:value={goalKind}>
+                  <option value="build">Build</option>
+                  <option value="routine">Routine</option>
+                  <option value="watch">Watch</option>
+                  <option value="maintenance">Maintenance</option>
+                </select>
+              </label>
+              <label>
+                <span>Execution mode</span>
+                <select bind:value={goalExecutionMode}>
+                  <option value="guided">Guided</option>
+                  <option value="autopilot">Autopilot</option>
+                </select>
+              </label>
+              <label>
                 <span>Cadence</span>
                 <select bind:value={goalCadence}>
                   <option value="daily">Daily</option>
@@ -950,6 +1028,12 @@
                 </select>
               </label>
             </div>
+            {#if goalExecutionMode === 'autopilot'}
+              <label>
+                <span>Autopilot task budget</span>
+                <input bind:value={goalAutopilotBudget} type="number" min="1" max="20" inputmode="numeric" />
+              </label>
+            {/if}
             <label>
               <span>Details</span>
               <textarea bind:value={goalDetails} rows="2" placeholder="Constraints, preferences, examples, and what done means."></textarea>
@@ -972,6 +1056,14 @@
                 <span class={`dot ${assistantGoalStatusTone(goal.status)}`} aria-hidden="true"></span>
                 <span>
                   <strong>{goal.title}</strong>
+                  <span class="goal-chip-row" aria-label={`Goal type and mode for ${goal.title}`}>
+                    <span class="status blue">{assistantGoalKindShortLabel(goal.kind)}</span>
+                    <span class={`status ${goal.execution_mode === 'autopilot' ? assistantGoalAutopilotTone(goalAutopilotStatus(goal)) : 'gray'}`}>
+                      {goal.execution_mode === 'autopilot'
+                        ? `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(goal))}`
+                        : 'Guided'}
+                    </span>
+                  </span>
                   <small>{goalSubtitle(goal)}</small>
                   <em>{goalProgress(goal)}</em>
                 </span>
@@ -1169,7 +1261,7 @@
               <span>Back</span>
             </button>
             <div>
-              <p>{selectedGoal.kind ? labelFromSlug(selectedGoal.kind) : 'Goal'}</p>
+              <p>{assistantGoalKindLabel(selectedGoal.kind)} / {assistantGoalExecutionLabel(selectedGoal.execution_mode)} mode</p>
               <h2>{selectedGoal.title}</h2>
               <span>{goalProgress(selectedGoal)}</span>
             </div>
@@ -1177,6 +1269,13 @@
               <span class={`status ${assistantGoalStatusTone(selectedGoal.status)}`}>
                 {assistantGoalStatusLabel(selectedGoal.status)}
               </span>
+              {#if selectedGoal.execution_mode === 'autopilot'}
+                <span class={`status ${assistantGoalAutopilotTone(goalAutopilotStatus(selectedGoal))}`}>
+                  Autopilot {assistantGoalAutopilotStatusLabel(goalAutopilotStatus(selectedGoal))}
+                </span>
+              {:else}
+                <span class="status gray">Guided</span>
+              {/if}
               <button
                 type="button"
                 class="primary-action"
@@ -1185,6 +1284,44 @@
               >
                 {goalChecking ? 'Checking' : 'Check now'}
               </button>
+              {#if selectedGoal.execution_mode === 'autopilot'}
+                {#if goalAutopilotStatus(selectedGoal) === 'running'}
+                  <button
+                    type="button"
+                    class="text-action"
+                    disabled={goalAutopilotUpdating}
+                    on:click={() => void updateSelectedGoalAutopilot('pause')}
+                  >
+                    Pause Autopilot
+                  </button>
+                {:else if goalAutopilotStatus(selectedGoal) === 'paused' || goalAutopilotStatus(selectedGoal) === 'blocked'}
+                  <button
+                    type="button"
+                    class="primary-action"
+                    disabled={goalAutopilotUpdating}
+                    on:click={() => void updateSelectedGoalAutopilot('resume')}
+                  >
+                    Resume Autopilot
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    class="primary-action"
+                    disabled={goalAutopilotUpdating || selectedGoal.status === 'archived'}
+                    on:click={() => void updateSelectedGoalAutopilot('start')}
+                  >
+                    Start Autopilot
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="text-action"
+                  disabled={goalAutopilotUpdating || goalAutopilotStatus(selectedGoal) === 'stopped'}
+                  on:click={() => void updateSelectedGoalAutopilot('stop')}
+                >
+                  Stop Autopilot
+                </button>
+              {/if}
               <button
                 type="button"
                 class="text-action"
@@ -1210,6 +1347,18 @@
               <dd>{shortAssistantId(selectedGoal.id)}</dd>
             </div>
             <div>
+              <dt>Type</dt>
+              <dd>{assistantGoalKindShortLabel(selectedGoal.kind)}</dd>
+            </div>
+            <div>
+              <dt>Mode</dt>
+              <dd>{assistantGoalExecutionLabel(selectedGoal.execution_mode)}</dd>
+            </div>
+            <div>
+              <dt>Autopilot</dt>
+              <dd>{selectedGoal.execution_mode === 'autopilot' ? `${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(selectedGoal))} / ${goalAutopilotBudgetLabel(selectedGoal)}` : 'human in loop'}</dd>
+            </div>
+            <div>
               <dt>Autonomy</dt>
               <dd>{labelFromSlug(selectedGoal.autonomy)}</dd>
             </div>
@@ -1232,8 +1381,11 @@
           </dl>
 
           <section class="route-strip goal-strip" aria-label="Goal objective">
-            <span class={`status ${assistantGoalStatusTone(selectedGoal.status)}`}>
-              {assistantGoalStatusLabel(selectedGoal.status)}
+            <span class="status blue">{assistantGoalKindShortLabel(selectedGoal.kind)}</span>
+            <span class={`status ${selectedGoal.execution_mode === 'autopilot' ? assistantGoalAutopilotTone(goalAutopilotStatus(selectedGoal)) : 'gray'}`}>
+              {selectedGoal.execution_mode === 'autopilot'
+                ? `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(selectedGoal))}`
+                : 'Guided'}
             </span>
             <div>
               <strong>{selectedGoal.objective}</strong>
@@ -1308,7 +1460,10 @@
               </header>
               <div class="task-link-list">
                 {#each selectedGoal.linked_tasks.slice(0, 8) as taskId}
-                  <a href={`/tasks?task=${taskId}`}>{shortAssistantId(taskId)}</a>
+                  <a href={`/tasks?task=${taskId}`}>
+                    <strong>{shortAssistantId(taskId)}</strong>
+                    <span>{selectedGoal.execution_mode === 'autopilot' ? 'Autopilot task' : 'Guided task'}</span>
+                  </a>
                 {/each}
               </div>
             </section>
@@ -2209,6 +2364,13 @@
     gap: 0.15rem;
   }
 
+  .goal-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
   .goal-list strong {
     color: var(--text-strong, #0f172a);
     font-size: 0.84rem;
@@ -2357,6 +2519,7 @@
   .task-link-list a {
     display: inline-flex;
     align-items: center;
+    gap: 0.35rem;
     min-height: 2rem;
     padding: 0 0.65rem;
     border: 1px solid var(--border, #cbd5e1);
@@ -2366,6 +2529,12 @@
     font-size: 0.82rem;
     font-weight: 800;
     text-decoration: none;
+  }
+
+  .task-link-list a span {
+    color: var(--assistant-muted, #475569);
+    font-size: 0.72rem;
+    font-weight: 700;
   }
 
   .compact-receipts {

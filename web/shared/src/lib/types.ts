@@ -88,6 +88,8 @@ export type TaskStatus =
 export interface HomelabdTask {
   id: string;
   goal_id?: string;
+  execution_mode?: string;
+  goal_kind?: string;
   title: string;
   goal: string;
   status: TaskStatus | string;
@@ -749,6 +751,8 @@ export interface AssistantGoal {
   details?: string;
   status: string;
   kind?: string;
+  execution_mode?: string;
+  autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy: string;
   cadence?: string;
@@ -774,6 +778,8 @@ export interface AssistantGoalSnapshotRef {
   details?: string;
   status?: string;
   kind?: string;
+  execution_mode?: string;
+  autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy?: string;
   cadence?: string;
@@ -793,6 +799,8 @@ export interface AssistantGoalCreateRequest {
   objective?: string;
   details?: string;
   kind?: string;
+  execution_mode?: string;
+  autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy?: string;
   cadence?: string;
@@ -809,6 +817,8 @@ export interface AssistantGoalUpdateRequest {
   details?: string;
   status?: string;
   kind?: string;
+  execution_mode?: string;
+  autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy?: string;
   cadence?: string;
@@ -817,6 +827,29 @@ export interface AssistantGoalUpdateRequest {
   constraints?: string[];
   progress_summary?: string;
   open_questions?: string[];
+}
+
+export interface AssistantGoalAutopilot {
+  status?: string;
+  budget_tasks?: number;
+  tasks_started?: number;
+  max_runtime_minutes?: number;
+  started_at?: string;
+  last_step_at?: string;
+  stop_reasons?: string[];
+  allowed_actions?: string[];
+  current_task_id?: string;
+}
+
+export interface AssistantGoalAutopilotRequest {
+  budget_tasks?: number;
+  max_runtime_minutes?: number;
+  allowed_actions?: string[];
+}
+
+export interface AssistantGoalAutopilotResponse {
+  timeline: AssistantGoalTimeline;
+  reply?: string;
 }
 
 export interface AssistantGoalWatch {
@@ -1521,6 +1554,11 @@ export interface HomelabdClient {
     request: AssistantGoalUpdateRequest
   ): Promise<AssistantGoalTimeline>;
   checkAssistantGoal(goalId: string): Promise<AssistantRunActionResponse>;
+  updateAssistantGoalAutopilot(
+    goalId: string,
+    action: 'start' | 'pause' | 'resume' | 'stop' | string,
+    request?: AssistantGoalAutopilotRequest
+  ): Promise<AssistantGoalAutopilotResponse>;
   addAssistantGoalWatch(
     goalId: string,
     request: AssistantGoalWatchRequest

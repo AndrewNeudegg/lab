@@ -2194,6 +2194,11 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		})})
 		go o.resumeRecoveredTask(ctx, sem, t, strategy, backend)
 	}
+	if autopilotRecovered, err := o.ReconcileGoalAutopilots(ctx); err != nil {
+		o.log().Error("goal autopilot reconcile failed", "error", err)
+	} else if autopilotRecovered > 0 {
+		recovered += autopilotRecovered
+	}
 	if recovered == 0 {
 		o.log().Info("task supervisor found no tasks requiring recovery")
 	} else {
@@ -4365,17 +4370,19 @@ func (o *Orchestrator) createTaskRecordWithOptions(ctx context.Context, goal str
 	now := time.Now().UTC()
 	attachments = prepareTaskAttachments(attachments)
 	t := taskstore.Task{
-		ID:          taskID,
-		GoalID:      strings.TrimSpace(opts.GoalID),
-		Title:       o.summarizeTaskTitle(ctx, taskID, goal),
-		Goal:        goal,
-		Status:      taskstore.StatusQueued,
-		AssignedTo:  "OrchestratorAgent",
-		Priority:    5,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Attachments: attachments,
-		Result:      "queued for task supervisor",
+		ID:            taskID,
+		GoalID:        strings.TrimSpace(opts.GoalID),
+		ExecutionMode: strings.TrimSpace(opts.ExecutionMode),
+		GoalKind:      strings.TrimSpace(opts.GoalKind),
+		Title:         o.summarizeTaskTitle(ctx, taskID, goal),
+		Goal:          goal,
+		Status:        taskstore.StatusQueued,
+		AssignedTo:    "OrchestratorAgent",
+		Priority:      5,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Attachments:   attachments,
+		Result:        "queued for task supervisor",
 	}
 	o.ensureTaskPlan(ctx, &t)
 	raw, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_create", map[string]any{"task_id": t.ID}, t.ID)
@@ -4641,6 +4648,9 @@ func (o *Orchestrator) createTaskGraphChildren(ctx context.Context, parent tasks
 	for i, phase := range phases {
 		child := taskstore.Task{
 			ID:                 id.New("task"),
+			GoalID:             parent.GoalID,
+			ExecutionMode:      parent.ExecutionMode,
+			GoalKind:           parent.GoalKind,
 			Title:              phase.Title,
 			Goal:               phase.Goal,
 			Status:             taskstore.StatusBlocked,
@@ -5960,6 +5970,11 @@ func externalBackendForTask(t taskstore.Task) string {
 }
 
 func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string, error) {
+	return o.acceptTaskWithActor(ctx, selector, "human")
+}
+
+func (o *Orchestrator) acceptTaskWithActor(ctx context.Context, selector string, actor string) (string, error) {
+	actor = firstNonEmptyString(strings.TrimSpace(actor), "human")
 	taskID, err := o.resolveTaskID(selector)
 	if err != nil {
 		return "", err
@@ -5978,21 +5993,22 @@ func (o *Orchestrator) acceptTask(ctx context.Context, selector string) (string,
 		return fmt.Sprintf("Task %s is still enforcing post-merge restarts (%s). Wait for completion or run `restart %s` to retry a failed restart.", taskShortID(taskID), firstNonEmptyString(t.RestartStatus, taskstore.RestartStatusPending), taskShortID(taskID)), nil
 	}
 	acceptsNoChange := t.Status == taskstore.StatusNoChangeRequired
-	if err := o.stalePendingTaskApprovals(ctx, taskID, "task accepted by human"); err != nil {
+	if err := o.stalePendingTaskApprovals(ctx, taskID, "task accepted by "+actor); err != nil {
 		return "", err
 	}
 	t.Status = taskstore.StatusDone
 	t.AssignedTo = "OrchestratorAgent"
 	t.AcceptanceCriteria = markAcceptanceCriteria(t.AcceptanceCriteria, "accepted")
+	acceptedLine := "accepted by " + actor
 	if strings.TrimSpace(t.Result) == "" {
-		t.Result = "accepted by human"
+		t.Result = acceptedLine
 	} else {
-		t.Result = strings.TrimSpace(t.Result) + "\naccepted by human"
+		t.Result = strings.TrimSpace(t.Result) + "\n" + acceptedLine
 	}
 	if err := o.tasks.Save(t); err != nil {
 		return "", err
 	}
-	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.completed", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"result": t.Result})})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.completed", Actor: actor, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"result": t.Result})})
 	o.reflectGoalTaskCompletion(ctx, t)
 	released, releaseErr := o.releaseGraphDependents(ctx, taskID)
 	if releaseErr != nil {

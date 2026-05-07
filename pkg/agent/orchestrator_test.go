@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	assistantstore "github.com/andrewneudegg/lab/pkg/assistant"
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	knowledgestore "github.com/andrewneudegg/lab/pkg/knowledge"
@@ -6587,6 +6588,59 @@ func seedTaskGraph(t *testing.T, orch *Orchestrator, goal string) (taskstore.Tas
 		previousID = child.ID
 	}
 	return parent, children
+}
+
+func TestGoalAutopilotStartCreatesTypedTask(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build Autopilot thing",
+		Objective:     "Build a durable Autopilot feature.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, reply, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Autopilot created task") {
+		t.Fatalf("reply = %q, want created task message", reply)
+	}
+	if started.Goal.ExecutionMode != assistantstore.GoalExecutionModeAutopilot || started.Goal.Autopilot == nil {
+		t.Fatalf("goal = %#v, want autopilot mode", started.Goal)
+	}
+	if started.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning || started.Goal.Autopilot.TasksStarted != 1 || started.Goal.Autopilot.CurrentTaskID == "" {
+		t.Fatalf("autopilot = %#v, want running with current task", started.Goal.Autopilot)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %#v, want one Autopilot task", tasks)
+	}
+	task := tasks[0]
+	if task.GoalID != started.Goal.ID || task.ExecutionMode != assistantstore.GoalExecutionModeAutopilot || task.GoalKind != assistantstore.GoalKindBuild {
+		t.Fatalf("task metadata = goal %q mode %q kind %q, want Goal-linked Autopilot Build task", task.GoalID, task.ExecutionMode, task.GoalKind)
+	}
+	if !strings.Contains(task.Goal, "Autopilot task for build Goal") || !strings.Contains(task.Goal, "Do not split the work into a daily drip") {
+		t.Fatalf("task goal = %q, want Autopilot build instructions", task.Goal)
+	}
+	select {
+	case <-delegate.finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Autopilot worker stub to finish")
+	}
 }
 
 func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {

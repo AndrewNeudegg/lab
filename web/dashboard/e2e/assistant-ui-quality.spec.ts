@@ -314,7 +314,8 @@ const assistantGoal = {
   title: 'Daily brief',
   objective: 'Keep the daily brief current and point out unanswered mail.',
   details: 'Respect focus blocks, cite evidence, and do not send mail without approval.',
-  kind: 'ongoing',
+  kind: 'routine',
+  execution_mode: 'guided',
   status: 'active',
   priority: 'high',
   autonomy: 'observe',
@@ -621,12 +622,31 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
     const goal = goals.find((candidate) => candidate.id === goalID) || goals[0];
 
     if (route.request().method() === 'POST' && !goalID) {
-      const body = route.request().postDataJSON() as { title?: string; objective?: string; cadence?: string; autonomy?: string };
+      const body = route.request().postDataJSON() as {
+        title?: string;
+        objective?: string;
+        cadence?: string;
+        autonomy?: string;
+        kind?: string;
+        execution_mode?: string;
+        autopilot?: { budget_tasks?: number };
+      };
       const created = {
         ...clone(assistantGoal),
         id: 'goal_created',
         title: body.title || 'Created Goal',
         objective: body.objective || body.title || 'Keep the new Goal alive.',
+        kind: body.kind || 'build',
+        execution_mode: body.execution_mode || 'guided',
+        autopilot:
+          body.execution_mode === 'autopilot'
+            ? {
+                status: 'ready',
+                budget_tasks: body.autopilot?.budget_tasks || 1,
+                tasks_started: 0,
+                current_task_id: ''
+              }
+            : undefined,
         cadence: body.cadence || 'daily',
         autonomy: body.autonomy || 'observe',
         linked_tasks: [],
@@ -647,6 +667,44 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
       goals.unshift(created);
       notes.unshift(createdNote);
       await route.fulfill({ status: 201, json: timelineForGoal(created) });
+      return;
+    }
+
+    if (route.request().method() === 'POST' && suffix === 'autopilot') {
+      const action = parts[goalIndex + 3] || '';
+      const body = route.request().postDataJSON() as { budget_tasks?: number };
+      goal.execution_mode = 'autopilot';
+      goal.autopilot = {
+        ...(goal.autopilot || { tasks_started: 0 }),
+        status:
+          action === 'pause'
+            ? 'paused'
+            : action === 'stop'
+              ? 'stopped'
+              : action === 'resume' || action === 'start'
+                ? 'running'
+                : 'ready',
+        budget_tasks: body.budget_tasks || goal.autopilot?.budget_tasks || 4,
+        tasks_started: action === 'start' ? Math.max(goal.autopilot?.tasks_started || 0, 1) : goal.autopilot?.tasks_started || 0,
+        current_task_id: action === 'start' || action === 'resume' ? 'task_goal_autopilot' : goal.autopilot?.current_task_id || ''
+      };
+      goal.linked_tasks = Array.from(new Set([...(goal.linked_tasks || []), goal.autopilot.current_task_id].filter(Boolean)));
+      goal.updated_at = now;
+      notes.unshift({
+        ...clone(assistantGoalNote),
+        id: `gnote_autopilot_${action}`,
+        goal_id: goal.id,
+        title: `Autopilot ${action}`,
+        body: `Autopilot ${action} recorded for this Goal.`,
+        kind: 'autopilot',
+        task_id: goal.autopilot.current_task_id || ''
+      });
+      await route.fulfill({
+        json: {
+          reply: `Autopilot ${action} recorded.`,
+          timeline: timelineForGoal(goal)
+        }
+      });
       return;
     }
 
@@ -969,18 +1027,22 @@ for (const viewport of [
       const goalForm = goalsPanel.locator('form[aria-label="Create Assistant Goal"]');
       await goalForm.getByLabel('Title').fill('Inbox follow-up');
       await goalForm.getByLabel('Objective').fill('Keep unanswered inbox items visible until resolved.');
+      await goalForm.getByLabel('Goal type').selectOption('build');
+      await goalForm.getByLabel('Execution mode').selectOption('autopilot');
+      await goalForm.getByLabel('Autopilot task budget').fill('4');
       await goalForm.getByLabel('Autonomy').selectOption('create_tasks');
       await goalForm.getByLabel('Details').fill('Create bounded tasks only when a response needs work.');
       await goalForm.getByRole('button', { name: 'Create Goal' }).click();
-      await expect(page.getByLabel('Selected Assistant Goal')).toContainText(
-        'Keep unanswered inbox items visible until resolved.'
-      );
+      const createdGoalRegion = page.getByLabel('Selected Assistant Goal');
+      await expect(createdGoalRegion).toContainText('Keep unanswered inbox items visible until resolved.');
+      await expect(createdGoalRegion).toContainText('Build Goal / Autopilot mode');
+      await createdGoalRegion.getByRole('button', { name: 'Start Autopilot' }).click();
+      await expect(createdGoalRegion).toContainText('Autopilot Running');
+      await expect(createdGoalRegion.getByLabel('Goal linked tasks')).toContainText('Autopilot task');
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to Goal list' }).click();
       }
-      await expect(goalsPanel.getByRole('status')).toContainText(
-        'Goal created and added to proactive review.'
-      );
+      await expect(goalsPanel.getByRole('status')).toContainText('Autopilot start recorded.');
       await expect(goalsPanel.getByText('Inbox follow-up')).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Signal inbox' })).toBeVisible();
       await expect(page.getByText('Review subpar chat answer')).toBeVisible();

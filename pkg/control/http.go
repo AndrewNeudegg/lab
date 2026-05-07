@@ -190,6 +190,39 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 		}
 		return
 	}
+	if len(parts) == 3 && parts[1] == "autopilot" && req.Method == http.MethodPost {
+		var in assistant.GoalAutopilotRequest
+		if req.Body != nil {
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		var (
+			timeline assistant.GoalTimeline
+			reply    string
+			err      error
+		)
+		switch parts[2] {
+		case "start":
+			timeline, reply, err = s.Orchestrator.StartGoalAutopilot(req.Context(), goalID, in)
+		case "pause":
+			timeline, reply, err = s.Orchestrator.PauseGoalAutopilot(req.Context(), goalID)
+		case "resume":
+			timeline, reply, err = s.Orchestrator.ResumeGoalAutopilot(req.Context(), goalID, in)
+		case "stop":
+			timeline, reply, err = s.Orchestrator.StopGoalAutopilot(req.Context(), goalID)
+		default:
+			writeError(rw, http.StatusNotFound, "assistant goal autopilot action not found")
+			return
+		}
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"timeline": timeline, "reply": reply})
+		return
+	}
 	if len(parts) != 2 || req.Method != http.MethodPost {
 		writeError(rw, http.StatusNotFound, "assistant goal action not found")
 		return

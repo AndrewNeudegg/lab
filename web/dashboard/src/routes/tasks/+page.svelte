@@ -350,6 +350,28 @@
     return `${machine} / ${dir}`;
   };
 
+  const taskGoalKindLabel = (task: HomelabdTask) => {
+    switch (task.goal_kind) {
+      case 'build':
+      case 'project':
+        return 'Build task';
+      case 'routine':
+        return 'Routine task';
+      case 'watch':
+        return 'Watch task';
+      case 'maintenance':
+        return 'Maintenance task';
+      default:
+        return task.goal_id ? 'Goal task' : 'Task';
+    }
+  };
+
+  const taskExecutionModeLabel = (task: HomelabdTask) =>
+    task.execution_mode === 'autopilot' ? 'Autopilot' : task.goal_id ? 'Guided' : 'Manual';
+
+  const taskExecutionTone = (task: HomelabdTask) =>
+    task.execution_mode === 'autopilot' ? 'blue' : task.goal_id ? 'gray' : 'gray';
+
   const isRemoteTask = (task?: HomelabdTask) => task?.target?.mode === 'remote';
 
   const compactTime = (value?: string) => {
@@ -1394,6 +1416,10 @@
                 <small>
                   <span>{shortID(task.id)} / updated {compactTime(task.updated_at)}</span>
                   <span class={`status ${taskTone(task)}`}>{taskStatusLabel(task.status)}</span>
+                  {#if task.goal_id}
+                    <span class={`status ${taskExecutionTone(task)}`}>{taskExecutionModeLabel(task)}</span>
+                    <span class="status gray">{taskGoalKindLabel(task)}</span>
+                  {/if}
                 </small>
                 <em>
                   {targetLabel(task)}
@@ -1510,10 +1536,21 @@
               <span>Back to queue</span>
             </button>
             <div>
-              <p>Selected task</p>
+              <p>
+                {#if currentTask.goal_id}
+                  {taskGoalKindLabel(currentTask)} / {taskExecutionModeLabel(currentTask)}
+                {:else}
+                  Selected task
+                {/if}
+              </p>
               <h2>{taskSummaryTitle(currentTask)}</h2>
             </div>
-            <span class={`status ${taskTone(currentTask)}`}>{taskStatusLabel(currentTask.status)}</span>
+            <div class="record-status-row">
+              <span class={`status ${taskTone(currentTask)}`}>{taskStatusLabel(currentTask.status)}</span>
+              {#if currentTask.goal_id}
+                <span class={`status ${taskExecutionTone(currentTask)}`}>{taskExecutionModeLabel(currentTask)}</span>
+              {/if}
+            </div>
           </header>
 
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
@@ -1617,6 +1654,16 @@
               <dt>Target</dt>
               <dd>{targetLabel(currentTask)}</dd>
             </div>
+            {#if currentTask.goal_id}
+              <div>
+                <dt>Goal type</dt>
+                <dd>{taskGoalKindLabel(currentTask)}</dd>
+              </div>
+              <div>
+                <dt>Mode</dt>
+                <dd>{taskExecutionModeLabel(currentTask)}</dd>
+              </div>
+            {/if}
             <div>
               <dt>Started</dt>
               <dd>{compactTime(taskStartedAt(currentTask))}</dd>
@@ -2183,6 +2230,14 @@
     line-height: 1.15;
   }
 
+  .record-status-row {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.35rem;
+  }
+
   .triage button,
   .queue-groups button,
   .secondary-actions button,
@@ -2383,6 +2438,7 @@
 
   .task-copy small {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.4rem;
     min-width: 0;
@@ -3066,6 +3122,10 @@
   .record-header > div {
     flex: 1 1 auto;
     min-width: 0;
+  }
+
+  .record-header > .record-status-row {
+    flex: 0 0 auto;
   }
 
   .record-header h2 {

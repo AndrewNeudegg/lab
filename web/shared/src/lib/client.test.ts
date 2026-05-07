@@ -539,6 +539,12 @@ describe('homelabd client', () => {
             }
           });
         }
+        if (String(input).includes('/autopilot/')) {
+          return jsonResponse({
+            reply: 'Autopilot started.',
+            timeline
+          });
+        }
         if (String(input).endsWith('/assistant/goals') && !init?.method) {
           return jsonResponse({ goals: [timeline.goal] });
         }
@@ -555,6 +561,7 @@ describe('homelabd client', () => {
     const loaded = await client.getAssistantGoal('goal_1');
     const updated = await client.updateAssistantGoal('goal_1', { status: 'paused' });
     const checked = await client.checkAssistantGoal('goal_1');
+    const autopilot = await client.updateAssistantGoalAutopilot('goal_1', 'start', { budget_tasks: 3 });
     await client.addAssistantGoalWatch('goal_1', { title: 'Morning readiness' });
     await client.addAssistantGoalNote('goal_1', { body: 'Operator preference.' });
 
@@ -563,12 +570,14 @@ describe('homelabd client', () => {
     expect(loaded.goal.id).toBe('goal_1');
     expect(updated.goal.id).toBe('goal_1');
     expect(checked.run.goal_id).toBe('goal_1');
+    expect(autopilot.timeline.goal.id).toBe('goal_1');
     expect(requests.map((request) => request.url)).toEqual([
       'http://homelabd/assistant/goals',
       'http://homelabd/assistant/goals',
       'http://homelabd/assistant/goals/goal_1',
       'http://homelabd/assistant/goals/goal_1',
       'http://homelabd/assistant/goals/goal_1/check',
+      'http://homelabd/assistant/goals/goal_1/autopilot/start',
       'http://homelabd/assistant/goals/goal_1/watches',
       'http://homelabd/assistant/goals/goal_1/notes'
     ]);
@@ -580,6 +589,8 @@ describe('homelabd client', () => {
     });
     expect(requests[3].init?.method).toBe('PATCH');
     expect(requests[3].body).toEqual({ status: 'paused' });
+    expect(requests[5].init?.method).toBe('POST');
+    expect(requests[5].body).toEqual({ budget_tasks: 3 });
   });
 
   test('uses typed task and approval action endpoints', async () => {

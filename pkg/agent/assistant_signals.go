@@ -616,6 +616,13 @@ func applyAssistantSignalRecordToSignal(store *assistantstore.SignalStore, signa
 		}
 		return
 	}
+	applyAssistantSignalFeedbackRecordToSignal(record, signal, now)
+}
+
+func applyAssistantSignalFeedbackRecordToSignal(record assistantstore.SignalRecord, signal *assistantstore.RunSignal, now time.Time) {
+	if signal == nil {
+		return
+	}
 	record = assistantstore.NormalizeSignalRecord(record, now)
 	if record.SeenCount > 0 {
 		signal.SeenCount = record.SeenCount

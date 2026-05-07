@@ -21,6 +21,10 @@ A **Goal** is the durable object that drives this loop.
 ## Core Concepts
 
 - **Goal**: A long-running objective with rich context, success criteria, constraints, cadence, autonomy, and current progress.
+- **Build Goal**: A Goal for making a concrete new thing. It advances through an execution loop and is usually manual or event-driven, not daily.
+- **Routine Goal**: A Goal for an ongoing responsibility such as briefs, inbox triage, monitoring, or reviews. It advances through cadence, watches, and signals.
+- **Guided Mode**: A human-in-the-loop Goal mode. The assistant proposes or creates bounded work, but the operator drives approval, verification, and next-step timing.
+- **Autopilot Mode**: A human-out-of-the-loop Goal mode within explicit limits. The assistant keeps creating, running, reviewing, merging, restarting, and verifying safe work until the Goal is done, blocked, or out of budget.
 - **Task**: A concrete unit of work that can be delegated to the existing task supervisor.
 - **Watch**: A standing condition the assistant should monitor on behalf of a Goal.
 - **Signal**: A factual event that says a Goal may need attention now.
@@ -34,6 +38,129 @@ Use the split deliberately:
 - Create a **signal** when attention is needed now.
 - Create a **note** when context should be remembered.
 - Create a **question** when the assistant cannot safely decide.
+- Use **Guided Mode** when taste, ambiguity, or product direction should stay with the human.
+- Use **Autopilot Mode** when the assistant may keep executing safe, bounded local work without a click per task.
+
+The UI and CLI must use this language consistently. "Cadence" means routine attention. "Mode" means who drives execution. A build Goal can be manual and still fully autonomous once started; a routine Goal can be daily and still require human approval for every step.
+
+## Goal Execution Modes
+
+Goals need two separate operator contracts. The first keeps the human driving the process. The second lets the assistant drive until a stop condition is reached.
+
+### Guided Mode
+
+Guided Mode is the default for high-judgement work.
+
+Lifecycle:
+
+1. User creates a Goal.
+2. Assistant stores the brief, watches, notes, and current state.
+3. User clicks `Check now` or waits for a cadence/signal.
+4. Assistant proposes the next task or creates one if autonomy allows `create_tasks`.
+5. User supervises task execution, review, merge, restart, and acceptance.
+6. Task acceptance reflects progress back into the Goal.
+7. User decides when to ask for the next step.
+
+Use this for:
+
+- product taste and design direction
+- work with unclear acceptance criteria
+- external side effects
+- risky migrations
+- tasks that should be reviewed one by one
+
+### Autopilot Mode
+
+Autopilot Mode is for "build this until it is done" within an explicit autonomy budget. It should not mean "do a small amount every day." For build Goals, cadence should usually be `manual`; the operator starts the Goal, then Autopilot keeps advancing the build loop.
+
+Lifecycle:
+
+```mermaid
+flowchart TD
+  Start[Start Autopilot] --> Assess[Assess Goal and repo state]
+  Assess --> Plan[Create or update roadmap]
+  Plan --> Task[Create next bounded task]
+  Task --> Run[Run worker]
+  Run --> Review[Run review and tests]
+  Review --> Merge{Safe to merge?}
+  Merge -->|yes| Restart[Restart affected components]
+  Restart --> Verify[Verify behaviour]
+  Verify --> Reflect[Reflect into Goal]
+  Reflect --> Continue{Done, blocked, or budget left?}
+  Continue -->|budget left| Assess
+  Continue -->|done| Complete[Complete Goal]
+  Continue -->|blocked| Block[Block and notify]
+  Merge -->|no| Block
+```
+
+Autopilot may do:
+
+- create Goal-linked tasks
+- start local workers
+- run review gates
+- grant merge approval for low-risk local changes when checks pass
+- restart only affected supervised components
+- verify the changed workflow
+- update Goal progress and continue to the next bounded task
+
+Autopilot must stop for:
+
+- missing credentials or integrations
+- product decisions or unclear requirements
+- failed tests, failed browser UAT, or failed restart health
+- destructive migrations or data loss risk
+- external side effects such as sending email, publishing, buying, or messaging people
+- budget exhaustion
+- repeated worker or review failure
+- any action outside the Goal's allowed policy
+
+Required Autopilot fields:
+
+```json
+{
+  "execution_mode": "autopilot",
+  "autopilot": {
+    "status": "running",
+    "budget_tasks": 8,
+    "tasks_started": 2,
+    "max_runtime_minutes": 240,
+    "started_at": "2026-05-07T14:00:00Z",
+    "last_step_at": "2026-05-07T14:30:00Z",
+    "stop_reasons": [],
+    "allowed_actions": [
+      "create_task",
+      "run_worker",
+      "review",
+      "merge",
+      "restart_affected",
+      "verify",
+      "reflect"
+    ]
+  }
+}
+```
+
+Initial Autopilot MVP should be conservative:
+
+- require explicit `autopilot` mode on the Goal
+- create and run one task at a time
+- use existing task supervisor, review, merge, restart, and verification machinery
+- require all review checks to pass before merge
+- stop after one failed task/review/restart
+- stop when the Goal produces an open question
+- cap task count and runtime
+- notify through the Goal timeline and Assistant run receipts
+
+## Goal Types
+
+The system should label what kind of Goal the operator is creating. This is separate from execution mode.
+
+- **Build Goal**: Make a specific new thing. Default cadence `manual`, default mode `Guided`, suggested mode `Autopilot` when requirements are clear and local-only.
+- **Routine Goal**: Keep doing something over time. Default cadence `daily` or `weekly`, default mode `Guided` or `Autopilot` depending on risk.
+- **Watch Goal**: Keep an eye on a condition. Default cadence or event watch, default mode `Guided`, usually no task until a signal fires.
+- **Maintenance Goal**: Keep a system healthy. Default cadence `daily` or event-driven, can use Autopilot for safe local fixes and stop on production risk.
+
+Dashboard copy should say "Build", "Routine", "Watch", or "Maintenance" next to each Goal row. Task rows and Goal detail should show whether the next item is a human-guided task or an Autopilot task.
 
 ## Goal Lifecycle
 
@@ -78,6 +205,7 @@ Required Goal fields:
   "details": "Long-form operator intent, constraints, examples, and preferences.",
   "status": "active",
   "kind": "routine",
+  "execution_mode": "guided",
   "priority": "high",
   "autonomy": "propose",
   "cadence": "daily",
@@ -277,6 +405,8 @@ Autonomy should be both global and per-Goal. A Goal can only narrow or explicitl
 - `create_tasks`: Create linked tasks without approval, but do not merge, send, delete, or externally mutate without approval.
 - `execute_safe`: Run whitelisted local workflows and safe checks.
 - `external_actions`: Explicit opt-in only. Sending email, messaging people, buying things, changing production state, or publishing externally require strong approval rules.
+
+Autonomy is not the same as execution mode. `execution_mode=guided` means the human drives when the next step happens. `execution_mode=autopilot` means the assistant may keep advancing the Goal until a configured stop condition is reached. A Goal still cannot exceed its autonomy ceiling.
 
 ## Technical Implementation Plan
 
@@ -484,6 +614,39 @@ Routine Goals need:
 - failure count
 - catch-up behaviour
 
+### Phase 8: Autopilot Goals
+
+Autopilot Goals should let the assistant drive safe build and maintenance processes without requiring the operator to click through each task.
+
+Backend work:
+
+- add `execution_mode` to Goals: `guided` or `autopilot`
+- add Autopilot state and policy fields to Goals
+- add start, pause, stop, and resume endpoints
+- add `homelabctl goal autopilot start|pause|stop|resume <goal-id>`
+- add an Autopilot loop that picks one Goal-linked task at a time
+- create the next task from the Goal assessment
+- start the worker
+- wait for review outcome
+- merge only after successful review and safe policy checks
+- restart affected components through `supervisord`
+- verify the changed workflow
+- reflect into the Goal and decide whether to continue
+- stop on budget, blocker, failed review, failed restart, unclear requirement, or unsafe action
+
+UI work:
+
+- show Goal type: Build, Routine, Watch, or Maintenance
+- show execution mode: Guided or Autopilot
+- make cadence copy clear that cadence is for attention, not build pacing
+- show Autopilot status: ready, running, paused, blocked, completed, budget exhausted
+- show budget and task count
+- provide explicit `Start Autopilot`, `Pause`, `Stop`, and `Resume` controls
+- label Autopilot-created tasks as Autopilot tasks in Goal detail and task metadata
+- show why Autopilot stopped in plain language
+
+Initial implementation can treat Autopilot as a bounded orchestration loop over existing task machinery. It should not invent a new worker system. The value is that the Goal owns the loop.
+
 ## Acceptance Criteria
 
 The first complete version is done when:
@@ -500,6 +663,11 @@ The first complete version is done when:
 - The dashboard shows active Goals, status, next check, last action, linked tasks, watches, and signals.
 - Tests cover storage, proactive selection, signal creation, task linking, and reflection.
 - Dashboard UAT covers the Goal create/check/review workflow on desktop and mobile.
+- A build Goal can be set to Autopilot with an explicit budget.
+- Autopilot can create and start one Goal-linked task.
+- Autopilot records whether it is running, paused, blocked, or done.
+- Autopilot stops when a task reaches review, fails, asks a question, exhausts budget, or requires unsafe action in the MVP.
+- UI and CLI clearly distinguish Goal type from execution mode.
 
 ## Suggested MVP
 
@@ -538,4 +706,3 @@ This MVP should make the assistant feel materially different: it will have stand
 - External actions require explicit opt-in and strong approval rules.
 - Local models should be used in bounded decisions where their output can be validated.
 - Reflection should improve the system without silently rewriting memory or behaviour.
-

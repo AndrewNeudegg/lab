@@ -2175,6 +2175,223 @@ func TestRemoteClaimOnlyReturnsTasksForMatchingAgent(t *testing.T) {
 	}
 }
 
+func TestAutoTaskRoutesToOnlyRegisteredRemoteWorkspace(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "remote1-agent",
+		Name:    "Remote 1",
+		Machine: "vm-remote1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			Label:     "Remote 1",
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+			Labels:    []string{"uat", "node"},
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.CreateTaskWithTarget(context.Background(), "build the first remote1 feature", &taskstore.ExecutionTarget{Mode: "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created remote task") || !strings.Contains(reply, "remote1") {
+		t.Fatalf("reply = %q, want remote project creation", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %#v, want one remote task", tasks)
+	}
+	task := tasks[0]
+	if task.Target == nil || task.Target.Mode != "remote" || task.Target.ProjectID != "remote1" || task.Target.RepoURL != "git@example.com:remote1.git" || task.Target.Branch != "main" {
+		t.Fatalf("target = %#v, want remote1 metadata", task.Target)
+	}
+
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil || assignment.ProjectID != "remote1" || assignment.RepoURL != "git@example.com:remote1.git" || assignment.Branch != "main" {
+		t.Fatalf("assignment = %#v, want remote project metadata", assignment)
+	}
+	if !strings.Contains(assignment.Instruction, "Project: remote1.") || !strings.Contains(assignment.Instruction, "depends on another project") {
+		t.Fatalf("instruction = %q, want project context and coordination guidance", assignment.Instruction)
+	}
+}
+
+func TestAutoTaskKeepsSelfImprovementLocalWithRemoteWorkspace(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID: "remote1-agent",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			ProjectID: "remote1",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.CreateTaskWithTarget(context.Background(), "fix homelabd routing so this platform improves itself", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created queued task") {
+		t.Fatalf("reply = %q, want local queued task", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Target != nil || tasks[0].AssignedTo != "OrchestratorAgent" {
+		t.Fatalf("tasks = %#v, want local self-improvement task", tasks)
+	}
+}
+
+func TestAutoTaskKeepsSelfImprovementLocalWhenRemoteWorkspaceLooksSimilar(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID: "remote-homelabd-agent",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote-homelabd",
+			Path:      "/srv/homelabd-remote",
+			ProjectID: "homelabd-remote",
+			Labels:    []string{"homelabd", "control-plane"},
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.CreateTaskWithTarget(context.Background(), "improve homelabd control plane routing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created queued task") {
+		t.Fatalf("reply = %q, want local queued task", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Target != nil || tasks[0].AssignedTo != "OrchestratorAgent" {
+		t.Fatalf("tasks = %#v, want local self-improvement task", tasks)
+	}
+}
+
+func TestAutoTaskRequiresProjectWhenMultipleRemoteWorkspacesAreRegistered(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID: "desk",
+		Workdirs: []remoteagent.Workdir{
+			{ID: "remote1", Path: "/srv/remote1", ProjectID: "remote1"},
+			{ID: "remote2", Path: "/srv/remote2", ProjectID: "remote2"},
+		},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "build the new feature", nil); err == nil || !strings.Contains(err.Error(), "ambiguous task target") {
+		t.Fatalf("ambiguous error = %v, want project selection prompt", err)
+	}
+
+	reply, err := orch.CreateTaskWithTarget(context.Background(), "build the new feature", &taskstore.ExecutionTarget{Mode: "auto", ProjectID: "remote2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Created remote task") || !strings.Contains(reply, "remote2") {
+		t.Fatalf("reply = %q, want routed remote2 task", reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Target == nil || tasks[0].Target.ProjectID != "remote2" {
+		t.Fatalf("tasks = %#v, want remote2 target", tasks)
+	}
+}
+
+func TestRemoteTaskRetryAndReopenKeepSameRemoteTarget(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "desk",
+		Machine: "vm1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "repo",
+			Path:      "/srv/desk/repo",
+			ProjectID: "remote1",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "remote task retry", &taskstore.ExecutionTarget{Mode: "remote", AgentID: "desk", WorkdirID: "repo"}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := tasks[0].ID
+	if _, err := orch.ClaimRemoteTask(context.Background(), agent, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CompleteRemoteTask(context.Background(), "desk", taskID, "needs another pass", "failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	retryReply, err := orch.retryTask(context.Background(), taskID, "claude", "try a smaller change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(retryReply, "Requeued remote task") {
+		t.Fatalf("retry reply = %q, want remote requeue", retryReply)
+	}
+	requeued, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requeued.Status != taskstore.StatusQueued || requeued.AssignedTo != "remote:desk" || requeued.Target == nil || requeued.Target.Backend != "claude" {
+		t.Fatalf("requeued = %#v, want queued for same remote target with updated backend", requeued)
+	}
+
+	requeued.Status = taskstore.StatusDone
+	requeued.AssignedTo = "OrchestratorAgent"
+	if err := orch.tasks.Save(requeued); err != nil {
+		t.Fatal(err)
+	}
+	reopenReply, err := orch.reopenTask(context.Background(), taskID, "cross-repo API changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reopenReply, "Reopened remote task") {
+		t.Fatalf("reopen reply = %q, want remote reopen", reopenReply)
+	}
+	reopened, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Status != taskstore.StatusQueued || reopened.AssignedTo != "remote:desk" || reopened.Target == nil || reopened.Target.ProjectID != "remote1" {
+		t.Fatalf("reopened = %#v, want same remote project target", reopened)
+	}
+}
+
 func TestAcceptingGraphPhaseReleasesNextChild(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	seedTaskGraph(t, orch, "improve task graph execution")
@@ -6640,6 +6857,70 @@ func TestGoalAutopilotStartCreatesTypedTask(t *testing.T) {
 	case <-delegate.finished:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Autopilot worker stub to finish")
+	}
+}
+
+func TestGoalAutopilotStartCreatesRemoteTaskWithoutLocalWorker(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "remote1-agent",
+		Machine: "vm-remote1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build remote1 Autopilot thing",
+		Objective:     "Build a durable remote1 feature.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 2},
+		Target: &taskstore.ExecutionTarget{
+			Mode:      "remote",
+			AgentID:   "remote1-agent",
+			WorkdirID: "remote1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started, reply, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Remote agent remote1-agent will claim it") {
+		t.Fatalf("reply = %q, want remote claim message", reply)
+	}
+	if started.Goal.Autopilot == nil || started.Goal.Autopilot.CurrentTaskID == "" {
+		t.Fatalf("autopilot = %#v, want current remote task", started.Goal.Autopilot)
+	}
+	task, err := orch.tasks.Load(started.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != taskstore.StatusQueued || task.AssignedTo != "remote:remote1-agent" || task.Target == nil || task.Target.ProjectID != "remote1" {
+		t.Fatalf("task = %#v, want queued remote Autopilot task", task)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started for remote Autopilot task")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

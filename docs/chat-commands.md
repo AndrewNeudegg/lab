@@ -121,6 +121,8 @@ Rejected envelopes are sent back to the model with the full JSON Schema and the 
 
 New local development tasks create one queued task record and one isolated worktree. The chat reply stays compact: it links the summarised task title to `/tasks?task=<task_id>` and notes that a worker will start automatically. The task goal itself is not clipped for display; keep important constraints in the brief and let title summarisation handle the task-list label. Opening the link selects the new task in the dashboard without a full page reload. To start or reassign the task explicitly, use:
 
+Remote project work uses the same task record with a target instead of a local worktree. Use `workspaces` or `projects` in chat to list registered project workspaces. Auto-routed task creation keeps homelabd self-improvement local, sends a single or clearly matched project to its remote agent, and asks for a project, agent, workdir, or label when several remote repos could match. The dashboard and `homelabctl task new --project <project>` expose the structured route controls; chat should avoid guessing across multiple repos.
+
 Messages that explicitly say `no action needed`, `no action required`, or `do not create a task` are treated as notes and do not queue work, even if they accidentally start with `new`. A clear development goal such as `new fix no action needed messages` still creates a task.
 
 ```text

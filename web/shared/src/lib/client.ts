@@ -64,6 +64,7 @@ import type {
   HomelabdUpdateSettingsRequest,
   HomelabdWorkflow,
   HomelabdWorkflowActionResponse,
+  HomelabdWorkspacesResponse,
   HomelabdWorkflowsResponse,
   SupervisorSnapshot
 } from './types';
@@ -527,6 +528,12 @@ export const createHomelabdClient = (
     },
     listAgents() {
       return apiFetch<HomelabdAgentsResponse>('/agents', {
+        baseUrl,
+        fetcher
+      });
+    },
+    listWorkspaces() {
+      return apiFetch<HomelabdWorkspacesResponse>('/workspaces', {
         baseUrl,
         fetcher
       });

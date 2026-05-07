@@ -391,6 +391,27 @@ const mockShellApis = async (page: Page) => {
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [] } });
   });
+  await page.route(/\/api\/workspaces(?:\?.*)?$/, async (route) => {
+    await route.fulfill({
+      json: {
+        workspaces: [
+          {
+            id: 'desk:remote1',
+            project_id: 'remote1',
+            agent_id: 'desk',
+            agent_name: 'Desk',
+            machine: 'desk.local',
+            status: 'online',
+            workdir_id: 'remote1',
+            workdir: '/srv/remote1',
+            repo_url: 'git@example.com:remote1.git',
+            branch: 'main',
+            labels: ['uat']
+          }
+        ]
+      }
+    });
+  });
   await page.route(/\/api\/approvals$/, async (route) => {
     await route.fulfill({ json: { approvals: [] } });
   });
@@ -630,6 +651,7 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
         kind?: string;
         execution_mode?: string;
         autopilot?: { budget_tasks?: number };
+        target?: unknown;
       };
       const created = {
         ...clone(assistantGoal),
@@ -649,6 +671,7 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
             : undefined,
         cadence: body.cadence || 'daily',
         autonomy: body.autonomy || 'observe',
+        target: body.target,
         linked_tasks: [],
         progress_summary: 'Goal is waiting for its first Assistant assessment.',
         created_by: 'dashboard',

@@ -18,12 +18,12 @@
     taskStatusLabel,
     taskSummaryTitle,
     type HomelabdApproval,
-    type HomelabdEvent,
-    type HomelabdRemoteAgent,
-    type HomelabdRemoteAgentWorkdir,
-    type HomelabdRunArtifact,
-    type HomelabdTask,
-    type HomelabdTaskDiffResponse
+	    type HomelabdEvent,
+	    type HomelabdRemoteAgent,
+	    type HomelabdRemoteWorkspace,
+	    type HomelabdRunArtifact,
+	    type HomelabdTask,
+	    type HomelabdTaskDiffResponse
   } from '@homelab/shared';
   import {
     buildSplitRows,
@@ -65,8 +65,9 @@
   } from './sync-model';
 
   type DiffMode = 'split' | 'unified';
-  type MergeQueueDirection = 'up' | 'down';
-  type MobilePanel = 'queue' | 'detail';
+	  type MergeQueueDirection = 'up' | 'down';
+	  type MobilePanel = 'queue' | 'detail';
+	  type TaskTargetMode = 'auto' | 'local' | 'remote';
   type Notice = {
     id: number;
     tone: 'success' | 'error' | 'info';
@@ -110,10 +111,10 @@
   let diffMode: DiffMode = 'split';
   let mobilePanel: MobilePanel = 'queue';
   let lastRefresh = '';
-  let syncFailureCount = 0;
-  let syncIssue = '';
-  let selectedAgentId = '';
-  let selectedWorkdirId = '';
+	  let syncFailureCount = 0;
+	  let syncIssue = '';
+	  let taskTargetMode: TaskTargetMode = 'auto';
+	  let selectedWorkspaceId = '';
   let retryBackend = 'codex';
   let retryInstruction = '';
   let reopenReason = '';
@@ -126,9 +127,10 @@
   let pendingRouteTaskId = '';
   let pendingOverviewRoute = false;
 
-  let tasks: HomelabdTask[] = [];
-  let agents: HomelabdRemoteAgent[] = [];
-  let approvals: HomelabdApproval[] = [];
+	  let tasks: HomelabdTask[] = [];
+	  let agents: HomelabdRemoteAgent[] = [];
+	  let workspaces: HomelabdRemoteWorkspace[] = [];
+	  let approvals: HomelabdApproval[] = [];
   let events: HomelabdEvent[] = [];
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
@@ -154,13 +156,12 @@
   let currentDiffFile: ParsedDiffFile | undefined;
   let currentSplitRows: DiffSplitRow[] = [];
   let needsActionTotal = 0;
-  let navTaskAttention = taskAttentionCounts(tasks, approvals);
-  let onlineAgentItems: HomelabdRemoteAgent[] = [];
-  let selectedAgent: HomelabdRemoteAgent | undefined;
-  let selectedWorkdirs: HomelabdRemoteAgentWorkdir[] = [];
-  let selectedWorkdir: HomelabdRemoteAgentWorkdir | undefined;
-  let queueOptions: { id: TaskQueueFilter; label: string; count: number; detail: string }[] = [];
-  let selectedContextLabel = 'Local homelabd workspace';
+	  let navTaskAttention = taskAttentionCounts(tasks, approvals);
+	  let onlineAgentItems: HomelabdRemoteAgent[] = [];
+	  let onlineWorkspaceItems: HomelabdRemoteWorkspace[] = [];
+	  let selectedWorkspace: HomelabdRemoteWorkspace | undefined;
+	  let queueOptions: { id: TaskQueueFilter; label: string; count: number; detail: string }[] = [];
+	  let selectedContextLabel = 'Local homelabd workspace';
   let emptyTaskListMessage = '';
   let currentPrimaryAction: PrimaryTaskAction = primaryTaskAction(undefined, []);
   let currentSecondaryOperations: TaskOperation[] = [];
@@ -334,21 +335,30 @@
     return tail.length > 8 ? tail.slice(0, 8) : tail;
   };
 
-  const workdirLabel = (workdir?: HomelabdRemoteAgentWorkdir) => {
-    if (!workdir) {
-      return 'No directory';
-    }
-    return workdir.label || workdir.id || workdir.path;
-  };
+	  const workspaceLabel = (workspace?: HomelabdRemoteWorkspace) => {
+	    if (!workspace) {
+	      return 'No remote project';
+	    }
+	    return workspace.project_id || workspace.label || workspace.workdir_id || workspace.workdir;
+	  };
+
+	  const workspaceDetail = (workspace?: HomelabdRemoteWorkspace) => {
+	    if (!workspace) {
+	      return 'No remote project selected';
+	    }
+	    const location = [workspace.agent_name || workspace.agent_id, workspace.machine].filter(Boolean).join(' on ');
+	    return [location, workspace.workdir].filter(Boolean).join(' / ');
+	  };
 
   const targetLabel = (task: HomelabdTask) => {
-    if (!task.target || task.target.mode !== 'remote') {
-      return task.workspace ? 'Local workspace' : 'Local';
-    }
-    const machine = task.target.machine || task.target.agent_id || 'remote';
-    const dir = task.target.workdir || task.target.workdir_id || 'directory';
-    return `${machine} / ${dir}`;
-  };
+	    if (!task.target || task.target.mode !== 'remote') {
+	      return task.workspace ? 'Local workspace' : 'Local';
+	    }
+	    const project = task.target.project_id || 'remote project';
+	    const machine = task.target.machine || task.target.agent_id || 'remote';
+	    const dir = task.target.workdir || task.target.workdir_id || 'directory';
+	    return `${project} / ${machine} / ${dir}`;
+	  };
 
   const taskGoalKindLabel = (task: HomelabdTask) => {
     switch (task.goal_kind) {
@@ -491,20 +501,17 @@
   }
   $: needsActionTotal = attentionTaskItems.length;
   $: onlineAgentItems = agents.filter((agent) => agent.status !== 'offline');
-  $: if (!selectedAgentId && onlineAgentItems[0]) {
-    selectedAgentId = onlineAgentItems[0].id;
-  }
-  $: selectedAgent =
-    agents.find((agent) => agent.id === selectedAgentId) || onlineAgentItems[0] || agents[0];
-  $: selectedWorkdirs = selectedAgent?.workdirs || [];
+  $: onlineWorkspaceItems = workspaces.filter((workspace) => workspace.status !== 'offline');
   $: if (
-    selectedWorkdirs.length &&
-    !selectedWorkdirs.some((workdir) => workdir.id === selectedWorkdirId)
+    workspaces.length &&
+    !workspaces.some((workspace) => workspace.id === selectedWorkspaceId)
   ) {
-    selectedWorkdirId = selectedWorkdirs[0].id;
+    selectedWorkspaceId = onlineWorkspaceItems[0]?.id || workspaces[0].id;
   }
-  $: selectedWorkdir =
-    selectedWorkdirs.find((workdir) => workdir.id === selectedWorkdirId) || selectedWorkdirs[0];
+  $: selectedWorkspace =
+    workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ||
+    onlineWorkspaceItems[0] ||
+    workspaces[0];
   $: queueOptions = [
     { id: 'all', label: 'All queues', count: tasks.length, detail: 'Local and remote targets' },
     {
@@ -522,9 +529,13 @@
     }))
   ];
   $: selectedContextLabel =
-    selectedAgent && selectedWorkdir
-      ? `${selectedAgent.name || selectedAgent.id} on ${selectedAgent.machine || 'unknown'} in ${selectedWorkdir.path}`
-      : 'Local homelabd workspace';
+    taskTargetMode === 'remote'
+      ? workspaceDetail(selectedWorkspace)
+      : taskTargetMode === 'local'
+        ? 'Local homelabd workspace'
+        : workspaces.length
+          ? 'Coordinator auto-route'
+          : 'Local homelabd workspace';
   $: currentPendingApproval = pendingApprovalForTask(currentTask, approvals);
   $: currentPrimaryAction = primaryTaskAction(currentTask, approvals);
   $: currentSecondaryOperations = secondaryTaskOperations(currentTask, approvals);
@@ -759,24 +770,26 @@
 
   const applySecondaryRefresh = async (
     sequence: number,
-    requests: {
-      approvals: Promise<unknown>;
-      events: Promise<unknown>;
-      agents: Promise<unknown>;
-      settings: Promise<unknown>;
-    },
+	    requests: {
+	      approvals: Promise<unknown>;
+	      events: Promise<unknown>;
+	      agents: Promise<unknown>;
+	      workspaces: Promise<unknown>;
+	      settings: Promise<unknown>;
+	    },
     baseTasks: HomelabdTask[],
     initialErrors: string[],
     settingsVersion: number
   ) => {
     const refreshErrors = [...initialErrors];
     let nextApprovals = approvals;
-    const [approvalResult, eventResult, agentResult, settingsResult] = await Promise.allSettled([
-      requests.approvals,
-      requests.events,
-      requests.agents,
-      requests.settings
-    ]);
+	    const [approvalResult, eventResult, agentResult, workspaceResult, settingsResult] = await Promise.allSettled([
+	      requests.approvals,
+	      requests.events,
+	      requests.agents,
+	      requests.workspaces,
+	      requests.settings
+	    ]);
     if (sequence !== refreshStateSequence) {
       return;
     }
@@ -815,11 +828,25 @@
       } catch (err) {
         refreshErrors.push(errorMessage(err, 'Unable to load agents.'));
       }
-    } else {
-      refreshErrors.push(errorMessage(agentResult.reason, 'Unable to load agents.'));
-    }
+	    } else {
+	      refreshErrors.push(errorMessage(agentResult.reason, 'Unable to load agents.'));
+	    }
 
-    if (settingsResult.status === 'fulfilled') {
+	    if (workspaceResult.status === 'fulfilled') {
+	      try {
+	        workspaces = collectionFromResponse<HomelabdRemoteWorkspace>(
+	          'Workspaces',
+	          'workspaces',
+	          workspaceResult.value
+	        );
+	      } catch (err) {
+	        refreshErrors.push(errorMessage(err, 'Unable to load remote project workspaces.'));
+	      }
+	    } else {
+	      refreshErrors.push(errorMessage(workspaceResult.reason, 'Unable to load remote project workspaces.'));
+	    }
+
+	    if (settingsResult.status === 'fulfilled') {
       if (settingsVersion === autoMergeVersion) {
         const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
         autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
@@ -849,10 +876,11 @@
       const refreshErrors: string[] = [];
       let nextTasks = tasks;
       const taskRequest = withRefreshTimeout('Tasks', client.listTasks());
-      const approvalRequest = withRefreshTimeout('Approvals', client.listApprovals());
-      const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
-      const agentRequest = withRefreshTimeout('Agents', client.listAgents());
-      const settingsRequest = withRefreshTimeout('Settings', client.getSettings());
+	      const approvalRequest = withRefreshTimeout('Approvals', client.listApprovals());
+	      const eventRequest = withRefreshTimeout('Events', client.listEvents({ limit: 500 }));
+	      const agentRequest = withRefreshTimeout('Agents', client.listAgents());
+	      const workspaceRequest = withRefreshTimeout('Workspaces', client.listWorkspaces());
+	      const settingsRequest = withRefreshTimeout('Settings', client.getSettings());
       const settingsVersion = autoMergeVersion;
       try {
         const taskResult = await Promise.resolve(taskRequest).then(
@@ -860,7 +888,7 @@
           (reason) => ({ status: 'rejected' as const, reason })
         );
         if (sequence !== refreshStateSequence) {
-          void Promise.allSettled([approvalRequest, eventRequest, agentRequest, settingsRequest]);
+	            void Promise.allSettled([approvalRequest, eventRequest, agentRequest, workspaceRequest, settingsRequest]);
           return;
         }
 
@@ -898,12 +926,13 @@
         applySyncedTaskSelection(syncSelection);
         void applySecondaryRefresh(
           sequence,
-          {
-            approvals: approvalRequest,
-            events: eventRequest,
-            agents: agentRequest,
-            settings: settingsRequest
-          },
+	          {
+	            approvals: approvalRequest,
+	            events: eventRequest,
+	            agents: agentRequest,
+	            workspaces: workspaceRequest,
+	            settings: settingsRequest
+	          },
           nextTasks,
           refreshErrors,
           settingsVersion
@@ -944,17 +973,23 @@
     creatingTask = true;
     clearNotice();
     try {
-      const target =
-        selectedAgent && selectedWorkdir
-          ? {
-              mode: 'remote',
-              agent_id: selectedAgent.id,
-              machine: selectedAgent.machine,
-              workdir_id: selectedWorkdir.id,
-              workdir: selectedWorkdir.path,
-              backend: selectedAgent.capabilities?.includes('codex') ? 'codex' : undefined
-            }
-          : undefined;
+	      const target =
+	        taskTargetMode === 'local'
+	          ? { mode: 'local' }
+	          : taskTargetMode === 'remote' && selectedWorkspace
+	            ? {
+	                mode: 'remote',
+	                project_id: selectedWorkspace.project_id,
+	                agent_id: selectedWorkspace.agent_id,
+	                machine: selectedWorkspace.machine,
+	                workdir_id: selectedWorkspace.workdir_id,
+	                workdir: selectedWorkspace.workdir,
+	                repo_url: selectedWorkspace.repo_url,
+	                branch: selectedWorkspace.branch,
+	                labels: selectedWorkspace.labels,
+	                backend: selectedWorkspace.backend || undefined
+	              }
+	            : { mode: 'auto' };
       const response = await client.createTask({ goal, target });
       newTaskDraft = '';
       contextAcknowledged = false;
@@ -1024,9 +1059,9 @@
     syncSelectionForCurrentFilters();
   };
 
-  const handleAgentChange = () => {
-    contextAcknowledged = false;
-  };
+	  const handleTargetChange = () => {
+	    contextAcknowledged = false;
+	  };
 
   const actionLoadingKey = (operation: TaskOperation, taskId: string) => `${operation}:${taskId}`;
 
@@ -1459,31 +1494,45 @@
         <div class="target-create-body" aria-label="Create targeted task">
           <header>
             <div>
-              <p>Target</p>
-              <h2>{selectedAgent ? selectedAgent.name || selectedAgent.id : 'Local homelabd'}</h2>
+              <p>Execution context</p>
+              <h2>
+                {taskTargetMode === 'remote'
+                  ? workspaceLabel(selectedWorkspace)
+                  : taskTargetMode === 'local'
+                    ? 'Local homelabd'
+                    : 'Auto route'}
+              </h2>
             </div>
-            <span>{onlineAgentItems.length} online</span>
+            <span>{onlineWorkspaceItems.length} remote online</span>
           </header>
-          {#if agents.length}
-            <label class="hidden" for="agent-select">Remote agent</label>
-            <select id="agent-select" bind:value={selectedAgentId} on:change={handleAgentChange}>
-              {#each agents as agent}
-                <option value={agent.id}>
-                  {agent.name || agent.id} / {agent.machine || 'unknown'} / {agent.status}
-                </option>
-              {/each}
+          <label>
+            <span>Task type</span>
+            <select bind:value={taskTargetMode} on:change={handleTargetChange}>
+              <option value="auto">Auto route</option>
+              <option value="remote">Remote project</option>
+              <option value="local">Local homelabd</option>
             </select>
-            <label class="hidden" for="workdir-select">Remote directory</label>
-            <select
-              id="workdir-select"
-              bind:value={selectedWorkdirId}
-              disabled={!selectedWorkdirs.length}
-              on:change={handleAgentChange}
-            >
-              {#each selectedWorkdirs as workdir}
-                <option value={workdir.id}>{workdirLabel(workdir)} / {workdir.path}</option>
-              {/each}
-            </select>
+          </label>
+          {#if taskTargetMode === 'remote'}
+            <label>
+              <span>Remote project</span>
+              <select
+                bind:value={selectedWorkspaceId}
+                disabled={!workspaces.length}
+                on:change={handleTargetChange}
+              >
+                {#each workspaces as workspace}
+                  <option value={workspace.id}>
+                    {workspaceLabel(workspace)} / {workspace.agent_name || workspace.agent_id} / {workspace.status}
+                  </option>
+                {/each}
+              </select>
+            </label>
+            {#if selectedWorkspace}
+              <p class="target-context">{workspaceDetail(selectedWorkspace)}</p>
+            {:else}
+              <p class="target-context">No remote projects are registered.</p>
+            {/if}
           {/if}
           <form on:submit|preventDefault={createTargetedTask}>
             <label class="hidden" for="new-task-goal">New task goal</label>
@@ -1491,12 +1540,16 @@
               id="new-task-goal"
               bind:value={newTaskDraft}
               rows="3"
-              placeholder={selectedAgent ? 'Describe remote work' : 'Describe local work'}
+              placeholder={taskTargetMode === 'remote'
+                ? 'Describe work for the selected project'
+                : taskTargetMode === 'local'
+                  ? 'Describe local homelabd work'
+                  : 'Describe work; the coordinator chooses the context'}
               disabled={creatingTask}
             ></textarea>
-            {#if selectedAgent}
+            {#if taskTargetMode === 'remote'}
               <label class="context-confirm">
-                <input type="checkbox" bind:checked={contextAcknowledged} disabled={!selectedAgent} />
+                <input type="checkbox" bind:checked={contextAcknowledged} disabled={!selectedWorkspace} />
                 <span>Run on <strong>{selectedContextLabel}</strong></span>
               </label>
             {/if}
@@ -1504,9 +1557,15 @@
               type="submit"
               disabled={creatingTask ||
                 !newTaskDraft.trim() ||
-                Boolean(selectedAgent && (!selectedWorkdir || !contextAcknowledged))}
+                Boolean(taskTargetMode === 'remote' && (!selectedWorkspace || !contextAcknowledged))}
             >
-              {creatingTask ? 'Creating' : selectedAgent ? 'Create remote task' : 'Create local task'}
+              {creatingTask
+                ? 'Creating'
+                : taskTargetMode === 'remote'
+                  ? 'Create remote task'
+                  : taskTargetMode === 'local'
+                    ? 'Create local task'
+                    : 'Create auto-routed task'}
             </button>
           </form>
         </div>
@@ -3060,12 +3119,32 @@
     font-size: 0.95rem;
   }
 
-  .target-create form {
-    display: grid;
-    gap: 0.5rem;
-  }
+	  .target-create form {
+	    display: grid;
+	    gap: 0.5rem;
+	  }
 
-  .target-create button[type='submit'],
+	  .target-create label {
+	    display: grid;
+	    gap: 0.25rem;
+	  }
+
+	  .target-create label > span {
+	    color: var(--muted, #64748b);
+	    font-size: 0.72rem;
+	    font-weight: 800;
+	    text-transform: uppercase;
+	  }
+
+	  .target-context {
+	    margin: -0.1rem 0 0;
+	    overflow-wrap: anywhere;
+	    color: var(--muted, #64748b);
+	    font-size: 0.78rem;
+	    line-height: 1.35;
+	  }
+
+	  .target-create button[type='submit'],
   .primary-action {
     border-color: var(--accent, #2563eb);
     color: #ffffff;

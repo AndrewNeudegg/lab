@@ -682,12 +682,16 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		if action.GoalID != "" {
 			goalTimeline, loadErr := o.LoadGoal(action.GoalID)
 			if loadErr == nil {
-				created, err = o.createTaskRecordForGoal(ctx, goal, goalTimeline.Goal)
+				goalRecord := goalTimeline.Goal
+				if action.Target != nil {
+					goalRecord.Target = action.Target
+				}
+				created, err = o.createTaskRecordForGoal(ctx, goal, goalRecord)
 			} else {
 				err = loadErr
 			}
 		} else {
-			created, err = o.createTaskRecord(ctx, goal)
+			created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, action.Target, nil, taskCreateOptions{})
 		}
 		if err != nil {
 			action.Status = "failed"
@@ -1170,12 +1174,16 @@ func (o *Orchestrator) createTaskFromAssistantAction(ctx context.Context, action
 	if action.GoalID != "" {
 		timeline, loadErr := o.LoadGoal(action.GoalID)
 		if loadErr == nil {
-			created, err = o.createTaskRecordForGoal(ctx, goal, timeline.Goal)
+			goalRecord := timeline.Goal
+			if action.Target != nil {
+				goalRecord.Target = action.Target
+			}
+			created, err = o.createTaskRecordForGoal(ctx, goal, goalRecord)
 		} else {
 			err = loadErr
 		}
 	} else {
-		created, err = o.createTaskRecord(ctx, goal)
+		created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, action.Target, nil, taskCreateOptions{})
 	}
 	if err != nil {
 		return "", err

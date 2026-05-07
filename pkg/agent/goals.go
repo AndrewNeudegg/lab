@@ -96,6 +96,7 @@ func (o *Orchestrator) CreateGoal(ctx context.Context, req assistantstore.GoalCr
 		Status:          assistantstore.GoalStatusActive,
 		Kind:            req.Kind,
 		ExecutionMode:   req.ExecutionMode,
+		Target:          req.Target,
 		Autopilot:       req.Autopilot,
 		Priority:        req.Priority,
 		Autonomy:        req.Autonomy,
@@ -178,6 +179,9 @@ func (o *Orchestrator) UpdateGoal(ctx context.Context, goalID string, req assist
 	}
 	if strings.TrimSpace(req.ExecutionMode) != "" {
 		goal.ExecutionMode = req.ExecutionMode
+	}
+	if req.Target != nil {
+		goal.Target = req.Target
 	}
 	if req.Autopilot != nil {
 		goal.Autopilot = req.Autopilot
@@ -689,9 +693,6 @@ func (o *Orchestrator) processGoalAutopilotMergeApproval(ctx context.Context, t 
 
 func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal) (bool, string, error) {
 	goal = assistantstore.NormalizeGoal(goal)
-	if _, ok := o.preferredWorkerBackend(); !ok {
-		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "No local worker backend is configured for Autopilot tasks.")
-	}
 	created, err := o.createTaskRecordForGoal(ctx, goalAutopilotTaskGoal(goal), goal)
 	if err != nil {
 		return false, "", err
@@ -744,6 +745,9 @@ func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assis
 func (o *Orchestrator) startGoalAutopilotTaskIfPossible(ctx context.Context, t taskstore.Task) string {
 	if t.Status != taskstore.StatusQueued || o.taskActive(t.ID) {
 		return ""
+	}
+	if remoteTask(t) && t.Target != nil {
+		return fmt.Sprintf("Remote agent %s will claim it from %s on the next poll.", t.Target.AgentID, t.Target.Workdir)
 	}
 	if o.activeTaskCount() >= o.maxConcurrentTasks() {
 		return "Worker capacity is full; the task supervisor will start it when capacity is available."
@@ -1150,11 +1154,12 @@ func (o *Orchestrator) createTaskRecordForGoal(ctx context.Context, taskGoal str
 		return createdTask{}, nil
 	}
 	goal = assistantstore.NormalizeGoal(goal)
-	return o.createTaskRecordWithOptions(ctx, taskGoalWithGoalContext(taskGoal, goal), nil, taskCreateOptions{
+	created, _, err := o.createTaskRecordWithRoutedTarget(ctx, taskGoalWithGoalContext(taskGoal, goal), goal.Target, nil, taskCreateOptions{
 		GoalID:        goal.ID,
 		ExecutionMode: goal.ExecutionMode,
 		GoalKind:      goal.Kind,
 	})
+	return created, err
 }
 
 func (o *Orchestrator) recordGoalRunAssessment(ctx context.Context, run *assistantstore.Run) {

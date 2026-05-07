@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	taskstore "github.com/andrewneudegg/lab/pkg/task"
 )
 
 const (
@@ -45,65 +47,68 @@ const (
 )
 
 type Goal struct {
-	ID              string         `json:"id"`
-	Title           string         `json:"title"`
-	Objective       string         `json:"objective"`
-	Details         string         `json:"details,omitempty"`
-	Status          string         `json:"status"`
-	Kind            string         `json:"kind,omitempty"`
-	ExecutionMode   string         `json:"execution_mode,omitempty"`
-	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
-	Priority        string         `json:"priority,omitempty"`
-	Autonomy        string         `json:"autonomy"`
-	Cadence         string         `json:"cadence,omitempty"`
-	NextCheckAt     *time.Time     `json:"next_check_at,omitempty"`
-	SuccessCriteria []string       `json:"success_criteria,omitempty"`
-	Constraints     []string       `json:"constraints,omitempty"`
-	LinkedTasks     []string       `json:"linked_tasks,omitempty"`
-	LinkedWorkflows []string       `json:"linked_workflows,omitempty"`
-	ProgressSummary string         `json:"progress_summary,omitempty"`
-	OpenQuestions   []string       `json:"open_questions,omitempty"`
-	LastCheckedAt   *time.Time     `json:"last_checked_at,omitempty"`
-	LastActionAt    *time.Time     `json:"last_action_at,omitempty"`
-	CreatedBy       string         `json:"created_by,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	ArchivedAt      *time.Time     `json:"archived_at,omitempty"`
+	ID              string                     `json:"id"`
+	Title           string                     `json:"title"`
+	Objective       string                     `json:"objective"`
+	Details         string                     `json:"details,omitempty"`
+	Status          string                     `json:"status"`
+	Kind            string                     `json:"kind,omitempty"`
+	ExecutionMode   string                     `json:"execution_mode,omitempty"`
+	Target          *taskstore.ExecutionTarget `json:"target,omitempty"`
+	Autopilot       *GoalAutopilot             `json:"autopilot,omitempty"`
+	Priority        string                     `json:"priority,omitempty"`
+	Autonomy        string                     `json:"autonomy"`
+	Cadence         string                     `json:"cadence,omitempty"`
+	NextCheckAt     *time.Time                 `json:"next_check_at,omitempty"`
+	SuccessCriteria []string                   `json:"success_criteria,omitempty"`
+	Constraints     []string                   `json:"constraints,omitempty"`
+	LinkedTasks     []string                   `json:"linked_tasks,omitempty"`
+	LinkedWorkflows []string                   `json:"linked_workflows,omitempty"`
+	ProgressSummary string                     `json:"progress_summary,omitempty"`
+	OpenQuestions   []string                   `json:"open_questions,omitempty"`
+	LastCheckedAt   *time.Time                 `json:"last_checked_at,omitempty"`
+	LastActionAt    *time.Time                 `json:"last_action_at,omitempty"`
+	CreatedBy       string                     `json:"created_by,omitempty"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	UpdatedAt       time.Time                  `json:"updated_at"`
+	ArchivedAt      *time.Time                 `json:"archived_at,omitempty"`
 }
 
 type GoalCreateRequest struct {
-	Title           string         `json:"title"`
-	Objective       string         `json:"objective,omitempty"`
-	Details         string         `json:"details,omitempty"`
-	Kind            string         `json:"kind,omitempty"`
-	ExecutionMode   string         `json:"execution_mode,omitempty"`
-	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
-	Priority        string         `json:"priority,omitempty"`
-	Autonomy        string         `json:"autonomy,omitempty"`
-	Cadence         string         `json:"cadence,omitempty"`
-	NextCheckAt     string         `json:"next_check_at,omitempty"`
-	SuccessCriteria []string       `json:"success_criteria,omitempty"`
-	Constraints     []string       `json:"constraints,omitempty"`
-	OpenQuestions   []string       `json:"open_questions,omitempty"`
-	CreatedBy       string         `json:"created_by,omitempty"`
+	Title           string                     `json:"title"`
+	Objective       string                     `json:"objective,omitempty"`
+	Details         string                     `json:"details,omitempty"`
+	Kind            string                     `json:"kind,omitempty"`
+	ExecutionMode   string                     `json:"execution_mode,omitempty"`
+	Target          *taskstore.ExecutionTarget `json:"target,omitempty"`
+	Autopilot       *GoalAutopilot             `json:"autopilot,omitempty"`
+	Priority        string                     `json:"priority,omitempty"`
+	Autonomy        string                     `json:"autonomy,omitempty"`
+	Cadence         string                     `json:"cadence,omitempty"`
+	NextCheckAt     string                     `json:"next_check_at,omitempty"`
+	SuccessCriteria []string                   `json:"success_criteria,omitempty"`
+	Constraints     []string                   `json:"constraints,omitempty"`
+	OpenQuestions   []string                   `json:"open_questions,omitempty"`
+	CreatedBy       string                     `json:"created_by,omitempty"`
 }
 
 type GoalUpdateRequest struct {
-	Title           string         `json:"title,omitempty"`
-	Objective       string         `json:"objective,omitempty"`
-	Details         string         `json:"details,omitempty"`
-	Status          string         `json:"status,omitempty"`
-	Kind            string         `json:"kind,omitempty"`
-	ExecutionMode   string         `json:"execution_mode,omitempty"`
-	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
-	Priority        string         `json:"priority,omitempty"`
-	Autonomy        string         `json:"autonomy,omitempty"`
-	Cadence         string         `json:"cadence,omitempty"`
-	NextCheckAt     string         `json:"next_check_at,omitempty"`
-	SuccessCriteria []string       `json:"success_criteria,omitempty"`
-	Constraints     []string       `json:"constraints,omitempty"`
-	ProgressSummary string         `json:"progress_summary,omitempty"`
-	OpenQuestions   []string       `json:"open_questions,omitempty"`
+	Title           string                     `json:"title,omitempty"`
+	Objective       string                     `json:"objective,omitempty"`
+	Details         string                     `json:"details,omitempty"`
+	Status          string                     `json:"status,omitempty"`
+	Kind            string                     `json:"kind,omitempty"`
+	ExecutionMode   string                     `json:"execution_mode,omitempty"`
+	Target          *taskstore.ExecutionTarget `json:"target,omitempty"`
+	Autopilot       *GoalAutopilot             `json:"autopilot,omitempty"`
+	Priority        string                     `json:"priority,omitempty"`
+	Autonomy        string                     `json:"autonomy,omitempty"`
+	Cadence         string                     `json:"cadence,omitempty"`
+	NextCheckAt     string                     `json:"next_check_at,omitempty"`
+	SuccessCriteria []string                   `json:"success_criteria,omitempty"`
+	Constraints     []string                   `json:"constraints,omitempty"`
+	ProgressSummary string                     `json:"progress_summary,omitempty"`
+	OpenQuestions   []string                   `json:"open_questions,omitempty"`
 }
 
 type GoalAutopilot struct {
@@ -201,26 +206,27 @@ type GoalAssessment struct {
 }
 
 type GoalSnapshotRef struct {
-	ID              string         `json:"id"`
-	Title           string         `json:"title"`
-	Objective       string         `json:"objective,omitempty"`
-	Details         string         `json:"details,omitempty"`
-	Status          string         `json:"status,omitempty"`
-	Kind            string         `json:"kind,omitempty"`
-	ExecutionMode   string         `json:"execution_mode,omitempty"`
-	Autopilot       *GoalAutopilot `json:"autopilot,omitempty"`
-	Priority        string         `json:"priority,omitempty"`
-	Autonomy        string         `json:"autonomy,omitempty"`
-	Cadence         string         `json:"cadence,omitempty"`
-	NextCheckAt     *time.Time     `json:"next_check_at,omitempty"`
-	LastCheckedAt   *time.Time     `json:"last_checked_at,omitempty"`
-	ProgressSummary string         `json:"progress_summary,omitempty"`
-	SuccessCriteria []string       `json:"success_criteria,omitempty"`
-	Constraints     []string       `json:"constraints,omitempty"`
-	OpenQuestions   []string       `json:"open_questions,omitempty"`
-	LinkedTasks     []string       `json:"linked_tasks,omitempty"`
-	URL             string         `json:"url,omitempty"`
-	Due             bool           `json:"due,omitempty"`
+	ID              string                     `json:"id"`
+	Title           string                     `json:"title"`
+	Objective       string                     `json:"objective,omitempty"`
+	Details         string                     `json:"details,omitempty"`
+	Status          string                     `json:"status,omitempty"`
+	Kind            string                     `json:"kind,omitempty"`
+	ExecutionMode   string                     `json:"execution_mode,omitempty"`
+	Target          *taskstore.ExecutionTarget `json:"target,omitempty"`
+	Autopilot       *GoalAutopilot             `json:"autopilot,omitempty"`
+	Priority        string                     `json:"priority,omitempty"`
+	Autonomy        string                     `json:"autonomy,omitempty"`
+	Cadence         string                     `json:"cadence,omitempty"`
+	NextCheckAt     *time.Time                 `json:"next_check_at,omitempty"`
+	LastCheckedAt   *time.Time                 `json:"last_checked_at,omitempty"`
+	ProgressSummary string                     `json:"progress_summary,omitempty"`
+	SuccessCriteria []string                   `json:"success_criteria,omitempty"`
+	Constraints     []string                   `json:"constraints,omitempty"`
+	OpenQuestions   []string                   `json:"open_questions,omitempty"`
+	LinkedTasks     []string                   `json:"linked_tasks,omitempty"`
+	URL             string                     `json:"url,omitempty"`
+	Due             bool                       `json:"due,omitempty"`
 }
 
 type GoalTimeline struct {
@@ -577,6 +583,7 @@ func NormalizeGoal(goal Goal) Goal {
 	goal.Details = strings.TrimSpace(goal.Details)
 	goal.Status = normalizeGoalStatus(goal.Status)
 	goal.Kind = normalizeGoalKind(goal.Kind)
+	goal.Target = normalizeExecutionTarget(goal.Target)
 	if goal.Autopilot != nil && strings.TrimSpace(goal.ExecutionMode) == "" {
 		goal.ExecutionMode = GoalExecutionModeAutopilot
 	}
@@ -804,6 +811,7 @@ func GoalToSnapshotRef(goal Goal, now time.Time) GoalSnapshotRef {
 		Status:          goal.Status,
 		Kind:            goal.Kind,
 		ExecutionMode:   goal.ExecutionMode,
+		Target:          normalizeExecutionTarget(goal.Target),
 		Autopilot:       cloneGoalAutopilot(goal.Autopilot),
 		Priority:        goal.Priority,
 		Autonomy:        goal.Autonomy,

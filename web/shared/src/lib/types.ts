@@ -134,11 +134,16 @@ export interface HomelabdTaskAttachment {
 
 export interface HomelabdTaskTarget {
   mode?: string;
+  project_id?: string;
   agent_id?: string;
   machine?: string;
   workdir_id?: string;
   workdir?: string;
+  repo_url?: string;
+  branch?: string;
+  labels?: string[];
   backend?: string;
+  reason?: string;
 }
 
 export interface HomelabdAcceptanceCriterion {
@@ -205,6 +210,11 @@ export interface HomelabdRemoteAgentWorkdir {
   id: string;
   path: string;
   label?: string;
+  project_id?: string;
+  repo_url?: string;
+  branch?: string;
+  labels?: string[];
+  metadata?: Record<string, string>;
 }
 
 export interface HomelabdRemoteAgent {
@@ -223,6 +233,29 @@ export interface HomelabdRemoteAgent {
 
 export interface HomelabdAgentsResponse {
   agents: HomelabdRemoteAgent[];
+}
+
+export interface HomelabdRemoteWorkspace {
+  id: string;
+  project_id: string;
+  agent_id: string;
+  agent_name?: string;
+  machine?: string;
+  status: 'online' | 'offline' | string;
+  current_task_id?: string;
+  workdir_id: string;
+  workdir: string;
+  label?: string;
+  repo_url?: string;
+  branch?: string;
+  labels?: string[];
+  backend?: string;
+  metadata?: Record<string, string>;
+  last_seen?: string;
+}
+
+export interface HomelabdWorkspacesResponse {
+  workspaces: HomelabdRemoteWorkspace[];
 }
 
 export interface HomelabdTaskActionResponse {
@@ -457,6 +490,7 @@ export interface AssistantRunAction {
   priority?: string;
   risk?: string;
   target_surface?: string;
+  target?: HomelabdTaskTarget;
   task_goal?: string;
   knowledge_query?: string;
   workflow_hint?: string;
@@ -752,6 +786,7 @@ export interface AssistantGoal {
   status: string;
   kind?: string;
   execution_mode?: string;
+  target?: HomelabdTaskTarget;
   autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy: string;
@@ -779,6 +814,7 @@ export interface AssistantGoalSnapshotRef {
   status?: string;
   kind?: string;
   execution_mode?: string;
+  target?: HomelabdTaskTarget;
   autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy?: string;
@@ -800,6 +836,7 @@ export interface AssistantGoalCreateRequest {
   details?: string;
   kind?: string;
   execution_mode?: string;
+  target?: HomelabdTaskTarget;
   autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy?: string;
@@ -818,6 +855,7 @@ export interface AssistantGoalUpdateRequest {
   status?: string;
   kind?: string;
   execution_mode?: string;
+  target?: HomelabdTaskTarget;
   autopilot?: AssistantGoalAutopilot;
   priority?: string;
   autonomy?: string;
@@ -1612,6 +1650,7 @@ export interface HomelabdClient {
   getWorkflow(workflowId: string): Promise<HomelabdWorkflow>;
   runWorkflow(workflowId: string): Promise<HomelabdWorkflowActionResponse>;
   listAgents(): Promise<HomelabdAgentsResponse>;
+  listWorkspaces(): Promise<HomelabdWorkspacesResponse>;
   listApprovals(): Promise<HomelabdApprovalsResponse>;
   listEvents(options?: { date?: string; limit?: number }): Promise<HomelabdEventsResponse>;
   listTaskRuns(taskId: string): Promise<HomelabdTaskRunsResponse>;

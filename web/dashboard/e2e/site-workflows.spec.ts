@@ -680,10 +680,13 @@ const mockDashboardApis = async (page: Page) => {
   await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
-  await page.route(/\/api\/agents\/?(?:\?.*)?$/, async (route) => {
-    await route.fulfill({ json: { agents: [] } });
-  });
-  await page.route(/\/api\/workflows$/, async (route) => {
+	  await page.route(/\/api\/agents\/?(?:\?.*)?$/, async (route) => {
+	    await route.fulfill({ json: { agents: [] } });
+	  });
+	  await page.route(/\/api\/workspaces\/?(?:\?.*)?$/, async (route) => {
+	    await route.fulfill({ json: { workspaces: [] } });
+	  });
+	  await page.route(/\/api\/workflows$/, async (route) => {
     if (route.request().method() === 'POST') {
       await route.fulfill({ status: 201, json: { workflow, reply: 'created workflow' } });
       return;

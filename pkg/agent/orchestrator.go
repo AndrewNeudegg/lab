@@ -539,6 +539,8 @@ func (o *Orchestrator) handleMessageWithAttachments(ctx context.Context, message
 		return programResult(o.handleWorkflowCommand(ctx, fields, message))
 	case "agents":
 		return programResult(o.listAgents(ctx))
+	case "workspaces", "projects":
+		return programResult(o.formatRemoteWorkspacesReply())
 	case "llm":
 		if len(fields) >= 2 && commandWord(fields[1]) == "quality" {
 			dayArg := ""
@@ -1580,20 +1582,14 @@ func (o *Orchestrator) CreateTaskWithTarget(ctx context.Context, goal string, ta
 }
 
 func (o *Orchestrator) CreateTaskWithTargetAndAttachments(ctx context.Context, goal string, target *taskstore.ExecutionTarget, attachments []taskstore.Attachment) (string, error) {
-	if target == nil || strings.TrimSpace(target.Mode) == "" || strings.EqualFold(target.Mode, "local") {
-		return o.createTaskWithAttachments(ctx, goal, attachments)
-	}
-	if !strings.EqualFold(target.Mode, "remote") {
-		return "", fmt.Errorf("unsupported task target mode %q", target.Mode)
-	}
-	task, err := o.createRemoteTaskRecord(ctx, goal, *target, attachments)
+	created, decision, err := o.createTaskRecordWithRoutedTarget(ctx, goal, target, attachments, taskCreateOptions{})
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Created remote task %s for %s on %s.\nThe remote agent will claim it on its next poll.\nNext:\n%s", task.ID, task.Target.AgentID, task.Target.Workdir, commandBlock(
-		"status",
-		"show "+task.ID,
-	)), nil
+	if created.Task.ID == "" {
+		return "usage: new <goal>", nil
+	}
+	return formatCreatedTaskReply(created, decision), nil
 }
 
 func (o *Orchestrator) ListTasks() ([]taskstore.Task, error) {
@@ -1808,8 +1804,11 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			TaskID:      t.ID,
 			Title:       t.Title,
 			Goal:        t.Goal,
+			ProjectID:   target.ProjectID,
 			Workdir:     target.Workdir,
 			WorkdirID:   target.WorkdirID,
+			RepoURL:     target.RepoURL,
+			Branch:      target.Branch,
 			Backend:     backend,
 			Instruction: defaultRemoteAgentInstruction(t, agent),
 		}, nil
@@ -2819,6 +2818,7 @@ func help() string {
 		"  run <task_id>              let CoderAgent work in the task worktree",
 		"  ux <task_id> [instruction] let UXAgent audit, research, improve, and test UI/UX",
 		"  agents                     list external worker backends",
+		"  workspaces                 list remote project workspaces",
 		"  delegate <task_id> <agent> <instruction>",
 		"                             run codex/claude/gemini or UXAgent in the task worktree",
 		"  delegate <task title> to <agent>",
@@ -3975,16 +3975,26 @@ func (o *Orchestrator) createTaskOrPlanningBriefWithAttachments(ctx context.Cont
 }
 
 func (o *Orchestrator) createTaskWithAttachments(ctx context.Context, goal string, attachments []taskstore.Attachment) (string, error) {
-	created, err := o.createTaskRecordWithAttachments(ctx, goal, attachments)
+	created, decision, err := o.createTaskRecordWithRoutedTarget(ctx, goal, nil, attachments, taskCreateOptions{})
 	if err != nil {
 		return "", err
 	}
 	if created.Task.ID == "" {
 		return "usage: new <goal>", nil
 	}
+	return formatCreatedTaskReply(created, decision), nil
+}
+
+func formatCreatedTaskReply(created createdTask, decision WorkRouteDecision) string {
 	t := created.Task
 	taskLink := fmt.Sprintf("[%s](%s)", markdownLinkLabel(taskLinkTitle(t)), dashboardTaskURL(t.ID))
-	return fmt.Sprintf("Created queued task %s. Worker will start automatically.", taskLink), nil
+	if remoteTask(t) && t.Target != nil {
+		return fmt.Sprintf("Created remote task %s for project `%s` on %s in %s.\nThe remote agent will claim it on its next poll.\nRoute: %s.\nNext:\n%s", taskLink, firstNonEmptyString(t.Target.ProjectID, t.Target.WorkdirID, "remote"), t.Target.AgentID, t.Target.Workdir, firstNonEmptyString(decision.Reason, t.Target.Reason, "remote target selected"), commandBlock(
+			"status",
+			"show "+t.ID,
+		))
+	}
+	return fmt.Sprintf("Created queued task %s. Worker will start automatically.", taskLink)
 }
 
 func (c createdTask) firstChildID() string {
@@ -4361,6 +4371,23 @@ func (o *Orchestrator) createTaskRecordWithAttachments(ctx context.Context, goal
 	return o.createTaskRecordWithOptions(ctx, goal, attachments, taskCreateOptions{})
 }
 
+func (o *Orchestrator) createTaskRecordWithRoutedTarget(ctx context.Context, goal string, target *taskstore.ExecutionTarget, attachments []taskstore.Attachment, opts taskCreateOptions) (createdTask, WorkRouteDecision, error) {
+	resolved, decision, err := o.resolveTaskTarget(goal, target)
+	if err != nil {
+		return createdTask{}, decision, err
+	}
+	if resolved != nil && strings.EqualFold(resolved.Mode, "remote") {
+		task, err := o.createRemoteTaskRecordWithOptions(ctx, goal, *resolved, attachments, opts)
+		if err != nil {
+			return createdTask{}, decision, err
+		}
+		decision.Target = task.Target
+		return createdTask{Task: task}, decision, nil
+	}
+	created, err := o.createTaskRecordWithOptions(ctx, goal, attachments, opts)
+	return created, decision, err
+}
+
 func (o *Orchestrator) createTaskRecordWithOptions(ctx context.Context, goal string, attachments []taskstore.Attachment, opts taskCreateOptions) (createdTask, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
@@ -4406,15 +4433,16 @@ func (o *Orchestrator) createTaskRecordWithOptions(ctx context.Context, goal str
 }
 
 func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, target taskstore.ExecutionTarget, attachments []taskstore.Attachment) (taskstore.Task, error) {
+	return o.createRemoteTaskRecordWithOptions(ctx, goal, target, attachments, taskCreateOptions{})
+}
+
+func (o *Orchestrator) createRemoteTaskRecordWithOptions(ctx context.Context, goal string, target taskstore.ExecutionTarget, attachments []taskstore.Attachment, opts taskCreateOptions) (taskstore.Task, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return taskstore.Task{}, fmt.Errorf("goal is required")
 	}
+	target = normalizeTaskTarget(&target)
 	target.Mode = "remote"
-	target.AgentID = strings.TrimSpace(target.AgentID)
-	target.WorkdirID = strings.TrimSpace(target.WorkdirID)
-	target.Workdir = strings.TrimSpace(target.Workdir)
-	target.Backend = strings.TrimSpace(target.Backend)
 	if target.AgentID == "" {
 		return taskstore.Task{}, fmt.Errorf("remote agent id is required")
 	}
@@ -4441,6 +4469,9 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 	attachments = prepareTaskAttachments(attachments)
 	task := taskstore.Task{
 		ID:                 taskID,
+		GoalID:             strings.TrimSpace(opts.GoalID),
+		ExecutionMode:      strings.TrimSpace(opts.ExecutionMode),
+		GoalKind:           strings.TrimSpace(opts.GoalKind),
 		Title:              o.summarizeTaskTitle(ctx, taskID, goal),
 		Goal:               goal,
 		Status:             taskstore.StatusQueued,
@@ -4462,6 +4493,7 @@ func (o *Orchestrator) createRemoteTaskRecord(ctx context.Context, goal string, 
 		"agent_id": target.AgentID,
 		"machine":  target.Machine,
 		"workdir":  target.Workdir,
+		"project":  target.ProjectID,
 		"backend":  target.Backend,
 	})})
 	return task, nil
@@ -5747,6 +5779,10 @@ func resolveAdvertisedWorkdir(agent remoteagent.Agent, target *taskstore.Executi
 	}
 	target.WorkdirID = matched.ID
 	target.Workdir = matched.Path
+	target.ProjectID = firstNonEmptyString(target.ProjectID, matched.ProjectID, workspaceProjectID(*matched))
+	target.RepoURL = firstNonEmptyString(target.RepoURL, matched.RepoURL)
+	target.Branch = firstNonEmptyString(target.Branch, matched.Branch)
+	target.Labels = compactRouteLabels(append(append([]string{}, matched.Labels...), target.Labels...))
 	return nil
 }
 
@@ -5768,14 +5804,29 @@ func formatTaskTarget(target taskstore.ExecutionTarget) string {
 }
 
 func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) string {
+	target := taskstore.ExecutionTarget{}
+	if t.Target != nil {
+		target = *t.Target
+	}
+	project := "Project: " + firstNonEmptyString(target.ProjectID, target.WorkdirID, filepath.Base(target.Workdir), "remote workspace") + "."
+	repo := ""
+	if target.RepoURL != "" || target.Branch != "" {
+		parts := []string{target.RepoURL}
+		if target.Branch != "" {
+			parts = append(parts, "branch "+target.Branch)
+		}
+		repo = "Repository metadata: " + strings.Join(uniqueStrings(parts), " / ") + "."
+	}
 	return strings.Join([]string{
 		"Work this task in the selected remote directory.",
 		"Agent: " + agent.ID + " on " + firstNonEmptyString(agent.Machine, "unknown machine") + ".",
+		project,
+		repo,
 		"Goal: " + t.Goal,
 		"Attachments: " + formatTaskAttachmentsForPrompt(t.Attachments),
 		"",
 		agentDiagramGuidance,
-		"Inspect the directory first. If no code, docs, configuration, or workflow change is required, make no edits and start the final result with `No change required:` followed by the reason. Otherwise make the smallest practical change, run relevant validation, and report changed files plus commands run.",
+		"Inspect the directory first. If this task depends on another project, name the dependency, the expected version/commit/API, and the coordination order instead of guessing. If no code, docs, configuration, or workflow change is required, make no edits and start the final result with `No change required:` followed by the reason. Otherwise make the smallest practical change, run relevant validation, and report changed files plus commands run.",
 	}, "\n")
 }
 
@@ -5928,6 +5979,9 @@ func (o *Orchestrator) cancelTask(ctx context.Context, selector string) (string,
 		payload["worker"] = activeRun.Worker
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.cancelled", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(payload)})
+	if remoteTask(t) && t.Target != nil {
+		return fmt.Sprintf("Cancelled remote task %s in the control plane. If agent %s already claimed it, the current remote process may finish and its late completion will be rejected by task state.", taskShortID(taskID), t.Target.AgentID), nil
+	}
 	return fmt.Sprintf("Cancelled %s. Workspace kept at %s.", taskID, t.Workspace), nil
 }
 
@@ -5942,6 +5996,28 @@ func (o *Orchestrator) retryTask(ctx context.Context, selector, backend, instruc
 	}
 	if o.taskActive(taskID) {
 		return "", fmt.Errorf("task %s is already running", taskShortID(taskID))
+	}
+	if remoteTask(t) && t.Target != nil {
+		if t.Status == taskstore.StatusRunning {
+			return "", fmt.Errorf("remote task %s is already running on %s", taskShortID(taskID), t.Target.AgentID)
+		}
+		if strings.TrimSpace(backend) != "" {
+			t.Target.Backend = strings.TrimSpace(backend)
+		}
+		if strings.TrimSpace(instruction) == "" {
+			instruction = "retry requested"
+		}
+		if err := o.stalePendingTaskApprovals(ctx, taskID, "remote task retried"); err != nil {
+			return "", err
+		}
+		t.Status = taskstore.StatusQueued
+		t.AssignedTo = "remote:" + t.Target.AgentID
+		t.Result = appendResultLine(t.Result, "remote retry queued: "+strings.TrimSpace(instruction))
+		if err := o.tasks.Save(t); err != nil {
+			return "", err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.retried", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"agent_id": t.Target.AgentID, "workdir": t.Target.Workdir, "backend": t.Target.Backend, "instruction": instruction})})
+		return fmt.Sprintf("Requeued remote task %s for %s in %s. The remote agent will claim it on its next poll.", taskShortID(taskID), t.Target.AgentID, t.Target.Workdir), nil
 	}
 	if strings.TrimSpace(backend) == "" {
 		backend = externalBackendForTask(t)
@@ -6345,7 +6421,11 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 		return "", err
 	}
 	t.Status = taskstore.StatusQueued
-	t.AssignedTo = "OrchestratorAgent"
+	if remoteTask(t) && t.Target != nil {
+		t.AssignedTo = "remote:" + t.Target.AgentID
+	} else {
+		t.AssignedTo = "OrchestratorAgent"
+	}
 	if strings.TrimSpace(t.Result) == "" {
 		t.Result = reason
 	} else {
@@ -6356,6 +6436,9 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.reopened", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": reason})})
 	shortID := taskShortID(taskID)
+	if remoteTask(t) && t.Target != nil {
+		return fmt.Sprintf("Reopened remote task %s for %s in %s.\nThe remote agent will claim it on its next poll.", shortID, t.Target.AgentID, t.Target.Workdir), nil
+	}
 	instruction := strings.TrimPrefix(reason, "reopened by human: ")
 	instruction = strings.TrimPrefix(instruction, "reopened by human")
 	instruction = strings.TrimSpace(instruction)
@@ -6876,6 +6959,35 @@ func (o *Orchestrator) listAgents(ctx context.Context) (string, error) {
 			command = "not configured"
 		}
 		fmt.Fprintf(&b, "%s [%s] %s\n  command: %s\n", a.Name, status, a.Description, command)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func (o *Orchestrator) formatRemoteWorkspacesReply() (string, error) {
+	workspaces, err := o.ListRemoteWorkspaces()
+	if err != nil {
+		return "", err
+	}
+	if len(workspaces) == 0 {
+		return "No remote project workspaces are registered. Start a homelab-agent with remote_agent.workdirs or `-workdir repo=/path`.", nil
+	}
+	var b strings.Builder
+	for _, workspace := range workspaces {
+		status := workspace.Status
+		if status == "" {
+			status = "unknown"
+		}
+		fmt.Fprintf(&b, "%s [%s]\n  agent: %s on %s\n  dir: %s\n", workspace.ProjectID, status, workspace.AgentID, firstNonEmptyString(workspace.Machine, "unknown"), workspace.Workdir)
+		if workspace.RepoURL != "" || workspace.Branch != "" {
+			branch := ""
+			if workspace.Branch != "" {
+				branch = " branch " + workspace.Branch
+			}
+			fmt.Fprintf(&b, "  repo: %s%s\n", firstNonEmptyString(workspace.RepoURL, "unknown"), branch)
+		}
+		if len(workspace.Labels) > 0 {
+			fmt.Fprintf(&b, "  labels: %s\n", strings.Join(workspace.Labels, ", "))
+		}
 	}
 	return strings.TrimSpace(b.String()), nil
 }
@@ -9053,17 +9165,7 @@ func (o *Orchestrator) failApproval(ctx context.Context, approval approvalstore.
 }
 
 func (o *Orchestrator) createApprovedTaskFromRequest(ctx context.Context, req taskCreateRequest, goal string) (string, string, error) {
-	if req.Target != nil && strings.EqualFold(req.Target.Mode, "remote") {
-		task, err := o.createRemoteTaskRecord(ctx, goal, *req.Target, req.Attachments)
-		if err != nil {
-			return "", "", err
-		}
-		return fmt.Sprintf("Created remote task %s for %s on %s.\nThe remote agent will claim it on its next poll.\nNext:\n%s", task.ID, task.Target.AgentID, task.Target.Workdir, commandBlock(
-			"status",
-			"show "+task.ID,
-		)), task.ID, nil
-	}
-	created, err := o.createTaskRecordWithAttachments(ctx, goal, req.Attachments)
+	created, decision, err := o.createTaskRecordWithRoutedTarget(ctx, goal, req.Target, req.Attachments, taskCreateOptions{})
 	if err != nil {
 		return "", "", err
 	}
@@ -9072,6 +9174,9 @@ func (o *Orchestrator) createApprovedTaskFromRequest(ctx context.Context, req ta
 	}
 	taskID := created.firstChildID()
 	taskLink := fmt.Sprintf("[%s](%s)", markdownLinkLabel(taskLinkTitle(created.Task)), dashboardTaskURL(created.Task.ID))
+	if remoteTask(created.Task) {
+		return formatCreatedTaskReply(created, decision), taskID, nil
+	}
 	if !req.AutoRun {
 		return fmt.Sprintf("Created queued task %s. Worker will start automatically.", taskLink), taskID, nil
 	}

@@ -182,7 +182,7 @@ const run = async () => {
       cdp,
       `(() => {
         const countResources = () => {
-          const counts = { tasks: 0, approvals: 0, events: 0, agents: 0 };
+	          const counts = { tasks: 0, approvals: 0, events: 0, agents: 0, workspaces: 0 };
           for (const entry of performance.getEntriesByType('resource')) {
             let path = '';
             try {
@@ -192,8 +192,9 @@ const run = async () => {
             }
             if (path === '/api/tasks' || path === '/tasks') counts.tasks += 1;
             if (path === '/api/approvals' || path === '/approvals') counts.approvals += 1;
-            if (path === '/api/events' || path === '/events') counts.events += 1;
-            if (path === '/api/agents' || path === '/agents') counts.agents += 1;
+	            if (path === '/api/events' || path === '/events') counts.events += 1;
+	            if (path === '/api/agents' || path === '/agents') counts.agents += 1;
+	            if (path === '/api/workspaces' || path === '/workspaces') counts.workspaces += 1;
           }
           return counts;
         };
@@ -205,9 +206,10 @@ const run = async () => {
             const after = countResources();
             const completed =
               after.tasks > before.tasks &&
-              after.approvals > before.approvals &&
-              after.events > before.events &&
-              after.agents > before.agents;
+	              after.approvals > before.approvals &&
+	              after.events > before.events &&
+	              after.agents > before.agents &&
+	              after.workspaces > before.workspaces;
             if (completed || Date.now() - started > 11500) {
               const status = document.querySelector('.sync-status');
               resolve({

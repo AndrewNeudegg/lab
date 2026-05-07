@@ -26,7 +26,7 @@ func TestStoreUpsertHeartbeatNormalizesAgent(t *testing.T) {
 			"directory-context",
 		},
 		Workdirs: []Workdir{
-			{ID: "repo", Path: "/srv/repo", Label: " Repo "},
+			{ID: "repo", Path: "/srv/repo", Label: " Repo ", ProjectID: " remote1 ", RepoURL: " git@example.com:remote1.git ", Branch: " main ", Labels: []string{" uat ", "uat", ""}, Metadata: map[string]string{" owner ": " platform ", "empty": " "}},
 			{ID: "repo", Path: "/srv/repo", Label: "duplicate"},
 			{Path: "/srv/other"},
 			{ID: "empty"},
@@ -52,6 +52,12 @@ func TestStoreUpsertHeartbeatNormalizesAgent(t *testing.T) {
 	}
 	if len(agent.Workdirs) != 2 {
 		t.Fatalf("workdirs = %#v, want deduped non-empty paths", agent.Workdirs)
+	}
+	if agent.Workdirs[0].ProjectID != "remote1" || agent.Workdirs[0].RepoURL != "git@example.com:remote1.git" || agent.Workdirs[0].Branch != "main" {
+		t.Fatalf("first workdir metadata = %#v", agent.Workdirs[0])
+	}
+	if !reflect.DeepEqual(agent.Workdirs[0].Labels, []string{"uat"}) || !reflect.DeepEqual(agent.Workdirs[0].Metadata, map[string]string{"owner": "platform"}) {
+		t.Fatalf("first workdir labels/metadata = %#v / %#v", agent.Workdirs[0].Labels, agent.Workdirs[0].Metadata)
 	}
 	if agent.Workdirs[1].ID != "/srv/other" {
 		t.Fatalf("second workdir id = %q, want path fallback", agent.Workdirs[1].ID)

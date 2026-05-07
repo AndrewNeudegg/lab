@@ -199,6 +199,38 @@ describe('homelabd client', () => {
     expect(response.agents[0].workdirs?.[0].path).toBe('/srv/desk/repo');
   });
 
+  test('lists remote project workspaces from the control plane', async () => {
+    const paths: string[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input) => {
+        paths.push(String(input));
+        return jsonResponse({
+          workspaces: [
+            {
+              id: 'desk:remote1',
+              project_id: 'remote1',
+              agent_id: 'desk',
+              machine: 'desk.local',
+              status: 'online',
+              workdir_id: 'remote1',
+              workdir: '/srv/remote1',
+              repo_url: 'git@example.com:remote1.git',
+              branch: 'main',
+              labels: ['uat']
+            }
+          ]
+        });
+      }
+    });
+
+    const response = await client.listWorkspaces();
+
+    expect(paths).toEqual(['http://homelabd/workspaces']);
+    expect(response.workspaces[0].project_id).toBe('remote1');
+    expect(response.workspaces[0].workdir).toBe('/srv/remote1');
+  });
+
   test('loads the assistant catalogue with API-owned filters', async () => {
     const paths: string[] = [];
     const client = createHomelabdClient({

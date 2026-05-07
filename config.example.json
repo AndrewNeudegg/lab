@@ -87,7 +87,11 @@
       {
         "id": "repo",
         "path": "/home/me/project",
-        "label": "Project repo"
+        "label": "Project repo",
+        "project_id": "project",
+        "repo_url": "git@example.invalid:me/project.git",
+        "branch": "main",
+        "labels": ["project", "remote"]
       }
     ]
   },

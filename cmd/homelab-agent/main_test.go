@@ -59,7 +59,7 @@ func TestRemoteWorkdirsDropsEmptyAndUsesPathAsID(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("workdirs = %#v, want 2", got)
 	}
-	if got[0] != (remoteagent.Workdir{ID: "repo", Path: "/srv/repo", Label: "Repo"}) {
+	if got[0].ID != "repo" || got[0].Path != "/srv/repo" || got[0].Label != "Repo" {
 		t.Fatalf("first = %#v", got[0])
 	}
 	if got[1].ID != "/srv/other" || got[1].Path != "/srv/other" {

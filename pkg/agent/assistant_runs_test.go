@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
 	"github.com/andrewneudegg/lab/pkg/llm"
+	"github.com/andrewneudegg/lab/pkg/remoteagent"
+	taskstore "github.com/andrewneudegg/lab/pkg/task"
 )
 
 func TestAssistantRunCreateTasksAutonomyCreatesFollowUpTask(t *testing.T) {
@@ -58,6 +61,52 @@ func TestAssistantRunCreateTasksAutonomyCreatesFollowUpTask(t *testing.T) {
 	}
 	if len(run.Receipts) != 1 || run.Receipts[0].Kind != "task_created" || run.Receipts[0].ObjectURL == "" {
 		t.Fatalf("receipts = %#v, want task_created receipt", run.Receipts)
+	}
+}
+
+func TestAssistantRunActionCreateTaskUsesRemoteTarget(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID: "remote1-agent",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	run := assistantstore.Run{
+		Autonomy: assistantstore.RunAutonomyCreateTasks,
+		Decision: assistantstore.RunDecisionRecommend,
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:        "action_1",
+			Kind:      "task",
+			Title:     "Build remote1 feature",
+			TaskGoal:  "Build the remote1 feature from this proactive recommendation.",
+			Rationale: "remote1 is the right project.",
+			Target: &taskstore.ExecutionTarget{
+				Mode:      "auto",
+				ProjectID: "remote1",
+			},
+		}},
+	}
+
+	orch.applyAssistantRunActions(context.Background(), &run)
+
+	if run.Decision != assistantstore.RunDecisionCreated || run.RecommendedActions[0].CreatedTaskID == "" {
+		t.Fatalf("run = %#v, want created remote task", run)
+	}
+	created, err := orch.tasks.Load(run.RecommendedActions[0].CreatedTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Target == nil || created.Target.Mode != "remote" || created.Target.ProjectID != "remote1" || created.Target.Workdir != "/home/lab/remote1" {
+		t.Fatalf("target = %#v, want remote1 target", created.Target)
 	}
 }
 

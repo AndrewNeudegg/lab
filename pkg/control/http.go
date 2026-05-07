@@ -80,6 +80,7 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/tasks", s.withCORS(s.handleTasks))
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
 	mux.HandleFunc("/settings", s.withCORS(s.handleSettings))
+	mux.HandleFunc("/workspaces", s.withCORS(s.handleWorkspaces))
 	mux.HandleFunc("/knowledge/spaces", s.withCORS(s.handleKnowledgeSpaces))
 	mux.HandleFunc("/knowledge/spaces/", s.withCORS(s.handleKnowledgeSpace))
 	mux.HandleFunc("/workflows", s.withCORS(s.handleWorkflows))
@@ -850,6 +851,23 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+}
+
+func (s *Server) handleWorkspaces(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Orchestrator == nil {
+		writeJSON(rw, http.StatusOK, map[string]any{"workspaces": []agent.RemoteWorkspace{}})
+		return
+	}
+	workspaces, err := s.Orchestrator.ListRemoteWorkspaces()
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"workspaces": workspaces})
 }
 
 func (s *Server) handleAgents(rw http.ResponseWriter, req *http.Request) {

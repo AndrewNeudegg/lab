@@ -80,9 +80,14 @@ type RemoteAgentConfig struct {
 }
 
 type RemoteAgentWorkdirConfig struct {
-	ID    string `json:"id,omitempty"`
-	Path  string `json:"path"`
-	Label string `json:"label,omitempty"`
+	ID        string            `json:"id,omitempty"`
+	Path      string            `json:"path"`
+	Label     string            `json:"label,omitempty"`
+	ProjectID string            `json:"project_id,omitempty"`
+	RepoURL   string            `json:"repo_url,omitempty"`
+	Branch    string            `json:"branch,omitempty"`
+	Labels    []string          `json:"labels,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 type AssistantConfig struct {

@@ -159,6 +159,8 @@ func (c cli) dispatch(args []string) error {
 		return c.approval(args)
 	case "events", "event":
 		return c.events(args[1:])
+	case "workspace", "workspaces", "project", "projects":
+		return c.workspace(args[1:])
 	case "healthd":
 		return c.healthd(args[1:])
 	case "errors", "error":
@@ -327,6 +329,11 @@ func (c cli) goalCreate(args []string) error {
 	details := flags.String("details", "", "long-form goal details")
 	kind := flags.String("kind", "", "goal kind: build, routine, watch, or maintenance")
 	mode := flags.String("mode", "", "goal execution mode: guided or autopilot")
+	targetMode := flags.String("target", "", "goal task target: auto, local, or remote")
+	projectID := flags.String("project", "", "remote project/workspace id for Goal tasks")
+	agentID := flags.String("agent", "", "remote agent id for Goal tasks")
+	workdirID := flags.String("workdir", "", "remote workdir id for Goal tasks")
+	workdirPath := flags.String("workdir-path", "", "remote workdir path for Goal tasks")
 	priority := flags.String("priority", "", "goal priority")
 	autonomy := flags.String("autonomy", "", "goal autonomy")
 	cadence := flags.String("cadence", "", "goal cadence, such as daily, hourly, or 4h")
@@ -340,7 +347,7 @@ func (c cli) goalCreate(args []string) error {
 	}
 	objective := strings.TrimSpace(strings.Join(flags.Args(), " "))
 	if objective == "" {
-		return fmt.Errorf("usage: homelabctl goal create [--title TITLE] [--details TEXT] [--cadence daily] [--success TEXT] [--constraint TEXT] <objective>")
+		return fmt.Errorf("usage: homelabctl goal create [--title TITLE] [--target auto|local|remote] [--project PROJECT] [--cadence daily] [--success TEXT] [--constraint TEXT] <objective>")
 	}
 	body := map[string]any{
 		"objective":  objective,
@@ -359,6 +366,9 @@ func (c cli) goalCreate(args []string) error {
 	}
 	if value := strings.TrimSpace(*mode); value != "" {
 		body["execution_mode"] = value
+	}
+	if target := taskTargetFromFlags(*targetMode, *projectID, *agentID, *workdirID, *workdirPath, ""); len(target) > 0 {
+		body["target"] = target
 	}
 	if *budgetTasks > 0 {
 		body["autopilot"] = map[string]any{"budget_tasks": *budgetTasks}
@@ -874,7 +884,7 @@ func (c cli) task(args []string) error {
 		}
 		goal := strings.TrimSpace(strings.Join(rest, " "))
 		if goal == "" {
-			return fmt.Errorf("usage: homelabctl task new [--attach <path>] [--agent <agent_id> --workdir <path_or_id>] <goal>")
+			return fmt.Errorf("usage: homelabctl task new [--attach <path>] [--auto|--local|--project <project>|--agent <agent_id> --workdir <path_or_id>] <goal>")
 		}
 		body := map[string]any{"goal": goal}
 		if target != nil {
@@ -951,12 +961,27 @@ func (c cli) task(args []string) error {
 }
 
 func parseTaskNewArgs(args []string) (map[string]any, []map[string]any, []string, error) {
-	target := map[string]any{"mode": "remote"}
+	target := map[string]any{}
 	usedTarget := false
 	var attachments []map[string]any
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--local":
+			target["mode"] = "local"
+			usedTarget = true
+			continue
+		case "--auto":
+			target["mode"] = "auto"
+			usedTarget = true
+			continue
+		case "--project":
+			if i+1 < len(args) {
+				target["project_id"] = args[i+1]
+				usedTarget = true
+				i++
+				continue
+			}
 		case "--agent":
 			if i+1 < len(args) {
 				target["agent_id"] = args[i+1]
@@ -1001,8 +1026,49 @@ func parseTaskNewArgs(args []string) (map[string]any, []map[string]any, []string
 	}
 	if !usedTarget {
 		target = nil
+	} else if _, ok := target["mode"]; !ok {
+		if _, hasAgent := target["agent_id"]; hasAgent {
+			target["mode"] = "remote"
+		} else if _, hasWorkdirID := target["workdir_id"]; hasWorkdirID {
+			target["mode"] = "remote"
+		} else if _, hasWorkdir := target["workdir"]; hasWorkdir {
+			target["mode"] = "remote"
+		} else if _, hasBackend := target["backend"]; hasBackend {
+			target["mode"] = "remote"
+		} else {
+			target["mode"] = "auto"
+		}
 	}
 	return target, attachments, rest, nil
+}
+
+func taskTargetFromFlags(mode, projectID, agentID, workdirID, workdirPath, backend string) map[string]any {
+	target := map[string]any{}
+	if value := strings.TrimSpace(mode); value != "" {
+		target["mode"] = value
+	}
+	if value := strings.TrimSpace(projectID); value != "" {
+		target["project_id"] = value
+	}
+	if value := strings.TrimSpace(agentID); value != "" {
+		target["agent_id"] = value
+	}
+	if value := strings.TrimSpace(workdirID); value != "" {
+		target["workdir_id"] = value
+	}
+	if value := strings.TrimSpace(workdirPath); value != "" {
+		target["workdir"] = value
+	}
+	if value := strings.TrimSpace(backend); value != "" {
+		target["backend"] = value
+	}
+	if len(target) == 0 {
+		return nil
+	}
+	if _, ok := target["mode"]; !ok {
+		target["mode"] = "auto"
+	}
+	return target
 }
 
 func fileAttachment(path string) (map[string]any, error) {
@@ -1055,6 +1121,21 @@ func (c cli) agent(args []string) error {
 		return c.do(http.MethodGet, path("agents", args[1]), nil)
 	default:
 		return fmt.Errorf("unknown agent command %q", args[0])
+	}
+}
+
+func (c cli) workspace(args []string) error {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+	switch commandWord(args[0]) {
+	case "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl workspace list")
+		}
+		return c.do(http.MethodGet, "/workspaces", nil)
+	default:
+		return fmt.Errorf("unknown workspace command %q", args[0])
 	}
 }
 
@@ -1578,7 +1659,7 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] message <text>
   homelabctl [-addr http://127.0.0.1:18080] chat clear <conversation_id>|--all
 
-  homelabctl [-addr http://127.0.0.1:18080] task new [--attach <path>] [--agent <agent_id> --workdir <workdir_id>|--workdir-path <path> --backend <backend>] <goal>
+  homelabctl [-addr http://127.0.0.1:18080] task new [--attach <path>] [--auto|--local|--project <project>|--agent <agent_id> --workdir <workdir_id>|--workdir-path <path> --backend <backend>] <goal>
   homelabctl [-addr http://127.0.0.1:18080] task list
   homelabctl [-addr http://127.0.0.1:18080] task show <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task runs <task_id>
@@ -1621,9 +1702,11 @@ func usage(out io.Writer) {
   homelabctl [-addr http://127.0.0.1:18080] assistant restore <run_id>
   homelabctl [-addr http://127.0.0.1:18080] assistant signals
   homelabctl [-addr http://127.0.0.1:18080] assistant signal <fingerprint> <useful|dismiss|snooze|create-task> [reason]
+  homelabctl [-addr http://127.0.0.1:18080] goal create [--target auto|local|remote] [--project <project>] [--mode guided|autopilot] <objective>
 
   homelabctl [-addr http://127.0.0.1:18080] agent list
   homelabctl [-addr http://127.0.0.1:18080] agent show <agent_id>
+  homelabctl [-addr http://127.0.0.1:18080] workspace list
 
   homelabctl [-addr http://127.0.0.1:18080] approval list
   homelabctl [-addr http://127.0.0.1:18080] approval approve <approval_id>

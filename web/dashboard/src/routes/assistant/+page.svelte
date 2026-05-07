@@ -10,11 +10,13 @@
     Navbar,
     type AssistantGoal,
     type AssistantGoalTimeline,
-    type AssistantRun,
-    type AssistantRunAction,
-    type AssistantRunFinding,
-    type AssistantSignalCandidate
-  } from '@homelab/shared';
+	    type AssistantRun,
+	    type AssistantRunAction,
+	    type AssistantRunFinding,
+	    type AssistantSignalCandidate,
+	    type HomelabdRemoteWorkspace,
+	    type HomelabdTaskTarget
+	  } from '@homelab/shared';
   import {
     activeAssistantGoals,
     assistantGoalAutopilotStatusLabel,
@@ -41,13 +43,15 @@
   } from './assistant-model';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
-  const client = createHomelabdClient({ baseUrl: apiBase });
-  type MobilePanel = 'runs' | 'detail';
-  type DetailKind = 'goal' | 'run';
+	  const client = createHomelabdClient({ baseUrl: apiBase });
+	  type MobilePanel = 'runs' | 'detail';
+	  type DetailKind = 'goal' | 'run';
+	  type GoalTargetMode = 'auto' | 'local' | 'remote';
 
-  let runs: AssistantRun[] = [];
-  let signals: AssistantSignalCandidate[] = [];
-  let goals: AssistantGoal[] = [];
+	  let runs: AssistantRun[] = [];
+	  let signals: AssistantSignalCandidate[] = [];
+	  let goals: AssistantGoal[] = [];
+	  let workspaces: HomelabdRemoteWorkspace[] = [];
   let selectedGoalId = '';
   let selectedGoal: AssistantGoal | undefined;
   let selectedGoalTimeline: AssistantGoalTimeline | undefined;
@@ -75,19 +79,23 @@
   let archivedRuns: AssistantRun[] = [];
   let visibleRuns: AssistantRun[] = [];
   let displayedActions: AssistantRunAction[] = [];
-  let activeSignals: AssistantSignalCandidate[] = [];
-  let activeGoals: AssistantGoal[] = [];
-  let dueGoals: AssistantGoal[] = [];
-  let goalFormOpen = false;
+	  let activeSignals: AssistantSignalCandidate[] = [];
+	  let activeGoals: AssistantGoal[] = [];
+	  let dueGoals: AssistantGoal[] = [];
+	  let onlineWorkspaceItems: HomelabdRemoteWorkspace[] = [];
+	  let selectedGoalWorkspace: HomelabdRemoteWorkspace | undefined;
+	  let goalFormOpen = false;
   let goalTitle = '';
   let goalObjective = '';
   let goalKind = 'build';
   let goalExecutionMode = 'guided';
   let goalAutopilotBudget = 4;
-  let goalCadence = 'daily';
-  let goalAutonomy = 'observe';
-  let goalDetails = '';
-  let lastAppliedRouteRunId = '';
+	  let goalCadence = 'daily';
+	  let goalAutonomy = 'observe';
+	  let goalDetails = '';
+	  let goalTargetMode: GoalTargetMode = 'auto';
+	  let goalTargetWorkspaceId = '';
+	  let lastAppliedRouteRunId = '';
   let pendingRouteRunId = '';
   let pendingOverviewRoute = false;
 
@@ -98,10 +106,21 @@
   $: selectedGoal = selectAssistantGoal(goals, selectedGoalId);
   $: displayedActions = visibleRecommendedActions(selectedRun);
   $: openRunActions = activeRuns.reduce((total, run) => total + runOpenActionCount(run), 0);
-  $: activeSignals = signals.filter((signal) => !signal.suppressed && !signal.created_task_id);
-  $: activeGoals = activeAssistantGoals(goals);
-  $: dueGoals = dueAssistantGoals(goals);
-  $: runSpaces = [
+	  $: activeSignals = signals.filter((signal) => !signal.suppressed && !signal.created_task_id);
+	  $: activeGoals = activeAssistantGoals(goals);
+	  $: dueGoals = dueAssistantGoals(goals);
+	  $: onlineWorkspaceItems = workspaces.filter((workspace) => workspace.status !== 'offline');
+	  $: if (
+	    workspaces.length &&
+	    !workspaces.some((workspace) => workspace.id === goalTargetWorkspaceId)
+	  ) {
+	    goalTargetWorkspaceId = onlineWorkspaceItems[0]?.id || workspaces[0].id;
+	  }
+	  $: selectedGoalWorkspace =
+	    workspaces.find((workspace) => workspace.id === goalTargetWorkspaceId) ||
+	    onlineWorkspaceItems[0] ||
+	    workspaces[0];
+	  $: runSpaces = [
     {
       id: 'active' as AssistantRunView,
       label: 'Active',
@@ -127,14 +146,16 @@
     runsLoading = true;
     runsError = '';
     try {
-      const [runResponse, signalResponse, goalResponse] = await Promise.all([
-        client.listAssistantRuns({ archived: 'include' }),
-        client.listAssistantSignals(),
-        client.listAssistantGoals()
-      ]);
-      runs = runResponse.runs || [];
-      signals = signalResponse.signals || [];
-      goals = goalResponse.goals || [];
+	      const [runResponse, signalResponse, goalResponse, workspaceResponse] = await Promise.all([
+	        client.listAssistantRuns({ archived: 'include' }),
+	        client.listAssistantSignals(),
+	        client.listAssistantGoals(),
+	        client.listWorkspaces()
+	      ]);
+	      runs = runResponse.runs || [];
+	      signals = signalResponse.signals || [];
+	      goals = goalResponse.goals || [];
+	      workspaces = workspaceResponse.workspaces || [];
       applySyncedRunSelection();
       await refreshSelectedGoalAfterGoalList();
       lastSynced = syncTimeLabel();
@@ -306,12 +327,60 @@
     selectRun(runId, false, runView);
   };
 
-  const labelFromSlug = (value: unknown) =>
-    String(value || '')
-      .replaceAll('_', ' ')
-      .replaceAll('-', ' ') || 'unknown';
+	  const labelFromSlug = (value: unknown) =>
+	    String(value || '')
+	      .replaceAll('_', ' ')
+	      .replaceAll('-', ' ') || 'unknown';
 
-  const formatAssistantTime = (value?: string) => {
+	  const workspaceLabel = (workspace?: HomelabdRemoteWorkspace) => {
+	    if (!workspace) {
+	      return 'No remote project';
+	    }
+	    return workspace.project_id || workspace.label || workspace.workdir_id || workspace.workdir;
+	  };
+
+	  const workspaceDetail = (workspace?: HomelabdRemoteWorkspace) => {
+	    if (!workspace) {
+	      return 'No remote project selected';
+	    }
+	    const location = [workspace.agent_name || workspace.agent_id, workspace.machine].filter(Boolean).join(' on ');
+	    return [location, workspace.workdir].filter(Boolean).join(' / ');
+	  };
+
+	  const targetLabel = (target?: HomelabdTaskTarget) => {
+	    if (!target || target.mode === 'auto') {
+	      return target?.project_id ? `Auto route / ${target.project_id}` : 'Auto route';
+	    }
+	    if (target.mode === 'local') {
+	      return 'Local homelabd';
+	    }
+	    return [target.project_id || 'Remote project', target.agent_id, target.workdir || target.workdir_id]
+	      .filter(Boolean)
+	      .join(' / ');
+	  };
+
+	  const goalTargetFromForm = (): HomelabdTaskTarget | undefined => {
+	    if (goalTargetMode === 'local') {
+	      return { mode: 'local' };
+	    }
+	    if (goalTargetMode === 'remote' && selectedGoalWorkspace) {
+	      return {
+	        mode: 'remote',
+	        project_id: selectedGoalWorkspace.project_id,
+	        agent_id: selectedGoalWorkspace.agent_id,
+	        machine: selectedGoalWorkspace.machine,
+	        workdir_id: selectedGoalWorkspace.workdir_id,
+	        workdir: selectedGoalWorkspace.workdir,
+	        repo_url: selectedGoalWorkspace.repo_url,
+	        branch: selectedGoalWorkspace.branch,
+	        labels: selectedGoalWorkspace.labels,
+	        backend: selectedGoalWorkspace.backend
+	      };
+	    }
+	    return { mode: 'auto' };
+	  };
+
+	  const formatAssistantTime = (value?: string) => {
     if (!value) {
       return '';
     }
@@ -656,10 +725,11 @@
                 budget_tasks: Math.max(1, goalAutopilotBudget || 1)
               }
             : undefined,
-        cadence: goalCadence.trim() || undefined,
-        autonomy: goalAutonomy.trim() || undefined,
-        created_by: 'dashboard'
-      });
+	        cadence: goalCadence.trim() || undefined,
+	        autonomy: goalAutonomy.trim() || undefined,
+	        target: goalTargetFromForm(),
+	        created_by: 'dashboard'
+	      });
       goals = [timeline.goal, ...goals.filter((goal) => goal.id !== timeline.goal.id)];
       selectedGoalId = timeline.goal.id;
       selectedGoalTimeline = timeline;
@@ -667,11 +737,12 @@
       goalFormOpen = false;
       goalTitle = '';
       goalObjective = '';
-      goalDetails = '';
-      goalKind = 'build';
-      goalExecutionMode = 'guided';
-      goalAutopilotBudget = 4;
-      goalNotice = `${assistantGoalKindLabel(timeline.goal.kind)} created in ${assistantGoalExecutionLabel(timeline.goal.execution_mode)} mode.`;
+	      goalDetails = '';
+	      goalKind = 'build';
+	      goalExecutionMode = 'guided';
+	      goalAutopilotBudget = 4;
+	      goalTargetMode = 'auto';
+	      goalNotice = `${assistantGoalKindLabel(timeline.goal.kind)} created in ${assistantGoalExecutionLabel(timeline.goal.execution_mode)} mode.`;
       mobilePanel = 'detail';
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to create Goal.';
@@ -1019,26 +1090,53 @@
                   <option value="">Manual</option>
                 </select>
               </label>
-              <label>
-                <span>Autonomy</span>
-                <select bind:value={goalAutonomy}>
-                  <option value="observe">Observe</option>
-                  <option value="propose">Propose</option>
-                  <option value="create_tasks">Create tasks</option>
-                </select>
-              </label>
-            </div>
+	              <label>
+	                <span>Autonomy</span>
+	                <select bind:value={goalAutonomy}>
+	                  <option value="observe">Observe</option>
+	                  <option value="propose">Propose</option>
+	                  <option value="create_tasks">Create tasks</option>
+	                </select>
+	              </label>
+	              <label>
+	                <span>Target</span>
+	                <select bind:value={goalTargetMode}>
+	                  <option value="auto">Auto route</option>
+	                  <option value="remote">Remote project</option>
+	                  <option value="local">Local homelabd</option>
+	                </select>
+	              </label>
+	              {#if goalTargetMode === 'remote'}
+	                <label>
+	                  <span>Project</span>
+	                  <select bind:value={goalTargetWorkspaceId} disabled={!workspaces.length}>
+	                    {#each workspaces as workspace}
+	                      <option value={workspace.id}>
+	                        {workspaceLabel(workspace)} / {workspace.agent_name || workspace.agent_id} / {workspace.status}
+	                      </option>
+	                    {/each}
+	                  </select>
+	                </label>
+	              {/if}
+	            </div>
+	            {#if goalTargetMode === 'remote'}
+	              <p class="goal-target-context">{workspaceDetail(selectedGoalWorkspace)}</p>
+	            {/if}
             {#if goalExecutionMode === 'autopilot'}
               <label>
                 <span>Autopilot task budget</span>
                 <input bind:value={goalAutopilotBudget} type="number" min="1" max="20" inputmode="numeric" />
               </label>
             {/if}
-            <label>
-              <span>Details</span>
-              <textarea bind:value={goalDetails} rows="2" placeholder="Constraints, preferences, examples, and what done means."></textarea>
-            </label>
-            <button type="submit" class="primary-action" disabled={goalCreating || !goalObjective.trim()}>
+	            <label>
+	              <span>Details</span>
+	              <textarea bind:value={goalDetails} rows="2" placeholder="Constraints, preferences, examples, and what done means."></textarea>
+	            </label>
+	            <button
+	              type="submit"
+	              class="primary-action"
+	              disabled={goalCreating || !goalObjective.trim() || Boolean(goalTargetMode === 'remote' && !selectedGoalWorkspace)}
+	            >
               {goalCreating ? 'Creating' : 'Create Goal'}
             </button>
           </form>
@@ -1058,12 +1156,15 @@
                   <strong>{goal.title}</strong>
                   <span class="goal-chip-row" aria-label={`Goal type and mode for ${goal.title}`}>
                     <span class="status blue">{assistantGoalKindShortLabel(goal.kind)}</span>
-                    <span class={`status ${goal.execution_mode === 'autopilot' ? assistantGoalAutopilotTone(goalAutopilotStatus(goal)) : 'gray'}`}>
-                      {goal.execution_mode === 'autopilot'
-                        ? `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(goal))}`
-                        : 'Guided'}
-                    </span>
-                  </span>
+	                    <span class={`status ${goal.execution_mode === 'autopilot' ? assistantGoalAutopilotTone(goalAutopilotStatus(goal)) : 'gray'}`}>
+	                      {goal.execution_mode === 'autopilot'
+	                        ? `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(goal))}`
+	                        : 'Guided'}
+	                    </span>
+	                    <span class={`status ${goal.target?.mode === 'remote' ? 'green' : goal.target?.mode === 'local' ? 'gray' : 'blue'}`}>
+	                      {targetLabel(goal.target)}
+	                    </span>
+	                  </span>
                   <small>{goalSubtitle(goal)}</small>
                   <em>{goalProgress(goal)}</em>
                 </span>
@@ -1358,14 +1459,18 @@
               <dt>Autopilot</dt>
               <dd>{selectedGoal.execution_mode === 'autopilot' ? `${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(selectedGoal))} / ${goalAutopilotBudgetLabel(selectedGoal)}` : 'human in loop'}</dd>
             </div>
-            <div>
-              <dt>Autonomy</dt>
-              <dd>{labelFromSlug(selectedGoal.autonomy)}</dd>
-            </div>
-            <div>
-              <dt>Cadence</dt>
-              <dd>{selectedGoal.cadence ? labelFromSlug(selectedGoal.cadence) : 'manual'}</dd>
-            </div>
+	            <div>
+	              <dt>Autonomy</dt>
+	              <dd>{labelFromSlug(selectedGoal.autonomy)}</dd>
+	            </div>
+	            <div>
+	              <dt>Target</dt>
+	              <dd>{targetLabel(selectedGoal.target)}</dd>
+	            </div>
+	            <div>
+	              <dt>Cadence</dt>
+	              <dd>{selectedGoal.cadence ? labelFromSlug(selectedGoal.cadence) : 'manual'}</dd>
+	            </div>
             <div>
               <dt>Next</dt>
               <dd>{formatAssistantTime(selectedGoal.next_check_at) || 'due'}</dd>
@@ -1382,12 +1487,15 @@
 
           <section class="route-strip goal-strip" aria-label="Goal objective">
             <span class="status blue">{assistantGoalKindShortLabel(selectedGoal.kind)}</span>
-            <span class={`status ${selectedGoal.execution_mode === 'autopilot' ? assistantGoalAutopilotTone(goalAutopilotStatus(selectedGoal)) : 'gray'}`}>
-              {selectedGoal.execution_mode === 'autopilot'
-                ? `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(selectedGoal))}`
-                : 'Guided'}
-            </span>
-            <div>
+	            <span class={`status ${selectedGoal.execution_mode === 'autopilot' ? assistantGoalAutopilotTone(goalAutopilotStatus(selectedGoal)) : 'gray'}`}>
+	              {selectedGoal.execution_mode === 'autopilot'
+	                ? `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(selectedGoal))}`
+	                : 'Guided'}
+	            </span>
+	            <span class={`status ${selectedGoal.target?.mode === 'remote' ? 'green' : selectedGoal.target?.mode === 'local' ? 'gray' : 'blue'}`}>
+	              {targetLabel(selectedGoal.target)}
+	            </span>
+	            <div>
               <strong>{selectedGoal.objective}</strong>
               {#if selectedGoal.details}
                 <p>{selectedGoal.details}</p>
@@ -1675,10 +1783,15 @@
                         <strong>{action.title}</strong>
                         <small>{actionMeta(action)}</small>
                       </div>
-                      <span class={`status ${assistantRunActionStatusTone(action.status)}`}>
-                        {assistantRunActionStatusLabel(action.status)}
-                      </span>
-                    </header>
+	                      <span class={`status ${assistantRunActionStatusTone(action.status)}`}>
+	                        {assistantRunActionStatusLabel(action.status)}
+	                      </span>
+	                      {#if action.target}
+	                        <span class={`status ${action.target.mode === 'remote' ? 'green' : action.target.mode === 'local' ? 'gray' : 'blue'}`}>
+	                          {targetLabel(action.target)}
+	                        </span>
+	                      {/if}
+	                    </header>
                     <p>{action.rationale}</p>
                     {#if actionSupportText(action)}
                       <small class="action-support">{actionSupportText(action)}</small>
@@ -2330,11 +2443,19 @@
     font-size: 0.84rem;
   }
 
-  .goal-form textarea {
-    resize: vertical;
-  }
+	  .goal-form textarea {
+	    resize: vertical;
+	  }
 
-  .form-grid {
+	  .goal-target-context {
+	    margin: -0.1rem 0 0;
+	    overflow-wrap: anywhere;
+	    color: var(--assistant-muted, #475569);
+	    font-size: 0.76rem;
+	    line-height: 1.35;
+	  }
+
+	  .form-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.55rem;

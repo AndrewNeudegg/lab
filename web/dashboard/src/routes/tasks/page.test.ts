@@ -81,17 +81,32 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('class:pulse={refreshing}');
     expect(pageSource).toContain('function withRefreshTimeout');
     expect(pageSource).toContain('withRefreshTimeout as withTimeout');
-    expect(pageSource).toContain("const taskRequest = withRefreshTimeout('Tasks', client.listTasks())");
-    expect(pageSource).toContain("collectionFromResponse<HomelabdTask>('Tasks', 'tasks'");
-    expect(pageSource).toContain('let taskLoadError =');
+	    expect(pageSource).toContain("const taskRequest = withRefreshTimeout('Tasks', client.listTasks())");
+	    expect(pageSource).toContain("const workspaceRequest = withRefreshTimeout('Workspaces', client.listWorkspaces())");
+	    expect(pageSource).toContain("collectionFromResponse<HomelabdTask>('Tasks', 'tasks'");
+	    expect(pageSource).toContain("collectionFromResponse<HomelabdRemoteWorkspace>");
+	    expect(pageSource).toContain('let taskLoadError =');
     expect(pageSource).toContain('syncFailureCount += 1');
     expect(pageSource).toContain('syncFailureCount = 0');
     expect(pageSource).toContain('void applySecondaryRefresh');
     expect(pageSource).toContain('void refreshSelectedTaskDetails(syncSelection.selectedTaskId');
     expect(pageSource).toContain('if (sequence === refreshStateSequence)');
     expect(pageSource).toContain('lastRefresh = syncTimeLabel();');
-    expect(pageSource).not.toContain('on:click={() => void refreshState()}');
-  });
+	    expect(pageSource).not.toContain('on:click={() => void refreshState()}');
+	  });
+
+	  test('creates tasks through explicit auto, local, and remote project targets', () => {
+	    expect(pageSource).toContain("type TaskTargetMode = 'auto' | 'local' | 'remote'");
+	    expect(pageSource).toContain("let taskTargetMode: TaskTargetMode = 'auto'");
+	    expect(pageSource).toContain('client.listWorkspaces()');
+	    expect(pageSource).toContain('<option value="auto">Auto route</option>');
+	    expect(pageSource).toContain('<option value="remote">Remote project</option>');
+	    expect(pageSource).toContain('<option value="local">Local homelabd</option>');
+	    expect(pageSource).toContain("mode: 'remote'");
+	    expect(pageSource).toContain('project_id: selectedWorkspace.project_id');
+	    expect(pageSource).toContain("mode: 'local'");
+	    expect(pageSource).toContain("mode: 'auto'");
+	  });
 
   test('preserves the operator-selected queue filter during background refresh', () => {
     const refreshSource = pageSource.slice(

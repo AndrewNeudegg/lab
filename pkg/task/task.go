@@ -72,12 +72,17 @@ type Attachment struct {
 }
 
 type ExecutionTarget struct {
-	Mode      string `json:"mode,omitempty"`
-	AgentID   string `json:"agent_id,omitempty"`
-	Machine   string `json:"machine,omitempty"`
-	WorkdirID string `json:"workdir_id,omitempty"`
-	Workdir   string `json:"workdir,omitempty"`
-	Backend   string `json:"backend,omitempty"`
+	Mode      string   `json:"mode,omitempty"`
+	ProjectID string   `json:"project_id,omitempty"`
+	AgentID   string   `json:"agent_id,omitempty"`
+	Machine   string   `json:"machine,omitempty"`
+	WorkdirID string   `json:"workdir_id,omitempty"`
+	Workdir   string   `json:"workdir,omitempty"`
+	RepoURL   string   `json:"repo_url,omitempty"`
+	Branch    string   `json:"branch,omitempty"`
+	Labels    []string `json:"labels,omitempty"`
+	Backend   string   `json:"backend,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
 }
 
 type AcceptanceCriterion struct {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	taskstore "github.com/andrewneudegg/lab/pkg/task"
 )
 
 const (
@@ -523,12 +525,29 @@ func FingerprintRunAction(action RunAction) string {
 		action.Kind,
 		action.TargetSurface,
 		action.Title,
+		targetFingerprintText(action.Target),
 		action.TaskGoal,
 		action.KnowledgeQuery,
 		action.WorkflowHint,
 		action.Rationale,
 	}
 	return SignalFingerprint(strings.Join(parts, "|"))
+}
+
+func targetFingerprintText(target *taskstore.ExecutionTarget) string {
+	target = normalizeExecutionTarget(target)
+	if target == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		target.Mode,
+		target.ProjectID,
+		target.AgentID,
+		target.WorkdirID,
+		target.Workdir,
+		target.RepoURL,
+		strings.Join(target.Labels, ","),
+	}, "/")
 }
 
 func signalFileName(fingerprint string) string {

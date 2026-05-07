@@ -64,6 +64,31 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			},
 		},
 		{
+			name:       "auto project task target",
+			args:       []string{"task", "new", "--project", "remote1", "build", "feature"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/tasks",
+			wantBody: map[string]any{
+				"goal": "build feature",
+				"target": map[string]any{
+					"mode":       "auto",
+					"project_id": "remote1",
+				},
+			},
+		},
+		{
+			name:       "local task target",
+			args:       []string{"task", "new", "--local", "fix", "homelabd"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/tasks",
+			wantBody: map[string]any{
+				"goal": "fix homelabd",
+				"target": map[string]any{
+					"mode": "local",
+				},
+			},
+		},
+		{
 			name:       "task cancel",
 			args:       []string{"cancel", "task_123"},
 			wantMethod: http.MethodPost,
@@ -407,7 +432,7 @@ func TestTaskNewAttachesFiles(t *testing.T) {
 func TestGoalCreateAndAutopilotCommandsUseTypedEndpoints(t *testing.T) {
 	t.Run("create", func(t *testing.T) {
 		var observed observedRequest
-		_, stderr, code := runAgainstServer(t, []string{"goal", "create", "--kind", "build", "--mode", "autopilot", "--budget-tasks", "3", "build", "the", "thing"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		_, stderr, code := runAgainstServer(t, []string{"goal", "create", "--kind", "build", "--mode", "autopilot", "--budget-tasks", "3", "--target", "auto", "--project", "remote1", "build", "the", "thing"}, "", func(rw http.ResponseWriter, req *http.Request) {
 			observed = observeRequest(t, req)
 			writeTestJSON(t, rw, http.StatusCreated, map[string]any{"ok": true})
 		})
@@ -423,6 +448,10 @@ func TestGoalCreateAndAutopilotCommandsUseTypedEndpoints(t *testing.T) {
 		autopilot, ok := observed.Body["autopilot"].(map[string]any)
 		if !ok || autopilot["budget_tasks"] != float64(3) {
 			t.Fatalf("autopilot = %#v, want budget_tasks 3", observed.Body["autopilot"])
+		}
+		target, ok := observed.Body["target"].(map[string]any)
+		if !ok || target["mode"] != "auto" || target["project_id"] != "remote1" {
+			t.Fatalf("target = %#v, want auto remote1 target", observed.Body["target"])
 		}
 	})
 
@@ -453,6 +482,8 @@ func TestAgentCommandsUseAgentEndpoints(t *testing.T) {
 	}{
 		{name: "list", args: []string{"agent", "list"}, wantMethod: http.MethodGet, wantPath: "/agents"},
 		{name: "show", args: []string{"agent", "show", "desk"}, wantMethod: http.MethodGet, wantPath: "/agents/desk"},
+		{name: "workspace list", args: []string{"workspace", "list"}, wantMethod: http.MethodGet, wantPath: "/workspaces"},
+		{name: "projects alias", args: []string{"projects"}, wantMethod: http.MethodGet, wantPath: "/workspaces"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -63,6 +63,7 @@ go run ./cmd/homelabctl remember "prefer concise validation summaries"
 go run ./cmd/homelabctl memories
 go run ./cmd/homelabctl status
 go run ./cmd/homelabctl agents
+go run ./cmd/homelabctl workspaces
 ```
 
 `message`, `chat`, `say`, and chat-command shortcuts print the plain `reply` field by default. `chat clear <conversation_id>` calls the typed clear endpoint for one dashboard conversation, while `chat clear --all` clears all server-side chat transcript context. Add `-json` when the full response object is needed.
@@ -75,6 +76,8 @@ Direct task commands use typed HTTP endpoints. Most print pretty JSON; `task dif
 ```bash
 go run ./cmd/homelabctl task new "Add dashboard regression tests"
 go run ./cmd/homelabctl task new --attach ./browser-context.json "Fix the bug shown in the context"
+go run ./cmd/homelabctl task new --project remote1 "Build the remote1 feature"
+go run ./cmd/homelabctl task new --local "Improve homelabd routing"
 go run ./cmd/homelabctl task new --agent workstation --workdir repo "Update this checkout"
 go run ./cmd/homelabctl task list
 go run ./cmd/homelabctl task show task_123
@@ -106,7 +109,14 @@ go run ./cmd/homelabctl settings auto-merge on
 
 `task restart` retries an enforced post-merge restart gate for a task in `awaiting_restart`. Review stores required supervised components from the diff, approval moves the merged task into `awaiting_restart`, and `homelabd` blocks `accept` until `supervisord` has restarted each component and its configured health URL has returned 2xx.
 
-The remote target flags are optional. Use `--agent <agent_id>` with `--workdir <workdir_id>` for a remote task in an advertised workdir, or `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
+The target flags are optional. With no target, `homelabd` auto-routes: self-improvement stays local, a single registered remote workspace is selected, and multiple unclear remotes are rejected until a project is named. Use `--local` to force the control-plane checkout, `--project <project_id>` to let the coordinator route to a named project workspace, or `--agent <agent_id>` with `--workdir <workdir_id>` for a specific remote queue. Use `--workdir-path <path>` when the advertised path is the stable identifier. `--backend` overrides the backend that the remote agent should run.
+
+List project workspaces before creating remote work:
+
+```bash
+go run ./cmd/homelabctl workspace list
+go run ./cmd/homelabctl projects
+```
 
 Use `--attach <path>` one or more times to include local evidence on a new task. Text-like files also include a bounded text preview so workers can read the context from the prompt; all attached files remain visible on the task record.
 
@@ -162,7 +172,7 @@ go run ./cmd/homelabctl assistant signals
 go run ./cmd/homelabctl assistant signal sig_chat useful
 go run ./cmd/homelabctl assistant signal sig_chat create-task "follow up"
 go run ./cmd/homelabctl goal create --title "Daily brief" --kind routine --mode guided --cadence daily --success "brief posted" "Keep the daily brief current and point out unanswered mail"
-go run ./cmd/homelabctl goal create --title "Build reporting" --kind build --mode autopilot --budget-tasks 4 "Build the reporting workflow end to end"
+go run ./cmd/homelabctl goal create --title "Build reporting" --kind build --mode autopilot --target remote --project remote1 --budget-tasks 4 "Build the reporting workflow end to end"
 go run ./cmd/homelabctl goals
 go run ./cmd/homelabctl goal show goal_123
 go run ./cmd/homelabctl goal check goal_123
@@ -180,7 +190,7 @@ go run ./cmd/homelabctl goal watch goal_123 "Produce the morning brief"
 
 `assistant signals` calls `GET /assistant/signals` for the current unresolved signal inbox. `assistant signal` calls `PATCH /assistant/signals/<fingerprint>` with `useful`, `dismiss`, `snooze`, or `create_task`, so operators and agents can feed the Assistant learning loop or create a bounded follow-up task without ad hoc HTTP calls. `useful` records positive feedback and clears the current inbox item until a later new sighting reopens it.
 
-Goals are durable operator desires rather than one-off tasks. A Goal stores the objective, type, execution mode, details, success criteria, constraints, autonomy, cadence, watches, linked tasks, progress notes, and run assessments. Goal types are `build`, `routine`, `watch`, and `maintenance`. `guided` mode keeps the human in the loop: `goal check` starts a Goal-scoped Assistant run through `POST /assistant/goals/<goal_id>/check` and the operator decides whether to create or accept work. `autopilot` mode lets the Goal create one bounded linked task at a time, use the normal review, merge, restart, and acceptance gates, and continue until its task budget, runtime budget, blocker, or stop command is reached. `goal autopilot start|pause|resume|stop` calls `POST /assistant/goals/<goal_id>/autopilot/<action>`. `goal watch` records something the Assistant should keep an eye on, and Goal-linked tasks report progress back to the Goal when accepted. Chat accepts the same lifecycle through natural phrases such as `goal keep invoices reconciled` or `my goal is to keep the daily brief ready`.
+Goals are durable operator desires rather than one-off tasks. A Goal stores the objective, type, execution mode, target, details, success criteria, constraints, autonomy, cadence, watches, linked tasks, progress notes, and run assessments. Goal types are `build`, `routine`, `watch`, and `maintenance`. `guided` mode keeps the human in the loop: `goal check` starts a Goal-scoped Assistant run through `POST /assistant/goals/<goal_id>/check` and the operator decides whether to create or accept work. `autopilot` mode lets the Goal create one bounded linked task at a time on its selected local or remote target, use the normal review, merge, restart, and acceptance gates where applicable, and continue until its task budget, runtime budget, blocker, or stop command is reached. `goal autopilot start|pause|resume|stop` calls `POST /assistant/goals/<goal_id>/autopilot/<action>`. `goal watch` records something the Assistant should keep an eye on, and Goal-linked tasks report progress back to the Goal when accepted. Chat accepts the same lifecycle through natural phrases such as `goal keep invoices reconciled` or `my goal is to keep the daily brief ready`.
 
 ## Knowledge Space Commands
 

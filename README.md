@@ -43,6 +43,33 @@ Use the split deliberately:
 
 The UI and CLI must use this language consistently. "Cadence" means routine attention. "Mode" means who drives execution. A build Goal can be manual and still fully autonomous once started; a routine Goal can be daily and still require human approval for every step.
 
+## Remote Project Execution
+
+The assistant is not only a local worker. `homelabd` is the coordinator for many project workspaces, each advertised by a `homelab-agent` running beside that repo, VM, or machine. Local remains essential because the assistant improves this control plane through local worktrees, but remote project work is the default scale path.
+
+Execution targets:
+
+- `auto`: the coordinator chooses. Homelabd/self-improvement requests stay local. A single registered remote workspace is selected automatically. Multiple remote workspaces require a clear project, agent, workdir, repo, or label match; otherwise task creation fails with an ambiguity prompt.
+- `local`: force the local control-plane checkout and normal local task supervisor.
+- `remote`: force one advertised remote project workspace.
+
+Remote workspace records come from heartbeats and include `project_id`, `agent_id`, machine, `workdir_id`, full workdir path, repo URL, branch, labels, metadata, status, and backend. Goals and Assistant run actions carry the same target object, so a durable desire can keep creating tasks in the correct project over time.
+
+Cross-repo coordination must be explicit. If one project depends on another, the remote worker should name the dependency, expected commit/version/API, and order of operations. The coordinator can then create separate project-targeted tasks rather than pretending one checkout owns the whole system.
+
+```mermaid
+flowchart TD
+  Desire[Goal, chat request, or signal] --> Route{Target}
+  Route -->|local| Local[homelabd task supervisor]
+  Route -->|remote| Remote[remote project queue]
+  Route -->|auto| Decide[Coordinator route decision]
+  Decide -->|homelabd work| Local
+  Decide -->|clear project match| Remote
+  Decide -->|unclear among many repos| Ask[Ask for project/agent/workdir]
+  Remote --> Claim[homelab-agent claims task]
+  Claim --> Result[Remote result and coordination notes]
+```
+
 ## Goal Execution Modes
 
 Goals need two separate operator contracts. The first keeps the human driving the process. The second lets the assistant drive until a stop condition is reached.
@@ -669,6 +696,10 @@ The first complete version is done when:
 - Autopilot can move its current task through review, merge approval, restart gates, and acceptance when checks succeed.
 - Autopilot stops when a task fails unrecoverably, asks a question, exhausts budget, or requires unsafe action.
 - UI and CLI clearly distinguish Goal type from execution mode.
+- Tasks and Goals can target `auto`, `local`, or a remote project workspace.
+- Remote workspaces are discoverable through the dashboard, `homelabctl workspace list`, and `GET /workspaces`.
+- Assistant-created tasks preserve the Goal or action target instead of assuming the local checkout.
+- Multi-project ambiguity is rejected until the operator or coordinator names the project, agent, workdir, or label.
 
 ## Suggested MVP
 
@@ -684,6 +715,7 @@ Build this first:
 8. Dashboard Goal list/detail/create views.
 9. Assistant self-repair signal for invalid structured output.
 10. Autopilot mode for Build and Maintenance Goals with one active linked task, explicit budget, merge/restart/acceptance gates, and clear stop reasons.
+11. Remote project routing for tasks, Goals, and Assistant actions, with `../remote1` as the first UAT workspace.
 
 This MVP should make the assistant feel materially different: it will have standing objectives, check them on its own, create work from them, update progress, and explain what it is watching.
 
@@ -693,6 +725,7 @@ This MVP should make the assistant feel materially different: it will have stand
 - Assistant signals: `pkg/agent/assistant_signals.go`
 - Chat quality signals: `pkg/agent/chat_quality_signals.go`
 - Task creation and delegation: `pkg/agent/orchestrator.go`
+- Remote routing: `pkg/agent/work_router.go`, `pkg/remoteagent`
 - Workflows: `pkg/agent/workflow.go`
 - Memory: `pkg/memory`
 - Dashboard Assistant page: `web/dashboard/src/routes/assistant/+page.svelte`

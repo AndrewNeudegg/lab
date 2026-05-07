@@ -151,6 +151,9 @@ const mockTaskApi = async (
   await page.route(/\/api\/agents$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
   });
+  await page.route(/\/api\/workspaces$/, async (route) => {
+    await route.fulfill({ json: { workspaces: [] } });
+  });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
   });
@@ -272,6 +275,9 @@ const mockAcceptTaskApi = async (page: Page) => {
   await page.route(/\/api\/agents$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
   });
+  await page.route(/\/api\/workspaces$/, async (route) => {
+    await route.fulfill({ json: { workspaces: [] } });
+  });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
   });
@@ -328,6 +334,9 @@ const mockNoChangeTaskApi = async (page: Page) => {
   });
   await page.route(/\/api\/agents$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
+  });
+  await page.route(/\/api\/workspaces$/, async (route) => {
+    await route.fulfill({ json: { workspaces: [] } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
@@ -680,6 +689,9 @@ test('tasks mobile returns to the queue when Accept empties the current filter',
   });
   await page.route(/\/api\/agents$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
+  });
+  await page.route(/\/api\/workspaces$/, async (route) => {
+    await route.fulfill({ json: { workspaces: [] } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });

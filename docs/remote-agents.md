@@ -30,10 +30,12 @@ Relevant config:
 }
 ```
 
-The dashboard task page lists registered agents and can create a task directly against an agent plus directory. CLI usage is also available. Use `--workdir` for an advertised workdir id such as `repo`; use `--workdir-path` only when you need to target an advertised path by full path instead of id.
+The dashboard task page lists registered project workspaces and can create work as `Auto route`, `Local homelabd`, or `Remote project`. CLI usage is also available. Use `workspace list` to see the same inventory that the coordinator uses. Use `--project` for a project-level auto route, `--agent` plus `--workdir` for a specific remote queue, or `--workdir-path` only when the advertised path is the stable identifier.
 
 ```sh
 homelabctl -addr http://127.0.0.1:18080 agent list
+homelabctl -addr http://127.0.0.1:18080 workspace list
+homelabctl -addr http://127.0.0.1:18080 task new --project remote1 "Build the reporting widget"
 homelabctl -addr http://127.0.0.1:18080 task new --agent workstation --workdir repo "Update the service in this checkout"
 ```
 
@@ -43,7 +45,29 @@ The task page separates queues by execution target:
 - `Local homelabd`
 - one queue per registered remote agent
 
-When creating a remote task, the dashboard requires an explicit context confirmation that names the agent, machine, and full working directory path. If the target looks wrong, do not check that box. The API also resolves the selected workdir against the agent's advertised workdirs; an unknown workdir id/path is rejected instead of falling back to another checkout.
+When creating a remote task, the dashboard requires an explicit context confirmation that names the project, agent, machine, and full working directory path. If the target looks wrong, do not check that box. The API also resolves the selected workdir against the agent's advertised workdirs; an unknown workdir id/path is rejected instead of falling back to another checkout.
+
+## Execution Targets
+
+Every task and Goal can carry an execution target:
+
+- `mode: "local"`: always use the local `homelabd` checkout. Use this for control-plane and self-improvement work.
+- `mode: "remote"`: run in one advertised remote project workspace.
+- `mode: "auto"`: let the coordinator choose. If one remote workspace is registered it is selected; if several exist, the goal text or `project_id` must clearly identify one. Ambiguous work is rejected instead of being sent to the wrong repository.
+
+```mermaid
+flowchart LR
+  Request[Task or Goal action] --> Target{Target mode}
+  Target -->|local| Local[Local homelabd task queue]
+  Target -->|remote| Match[Validate advertised agent/workdir]
+  Target -->|auto| Route[Route by project, labels, repo, and goal text]
+  Route -->|homelabd/self-improvement| Local
+  Route -->|single or clear remote match| Match
+  Route -->|multiple unclear remotes| Ask[Reject with project selection prompt]
+  Match --> Remote[Remote agent claim queue]
+```
+
+Remote workspaces include `project_id`, repository URL, branch, labels, and metadata. The coordinator copies that context into the task target, the remote assignment, and the worker instruction so a remote worker can name cross-project dependencies instead of guessing. If a task depends on another repository, the remote result should state the dependency, expected commit/version/API, and coordination order.
 
 ## Remote Worker
 
@@ -65,6 +89,24 @@ The agent uses the `external_agents` command for the assigned backend, defaultin
 Remote agents do not need to run in this repository. Each advertised `workdir` can be a different checkout, a different project, or a non-git directory. `homelabd` stores the path as execution context only; it does not assume that remote path has the same HEAD, branch, or repository root as the control-plane checkout.
 
 Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are configured, `homelab-agent` falls back to the configured `repo.root`, which is useful for local development but too easy to point at the wrong tree on a real machine.
+
+```json
+{
+  "remote_agent": {
+    "workdirs": [
+      {
+        "id": "remote1",
+        "path": "/home/lab/remote1",
+        "label": "Remote 1",
+        "project_id": "remote1",
+        "repo_url": "git@example.com:remote1.git",
+        "branch": "main",
+        "labels": ["uat", "node"]
+      }
+    ]
+  }
+}
+```
 
 Remote workers may include Mermaid fenced diagrams in reported results or docs when a workflow, state machine, architecture, sequence, or user journey would be clearer visually. Chat and dashboard docs render those diagrams with the homelabd brand theme and strip Mermaid init directives. Do not add Mermaid `init` blocks or hard-code unrelated colours; use the palette in `docs/chat-commands.md` when explicit semantic styling is unavoidable.
 
@@ -141,11 +183,12 @@ Keep `auto_start` false on the control-plane machine unless it should also act a
 ## API Shape
 
 - `GET /agents` lists known remote agents for the UI.
+- `GET /workspaces` lists the project workspace inventory derived from remote-agent heartbeats.
 - `GET /agents/{id}` returns one registered agent.
 - `POST /agents/{id}/heartbeat` registers or refreshes an agent. `POST /agents` also accepts a heartbeat body with `id`.
 - `POST /agents/{id}/claim` claims the next queued task targeted to that agent.
 - `POST /agents/{id}/tasks/{task_id}/complete` records completion.
-- `POST /tasks` accepts an optional `target` object with `mode: "remote"`, `agent_id`, `workdir_id` or advertised `workdir`, and `backend`.
+- `POST /tasks` accepts an optional `target` object with `mode: "auto"`, `"local"`, or `"remote"`, plus `project_id`, `agent_id`, `workdir_id`, advertised `workdir`, `repo_url`, `branch`, labels, and `backend`.
 - `POST /tasks/{task_id}/assign` retargets a non-terminal task to a remote agent and advertised workdir.
 
 Remote tasks intentionally skip the local task supervisor. The selected remote agent owns execution until it reports completion or failure.

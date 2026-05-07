@@ -17,9 +17,14 @@ const (
 )
 
 type Workdir struct {
-	ID    string `json:"id"`
-	Path  string `json:"path"`
-	Label string `json:"label,omitempty"`
+	ID        string            `json:"id"`
+	Path      string            `json:"path"`
+	Label     string            `json:"label,omitempty"`
+	ProjectID string            `json:"project_id,omitempty"`
+	RepoURL   string            `json:"repo_url,omitempty"`
+	Branch    string            `json:"branch,omitempty"`
+	Labels    []string          `json:"labels,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 type Agent struct {
@@ -52,8 +57,11 @@ type Assignment struct {
 	TaskID      string `json:"task_id"`
 	Title       string `json:"title"`
 	Goal        string `json:"goal"`
+	ProjectID   string `json:"project_id,omitempty"`
 	Workdir     string `json:"workdir"`
 	WorkdirID   string `json:"workdir_id,omitempty"`
+	RepoURL     string `json:"repo_url,omitempty"`
+	Branch      string `json:"branch,omitempty"`
 	Backend     string `json:"backend"`
 	Instruction string `json:"instruction"`
 }
@@ -246,6 +254,11 @@ func compactWorkdirs(values []Workdir) []Workdir {
 		value.ID = strings.TrimSpace(value.ID)
 		value.Path = strings.TrimSpace(value.Path)
 		value.Label = strings.TrimSpace(value.Label)
+		value.ProjectID = strings.TrimSpace(value.ProjectID)
+		value.RepoURL = strings.TrimSpace(value.RepoURL)
+		value.Branch = strings.TrimSpace(value.Branch)
+		value.Labels = compactStrings(value.Labels)
+		value.Metadata = compactStringMap(value.Metadata)
 		if value.Path == "" {
 			continue
 		}
@@ -258,6 +271,25 @@ func compactWorkdirs(values []Workdir) []Workdir {
 		}
 		seen[key] = true
 		out = append(out, value)
+	}
+	return out
+}
+
+func compactStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	taskstore "github.com/andrewneudegg/lab/pkg/task"
 )
 
 const (
@@ -154,26 +156,27 @@ type RunFinding struct {
 }
 
 type RunAction struct {
-	ID             string                 `json:"id"`
-	Fingerprint    string                 `json:"fingerprint,omitempty"`
-	ContractID     string                 `json:"contract_id,omitempty"`
-	Contract       *RunCapabilityContract `json:"contract,omitempty"`
-	Kind           string                 `json:"kind"`
-	GoalID         string                 `json:"goal_id,omitempty"`
-	Title          string                 `json:"title"`
-	Rationale      string                 `json:"rationale"`
-	Priority       string                 `json:"priority,omitempty"`
-	Risk           string                 `json:"risk,omitempty"`
-	TargetSurface  string                 `json:"target_surface,omitempty"`
-	TaskGoal       string                 `json:"task_goal,omitempty"`
-	KnowledgeQuery string                 `json:"knowledge_query,omitempty"`
-	WorkflowHint   string                 `json:"workflow_hint,omitempty"`
-	Status         string                 `json:"status,omitempty"`
-	CreatedTaskID  string                 `json:"created_task_id,omitempty"`
-	Plan           *RunActionPlanPreview  `json:"plan,omitempty"`
-	SeenCount      int                    `json:"seen_count,omitempty"`
-	UsefulCount    int                    `json:"useful_count,omitempty"`
-	SnoozedUntil   time.Time              `json:"snoozed_until,omitempty"`
+	ID             string                     `json:"id"`
+	Fingerprint    string                     `json:"fingerprint,omitempty"`
+	ContractID     string                     `json:"contract_id,omitempty"`
+	Contract       *RunCapabilityContract     `json:"contract,omitempty"`
+	Kind           string                     `json:"kind"`
+	GoalID         string                     `json:"goal_id,omitempty"`
+	Title          string                     `json:"title"`
+	Rationale      string                     `json:"rationale"`
+	Priority       string                     `json:"priority,omitempty"`
+	Risk           string                     `json:"risk,omitempty"`
+	TargetSurface  string                     `json:"target_surface,omitempty"`
+	Target         *taskstore.ExecutionTarget `json:"target,omitempty"`
+	TaskGoal       string                     `json:"task_goal,omitempty"`
+	KnowledgeQuery string                     `json:"knowledge_query,omitempty"`
+	WorkflowHint   string                     `json:"workflow_hint,omitempty"`
+	Status         string                     `json:"status,omitempty"`
+	CreatedTaskID  string                     `json:"created_task_id,omitempty"`
+	Plan           *RunActionPlanPreview      `json:"plan,omitempty"`
+	SeenCount      int                        `json:"seen_count,omitempty"`
+	UsefulCount    int                        `json:"useful_count,omitempty"`
+	SnoozedUntil   time.Time                  `json:"snoozed_until,omitempty"`
 }
 
 type RunActionPlanPreview struct {
@@ -645,6 +648,7 @@ func normalizeRunAction(value RunAction, index int) RunAction {
 	value.Priority = strings.TrimSpace(value.Priority)
 	value.Risk = strings.TrimSpace(value.Risk)
 	value.TargetSurface = strings.TrimSpace(value.TargetSurface)
+	value.Target = normalizeExecutionTarget(value.Target)
 	value.TaskGoal = strings.TrimSpace(value.TaskGoal)
 	value.KnowledgeQuery = strings.TrimSpace(value.KnowledgeQuery)
 	value.WorkflowHint = strings.TrimSpace(value.WorkflowHint)
@@ -682,6 +686,31 @@ func normalizeRunAction(value RunAction, index int) RunAction {
 		value.UsefulCount = 0
 	}
 	return value
+}
+
+func normalizeExecutionTarget(target *taskstore.ExecutionTarget) *taskstore.ExecutionTarget {
+	if target == nil {
+		return nil
+	}
+	value := *target
+	value.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
+	value.ProjectID = strings.TrimSpace(value.ProjectID)
+	value.AgentID = strings.TrimSpace(value.AgentID)
+	value.Machine = strings.TrimSpace(value.Machine)
+	value.WorkdirID = strings.TrimSpace(value.WorkdirID)
+	value.Workdir = strings.TrimSpace(value.Workdir)
+	value.RepoURL = strings.TrimSpace(value.RepoURL)
+	value.Branch = strings.TrimSpace(value.Branch)
+	value.Labels = normalizeRunStringList(value.Labels, 16)
+	value.Backend = strings.TrimSpace(value.Backend)
+	value.Reason = strings.TrimSpace(value.Reason)
+	if value.Mode == "" && (value.ProjectID != "" || value.AgentID != "" || value.WorkdirID != "" || value.Workdir != "" || value.RepoURL != "" || len(value.Labels) > 0) {
+		value.Mode = "auto"
+	}
+	if value.Mode == "" && value.ProjectID == "" && value.AgentID == "" && value.Machine == "" && value.WorkdirID == "" && value.Workdir == "" && value.RepoURL == "" && value.Branch == "" && len(value.Labels) == 0 && value.Backend == "" && value.Reason == "" {
+		return nil
+	}
+	return &value
 }
 
 func normalizeRunDecisionCompiler(value RunDecisionCompiler) RunDecisionCompiler {

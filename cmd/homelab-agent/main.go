@@ -110,7 +110,7 @@ func main() {
 	if len(workdirs) > 0 {
 		agentCfg.Workdirs = make([]config.RemoteAgentWorkdirConfig, 0, len(workdirs))
 		for _, workdir := range workdirs {
-			agentCfg.Workdirs = append(agentCfg.Workdirs, config.RemoteAgentWorkdirConfig{ID: workdir.ID, Path: workdir.Path, Label: workdir.Label})
+			agentCfg.Workdirs = append(agentCfg.Workdirs, config.RemoteAgentWorkdirConfig{ID: workdir.ID, Path: workdir.Path, Label: workdir.Label, ProjectID: workdir.ProjectID, RepoURL: workdir.RepoURL, Branch: workdir.Branch, Labels: workdir.Labels, Metadata: workdir.Metadata})
 		}
 	}
 	if err := run(ctx, cfg, agentCfg); err != nil {
@@ -349,7 +349,49 @@ func remoteWorkdirs(values []config.RemoteAgentWorkdirConfig) []remoteagent.Work
 		if id == "" {
 			id = path
 		}
-		out = append(out, remoteagent.Workdir{ID: id, Path: path, Label: strings.TrimSpace(value.Label)})
+		out = append(out, remoteagent.Workdir{
+			ID:        id,
+			Path:      path,
+			Label:     strings.TrimSpace(value.Label),
+			ProjectID: strings.TrimSpace(value.ProjectID),
+			RepoURL:   strings.TrimSpace(value.RepoURL),
+			Branch:    strings.TrimSpace(value.Branch),
+			Labels:    compactRemoteLabels(value.Labels),
+			Metadata:  compactRemoteMetadata(value.Metadata),
+		})
+	}
+	return out
+}
+
+func compactRemoteLabels(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func compactRemoteMetadata(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

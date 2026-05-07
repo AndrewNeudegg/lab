@@ -520,6 +520,9 @@ func applyAssistantSignalRecordToSignal(store *assistantstore.SignalStore, signa
 	case assistantstore.SignalStatusDismissed:
 		signal.Suppressed = true
 		signal.SuppressionReason = "Dismissed by operator feedback."
+	case assistantstore.SignalStatusUseful:
+		signal.Suppressed = true
+		signal.SuppressionReason = "Marked useful; cleared from the active inbox until a new sighting arrives."
 	case assistantstore.SignalStatusSnoozed:
 		signal.Suppressed = true
 		if !record.SnoozedUntil.IsZero() {

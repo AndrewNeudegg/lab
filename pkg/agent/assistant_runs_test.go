@@ -346,6 +346,9 @@ func TestUpdateAssistantSignalCandidateStoresFeedbackAndCreatesTask(t *testing.T
 	if reply != "Marked signal as useful." || useful.UsefulCount != 1 {
 		t.Fatalf("useful signal = %#v reply %q, want useful count", useful, reply)
 	}
+	if !useful.Suppressed || !strings.Contains(useful.SuppressionReason, "cleared") {
+		t.Fatalf("useful signal = %#v, want cleared from active inbox", useful)
+	}
 
 	created, reply, err := orch.UpdateAssistantSignalCandidate(context.Background(), candidate.Fingerprint, assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackCreateTask})
 	if err != nil {
@@ -360,6 +363,62 @@ func TestUpdateAssistantSignalCandidateStoresFeedbackAndCreatesTask(t *testing.T
 	}
 	if len(tasks) != 1 || tasks[0].ID != created.CreatedTaskID {
 		t.Fatalf("tasks = %#v, want one created signal task", tasks)
+	}
+}
+
+func TestAssistantSignalUsefulFeedbackClearsInboxUntilNewObservation(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	allowed := true
+	orch.cfg.Assistant.SignalSources = map[string]config.AssistantSignalSourceConfig{
+		"chat": {Enabled: &allowed, SafeActions: []string{"create_task", "useful", "snooze", "dismiss"}},
+	}
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	candidate, err := orch.SubmitAssistantSignal(context.Background(), assistantstore.SignalSubmitRequest{
+		Source:      "chat",
+		Kind:        "chat_quality_feedback",
+		Title:       "Review subpar chat answer",
+		Surface:     "chat",
+		ObjectID:    "evt_chat",
+		Score:       88,
+		ActionKind:  "task",
+		TaskGoal:    "Review the chat exchange.",
+		SafeActions: []string{"create_task", "useful", "snooze", "dismiss"},
+		ObservedAt:  now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := orch.UpdateAssistantSignalCandidate(context.Background(), candidate.Fingerprint, assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackUseful}); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := orch.ListAssistantSignalCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared) != 0 {
+		t.Fatalf("signals = %#v, want useful signal cleared from active inbox", cleared)
+	}
+
+	if _, err := orch.SubmitAssistantSignal(context.Background(), assistantstore.SignalSubmitRequest{
+		Source:      "chat",
+		Kind:        "chat_quality_feedback",
+		Title:       "Review subpar chat answer",
+		Surface:     "chat",
+		ObjectID:    "evt_chat",
+		Score:       88,
+		ActionKind:  "task",
+		TaskGoal:    "Review the chat exchange again.",
+		SafeActions: []string{"create_task", "useful", "snooze", "dismiss"},
+		ObservedAt:  time.Now().UTC().Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := orch.ListAssistantSignalCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened) != 1 || reopened[0].UsefulCount != 1 || reopened[0].Suppressed {
+		t.Fatalf("signals = %#v, want new sighting reopened with useful memory", reopened)
 	}
 }
 
@@ -663,6 +722,58 @@ func TestAssistantRunActionCreateTaskFeedbackDedupesBySignal(t *testing.T) {
 	}
 }
 
+func TestAssistantRunUsefulFeedbackArchivesSettledDecision(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	run := assistantstore.NormalizeRun(assistantstore.Run{
+		ID:        "arun_useful",
+		Status:    assistantstore.RunStatusCompleted,
+		Decision:  assistantstore.RunDecisionRecommend,
+		Trigger:   assistantstore.RunTrigger{Kind: "manual", Label: "Manual proactive check"},
+		Autonomy:  assistantstore.RunAutonomyPropose,
+		Summary:   "Action recommended.",
+		CreatedAt: now,
+		UpdatedAt: now,
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:        "action_1",
+			Kind:      "task",
+			Title:     "Review useful signal",
+			Rationale: "The signal was useful training feedback.",
+			TaskGoal:  "Review the useful signal.",
+		}},
+	})
+	store, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, reply, err := orch.UpdateAssistantRunAction(context.Background(), run.ID, "action_1", assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackUseful})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Marked recommendation as useful." {
+		t.Fatalf("reply = %q, want useful reply", reply)
+	}
+	if !updated.Archived || updated.ArchivedBy != "assistant-lifecycle" || !strings.Contains(updated.ArchivedReason, "resolved") {
+		t.Fatalf("updated run = %#v, want lifecycle archive after useful feedback", updated)
+	}
+	if updated.RecommendedActions[0].Status != assistantstore.SignalStatusUseful {
+		t.Fatalf("action = %#v, want useful status", updated.RecommendedActions[0])
+	}
+	runs, err := orch.ListAssistantRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listed := range runs {
+		if listed.ID == run.ID && !listed.Archived {
+			t.Fatalf("runs = %#v, useful-settled run should not remain active", runs)
+		}
+	}
+}
+
 func TestAssistantRunLifecycleAutoArchivesOldResolvedDecisions(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	orch.cfg.Assistant.DecisionNoopAutoArchiveSeconds = 60
@@ -707,21 +818,88 @@ func TestAssistantRunLifecycleAutoArchivesOldResolvedDecisions(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Save(assistantstore.Run{
+		ID:         "arun_failed",
+		Status:     assistantstore.RunStatusFailed,
+		Decision:   assistantstore.RunDecisionNoop,
+		Trigger:    assistantstore.RunTrigger{Kind: "manual", Label: "Failed without decision"},
+		Autonomy:   assistantstore.RunAutonomyPropose,
+		Summary:    "Failed before decision.",
+		Error:      "invalid JSON",
+		Snapshot:   assistantstore.RunSnapshot{GeneratedAt: old},
+		CreatedAt:  old,
+		FinishedAt: old,
+		UpdatedAt:  old,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	archived, err := orch.maintainAssistantRuns(context.Background(), store, old.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if archived != 2 {
-		t.Fatalf("archived = %d, want 2", archived)
+	if archived != 3 {
+		t.Fatalf("archived = %d, want 3", archived)
 	}
-	for _, id := range []string{"arun_noop", "arun_settled"} {
+	for _, id := range []string{"arun_noop", "arun_settled", "arun_failed"} {
 		run, err := store.Load(id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !run.Archived || run.ArchivedBy != "assistant-lifecycle" || len(run.Receipts) == 0 {
 			t.Fatalf("run %s = %#v, want lifecycle archive receipt", id, run)
+		}
+	}
+}
+
+func TestAssistantRunLifecycleKeepsOnlyLatestNoopStatusActive(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.cfg.Assistant.DecisionNoopAutoArchiveSeconds = 24 * 60 * 60
+	store, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 5, 7, 8, 0, 0, 0, time.UTC)
+	for index, id := range []string{"arun_nominal_old", "arun_nominal_middle", "arun_nominal_latest"} {
+		finished := base.Add(time.Duration(index) * time.Minute)
+		if err := store.Save(assistantstore.Run{
+			ID:         id,
+			Status:     assistantstore.RunStatusCompleted,
+			Decision:   assistantstore.RunDecisionNoop,
+			Trigger:    assistantstore.RunTrigger{Kind: "schedule", Label: "All systems nominal"},
+			Autonomy:   assistantstore.RunAutonomyObserve,
+			Summary:    "All systems nominal.",
+			Snapshot:   assistantstore.RunSnapshot{GeneratedAt: finished},
+			CreatedAt:  finished,
+			StartedAt:  finished,
+			FinishedAt: finished,
+			UpdatedAt:  finished,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	archived, err := orch.maintainAssistantRuns(context.Background(), store, base.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived != 2 {
+		t.Fatalf("archived = %d, want 2 older nominal runs", archived)
+	}
+	latest, err := store.Load("arun_nominal_latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Archived {
+		t.Fatalf("latest run = %#v, want active", latest)
+	}
+	for _, id := range []string{"arun_nominal_old", "arun_nominal_middle"} {
+		run, err := store.Load(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !run.Archived || run.ArchivedBy != "assistant-lifecycle" || !strings.Contains(run.ArchivedReason, "newer no-action") {
+			t.Fatalf("run %s = %#v, want archived as superseded by newer nominal status", id, run)
 		}
 	}
 }

@@ -303,7 +303,7 @@ func Default() Config {
 			ProactiveMaxRunsPerHour:           12,
 			CreateTasksMaxPerRun:              3,
 			DecisionNoopAutoArchiveSeconds:    24 * 60 * 60,
-			DecisionSettledAutoArchiveSeconds: 7 * 24 * 60 * 60,
+			DecisionSettledAutoArchiveSeconds: 0,
 			SignalSources: map[string]AssistantSignalSourceConfig{
 				"chat": {
 					Enabled:         boolPtr(true),

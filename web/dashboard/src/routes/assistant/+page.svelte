@@ -51,6 +51,7 @@
   let activeRuns: AssistantRun[] = [];
   let archivedRuns: AssistantRun[] = [];
   let visibleRuns: AssistantRun[] = [];
+  let displayedActions: AssistantRunAction[] = [];
   let activeSignals: AssistantSignalCandidate[] = [];
   let lastAppliedRouteRunId = '';
   let pendingRouteRunId = '';
@@ -60,6 +61,7 @@
   $: archivedRuns = assistantRunsForView(runs, 'archived');
   $: visibleRuns = runView === 'archived' ? archivedRuns : activeRuns;
   $: selectedRun = selectAssistantRun(runs, selectedRunId);
+  $: displayedActions = visibleRecommendedActions(selectedRun);
   $: openRunActions = activeRuns.reduce((total, run) => total + runOpenActionCount(run), 0);
   $: activeSignals = signals.filter((signal) => !signal.suppressed && !signal.created_task_id);
   $: runSpaces = [
@@ -273,10 +275,15 @@
       .sort(([left], [right]) => left.localeCompare(right));
 
   const actionIsSettled = (action: AssistantRunAction) =>
-    ['created_task', 'dismissed', 'snoozed', 'skipped'].includes(action.status || '');
+    ['created_task', 'dismissed', 'snoozed', 'useful', 'skipped', 'failed'].includes(action.status || '');
 
   const runOpenActionCount = (run: AssistantRun | undefined) =>
     (run?.recommended_actions || []).filter((action) => !actionIsSettled(action)).length;
+
+  const visibleRecommendedActions = (run: AssistantRun | undefined) =>
+    run?.archived
+      ? run.recommended_actions || []
+      : (run?.recommended_actions || []).filter((action) => !actionIsSettled(action));
 
   const primaryRunAction = (run: AssistantRun | undefined) =>
     (run?.recommended_actions || []).find(
@@ -290,6 +297,9 @@
         (action) => action.created_task_id || action.status === 'created_task'
       )
     );
+
+  const runHasResolvedActions = (run: AssistantRun | undefined) =>
+    Boolean((run?.recommended_actions || []).length && runOpenActionCount(run) === 0);
 
   const runDecisionTone = (run: AssistantRun | undefined) => {
     if (!run || run.status === 'failed' || run.error) {
@@ -324,6 +334,9 @@
     if (runHasCreatedTask(run)) {
       return 'Recommendation acted on';
     }
+    if (runHasResolvedActions(run)) {
+      return 'Recommendation resolved';
+    }
     if (run.decision === 'no_op') {
       return 'No action needed';
     }
@@ -347,6 +360,9 @@
     }
     if (runHasCreatedTask(run)) {
       return 'A task was created from this signal. Open it from the recommendation receipt when you need the work record.';
+    }
+    if (runHasResolvedActions(run)) {
+      return 'No operator action remains. The result is kept with receipts for audit.';
     }
     return run.summary || run.goal || 'The Assistant recorded this run without requesting operator action.';
   };
@@ -445,9 +461,7 @@
       runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
       selectedRunId = response.run.id;
       mobilePanel = 'detail';
-      if (currentRunRouteId() !== response.run.id) {
-        navigateToRun(response.run.id, true, assistantRunView(response.run));
-      }
+      navigateToRun(response.run.id, true, assistantRunView(response.run));
       runNotice = response.reply;
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to update Assistant recommendation.';
@@ -639,11 +653,21 @@
               <strong>Signal updated</strong>
               <p>{signalNotice}</p>
             </div>
+            <button
+              type="button"
+              class="notice-dismiss"
+              aria-label="Clear Assistant signal notice"
+              on:click={() => (signalNotice = '')}
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M6 6l8 8M14 6l-8 8" />
+              </svg>
+            </button>
           </section>
         {/if}
-        {#if signals.length}
+        {#if activeSignals.length}
           <div class="signal-inbox-list">
-            {#each signals.slice(0, 6) as signal}
+            {#each activeSignals.slice(0, 6) as signal}
               <article class="signal-inbox-row">
                 <span class={`dot ${assistantSignalStatusTone(signal)}`} aria-hidden="true"></span>
                 <div>
@@ -704,11 +728,21 @@
       </section>
 
       {#if runsError}
-        <section class="notice error" role="alert">
+        <section class="notice error" role="alert" aria-label="Assistant sync error">
           <div>
             <strong>Assistant sync failed</strong>
             <p>{runsError}</p>
           </div>
+          <button
+            type="button"
+            class="notice-dismiss"
+            aria-label="Clear Assistant sync error"
+            on:click={() => (runsError = '')}
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M6 6l8 8M14 6l-8 8" />
+            </svg>
+          </button>
         </section>
       {/if}
 
@@ -796,20 +830,40 @@
           </header>
 
           {#if runNotice}
-            <section class="notice success" role="status" aria-live="polite">
+            <section class="notice success" role="status" aria-live="polite" aria-label="Assistant run status">
               <div>
                 <strong>Assistant updated</strong>
                 <p>{runNotice}</p>
               </div>
+              <button
+                type="button"
+                class="notice-dismiss"
+                aria-label="Clear Assistant run notice"
+                on:click={() => (runNotice = '')}
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <path d="M6 6l8 8M14 6l-8 8" />
+                </svg>
+              </button>
             </section>
           {/if}
 
           {#if runsError}
-            <section class="notice error" role="alert">
+            <section class="notice error" role="alert" aria-label="Assistant action error">
               <div>
                 <strong>Assistant action failed</strong>
                 <p>{runsError}</p>
               </div>
+              <button
+                type="button"
+                class="notice-dismiss"
+                aria-label="Clear Assistant action error"
+                on:click={() => (runsError = '')}
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <path d="M6 6l8 8M14 6l-8 8" />
+                </svg>
+              </button>
             </section>
           {/if}
 
@@ -834,6 +888,7 @@
                     type="button"
                     class="primary-action"
                     disabled={isActionUpdating(primaryAction) ||
+                      selectedRun.archived ||
                       primaryAction.status === 'created_task' ||
                       Boolean(primaryAction.created_task_id)}
                     on:click={() =>
@@ -890,11 +945,21 @@
           {/if}
 
           {#if selectedRun.error}
-            <section class="notice error" role="alert">
+            <section class="notice error" role={selectedRun.archived ? 'status' : 'alert'}>
               <div>
                 <strong>Run failed</strong>
                 <p>{selectedRun.error}</p>
               </div>
+              {#if !selectedRun.archived}
+                <button
+                  type="button"
+                  class="text-action notice-action"
+                  disabled={runArchiving}
+                  on:click={() => void updateSelectedRunArchive(true)}
+                >
+                  Archive
+                </button>
+              {/if}
             </section>
           {/if}
 
@@ -906,9 +971,9 @@
               </div>
               <span>{plural(assistantRunActionCount(selectedRun), 'action')}</span>
             </header>
-            {#if selectedRun.recommended_actions?.length}
+            {#if displayedActions.length}
               <div class="recommendation-list">
-                {#each selectedRun.recommended_actions as action}
+                {#each displayedActions as action}
                   <article class="recommendation-card">
                     <header>
                       <div>
@@ -931,7 +996,10 @@
                         <button
                           type="button"
                           class="text-action"
-                          disabled={isActionUpdating(action) || Boolean(action.created_task_id)}
+                          disabled={isActionUpdating(action) ||
+                            Boolean(action.created_task_id) ||
+                            selectedRun.archived ||
+                            actionIsSettled(action)}
                           on:click={() => void updateSelectedRunAction(action, 'create_task')}
                         >
                           Create task
@@ -940,7 +1008,7 @@
                       <button
                         type="button"
                         class="text-action"
-                        disabled={isActionUpdating(action)}
+                        disabled={isActionUpdating(action) || selectedRun.archived || actionIsSettled(action)}
                         on:click={() => void updateSelectedRunAction(action, 'useful')}
                       >
                         Useful
@@ -948,7 +1016,10 @@
                       <button
                         type="button"
                         class="text-action"
-                        disabled={isActionUpdating(action) || action.status === 'snoozed'}
+                        disabled={isActionUpdating(action) ||
+                          selectedRun.archived ||
+                          action.status === 'snoozed' ||
+                          actionIsSettled(action)}
                         on:click={() => void updateSelectedRunAction(action, 'snooze')}
                       >
                         Snooze
@@ -956,7 +1027,10 @@
                       <button
                         type="button"
                         class="danger-action"
-                        disabled={isActionUpdating(action) || action.status === 'dismissed'}
+                        disabled={isActionUpdating(action) ||
+                          selectedRun.archived ||
+                          action.status === 'dismissed' ||
+                          actionIsSettled(action)}
                         on:click={() => void updateSelectedRunAction(action, 'dismiss')}
                       >
                         Dismiss
@@ -1771,6 +1845,46 @@
     overflow-wrap: anywhere;
     font-size: 0.82rem;
     line-height: 1.35;
+  }
+
+  .notice > div {
+    min-width: 0;
+  }
+
+  .notice-dismiss {
+    display: inline-grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: currentColor;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .notice-dismiss:hover,
+  .notice-dismiss:focus-visible {
+    border-color: currentColor;
+    background: rgb(255 255 255 / 0.42);
+  }
+
+  .notice-dismiss svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .notice-dismiss path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+  }
+
+  .notice-action {
+    flex: 0 0 auto;
   }
 
   .record-header {

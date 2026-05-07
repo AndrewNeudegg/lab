@@ -288,7 +288,7 @@ const mockShellApis = async (page: Page) => {
   });
 };
 
-const mockAssistantApis = async (page: Page) => {
+const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boolean } = {}) => {
   await mockShellApis(page);
   const archivedRun = {
     ...clone(assistantRun),
@@ -307,8 +307,52 @@ const mockAssistantApis = async (page: Page) => {
       }
     ]
   };
-  const runs = [clone(assistantRun), archivedRun];
+  const failedRun = {
+    ...clone(assistantRun),
+    id: 'arun_failed',
+    status: 'failed',
+    decision: 'no_op',
+    trigger: { kind: 'manual', label: 'Failed proactive check' },
+    summary: 'Assistant run failed before it could produce a decision.',
+    error: 'assistant run returned invalid JSON: unexpected end of JSON input',
+    recommended_actions: [],
+    route: {
+      capability: 'observe',
+      decision: 'diagnose_error',
+      reason: 'The run did not produce a valid decision.',
+      next_step: 'Archive after the failure is understood.',
+      autonomy: 'propose'
+    },
+    receipts: [
+      {
+        kind: 'error',
+        message: 'assistant run returned invalid JSON: unexpected end of JSON input',
+        created_at: now
+      }
+    ]
+  };
+  const runs = options.includeFailedRun ? [failedRun, clone(assistantRun), archivedRun] : [clone(assistantRun), archivedRun];
   const signals: any[] = [clone(assistantSignal)];
+  const actionIsSettled = (action: any) =>
+    ['created_task', 'dismissed', 'snoozed', 'useful', 'skipped', 'failed'].includes(action.status || '');
+  const archiveIfSettled = (run: any) => {
+    if (!run.archived && run.recommended_actions?.length && run.recommended_actions.every(actionIsSettled)) {
+      run.archived = true;
+      run.archived_at = now;
+      run.archived_by = 'assistant-lifecycle';
+      run.archived_reason = 'All recommendations are resolved; no operator action remains.';
+      run.updated_at = now;
+      run.receipts = [
+        ...(run.receipts || []),
+        {
+          kind: 'run_auto_archived',
+          message:
+            'Archived by Assistant lifecycle policy. Reason: All recommendations are resolved; no operator action remains.',
+          created_at: now
+        }
+      ];
+    }
+  };
   await page.route(/\/api\/assistant\/runs(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const parts = url.pathname.split('/').filter(Boolean);
@@ -329,6 +373,7 @@ const mockAssistantApis = async (page: Page) => {
           action.snoozed_until = '2026-04-29T12:00:00.000Z';
         }
       }
+      archiveIfSettled(run);
       await route.fulfill({
         json: {
           reply:
@@ -408,6 +453,8 @@ const mockAssistantApis = async (page: Page) => {
         signal.suppression_reason = 'Task already created for this signal.';
       } else if (body.feedback === 'useful') {
         signal.useful_count = (signal.useful_count || 0) + 1;
+        signal.suppressed = true;
+        signal.suppression_reason = 'Marked useful; cleared from the active inbox until a new sighting arrives.';
       } else if (body.feedback === 'snooze') {
         signal.suppressed = true;
         signal.suppression_reason = 'Snoozed until 2026-04-29T12:00:00Z.';
@@ -431,7 +478,9 @@ const mockAssistantApis = async (page: Page) => {
       });
       return;
     }
-    await route.fulfill({ json: { signals } });
+    await route.fulfill({
+      json: { signals: signals.filter((signal) => !signal.suppressed && !signal.created_task_id) }
+    });
   });
   await page.route(/\/api\/assistant(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -664,7 +713,11 @@ for (const viewport of [
       await expect(page.getByRole('status', { name: 'Assistant signal status' })).toContainText(
         'Marked signal as useful.'
       );
-      await expect(signalActions.locator('.status').filter({ hasText: /^Useful$/ })).toBeVisible();
+      await page.getByRole('button', { name: 'Clear Assistant signal notice' }).click();
+      await expect(page.getByRole('status', { name: 'Assistant signal status' })).toHaveCount(0);
+      await expect(signalActions).toHaveCount(0);
+      await expect(runTotals.getByText('0 signals', { exact: true })).toBeVisible();
+      await expect(page.getByText('Signals from chat, tasks, health, workflows, and future sources will appear here.')).toBeVisible();
       const decisionSpaces = page.getByLabel('Assistant decision spaces');
       await expect(decisionSpaces.getByRole('button', { name: /Active/ })).toHaveAttribute(
         'aria-pressed',
@@ -704,15 +757,15 @@ for (const viewport of [
         name: 'Recommendation actions for Review blocked deploy'
       });
       await recommendationActions.getByRole('button', { name: 'Useful' }).click();
-      await expect(selectedRunRegion.getByRole('status')).toContainText('Marked recommendation as useful.');
-      await expect(page.getByText('Marked useful')).toBeVisible();
-      await recommendationActions.getByRole('button', { name: 'Create task' }).click();
-      await expect(selectedRunRegion.getByRole('status')).toContainText('Created task from recommendation.');
-      await expect(page.getByRole('link', { name: 'Open created task' })).toHaveAttribute(
-        'href',
-        '/tasks?task=task_from_assistant'
+      await expect(selectedRunRegion.getByRole('status', { name: 'Assistant run status' })).toContainText(
+        'Marked recommendation as useful.'
       );
-      await expect(page.getByRole('heading', { name: 'Recommendation acted on' })).toBeVisible();
+      await selectedRunRegion.getByRole('button', { name: 'Clear Assistant run notice' }).click();
+      await expect(selectedRunRegion.getByRole('status', { name: 'Assistant run status' })).toHaveCount(0);
+      await expect(page).toHaveURL(/\/assistant\?view=archived&run=arun_focus$/);
+      await expect(selectedRunRegion.getByRole('heading', { name: 'Archived decision', exact: true })).toBeVisible();
+      await expect(page.getByText('Marked useful')).toBeVisible();
+      await expect(recommendationActions.getByRole('button', { name: 'Useful' })).toBeDisabled();
       await expectNoVisualArtifacts(page);
       await expectNoAxeViolations(page);
       await expectAssistantThemeSurfaces(page, 'light');
@@ -739,9 +792,6 @@ for (const viewport of [
         await waitForThemeRuntime(page, 'light');
       }
 
-      await page.getByRole('button', { name: 'Archive Assistant decision' }).click();
-      await expect(page.getByRole('status')).toContainText('Archived Assistant decision.');
-      await expect(page).toHaveURL(/\/assistant\?view=archived&run=arun_focus$/);
       await expect(page.getByRole('button', { name: 'Restore Assistant decision' })).toBeVisible();
       await page.getByRole('button', { name: 'Restore Assistant decision' }).click();
       await expect(page.getByRole('status')).toContainText('Restored Assistant decision.');
@@ -755,9 +805,23 @@ for (const viewport of [
       await expect(page).toHaveURL(/\/assistant\?run=arun_manual$/);
       await expect(page.getByRole('status')).toContainText('Assistant run completed.');
       await expect(page.getByRole('heading', { name: 'Operator requested proactive check' })).toBeInViewport();
+      const manualActions = page.getByRole('group', {
+        name: 'Recommendation actions for Review blocked deploy'
+      });
+      await manualActions.getByRole('button', { name: 'Create task' }).click();
+      await expect(page.getByRole('status', { name: 'Assistant run status' })).toContainText(
+        'Created task from recommendation.'
+      );
+      await page.getByRole('button', { name: 'Clear Assistant run notice' }).click();
+      await expect(page.getByRole('status', { name: 'Assistant run status' })).toHaveCount(0);
+      await expect(page).toHaveURL(/\/assistant\?view=archived&run=arun_manual$/);
+      await expect(page.getByRole('link', { name: 'Open created task' })).toHaveAttribute(
+        'href',
+        '/tasks?task=task_from_assistant'
+      );
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to runs' }).click();
-        await expect(page).toHaveURL(/\/assistant$/);
+        await expect(page).toHaveURL(/\/assistant\?view=archived$/);
       }
       await expect(page.getByRole('link', { name: 'Open Assistant documentation' })).toBeVisible();
 
@@ -768,6 +832,23 @@ for (const viewport of [
         fullPage: !viewport.mobile,
         animations: 'disabled'
       });
+    });
+
+    test('archives active failed runs from the failure notice', async ({ page }) => {
+      await initLightTheme(page);
+      await mockAssistantApis(page, { includeFailedRun: true });
+      await page.goto('/assistant?run=arun_failed');
+      await expectAssistantReady(page);
+
+      await expect(page.getByRole('heading', { name: 'Failed proactive check' })).toBeVisible();
+      const selectedRunRegion = page.getByLabel('Selected Assistant run');
+      await expect(selectedRunRegion.getByRole('alert')).toContainText('invalid JSON');
+      await selectedRunRegion.getByRole('button', { name: 'Archive', exact: true }).click();
+      await expect(page).toHaveURL(/\/assistant\?view=archived&run=arun_failed$/);
+      await expect(selectedRunRegion.getByRole('status', { name: 'Assistant run status' })).toContainText(
+        'Archived Assistant decision.'
+      );
+      await expect(selectedRunRegion.getByRole('button', { name: 'Restore Assistant decision' })).toBeVisible();
     });
 
     test('keeps capability reference in docs rather than page controls', async ({ page }) => {

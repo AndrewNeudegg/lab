@@ -377,6 +377,9 @@ func (s *SignalStore) UpsertFromAction(runID string, action RunAction, now time.
 	record.Kind = action.Kind
 	record.Title = firstRunValue(action.Title, "Assistant recommendation")
 	record.Surface = action.TargetSurface
+	if record.Status == SignalStatusUseful && now.After(record.UpdatedAt) {
+		record.Status = SignalStatusActive
+	}
 	record.LastSeenAt = now
 	record.LastRunID = strings.TrimSpace(runID)
 	record.LastActionID = action.ID

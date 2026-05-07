@@ -354,8 +354,8 @@ func TestAssistantSignalEndpointsSubmitAndListCandidates(t *testing.T) {
 	}
 
 	afterFeedback := requestJSON(t, mux, http.MethodGet, "/assistant/signals", "", "", http.StatusOK)
-	if !strings.Contains(afterFeedback.Body.String(), `"useful_count":1`) {
-		t.Fatalf("signal list did not include feedback memory: %s", afterFeedback.Body.String())
+	if strings.Contains(afterFeedback.Body.String(), createResponse.Signal.Fingerprint) {
+		t.Fatalf("signal list still included useful-cleared signal: %s", afterFeedback.Body.String())
 	}
 }
 

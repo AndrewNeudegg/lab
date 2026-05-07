@@ -142,12 +142,16 @@ func (o *Orchestrator) ListAssistantSignalCandidates() ([]assistantstore.SignalC
 	if err != nil {
 		return signals, nil
 	}
+	active := make([]assistantstore.SignalCandidate, 0, len(signals))
 	for index := range signals {
 		runSignal := signals[index].RunSignal
 		applyAssistantSignalRecordToSignal(signalStore, &runSignal, now)
 		signals[index].RunSignal = runSignal
+		if !runSignal.Suppressed && runSignal.CreatedTaskID == "" {
+			active = append(active, signals[index])
+		}
 	}
-	return signals, nil
+	return active, nil
 }
 
 func (o *Orchestrator) SubmitAssistantSignal(ctx context.Context, req assistantstore.SignalSubmitRequest) (assistantstore.SignalCandidate, error) {
@@ -178,8 +182,32 @@ func (o *Orchestrator) SubmitAssistantSignal(ctx context.Context, req assistants
 	if err != nil {
 		return assistantstore.SignalCandidate{}, err
 	}
+	o.reopenUsefulAssistantSignalForNewObservation(candidate, now)
 	o.appendAssistantSignalCandidateEvent(ctx, candidate)
 	return candidate, nil
+}
+
+func (o *Orchestrator) reopenUsefulAssistantSignalForNewObservation(candidate assistantstore.SignalCandidate, now time.Time) {
+	signalStore, err := o.assistantSignalStore()
+	if err != nil {
+		return
+	}
+	record, err := signalStore.Load(candidate.Fingerprint)
+	if err != nil {
+		return
+	}
+	if record.Status != assistantstore.SignalStatusUseful {
+		return
+	}
+	observedAt := firstNonZeroTime(candidate.LastObservedAt, candidate.UpdatedAt)
+	if !observedAt.After(record.UpdatedAt) {
+		return
+	}
+	record.Status = assistantstore.SignalStatusActive
+	record.UpdatedAt = now
+	if err := signalStore.Save(record); err != nil {
+		o.log().Warn("assistant signal reopen failed", "error", err, "fingerprint", candidate.Fingerprint)
+	}
 }
 
 func (o *Orchestrator) UpdateAssistantSignalCandidate(ctx context.Context, fingerprint string, req assistantstore.SignalFeedbackRequest) (assistantstore.SignalCandidate, string, error) {
@@ -263,6 +291,10 @@ func (o *Orchestrator) UpdateAssistantSignalCandidate(ctx context.Context, finge
 	runSignal := candidate.RunSignal
 	applyAssistantSignalRecordToSignal(signalStore, &runSignal, now)
 	candidate.RunSignal = runSignal
+	if feedback == assistantstore.SignalFeedbackUseful {
+		candidate.Suppressed = true
+		candidate.SuppressionReason = "Marked useful; cleared from the active inbox until a new sighting arrives."
+	}
 	if err := candidateStore.Save(candidate, now); err != nil {
 		return assistantstore.SignalCandidate{}, "", err
 	}
@@ -456,6 +488,7 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 		run.FinishedAt = finished
 		run.UpdatedAt = finished
 		run.Receipts = append(run.Receipts, assistantstore.RunReceipt{Kind: "error", Message: err.Error(), CreatedAt: finished})
+		archiveAssistantRunForLifecycle(&run, finished, "Run failed before producing an operator decision; stored for audit.")
 		_ = store.Save(run)
 		o.appendAssistantRunEvent(ctx, "assistant.run.failed", run, map[string]any{"error": err.Error()})
 		return run, "Assistant run failed: " + err.Error(), err
@@ -493,6 +526,9 @@ func (o *Orchestrator) StartAssistantRun(ctx context.Context, req assistantstore
 		Message:   assistantRunReceiptMessage(run),
 		CreatedAt: finished,
 	})
+	if assistantRunActionsSettled(run, finished) {
+		archiveAssistantRunForLifecycle(&run, finished, "All recommendations are resolved; no operator action remains.")
+	}
 	if err := store.Save(run); err != nil {
 		return assistantstore.Run{}, "", err
 	}
@@ -741,22 +777,13 @@ func (o *Orchestrator) maintainAssistantRuns(ctx context.Context, store *assista
 		return 0, err
 	}
 	archived := 0
+	latestNoopStatusRunID := assistantLatestNoopStatusRunID(runs)
 	for _, run := range runs {
-		reason, ok := o.assistantRunAutoArchiveReason(run, now)
+		reason, ok := o.assistantRunAutoArchiveReason(run, now, latestNoopStatusRunID)
 		if !ok {
 			continue
 		}
-		archivedAt := now.UTC()
-		run.Archived = true
-		run.ArchivedAt = &archivedAt
-		run.ArchivedBy = "assistant-lifecycle"
-		run.ArchivedReason = reason
-		run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
-			Kind:      "run_auto_archived",
-			Message:   "Archived by Assistant lifecycle policy. Reason: " + reason,
-			CreatedAt: archivedAt,
-		})
-		run.UpdatedAt = archivedAt
+		archiveAssistantRunForLifecycle(&run, now, reason)
 		if err := store.Save(run); err != nil {
 			return archived, err
 		}
@@ -766,33 +793,80 @@ func (o *Orchestrator) maintainAssistantRuns(ctx context.Context, store *assista
 	return archived, nil
 }
 
-func (o *Orchestrator) assistantRunAutoArchiveReason(run assistantstore.Run, now time.Time) (string, bool) {
-	if run.Archived || run.Status == assistantstore.RunStatusRunning || run.Status == assistantstore.RunStatusFailed {
+func assistantLatestNoopStatusRunID(runs []assistantstore.Run) string {
+	var latest assistantstore.Run
+	for _, run := range runs {
+		if !assistantNoopStatusRun(run) {
+			continue
+		}
+		if latest.ID == "" || assistantRunReferenceTime(run).After(assistantRunReferenceTime(latest)) {
+			latest = run
+		}
+	}
+	return latest.ID
+}
+
+func archiveAssistantRunForLifecycle(run *assistantstore.Run, now time.Time, reason string) bool {
+	if run == nil || run.Archived {
+		return false
+	}
+	archivedAt := now.UTC()
+	run.Archived = true
+	run.ArchivedAt = &archivedAt
+	run.ArchivedBy = "assistant-lifecycle"
+	run.ArchivedReason = reason
+	run.Receipts = append(run.Receipts, assistantstore.RunReceipt{
+		Kind:      "run_auto_archived",
+		Message:   "Archived by Assistant lifecycle policy. Reason: " + reason,
+		CreatedAt: archivedAt,
+	})
+	run.UpdatedAt = archivedAt
+	return true
+}
+
+func (o *Orchestrator) assistantRunAutoArchiveReason(run assistantstore.Run, now time.Time, latestNoopStatusRunID string) (string, bool) {
+	if run.Archived || run.Status == assistantstore.RunStatusRunning {
 		return "", false
 	}
-	reference := run.FinishedAt
-	if reference.IsZero() {
-		reference = run.UpdatedAt
-	}
-	if reference.IsZero() {
-		reference = run.CreatedAt
-	}
+	reference := assistantRunReferenceTime(run)
 	if reference.IsZero() || now.Before(reference) {
 		return "", false
 	}
-	if run.Decision == assistantstore.RunDecisionNoop && len(run.RecommendedActions) == 0 {
+	if assistantNoopStatusRun(run) {
+		if latestNoopStatusRunID != "" && run.ID != latestNoopStatusRunID {
+			return "A newer no-action Assistant status run is active.", true
+		}
 		window := time.Duration(o.cfg.Assistant.DecisionNoopAutoArchiveSeconds) * time.Second
 		if window > 0 && now.Sub(reference) >= window {
 			return "No action was recommended and the no-op retention window elapsed.", true
 		}
 	}
+	if run.Status == assistantstore.RunStatusFailed && len(run.RecommendedActions) == 0 {
+		return "Run failed without producing an operator decision; no operator action remains.", true
+	}
 	if len(run.RecommendedActions) > 0 && assistantRunActionsSettled(run, now) {
 		window := time.Duration(o.cfg.Assistant.DecisionSettledAutoArchiveSeconds) * time.Second
-		if window > 0 && now.Sub(reference) >= window {
-			return "All recommendations are already resolved and the settled retention window elapsed.", true
+		if window <= 0 || now.Sub(reference) >= window {
+			return "All recommendations are already resolved; no operator action remains.", true
 		}
 	}
 	return "", false
+}
+
+func assistantNoopStatusRun(run assistantstore.Run) bool {
+	return run.Status == assistantstore.RunStatusCompleted &&
+		run.Decision == assistantstore.RunDecisionNoop &&
+		len(run.RecommendedActions) == 0
+}
+
+func assistantRunReferenceTime(run assistantstore.Run) time.Time {
+	if !run.FinishedAt.IsZero() {
+		return run.FinishedAt
+	}
+	if !run.UpdatedAt.IsZero() {
+		return run.UpdatedAt
+	}
+	return run.CreatedAt
 }
 
 func assistantRunActionsSettled(run assistantstore.Run, now time.Time) bool {
@@ -898,6 +972,9 @@ func (o *Orchestrator) UpdateAssistantRunAction(ctx context.Context, runID, acti
 		ObjectURL: assistantActionReceiptURL(*action),
 		CreatedAt: now,
 	})
+	if assistantRunActionsSettled(run, now) {
+		archiveAssistantRunForLifecycle(&run, now, "All recommendations are resolved; no operator action remains.")
+	}
 	run.UpdatedAt = now
 	if err := runStore.Save(run); err != nil {
 		return assistantstore.Run{}, "", err

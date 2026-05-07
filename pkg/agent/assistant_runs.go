@@ -306,6 +306,7 @@ func (o *Orchestrator) UpdateAssistantSignalCandidate(ctx context.Context, finge
 	if err := candidateStore.Save(candidate, now); err != nil {
 		return assistantstore.SignalCandidate{}, "", err
 	}
+	o.applyAssistantSignalRecordToActiveRuns(ctx, record, now)
 	o.appendAssistantSignalFeedbackEvent(ctx, candidate, feedback)
 	return candidate, reply, nil
 }
@@ -1145,6 +1146,84 @@ func applyAssistantSignalToAction(action *assistantstore.RunAction, record assis
 			action.Status = "recommended"
 		}
 	}
+}
+
+func (o *Orchestrator) applyAssistantSignalRecordToActiveRuns(ctx context.Context, record assistantstore.SignalRecord, now time.Time) {
+	if strings.TrimSpace(record.Fingerprint) == "" {
+		return
+	}
+	fingerprint := assistantstore.SignalFingerprint(record.Fingerprint)
+	runStore, err := o.assistantRunStore()
+	if err != nil {
+		o.log().Warn("assistant run store unavailable for signal feedback", "error", err)
+		return
+	}
+	runs, err := runStore.List()
+	if err != nil {
+		o.log().Warn("assistant runs unavailable for signal feedback", "error", err)
+		return
+	}
+	for _, run := range runs {
+		if run.Archived || run.Status == assistantstore.RunStatusRunning {
+			continue
+		}
+		changed := false
+		for index := range run.Snapshot.Signals {
+			if assistantstore.SignalFingerprint(run.Snapshot.Signals[index].Fingerprint) != fingerprint {
+				continue
+			}
+			applyAssistantSignalFeedbackRecordToSignal(record, &run.Snapshot.Signals[index], now)
+			changed = true
+		}
+		for index := range run.RecommendedActions {
+			if assistantstore.SignalFingerprint(run.RecommendedActions[index].Fingerprint) != fingerprint {
+				continue
+			}
+			applyAssistantSignalToAction(&run.RecommendedActions[index], record, now)
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		applyAssistantCapabilityRouter(&run)
+		run.Receipts = append(run.Receipts, assistantSignalFeedbackRunReceipt(record, now))
+		if assistantRunActionsSettled(run, now) {
+			archiveAssistantRunForLifecycle(&run, now, "All recommendations are resolved by signal feedback; no operator action remains.")
+		}
+		run.UpdatedAt = now
+		if err := runStore.Save(run); err != nil {
+			o.log().Warn("assistant run signal feedback save failed", "error", err, "run", run.ID, "fingerprint", fingerprint)
+			continue
+		}
+		o.appendAssistantRunEvent(ctx, "assistant.run.signal_feedback_applied", run, map[string]any{
+			"fingerprint": fingerprint,
+			"status":      record.Status,
+			"task_id":     record.CreatedTaskID,
+		})
+	}
+}
+
+func assistantSignalFeedbackRunReceipt(record assistantstore.SignalRecord, now time.Time) assistantstore.RunReceipt {
+	receipt := assistantstore.RunReceipt{
+		Kind:      "signal_feedback",
+		Message:   "Applied signal feedback to this recommendation.",
+		CreatedAt: now.UTC(),
+	}
+	switch record.Status {
+	case assistantstore.SignalStatusCreatedTask:
+		receipt.Message = "Suppressed duplicate recommendation because a task already exists for this signal."
+		receipt.ObjectID = record.CreatedTaskID
+		if record.CreatedTaskID != "" {
+			receipt.ObjectURL = dashboardTaskURL(record.CreatedTaskID)
+		}
+	case assistantstore.SignalStatusDismissed:
+		receipt.Message = "Suppressed recommendation because the signal was dismissed."
+	case assistantstore.SignalStatusSnoozed:
+		receipt.Message = "Suppressed recommendation because the signal was snoozed."
+	case assistantstore.SignalStatusUseful:
+		receipt.Message = "Cleared recommendation because the signal was marked useful."
+	}
+	return receipt
 }
 
 func assistantActionSuppressesTaskCreation(action assistantstore.RunAction, now time.Time) bool {

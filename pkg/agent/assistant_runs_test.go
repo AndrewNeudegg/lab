@@ -649,6 +649,12 @@ func TestAssistantRunFallsBackWhenModelReturnsInvalidJSON(t *testing.T) {
 			var foundSelfRepair bool
 			for _, signal := range signals {
 				if signal.Kind == "assistant_self_repair" && signal.ActionKind == "task" {
+					if signal.ObjectID != run.ID || signal.ObjectURL != "/assistant?run="+run.ID {
+						t.Fatalf("self-repair signal = %#v, want failed run link %q", signal, run.ID)
+					}
+					if signal.Suppressed || !assistantSignalHasSafeAction(signal.ToRunSignal(), assistantstore.SignalFeedbackCreateTask) {
+						t.Fatalf("self-repair signal = %#v, want visible create-task action", signal)
+					}
 					foundSelfRepair = true
 				}
 			}
@@ -656,6 +662,101 @@ func TestAssistantRunFallsBackWhenModelReturnsInvalidJSON(t *testing.T) {
 				t.Fatalf("signals = %#v, want assistant_self_repair task signal", signals)
 			}
 		})
+	}
+}
+
+func TestAssistantSignalCreateTaskSuppressesMatchingRunRecommendations(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Date(2026, 5, 7, 21, 20, 51, 0, time.UTC)
+	candidate, err := orch.SubmitAssistantSignal(context.Background(), assistantstore.SignalSubmitRequest{
+		Fingerprint: "sig_structured_output_repair",
+		Source:      "assistant",
+		Kind:        "assistant_self_repair",
+		Title:       "Repair Assistant structured-output handling",
+		Detail:      "A proactive Assistant run fell back because the model did not return valid structured output.",
+		WhyNow:      "The Assistant cannot be trusted to drive Goals if failed reasoning is hidden as a no-op.",
+		Severity:    "warning",
+		Surface:     "assistant",
+		ObjectID:    "arun_20260507_212051_47f81d3a",
+		ObjectURL:   "/assistant?run=arun_20260507_212051_47f81d3a",
+		Score:       92,
+		ActionKind:  "task",
+		Rationale:   "Provider or parser failures should create self-repair work instead of disappearing into a fallback receipt.",
+		TaskGoal:    "Investigate and repair proactive Assistant structured-output handling.",
+		Evidence: []assistantstore.RunSignalEvidence{{
+			Source:   "assistant",
+			Kind:     "compiler_rejection",
+			Title:    "Assistant compiler fallback",
+			Detail:   "assistant run returned invalid JSON",
+			ObjectID: "arun_20260507_212051_47f81d3a",
+			Weight:   92,
+		}},
+		SafeActions: []string{"create_task", "useful", "snooze", "dismiss"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := assistantstore.NormalizeRun(assistantstore.Run{
+		ID:        "arun_duplicate_recommendation",
+		Status:    assistantstore.RunStatusCompleted,
+		Decision:  assistantstore.RunDecisionRecommend,
+		Trigger:   assistantstore.RunTrigger{Kind: "schedule", Label: "Scheduled proactive check"},
+		Autonomy:  assistantstore.RunAutonomyPropose,
+		Summary:   "Scored watchlist found high signal.",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Snapshot:  assistantstore.RunSnapshot{GeneratedAt: now, Signals: []assistantstore.RunSignal{candidate.ToRunSignal()}},
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:            "action_1",
+			Fingerprint:   candidate.Fingerprint,
+			Kind:          "task",
+			Title:         candidate.Title,
+			Rationale:     candidate.Rationale,
+			TaskGoal:      candidate.TaskGoal,
+			TargetSurface: "assistant",
+			Status:        "recommended",
+		}},
+	})
+	runStore, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runStore.Save(run); err != nil {
+		t.Fatal(err)
+	}
+
+	updatedSignal, reply, err := orch.UpdateAssistantSignalCandidate(context.Background(), candidate.Fingerprint, assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackCreateTask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Created task from signal." || updatedSignal.CreatedTaskID == "" || !updatedSignal.Suppressed {
+		t.Fatalf("updated signal = %#v reply %q, want created task suppression", updatedSignal, reply)
+	}
+	updatedRun, err := orch.LoadAssistantRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updatedRun.Archived || updatedRun.ArchivedBy != "assistant-lifecycle" {
+		t.Fatalf("updated run archive = %#v, want lifecycle archive after duplicate suppression", updatedRun)
+	}
+	if len(updatedRun.RecommendedActions) != 1 ||
+		updatedRun.RecommendedActions[0].Status != assistantstore.SignalStatusCreatedTask ||
+		updatedRun.RecommendedActions[0].CreatedTaskID != updatedSignal.CreatedTaskID {
+		t.Fatalf("updated actions = %#v, want matching recommendation linked to existing task", updatedRun.RecommendedActions)
+	}
+	if len(updatedRun.Snapshot.Signals) != 1 ||
+		!updatedRun.Snapshot.Signals[0].Suppressed ||
+		updatedRun.Snapshot.Signals[0].CreatedTaskID != updatedSignal.CreatedTaskID {
+		t.Fatalf("snapshot signals = %#v, want created-task suppression", updatedRun.Snapshot.Signals)
+	}
+	var sawSuppressionReceipt bool
+	for _, receipt := range updatedRun.Receipts {
+		if receipt.Kind == "signal_feedback" && receipt.ObjectID == updatedSignal.CreatedTaskID {
+			sawSuppressionReceipt = true
+		}
+	}
+	if !sawSuppressionReceipt {
+		t.Fatalf("receipts = %#v, want signal feedback suppression receipt", updatedRun.Receipts)
 	}
 }
 

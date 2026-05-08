@@ -47,6 +47,7 @@
 	  type MobilePanel = 'runs' | 'detail';
 	  type DetailKind = 'goal' | 'run';
 	  type GoalTargetMode = 'auto' | 'local' | 'remote';
+	  const GOAL_AUTOPILOT_TASK_BUDGET_MAX = 500;
 
 	  let runs: AssistantRun[] = [];
 	  let signals: AssistantSignalCandidate[] = [];
@@ -98,6 +99,12 @@
 	  let lastAppliedRouteRunId = '';
   let pendingRouteRunId = '';
   let pendingOverviewRoute = false;
+
+  const normaliseGoalAutopilotTaskBudget = (value: number | string | undefined) => {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    const finite = Number.isFinite(parsed) ? parsed : 1;
+    return Math.min(GOAL_AUTOPILOT_TASK_BUDGET_MAX, Math.max(1, Math.floor(finite)));
+  };
 
   $: activeRuns = assistantRunsForView(runs, 'active');
   $: archivedRuns = assistantRunsForView(runs, 'archived');
@@ -722,7 +729,7 @@
           goalExecutionMode === 'autopilot'
             ? {
                 status: 'ready',
-                budget_tasks: Math.max(1, goalAutopilotBudget || 1)
+                budget_tasks: normaliseGoalAutopilotTaskBudget(goalAutopilotBudget)
               }
             : undefined,
 	        cadence: goalCadence.trim() || undefined,
@@ -800,7 +807,7 @@
     try {
       const request =
         action === 'start' || action === 'resume'
-          ? { budget_tasks: Math.max(1, selectedGoal?.autopilot?.budget_tasks || goalAutopilotBudget || 1) }
+          ? { budget_tasks: selectedGoal?.autopilot?.budget_tasks || normaliseGoalAutopilotTaskBudget(goalAutopilotBudget) }
           : {};
       const response = await client.updateAssistantGoalAutopilot(selectedGoalId, action, request);
       const timeline = response.timeline;
@@ -1125,7 +1132,13 @@
             {#if goalExecutionMode === 'autopilot'}
               <label>
                 <span>Autopilot task budget</span>
-                <input bind:value={goalAutopilotBudget} type="number" min="1" max="20" inputmode="numeric" />
+                <input
+                  bind:value={goalAutopilotBudget}
+                  type="number"
+                  min="1"
+                  max={GOAL_AUTOPILOT_TASK_BUDGET_MAX}
+                  inputmode="numeric"
+                />
               </label>
             {/if}
 	            <label>

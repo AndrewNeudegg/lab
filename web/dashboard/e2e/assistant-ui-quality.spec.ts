@@ -1052,15 +1052,18 @@ for (const viewport of [
       await goalForm.getByLabel('Objective').fill('Keep unanswered inbox items visible until resolved.');
       await goalForm.getByLabel('Goal type').selectOption('build');
       await goalForm.getByLabel('Execution mode').selectOption('autopilot');
-      await goalForm.getByLabel('Autopilot task budget').fill('4');
+      await expect(goalForm.getByLabel('Autopilot task budget')).toHaveAttribute('max', '500');
+      await goalForm.getByLabel('Autopilot task budget').fill('500');
       await goalForm.getByLabel('Autonomy').selectOption('create_tasks');
       await goalForm.getByLabel('Details').fill('Create bounded tasks only when a response needs work.');
       await goalForm.getByRole('button', { name: 'Create Goal' }).click();
       const createdGoalRegion = page.getByLabel('Selected Assistant Goal');
       await expect(createdGoalRegion).toContainText('Keep unanswered inbox items visible until resolved.');
       await expect(createdGoalRegion).toContainText('Build Goal / Autopilot mode');
+      await expect(createdGoalRegion).toContainText('Autopilot Ready / 0/500 tasks');
       await createdGoalRegion.getByRole('button', { name: 'Start Autopilot' }).click();
       await expect(createdGoalRegion).toContainText('Autopilot Running');
+      await expect(createdGoalRegion).toContainText('Autopilot Running / 1/500 tasks');
       await expect(createdGoalRegion.getByLabel('Goal linked tasks')).toContainText('Autopilot task');
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to Goal list' }).click();

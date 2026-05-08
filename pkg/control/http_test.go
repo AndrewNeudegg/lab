@@ -1663,6 +1663,79 @@ func TestTaskDiffEndpointReturnsStructuredBranchDiff(t *testing.T) {
 	}
 }
 
+func TestTaskDiffEndpointReturnsRemoteWorkingTreeDiff(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "remote")
+	gitHTTPTestRun(t, "", "init", "--initial-branch=main", repo)
+	gitHTTPTestRun(t, repo, "config", "user.email", "test@example.com")
+	gitHTTPTestRun(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitHTTPTestRun(t, repo, "add", "README.md")
+	gitHTTPTestRun(t, repo, "commit", "-m", "base")
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "grid.js"), []byte("export const ready = true;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.DataDir = filepath.Join(dir, "data")
+	cfg.Repo.Root = filepath.Join(dir, "control")
+	cfg.Repo.WorkspaceRoot = filepath.Join(dir, "workspaces")
+	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
+	orch := agent.NewOrchestrator(
+		cfg,
+		eventlog.NewStore(filepath.Join(cfg.DataDir, "events")),
+		tasks,
+		approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals")),
+		tool.NewRegistry(),
+		tool.NewPolicy(nil),
+		nil,
+		"",
+	)
+	taskID := "task_20260508_remote"
+	now := time.Now().UTC()
+	if err := tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "remote grid",
+		Goal:       "build remote grid",
+		Status:     taskstore.StatusReadyForReview,
+		AssignedTo: "OrchestratorAgent",
+		Target:     &taskstore.ExecutionTarget{Mode: "remote", AgentID: "desk", Machine: "desk.local", Workdir: repo},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := Server{Orchestrator: orch}
+	mux := http.NewServeMux()
+	server.register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/tasks/"+taskID+"/diff", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body.String())
+	}
+	var got agent.TaskDiff
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseLabel != "remote base" || got.Workspace != repo {
+		t.Fatalf("labels/workspace = %q/%q, want remote working tree diff", got.BaseLabel, got.Workspace)
+	}
+	if got.Summary.Files != 1 || got.Files[0].Status != "added" || got.Files[0].Path != "src/grid.js" {
+		t.Fatalf("files = %#v summary=%#v, want one added untracked file", got.Files, got.Summary)
+	}
+	if !strings.Contains(got.RawDiff, "new file mode") || !strings.Contains(got.RawDiff, "+export const ready = true;") {
+		t.Fatalf("raw diff = %q, want untracked file patch", got.RawDiff)
+	}
+}
+
 func TestTaskCancelEndpointCancelsTask(t *testing.T) {
 	server, tasks, _ := newHTTPTestServer(t)
 	now := time.Now().UTC()
@@ -1951,7 +2024,7 @@ func TestRemoteAgentHTTPTaskLifecycle(t *testing.T) {
 	}
 
 	requestJSON(t, mux, http.MethodPost, "/agents/nuc/tasks/"+task.ID+"/complete", `{"status":"completed","result":"bad"}`, "secret", http.StatusConflict)
-	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", `{"status":"completed","result":"changed remote files; validation passed"}`, "secret", http.StatusOK)
+	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", `{"status":"completed","result":"changed remote files; validation passed","diff":"diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -0,0 +1 @@\n+remote\n"}`, "secret", http.StatusOK)
 
 	ready, err := tasks.Load(task.ID)
 	if err != nil {
@@ -1959,6 +2032,9 @@ func TestRemoteAgentHTTPTaskLifecycle(t *testing.T) {
 	}
 	if ready.Status != taskstore.StatusReadyForReview || !strings.Contains(ready.Result, "changed remote files") {
 		t.Fatalf("ready task = %#v", ready)
+	}
+	if !strings.Contains(ready.RemoteDiff, "+remote") || ready.RemoteDiffCapturedAt == nil {
+		t.Fatalf("remote diff = %q captured_at=%v, want stored completion diff", ready.RemoteDiff, ready.RemoteDiffCapturedAt)
 	}
 
 	review := requestJSON(t, mux, http.MethodPost, "/tasks/"+task.ID+"/review", `{}`, "", http.StatusOK)

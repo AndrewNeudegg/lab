@@ -981,6 +981,7 @@ func (s *Server) handleAgent(rw http.ResponseWriter, req *http.Request) {
 			Status string `json:"status"`
 			Result string `json:"result"`
 			Error  string `json:"error"`
+			Diff   string `json:"diff"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(rw, http.StatusBadRequest, err.Error())
@@ -990,7 +991,7 @@ func (s *Server) handleAgent(rw http.ResponseWriter, req *http.Request) {
 		if strings.TrimSpace(result) == "" {
 			result = in.Error
 		}
-		reply, err := s.Orchestrator.CompleteRemoteTask(req.Context(), agentID, parts[2], result, in.Status)
+		reply, err := s.Orchestrator.CompleteRemoteTask(req.Context(), agentID, parts[2], result, in.Status, in.Diff)
 		if err != nil {
 			writeError(rw, http.StatusConflict, err.Error())
 			return

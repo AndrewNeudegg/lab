@@ -1,7 +1,7 @@
 # External Agent Backends
 
 `homelabd` can delegate a task to a headless CLI worker such as Codex, Claude, or Gemini.
-For local tasks, the CLI runs inside the task worktree, so any file edits stay isolated until the normal `review` and `approve` merge flow. For remote tasks, `homelab-agent` runs the same backend command in the selected advertised remote directory; the control plane records the result but does not create a local worktree or merge approval.
+For local tasks, the CLI runs inside the task worktree, so any file edits stay isolated until the normal `review` and `approve` merge flow. For remote tasks, `homelab-agent` runs the same backend command in the selected advertised remote directory; the control plane records the result and captured remote working-tree diff but does not create a local worktree or merge approval.
 
 Built-in role agents are separate from external CLI backends. `UXAgent` is invoked with `ux <task_id> [instruction]` or `delegate <task_id> to ux ...`; it uses the local LLM provider and the same worktree/review flow, not an entry in `external_agents`.
 
@@ -34,7 +34,7 @@ approve approval_...
 
 The `agents` command lists external backend definitions, not remote machines. Remote machines are listed with `homelabctl agent list` or on the dashboard Tasks page.
 
-`diff <task_id>` uses the dedicated task diff API. In chat it returns a compact summary; `homelabctl task diff <task_id>` prints the raw patch; the dashboard task record shows the same comparison in the highlighted `Changes vs main` panel with split and unified views.
+`diff <task_id>` uses the dedicated task diff API. In chat it returns a compact summary; `homelabctl task diff <task_id>` prints the raw patch; the dashboard task record shows the same comparison or remote working-tree patch in the highlighted `Changes vs main` panel with split and unified views.
 
 ## Configuration
 

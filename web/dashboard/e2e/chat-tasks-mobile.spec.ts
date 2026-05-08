@@ -46,7 +46,10 @@ const mockTaskApi = async (
   page: Page,
   onCreateTask?: (body: any) => void,
   extraTasks: any[] = [],
-  options: { taskListDelayMs?: (requestCount: number) => number } = {}
+  options: {
+    taskListDelayMs?: (requestCount: number) => number;
+    diffByTaskId?: Record<string, any>;
+  } = {}
 ) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
   const plan = {
@@ -158,9 +161,15 @@ const mockTaskApi = async (
     await route.fulfill({ json: { runs: [] } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
+    const taskId = route.request().url().match(/\/api\/tasks\/([^/]+)\/diff/)?.[1] || tasks[0].id;
+    const diff = options.diffByTaskId?.[taskId];
+    if (diff) {
+      await route.fulfill({ json: diff });
+      return;
+    }
     await route.fulfill({
       json: {
-        task_id: tasks[0].id,
+        task_id: taskId,
         raw_diff: '',
         summary: { files: 0, additions: 0, deletions: 0 },
         files: [],
@@ -862,6 +871,66 @@ test('tasks status pills describe queued review without implying action', async 
   await expect(actions).toContainText('Queued for review');
   await expect(actions).toContainText('No action needed');
   await expect(actions).not.toContainText('Ready for review');
+});
+
+test('remote tasks show captured working-tree diff in the task panel', async ({ page }) => {
+  const now = new Date('2026-05-08T06:20:00Z').toISOString();
+  const remoteTaskId = 'task_20260508_062000_remote1';
+  await mockTaskApi(
+    page,
+    undefined,
+    [
+      {
+        id: remoteTaskId,
+        title: 'Build AG Grid alternative',
+        goal: 'Build a dependency-free AG Grid Enterprise alternative.',
+        status: 'ready_for_review',
+        assigned_to: 'OrchestratorAgent',
+        priority: 5,
+        created_at: now,
+        updated_at: now,
+        result: 'remote agent finished; ready for review.',
+        target: {
+          mode: 'remote',
+          project_id: 'remote1',
+          agent_id: 'remote1',
+          machine: 'remote1-uat',
+          workdir: '/home/lab/remote1',
+          backend: 'codex'
+        }
+      }
+    ],
+    {
+      diffByTaskId: {
+        [remoteTaskId]: {
+          task_id: remoteTaskId,
+          base_label: 'remote base',
+          head_label: 'remote1',
+          workspace: '/home/lab/remote1',
+          raw_diff:
+            'diff --git a/src/grid-core.js b/src/grid-core.js\nnew file mode 100644\n--- /dev/null\n+++ b/src/grid-core.js\n@@ -0,0 +1 @@\n+export const gridReady = true;\n',
+          summary: { files: 1, additions: 1, deletions: 0 },
+          files: [{ path: 'src/grid-core.js', status: 'added', additions: 1, deletions: 0 }],
+          generated_at: now
+        }
+      }
+    }
+  );
+
+  await page.goto(`/tasks?task=${remoteTaskId}`);
+  await expect(page.getByRole('heading', { name: 'Build AG Grid alternative' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  const diffPanel = page.getByRole('region', { name: 'Task diff' });
+  await expect(diffPanel).toContainText('1 file');
+  await expect(diffPanel).toContainText('src/grid-core.js');
+  await expect(diffPanel).toContainText('export const gridReady = true');
+  await expect(diffPanel.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+  await page.setViewportSize({ width: 390, height: 820 });
+  await expect(diffPanel).toContainText('src/grid-core.js');
+  await expect
+    .poll(() => page.evaluate(() => document.body.scrollWidth <= window.innerWidth + 2))
+    .toBe(true);
 });
 
 test('accepted task feedback is a non-reflowing toast on mobile', async ({ page }) => {

@@ -736,8 +736,26 @@ func TestTaskDiffCommandPrintsRemoteDiffGuidance(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "remote task diff is recorded by the remote agent") {
+	if !strings.Contains(stdout, "remote task diff is not available") {
 		t.Fatalf("stdout = %q, want remote diff guidance", stdout)
+	}
+}
+
+func TestTaskDiffCommandPrintsRemoteRawPatch(t *testing.T) {
+	stdout, stderr, code := runAgainstServer(t, []string{"task", "diff", "task_123"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{
+			"base_label": "remote base",
+			"head_label": "desk",
+			"raw_diff":   "diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -0,0 +1 @@\n+remote\n",
+			"summary":    map[string]any{"files": 1, "additions": 1, "deletions": 0},
+			"files":      []any{},
+		})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "# 1 changed file(s), +1/-0") || !strings.Contains(stdout, "+remote") {
+		t.Fatalf("stdout = %q, want remote raw diff", stdout)
 	}
 }
 

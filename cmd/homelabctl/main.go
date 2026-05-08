@@ -1416,8 +1416,8 @@ func (c cli) printTaskDiff(endpoint string) error {
 	if err := json.Unmarshal(out, &diff); err != nil {
 		return c.printResponse(out)
 	}
-	if strings.EqualFold(diff.BaseLabel, "remote agent") {
-		fmt.Fprintln(c.out, "remote task diff is recorded by the remote agent")
+	if strings.EqualFold(diff.BaseLabel, "remote agent") && strings.TrimSpace(diff.RawDiff) == "" {
+		fmt.Fprintln(c.out, "remote task diff is not available; inspect the remote agent result")
 		return nil
 	}
 	if strings.TrimSpace(diff.RawDiff) == "" {

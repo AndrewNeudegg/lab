@@ -757,7 +757,7 @@
       detailTasks.push(refreshTaskRuns(taskId));
     }
 
-    if (selected && !isRemoteTask(selected) && (options.force || loadedDiffTaskId !== taskId)) {
+    if (selected && (options.force || loadedDiffTaskId !== taskId)) {
       loadedDiffTaskId = taskId;
       if (options.resetDiffSelection) {
         selectedDiffFilePath = '';
@@ -1871,8 +1871,8 @@
                 </button>
                 <button
                   type="button"
-                  disabled={diffLoadingTaskId === currentTask.id || isRemoteTask(currentTask)}
-                  on:click={() => !isRemoteTask(currentTask) && void refreshTaskDiff(currentTask.id)}
+                  disabled={diffLoadingTaskId === currentTask.id}
+                  on:click={() => void refreshTaskDiff(currentTask.id)}
                 >
                   {diffLoadingTaskId === currentTask.id ? 'Loading' : 'Refresh'}
                 </button>
@@ -1883,10 +1883,10 @@
               <p class="error" role="alert">{diffError}</p>
             {/if}
 
-            {#if isRemoteTask(currentTask)}
-              <p class="empty">Remote diffs are recorded by the remote agent.</p>
-            {:else if diffLoadingTaskId === currentTask.id && !currentTaskDiff}
+            {#if diffLoadingTaskId === currentTask.id && !currentTaskDiff}
               <p class="empty">Loading task diff...</p>
+            {:else if isRemoteTask(currentTask) && currentTaskDiff && !currentTaskDiff.raw_diff.trim()}
+              <p class="empty">Remote diff is not available. Review the remote result and target checkout before accepting.</p>
             {:else if currentTaskDiff && !currentTaskDiff.raw_diff.trim()}
               <p class="empty">
                 {currentTask.status === 'no_change_required'

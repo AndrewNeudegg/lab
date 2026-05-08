@@ -58,6 +58,8 @@ type Task struct {
 	MergeQueueEnteredAt  *time.Time            `json:"merge_queue_entered_at,omitempty"`
 	Workspace            string                `json:"workspace,omitempty"`
 	Result               string                `json:"result,omitempty"`
+	RemoteDiff           string                `json:"remote_diff,omitempty"`
+	RemoteDiffCapturedAt *time.Time            `json:"remote_diff_captured_at,omitempty"`
 	Plan                 *TaskPlan             `json:"plan,omitempty"`
 }
 

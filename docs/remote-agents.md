@@ -84,7 +84,7 @@ go run ./cmd/homelab-agent \
   -terminal-url http://workstation:18083
 ```
 
-The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory and sends stdout/stderr back as the task result. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 18,000 seconds, or 5 hours. The default Codex backend disables Codex's own sandbox because local tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
+The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory, sends stdout/stderr back as the task result, and captures the remote git working-tree patch after completion. The captured patch includes uncommitted tracked changes and untracked files, excluding ignored runtime state such as `.agent-*`. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 18,000 seconds, or 5 hours. The default Codex backend disables Codex's own sandbox because local tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
 
 Remote agents do not need to run in this repository. Each advertised `workdir` can be a different checkout, a different project, or a non-git directory. `homelabd` stores the path as execution context only; it does not assume that remote path has the same HEAD, branch, or repository root as the control-plane checkout.
 
@@ -200,9 +200,13 @@ Local tasks still use local worktrees, local checks, diff review, and merge appr
 Remote tasks do not. For a remote task:
 
 1. The remote agent runs the worker in the selected remote directory.
-2. The remote agent reports output and validation back to `homelabd`.
+2. The remote agent reports output, validation, and the captured remote diff back to `homelabd`.
 3. `review <task>` acknowledges the remote result and moves the task to `awaiting_verification`. If the remote worker reports `No change required: <reason>`, `homelabd` records `no_change_required` instead so the operator can accept the no-change conclusion or reopen the task with corrected instructions.
 4. Human verification happens against the named remote machine/directory.
 5. `accept <task>` closes it, or `reopen <task> <reason>` queues more remote work.
 
 No local merge approval is created for remote tasks because the control plane cannot prove that the remote checkout corresponds to its own repo.
+
+For Autopilot Goals, remote review uses the same acknowledgement transition as manual remote review. When the remote task reaches `ready_for_review` and the Goal policy allows `review_task`, `homelabd` moves it to `awaiting_verification` without consulting the local merge queue. The next `accept_task` gate can then close the task or pause/block according to the Goal policy.
+
+Use `homelabctl task diff <task_id>` or the dashboard `Changes vs main` panel to inspect the captured remote patch. If the remote completion predates diff capture and the workdir path is still accessible from the control plane, `GET /tasks/{task_id}/diff` computes the current remote working-tree diff directly from that path. If neither source is available, the task still shows the remote result and validation, but the diff panel tells the operator that no remote diff is available.

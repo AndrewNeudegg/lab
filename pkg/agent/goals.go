@@ -578,6 +578,13 @@ func (o *Orchestrator) reconcileGoalAutopilotTask(ctx context.Context, store *as
 		if !goalAutopilotAllows(goal, "review_task") {
 			return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Autopilot policy does not allow reviewing tasks.")
 		}
+		if remoteTask(t) {
+			reply, err := o.reviewRemoteTask(ctx, t)
+			if err != nil {
+				return false, "", err
+			}
+			return true, fmt.Sprintf("Autopilot acknowledged remote review for task %s.\n%s", taskShortID(t.ID), reply), nil
+		}
 		if _, head, err := o.mergeQueuePosition(ctx, t.ID); err != nil {
 			return false, "", err
 		} else if !head {

@@ -6,8 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/andrewneudegg/lab/pkg/config"
 	agentrunner "github.com/andrewneudegg/lab/pkg/externalagent"
@@ -127,6 +132,30 @@ func contains(values []string, want string) bool {
 	return false
 }
 
+func TestRemoteHeartbeatLoopContinuesWhileAssignmentBlocks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var heartbeats atomic.Int32
+	thirdHeartbeat := make(chan struct{})
+	done := startRemoteHeartbeatLoop(ctx, time.Millisecond, func() {
+		if heartbeats.Add(1) == 3 {
+			close(thirdHeartbeat)
+		}
+	})
+
+	select {
+	case <-thirdHeartbeat:
+	case <-time.After(time.Second):
+		t.Fatalf("heartbeats = %d, want heartbeat loop to continue while caller is blocked", heartbeats.Load())
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat loop did not stop after context cancellation")
+	}
+}
+
 func TestControlClientReturnsHTTPErrorBody(t *testing.T) {
 	client := controlClient{
 		base:  "http://homelabd",
@@ -179,6 +208,37 @@ func TestExecuteAssignmentReportsNoChangeRequired(t *testing.T) {
 	}
 }
 
+func TestExecuteAssignmentReportsCapturedGitDiff(t *testing.T) {
+	workdir := t.TempDir()
+	gitAgentTestRun(t, workdir, "init", "--initial-branch=main")
+	gitAgentTestRun(t, workdir, "config", "user.email", "test@example.com")
+	gitAgentTestRun(t, workdir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitAgentTestRun(t, workdir, "add", "README.md")
+	gitAgentTestRun(t, workdir, "commit", "-m", "base")
+	if err := os.MkdirAll(filepath.Join(workdir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "src", "grid.js"), []byte("export const ready = true;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeAssignmentRunner{result: agentrunner.RunResult{Output: "done\n"}}
+	client := &fakeAgentControl{}
+	if err := executeAssignment(context.Background(), client, runner, "desk", "codex", &remoteagent.Assignment{
+		TaskID:      "task_1",
+		Workdir:     workdir,
+		Instruction: "build it",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if client.status != "completed" || !strings.Contains(client.diff, "new file mode") || !strings.Contains(client.diff, "+export const ready = true;") {
+		t.Fatalf("completion = %#v, want captured untracked diff", client)
+	}
+}
+
 func TestExecuteAssignmentReportsRunnerFailure(t *testing.T) {
 	runner := &fakeAssignmentRunner{err: fmt.Errorf("runner failed")}
 	client := &fakeAgentControl{}
@@ -215,14 +275,16 @@ type fakeAgentControl struct {
 	status    string
 	result    string
 	errorText string
+	diff      string
 }
 
-func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, status, result, errorText string) error {
+func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, status, result, errorText, diff string) error {
 	c.agentID = agentID
 	c.taskID = taskID
 	c.status = status
 	c.result = result
 	c.errorText = errorText
+	c.diff = diff
 	return nil
 }
 
@@ -232,5 +294,14 @@ func jsonResponse(status int, body string) *http.Response {
 		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func gitAgentTestRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, strings.TrimSpace(string(out)))
 	}
 }

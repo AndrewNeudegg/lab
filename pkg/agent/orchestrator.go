@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	assistantstore "github.com/andrewneudegg/lab/pkg/assistant"
 	"github.com/andrewneudegg/lab/pkg/config"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
@@ -1816,7 +1817,7 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 	return nil, nil
 }
 
-func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, result, status string) (string, error) {
+func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, result, status string, remoteDiff ...string) (string, error) {
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
@@ -1830,6 +1831,15 @@ func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, 
 	status = strings.ToLower(strings.TrimSpace(status))
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = strings.TrimSpace(result)
+	t.RemoteDiff = ""
+	t.RemoteDiffCapturedAt = nil
+	if len(remoteDiff) > 0 {
+		t.RemoteDiff = strings.TrimSpace(remoteDiff[0])
+		if t.RemoteDiff != "" {
+			capturedAt := time.Now().UTC()
+			t.RemoteDiffCapturedAt = &capturedAt
+		}
+	}
 	if status == "failed" || status == "blocked" {
 		t.Status = taskstore.StatusBlocked
 		if t.Result == "" {
@@ -4482,7 +4492,7 @@ func (o *Orchestrator) createRemoteTaskRecordWithOptions(ctx context.Context, go
 		Target:             &target,
 		Attachments:        attachments,
 		Result:             "queued for remote agent " + target.AgentID,
-		AcceptanceCriteria: remoteAcceptanceCriteria(target),
+		AcceptanceCriteria: remoteAcceptanceCriteria(goal, target, opts),
 	}
 	o.ensureTaskPlan(ctx, &task)
 	if err := o.tasks.Save(task); err != nil {
@@ -4525,7 +4535,7 @@ func (o *Orchestrator) summarizeTaskTitle(ctx context.Context, taskID, goal stri
 		return fallback
 	}
 	title := cleanTaskTitle(out.Summary, taskTitleMaxCharacters)
-	if title == "" {
+	if title == "" || genericTaskTitle(title) {
 		return fallback
 	}
 	return title
@@ -4539,7 +4549,39 @@ func taskTitleSummaryInput(goal string) string {
 			return parsed
 		}
 	}
+	if linked := linkedGoalTaskTitleInput(goal); linked != "" {
+		return linked
+	}
 	return goal
+}
+
+func linkedGoalTaskTitleInput(goal string) string {
+	first := strings.TrimSpace(strings.Split(goal, "\n")[0])
+	firstLower := strings.ToLower(first)
+	if strings.HasPrefix(firstLower, "autopilot task for ") || strings.HasPrefix(firstLower, "guided task for ") {
+		if _, right, ok := strings.Cut(first, ":"); ok {
+			if title := strings.TrimSpace(right); title != "" {
+				return title
+			}
+		}
+	}
+	for _, line := range strings.Split(goal, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "- title:") {
+			return strings.TrimSpace(trimmed[len("- title:"):])
+		}
+	}
+	return ""
+}
+
+func genericTaskTitle(title string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(title)), " "))
+	switch normalized {
+	case "", "add", "build", "change", "check", "create", "do", "fix", "implement", "improve", "inspect", "investigate", "make", "review", "run", "test", "update", "work":
+		return true
+	}
+	return len([]rune(normalized)) < 8 && !strings.Contains(normalized, " ")
 }
 
 func fallbackTaskTitle(goal string, maxCharacters int) string {
@@ -4805,10 +4847,22 @@ func rootAcceptanceCriteria() []taskstore.AcceptanceCriterion {
 	)
 }
 
-func remoteAcceptanceCriteria(target taskstore.ExecutionTarget) []taskstore.AcceptanceCriterion {
+func remoteAcceptanceCriteria(goal string, target taskstore.ExecutionTarget, opts taskCreateOptions) []taskstore.AcceptanceCriterion {
+	subject := fallbackTaskTitle(taskTitleSummaryInput(goal), 96)
+	if subject == "" {
+		subject = "the requested remote work"
+	}
+	where := firstNonEmptyString(target.Machine, target.AgentID, "the remote agent")
+	if strings.EqualFold(strings.TrimSpace(opts.ExecutionMode), assistantstore.GoalExecutionModeAutopilot) {
+		return criteria(
+			"Remote agent runs in "+firstNonEmptyString(target.Workdir, "the selected directory")+" and names the concrete implementation slice chosen for "+subject+".",
+			"Implementation measurably advances "+subject+", or the result starts with `No change required:` and explains why no patch was needed.",
+			"Final result states changed files, captured diff status, validation performed, and any follow-up needed on "+where+".",
+		)
+	}
 	return criteria(
 		"Remote agent runs in the selected directory and reports the commands or tools used.",
-		"Final result states changed files, validation performed, and any follow-up needed on "+firstNonEmptyString(target.Machine, target.AgentID)+".",
+		"Final result states changed files, captured diff status, validation performed, and any follow-up needed on "+where+".",
 	)
 }
 
@@ -5462,6 +5516,14 @@ func taskPlanSteps(t taskstore.Task, planContext taskPlanContext) []taskstore.Ta
 		}
 	}
 	if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
+		if strings.EqualFold(strings.TrimSpace(t.ExecutionMode), assistantstore.GoalExecutionModeAutopilot) {
+			return []taskstore.TaskPlanStep{
+				{Title: "Confirm remote Goal target", Detail: "Verify the selected agent, machine, backend, and working directory before work starts."},
+				{Title: "Choose a concrete Goal slice", Detail: "Name the largest coherent implementation slice that advances the Goal and can finish in this run."},
+				{Title: "Implement and validate remotely", Detail: "Make the change in the advertised checkout, run relevant tests and browser UAT when UI changes."},
+				{Title: "Report diff and next Goal step", Detail: "Return changed files, captured diff status, validation, blockers, and the next recommended Goal slice."},
+			}
+		}
 		return []taskstore.TaskPlanStep{
 			{Title: "Confirm remote target", Detail: "Verify the selected agent, machine, backend, and working directory before work starts."},
 			{Title: "Run in remote checkout", Detail: "Execute the requested change only in the advertised remote directory."},
@@ -5547,7 +5609,7 @@ func taskPlanRisks(t taskstore.Task, planContext taskPlanContext) []string {
 		if t.Target != nil && strings.EqualFold(t.Target.Mode, "remote") {
 			risks = []string{
 				"Remote execution can affect a checkout outside the local control-plane repository.",
-				"Local review acknowledges the remote result but cannot compare or merge that checkout.",
+				"Local review can inspect the captured remote diff but cannot merge that checkout.",
 			}
 		} else {
 			risks = []string{
@@ -7805,12 +7867,12 @@ func (o *Orchestrator) diffTask(ctx context.Context, selector string) (string, e
 	if err != nil {
 		return "", err
 	}
-	if remoteTask(t) {
-		return "Remote task diffs are not read from homelabd's repo. Inspect the remote agent result for changed files and validation.", nil
-	}
 	diff, err := o.TaskDiff(ctx, taskID)
 	if err != nil {
 		return "", err
+	}
+	if remoteTask(t) && strings.TrimSpace(diff.RawDiff) == "" {
+		return "Remote task diff is not available. Inspect the remote agent result for changed files and validation.", nil
 	}
 	if strings.TrimSpace(diff.RawDiff) == "" {
 		return "no diff", nil
@@ -7829,7 +7891,7 @@ func (o *Orchestrator) describeTaskDiff(ctx context.Context, selector string) (s
 		base = "main"
 	}
 	if strings.EqualFold(diff.BaseLabel, "remote agent") && strings.TrimSpace(diff.RawDiff) == "" {
-		return "Remote task diffs are not read from homelabd's repo. Inspect the remote agent result for changed files and validation.", nil
+		return "Remote task diff is not available. Inspect the remote agent result for changed files and validation.", nil
 	}
 	if strings.TrimSpace(diff.RawDiff) == "" {
 		return fmt.Sprintf("Task %s has no diff against %s.\nOpen the task in the dashboard to inspect the highlighted Changes panel, or run `homelabctl task diff %s`.", shortID, base, shortID), nil

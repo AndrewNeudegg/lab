@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -170,7 +173,7 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 		pollEvery = 5 * time.Second
 	}
 	runner := agentrunner.NewRunner(cfg.ExternalAgents)
-	currentTaskID := ""
+	state := newRemoteAgentRuntimeState()
 	capabilities, metadata := remoteAgentMetadata(agentCfg.Backend, terminalBaseURL)
 	sendHeartbeat := func() {
 		err := client.heartbeat(ctx, remoteagent.Heartbeat{
@@ -181,16 +184,19 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 			StartedAt:     startedAt,
 			Capabilities:  capabilities,
 			Workdirs:      workdirs,
-			CurrentTaskID: currentTaskID,
+			CurrentTaskID: state.currentTask(),
 			Metadata:      metadata,
 		})
 		if err != nil {
 			slog.Warn("remote heartbeat failed", "error", err)
 		}
 	}
-	sendHeartbeat()
-	heartbeatTicker := time.NewTicker(heartbeatEvery)
-	defer heartbeatTicker.Stop()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	heartbeatDone := startRemoteHeartbeatLoop(heartbeatCtx, heartbeatEvery, sendHeartbeat)
+	defer func() {
+		stopHeartbeat()
+		<-heartbeatDone
+	}()
 	pollTicker := time.NewTicker(pollEvery)
 	defer pollTicker.Stop()
 
@@ -198,10 +204,8 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-heartbeatTicker.C:
-			sendHeartbeat()
 		case <-pollTicker.C:
-			if currentTaskID != "" {
+			if state.currentTask() != "" {
 				continue
 			}
 			assignment, err := client.claim(ctx, agentCfg.ID, agentCfg.Backend)
@@ -212,20 +216,58 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 			if assignment == nil {
 				continue
 			}
-			currentTaskID = assignment.TaskID
+			state.setCurrentTask(assignment.TaskID)
 			sendHeartbeat()
 			slog.Info("remote assignment claimed", "task_id", assignment.TaskID, "workdir", assignment.Workdir, "backend", assignment.Backend)
 			if err := executeAssignment(ctx, client, runner, agentCfg.ID, agentCfg.Backend, assignment); err != nil {
 				slog.Warn("remote completion failed", "task_id", assignment.TaskID, "error", err)
 			}
-			currentTaskID = ""
+			state.setCurrentTask("")
 			sendHeartbeat()
 		}
 	}
 }
 
+type remoteAgentRuntimeState struct {
+	currentTaskID atomic.Value
+}
+
+func newRemoteAgentRuntimeState() *remoteAgentRuntimeState {
+	state := &remoteAgentRuntimeState{}
+	state.currentTaskID.Store("")
+	return state
+}
+
+func (s *remoteAgentRuntimeState) setCurrentTask(taskID string) {
+	s.currentTaskID.Store(strings.TrimSpace(taskID))
+}
+
+func (s *remoteAgentRuntimeState) currentTask() string {
+	value, _ := s.currentTaskID.Load().(string)
+	return value
+}
+
+func startRemoteHeartbeatLoop(ctx context.Context, every time.Duration, send func()) <-chan struct{} {
+	done := make(chan struct{})
+	send()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				send()
+			}
+		}
+	}()
+	return done
+}
+
 type agentControl interface {
-	complete(ctx context.Context, agentID, taskID, status, result, errorText string) error
+	complete(ctx context.Context, agentID, taskID, status, result, errorText, diff string) error
 }
 
 type assignmentRunner interface {
@@ -254,7 +296,73 @@ func executeAssignment(ctx context.Context, client agentControl, runner assignme
 	} else if workerReportedNoChangeRequired(body) {
 		status = "no_change_required"
 	}
-	return client.complete(ctx, agentID, assignment.TaskID, status, body, errorText)
+	diff, diffErr := captureGitDiff(ctx, assignment.Workdir)
+	if diffErr != nil {
+		body = appendResultNote(body, "Remote diff capture failed: "+diffErr.Error())
+	}
+	return client.complete(ctx, agentID, assignment.TaskID, status, body, errorText, diff)
+}
+
+func captureGitDiff(ctx context.Context, workdir string) (string, error) {
+	workdir = strings.TrimSpace(workdir)
+	if workdir == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
+		return "", nil
+	}
+	return remoteWorkingTreeDiff(ctx, workdir)
+}
+
+func remoteWorkingTreeDiff(ctx context.Context, workdir string) (string, error) {
+	diffOut, err := exec.CommandContext(ctx, "git", "-C", workdir, "diff", "--binary", "HEAD", "--", ".").CombinedOutput()
+	if err != nil {
+		diffOut, err = exec.CommandContext(ctx, "git", "-C", workdir, "diff", "--binary", "--", ".").CombinedOutput()
+	}
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w: %s", err, strings.TrimSpace(string(diffOut)))
+	}
+	var b strings.Builder
+	b.Write(diffOut)
+	untrackedOut, err := exec.CommandContext(ctx, "git", "-C", workdir, "ls-files", "--others", "--exclude-standard").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git ls-files untracked: %w: %s", err, strings.TrimSpace(string(untrackedOut)))
+	}
+	for _, rel := range strings.Split(string(untrackedOut), "\n") {
+		rel = strings.TrimSpace(rel)
+		if skipRemoteUntrackedDiffPath(rel) {
+			continue
+		}
+		out, diffErr := exec.CommandContext(ctx, "git", "-C", workdir, "diff", "--no-index", "--binary", "--", "/dev/null", rel).CombinedOutput()
+		if diffErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(diffErr, &exitErr) || exitErr.ExitCode() != 1 {
+				return "", fmt.Errorf("git diff untracked %s: %w: %s", rel, diffErr, strings.TrimSpace(string(out)))
+			}
+		}
+		b.Write(out)
+	}
+	return b.String(), nil
+}
+
+func skipRemoteUntrackedDiffPath(rel string) bool {
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	return rel == "" ||
+		rel == ".codex" ||
+		strings.HasPrefix(rel, ".codex/") ||
+		strings.HasPrefix(rel, ".agent-")
+}
+
+func appendResultNote(body, note string) string {
+	body = strings.TrimSpace(body)
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return body
+	}
+	if body == "" {
+		return note
+	}
+	return body + "\n\n" + note
 }
 
 func workerReportedNoChangeRequired(result string) bool {
@@ -295,11 +403,12 @@ func (c controlClient) claim(ctx context.Context, agentID, backend string) (*rem
 	return out.Assignment, nil
 }
 
-func (c controlClient) complete(ctx context.Context, agentID, taskID, status, result, errorText string) error {
+func (c controlClient) complete(ctx context.Context, agentID, taskID, status, result, errorText, diff string) error {
 	return c.do(ctx, http.MethodPost, "/agents/"+agentID+"/tasks/"+taskID+"/complete", map[string]any{
 		"status": status,
 		"result": result,
 		"error":  errorText,
+		"diff":   diff,
 	}, nil)
 }
 

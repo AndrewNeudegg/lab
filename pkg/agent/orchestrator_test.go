@@ -1763,6 +1763,29 @@ func TestCreateTaskSummarizesTitleFromCreationSugar(t *testing.T) {
 	}
 }
 
+func TestGoalLinkedTaskTitleUsesGoalTitleAndRejectsGenericVerb(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	summarizer := &taskTitleSummaryStub{summary: "Build"}
+	if err := orch.registry.Register(summarizer); err != nil {
+		t.Fatal(err)
+	}
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:        "goal_1",
+		Title:     "Build an AG Grid alternative as a clean-room exercise",
+		Objective: "Build a dependency-free AG Grid Enterprise alternative",
+		Kind:      assistantstore.GoalKindBuild,
+	})
+	taskGoal := taskGoalWithGoalContext(goalAutopilotTaskGoal(goal), goal)
+
+	title := orch.summarizeTaskTitle(context.Background(), "task_1", taskGoal)
+	if summarizer.text != goal.Title {
+		t.Fatalf("summarizer text = %q, want linked Goal title", summarizer.text)
+	}
+	if title != goal.Title {
+		t.Fatalf("title = %q, want fallback to linked Goal title instead of generic verb", title)
+	}
+}
+
 func TestCreateTaskFallbackTitleIgnoresCreationSugar(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	goal := "new\nWork this task to completion if possible. Inspect the task workspace before editing. Task goal: fix task titles by summarising the requested work"
@@ -3300,7 +3323,7 @@ func TestNaturalDiffQuestionForRemoteTaskExplainsRemoteCheckout(t *testing.T) {
 	if result.Source != "program" {
 		t.Fatalf("source = %q, want program", result.Source)
 	}
-	if !strings.Contains(result.Reply, "Remote task diffs are not read from homelabd's repo") {
+	if !strings.Contains(result.Reply, "Remote task diff is not available") {
 		t.Fatalf("reply = %q, want remote diff guidance", result.Reply)
 	}
 }
@@ -6920,6 +6943,118 @@ func TestGoalAutopilotStartCreatesRemoteTaskWithoutLocalWorker(t *testing.T) {
 	select {
 	case <-delegate.started:
 		t.Fatal("local worker started for remote Autopilot task")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGoalAutopilotReviewsReadyRemoteTaskWithoutMergeQueue(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "remote1-agent",
+		Machine: "vm-remote1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build remote1 review lifecycle",
+		Objective:     "Build a remote feature and let Autopilot review the result.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 1},
+		Target: &taskstore.ExecutionTarget{
+			Mode:      "remote",
+			AgentID:   "remote1-agent",
+			WorkdirID: "remote1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusReadyForReview
+	task.AssignedTo = "remote:remote1-agent"
+	task.Result = "remote agent finished; ready for review."
+	task.RemoteDiff = "diff --git a/src/grid.js b/src/grid.js\nnew file mode 100644\n"
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want remote review acknowledgement", changed)
+	}
+	reviewed, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.Status != taskstore.StatusAwaitingVerification {
+		t.Fatalf("status = %q, want awaiting verification", reviewed.Status)
+	}
+	if !strings.Contains(reviewed.Result, "ReviewerAgent acknowledged remote result") {
+		t.Fatalf("result = %q, want remote review acknowledgement", reviewed.Result)
+	}
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReviewEvent := false
+	for _, event := range events {
+		if event.TaskID == taskID && event.Type == "remote_agent.review.acknowledged" {
+			foundReviewEvent = true
+			break
+		}
+	}
+	if !foundReviewEvent {
+		t.Fatalf("events = %#v, want remote_agent.review.acknowledged", events)
+	}
+
+	changed, err = orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed after verification = %d, want Autopilot acceptance", changed)
+	}
+	accepted, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Status != taskstore.StatusDone {
+		t.Fatalf("status after acceptance = %q, want done", accepted.Status)
+	}
+	if !strings.Contains(accepted.Result, "accepted by Assistant Autopilot") {
+		t.Fatalf("result after acceptance = %q, want Assistant Autopilot acceptance", accepted.Result)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started while reviewing remote Autopilot task")
 	case <-time.After(50 * time.Millisecond):
 	}
 }

@@ -321,7 +321,7 @@ describe('task queue selection helper', () => {
     expect(result.shouldLoadDiff).toBe(true);
   });
 
-  test('keeps remote task sync from asking the local diff endpoint', () => {
+  test('loads remote task details and diff through the task diff endpoint', () => {
     const tasks = [remoteTask('task_desk', 'running', '04', 'desk')];
     const result = resolveTaskSyncSelection({
       tasks,
@@ -332,9 +332,9 @@ describe('task queue selection helper', () => {
       selectedTaskId: 'task_desk'
     });
 
-    expect(result.selectedTaskId).toBe('task_desk');
-    expect(result.shouldLoadRuns).toBe(true);
-    expect(result.shouldLoadDiff).toBe(false);
+	expect(result.selectedTaskId).toBe('task_desk');
+	expect(result.shouldLoadRuns).toBe(true);
+	expect(result.shouldLoadDiff).toBe(true);
   });
 
   test('keeps the overview from loading task details without an explicit selection', () => {

@@ -119,6 +119,8 @@ export interface HomelabdTask {
   merge_queue_entered_at?: string;
   workspace?: string;
   result?: string;
+  remote_diff?: string;
+  remote_diff_captured_at?: string;
   plan?: HomelabdTaskPlan;
 }
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -51,12 +52,39 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 		return TaskDiff{}, err
 	}
 	if remoteTask(t) {
+		raw := strings.TrimSpace(t.RemoteDiff)
+		workspace := firstNonEmptyString(t.Workspace)
+		headLabel := "remote task"
+		if t.Target != nil {
+			workspace = firstNonEmptyString(t.Target.Workdir, t.Workspace)
+			headLabel = firstNonEmptyString(t.Target.AgentID, t.Target.Machine, "remote task")
+		}
+		baseLabel := "remote agent"
+		if raw == "" && workspaceHasGit(workspace) {
+			raw, err = workingTreeDiff(ctx, workspace)
+			if err != nil {
+				return TaskDiff{}, err
+			}
+		}
+		if raw == "no diff" {
+			raw = ""
+		}
+		if raw != "" {
+			baseLabel = "remote base"
+		}
+		files := diffFileSummaries(raw)
+		if files == nil {
+			files = []TaskDiffFile{}
+		}
+		additions, deletions := diffLineStats(raw)
 		return TaskDiff{
 			TaskID:      taskID,
-			BaseLabel:   "remote agent",
-			HeadLabel:   firstNonEmptyString(t.Target.AgentID, t.Target.Machine, "remote task"),
-			Workspace:   t.Workspace,
-			Files:       []TaskDiffFile{},
+			BaseLabel:   baseLabel,
+			HeadLabel:   headLabel,
+			Workspace:   workspace,
+			RawDiff:     raw,
+			Summary:     TaskDiffSummary{Files: len(files), Additions: additions, Deletions: deletions},
+			Files:       files,
 			GeneratedAt: time.Now().UTC(),
 		}, nil
 	}
@@ -111,6 +139,52 @@ func (o *Orchestrator) taskDiffRaw(ctx context.Context, t task.Task) (raw, baseR
 	}
 	_ = json.Unmarshal(rawBytes, &out)
 	return out.Diff, "", "workspace base", "", "workspace", nil
+}
+
+func workingTreeDiff(ctx context.Context, workspace string) (string, error) {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return "", nil
+	}
+	diffOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--binary", "HEAD", "--", ".").CombinedOutput()
+	if err != nil {
+		diffOut, err = exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--binary", "--", ".").CombinedOutput()
+	}
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w: %s", err, strings.TrimSpace(string(diffOut)))
+	}
+	var b strings.Builder
+	b.Write(diffOut)
+	untrackedOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "ls-files", "--others", "--exclude-standard").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git ls-files untracked: %w: %s", err, strings.TrimSpace(string(untrackedOut)))
+	}
+	for _, rel := range strings.Split(string(untrackedOut), "\n") {
+		rel = strings.TrimSpace(rel)
+		if skipUntrackedDiffPath(rel) {
+			continue
+		}
+		out, diffErr := exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--no-index", "--binary", "--", "/dev/null", rel).CombinedOutput()
+		if diffErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(diffErr, &exitErr) || exitErr.ExitCode() != 1 {
+				return "", fmt.Errorf("git diff untracked %s: %w: %s", rel, diffErr, strings.TrimSpace(string(out)))
+			}
+		}
+		b.Write(out)
+	}
+	if strings.TrimSpace(b.String()) == "" {
+		return "no diff", nil
+	}
+	return b.String(), nil
+}
+
+func skipUntrackedDiffPath(rel string) bool {
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	return rel == "" ||
+		rel == ".codex" ||
+		strings.HasPrefix(rel, ".codex/") ||
+		strings.HasPrefix(rel, ".agent-")
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {

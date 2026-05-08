@@ -268,7 +268,7 @@ export const resolveTaskSyncSelection = ({
     selectedTaskId: normalizedSelectedTaskId,
     selectedTask,
     shouldLoadRuns: Boolean(selectedTask),
-    shouldLoadDiff: Boolean(selectedTask && selectedTask.target?.mode !== 'remote')
+    shouldLoadDiff: Boolean(selectedTask)
   };
 };
 

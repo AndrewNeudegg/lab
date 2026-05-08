@@ -16,6 +16,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
 	"github.com/andrewneudegg/lab/pkg/llm"
+	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
 )
 
@@ -680,19 +681,20 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		}
 		var created createdTask
 		var err error
+		target := assistantActionTaskTarget(*action)
 		if action.GoalID != "" {
 			goalTimeline, loadErr := o.LoadGoal(action.GoalID)
 			if loadErr == nil {
 				goalRecord := goalTimeline.Goal
-				if action.Target != nil {
-					goalRecord.Target = action.Target
+				if target != nil {
+					goalRecord.Target = target
 				}
 				created, err = o.createTaskRecordForGoal(ctx, goal, goalRecord)
 			} else {
 				err = loadErr
 			}
 		} else {
-			created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, action.Target, nil, taskCreateOptions{})
+			created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, target, nil, taskCreateOptions{})
 		}
 		if err != nil {
 			action.Status = "failed"
@@ -1237,6 +1239,32 @@ func assistantActionSuppressesTaskCreation(action assistantstore.RunAction, now 
 	}
 }
 
+func assistantActionTaskTarget(action assistantstore.RunAction) *taskstore.ExecutionTarget {
+	if action.Target != nil {
+		return action.Target
+	}
+	if assistantActionShouldStayLocal(action) {
+		return &taskstore.ExecutionTarget{Mode: "local"}
+	}
+	return nil
+}
+
+func assistantActionShouldStayLocal(action assistantstore.RunAction) bool {
+	if localSelfImprovementGoal(strings.Join([]string{action.TargetSurface, action.TaskGoal, action.Title, action.Rationale}, " ")) {
+		return true
+	}
+	surface := strings.Trim(strings.ToLower(strings.TrimSpace(action.TargetSurface)), "/")
+	switch surface {
+	case "assistant", "assistant/runs", "assistant/signals",
+		"chat", "tasks", "approvals", "approval", "workflows", "knowledge",
+		"dashboard", "docs", "health", "healthd", "supervisor", "supervisord",
+		"terminal", "terminals", "homelabd", "control-plane", "control plane":
+		return true
+	default:
+		return false
+	}
+}
+
 func (o *Orchestrator) createTaskFromAssistantAction(ctx context.Context, action assistantstore.RunAction) (string, error) {
 	if strings.TrimSpace(action.CreatedTaskID) != "" {
 		return action.CreatedTaskID, nil
@@ -1250,19 +1278,20 @@ func (o *Orchestrator) createTaskFromAssistantAction(ctx context.Context, action
 	}
 	var created createdTask
 	var err error
+	target := assistantActionTaskTarget(action)
 	if action.GoalID != "" {
 		timeline, loadErr := o.LoadGoal(action.GoalID)
 		if loadErr == nil {
 			goalRecord := timeline.Goal
-			if action.Target != nil {
-				goalRecord.Target = action.Target
+			if target != nil {
+				goalRecord.Target = target
 			}
 			created, err = o.createTaskRecordForGoal(ctx, goal, goalRecord)
 		} else {
 			err = loadErr
 		}
 	} else {
-		created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, action.Target, nil, taskCreateOptions{})
+		created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, target, nil, taskCreateOptions{})
 	}
 	if err != nil {
 		return "", err

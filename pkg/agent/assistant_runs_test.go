@@ -470,6 +470,57 @@ func TestUpdateAssistantSignalCandidateStoresFeedbackAndCreatesTask(t *testing.T
 	}
 }
 
+func TestAssistantSignalCreateTaskForAssistantSurfaceStaysLocalWithRemoteWorkspace(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID: "remote1-agent",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := orch.SubmitAssistantSignal(context.Background(), assistantstore.SignalSubmitRequest{
+		Fingerprint:       "sig_assistant_structured_output",
+		Source:            "assistant",
+		Kind:              "assistant_self_repair",
+		Title:             "Repair Assistant structured-output handling",
+		Surface:           "assistant",
+		ObjectID:          "arun_failed",
+		ObjectURL:         "/assistant?run=arun_failed",
+		Score:             100,
+		ActionKind:        "task",
+		Rationale:         "Provider or parser failures should create visible self-repair work.",
+		TaskGoal:          "Investigate and repair proactive Assistant structured-output handling.",
+		SafeActions:       []string{"create_task", "useful", "snooze", "dismiss"},
+		SuggestedNextStep: "Create a repair task for Assistant run structured-output handling.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, reply, err := orch.UpdateAssistantSignalCandidate(context.Background(), candidate.Fingerprint, assistantstore.SignalFeedbackRequest{Feedback: assistantstore.SignalFeedbackCreateTask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Created task from signal." || created.CreatedTaskID == "" {
+		t.Fatalf("created signal = %#v reply %q, want created local task", created, reply)
+	}
+	task, err := orch.tasks.Load(created.CreatedTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Target != nil || task.AssignedTo != "OrchestratorAgent" {
+		t.Fatalf("task target = %#v assigned_to = %q, want local control-plane task", task.Target, task.AssignedTo)
+	}
+}
+
 func TestAssistantSignalUsefulFeedbackClearsInboxUntilNewObservation(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	allowed := true

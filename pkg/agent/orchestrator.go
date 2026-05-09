@@ -8278,9 +8278,44 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 	if t.Status != taskstore.StatusReadyForReview {
 		return fmt.Sprintf("Remote task %s is %s. Wait for the agent to finish before review.", shortID, t.Status), nil
 	}
+	review, err := o.remoteTaskReview(ctx, t)
+	if err != nil {
+		return "", err
+	}
+	switch review.Decision {
+	case goalTaskReviewNoChange:
+		t.Status = taskstore.StatusNoChangeRequired
+		t.AssignedTo = "OrchestratorAgent"
+		t.Result = appendResultLine(t.Result, "ReviewerAgent independently found no remote diff and recorded the no-change conclusion for human acceptance.")
+		if err := o.tasks.Save(t); err != nil {
+			return "", err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.review.no_change", Actor: "ReviewerAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"agent_id": t.Target.AgentID,
+			"machine":  t.Target.Machine,
+			"workdir":  t.Target.Workdir,
+			"review":   review,
+		})})
+		return fmt.Sprintf("ReviewerAgent:\nRemote task %s produced no independently visible diff and has a no-change conclusion.\nNext: verify the conclusion, then use `accept %s` or `reopen %s <reason>`.", shortID, shortID, shortID), nil
+	case goalTaskReviewNeedsValidation, goalTaskReviewMisaligned, goalTaskReviewInsufficientEvidence:
+		t.Status = taskstore.StatusBlocked
+		t.AssignedTo = "OrchestratorAgent"
+		t.Result = appendResultLine(t.Result, "ReviewerAgent could not verify remote Goal progress: "+review.Summary)
+		if err := o.tasks.Save(t); err != nil {
+			return "", err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.review.blocked", Actor: "ReviewerAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"agent_id": t.Target.AgentID,
+			"machine":  t.Target.Machine,
+			"workdir":  t.Target.Workdir,
+			"review":   review,
+		})})
+		return fmt.Sprintf("ReviewerAgent:\nRemote task %s is blocked.\nIndependent review: %s\nNext: `reopen %s <reason>` or retry with validation/alignment instructions.", shortID, review.Summary, shortID), nil
+	}
 	t.Status = taskstore.StatusAwaitingVerification
 	t.AssignedTo = "OrchestratorAgent"
-	t.Result = appendResultLine(t.Result, "ReviewerAgent acknowledged remote result; no local git merge was attempted.")
+	t.Result = appendResultLine(t.Result, "ReviewerAgent independently reviewed remote result: "+review.Summary)
+	t.Result = appendResultLine(t.Result, "No local git merge was attempted.")
 	if err := o.tasks.Save(t); err != nil {
 		return "", err
 	}
@@ -8288,8 +8323,48 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 		"agent_id": t.Target.AgentID,
 		"machine":  t.Target.Machine,
 		"workdir":  t.Target.Workdir,
+		"review":   review,
 	})})
-	return fmt.Sprintf("ReviewerAgent:\nRemote result acknowledged for %s.\nNo local workspace, main-branch comparison, or merge approval was attempted.\nExecution context: %s on %s in %s.\nNext: verify that remote checkout, then use `accept %s` or `reopen %s <reason>`.", shortID, t.Target.AgentID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
+	return fmt.Sprintf("ReviewerAgent:\nRemote result reviewed for %s.\nIndependent review: %s\nNo local workspace, main-branch comparison, or merge approval was attempted.\nExecution context: %s on %s in %s.\nNext: verify that remote checkout, then use `accept %s` or `reopen %s <reason>`.", shortID, review.Summary, t.Target.AgentID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
+}
+
+func (o *Orchestrator) remoteTaskReview(ctx context.Context, t taskstore.Task) (goalTaskProgressReview, error) {
+	if strings.TrimSpace(t.GoalID) != "" {
+		store, err := o.assistantGoalStore()
+		if err == nil {
+			if goal, loadErr := store.LoadGoal(t.GoalID); loadErr == nil {
+				report := o.goalTaskReportFromTask(ctx, goal, t)
+				if saveErr := store.SaveTaskReport(report); saveErr != nil {
+					o.log().Warn("remote goal task report save failed", "error", saveErr, "goal", t.GoalID, "task", t.ID)
+				}
+				return goalTaskProgressReview{Decision: report.ReviewDecision, Summary: report.ReviewSummary, Evidence: report.ReviewEvidence}, nil
+			}
+		}
+	}
+	diff, err := o.TaskDiff(ctx, t.ID)
+	if err != nil {
+		return goalTaskProgressReview{}, err
+	}
+	hasDiff := diff.Summary.Files > 0 || strings.TrimSpace(diff.RawDiff) != ""
+	if !hasDiff {
+		if workerReportedNoChangeRequired(t.Result) {
+			return goalTaskProgressReview{
+				Decision: goalTaskReviewNoChange,
+				Summary:  "No remote diff was captured and the worker reported no change required.",
+				Evidence: []string{"No remote diff was captured."},
+			}, nil
+		}
+		return goalTaskProgressReview{
+			Decision: goalTaskReviewInsufficientEvidence,
+			Summary:  "No remote diff was captured, so the result cannot be verified independently.",
+			Evidence: []string{"No remote diff was captured."},
+		}, nil
+	}
+	return goalTaskProgressReview{
+		Decision: goalTaskReviewVerifiedProgress,
+		Summary:  fmt.Sprintf("Remote diff is available for independent verification: %d files, +%d/-%d.", diff.Summary.Files, diff.Summary.Additions, diff.Summary.Deletions),
+		Evidence: []string{fmt.Sprintf("Remote diff: %d files, +%d/-%d.", diff.Summary.Files, diff.Summary.Additions, diff.Summary.Deletions)},
+	}, nil
 }
 
 func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, workspace string) (string, error) {

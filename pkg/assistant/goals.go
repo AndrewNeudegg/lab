@@ -182,27 +182,30 @@ type GoalSupervisorDecision struct {
 }
 
 type GoalTaskReport struct {
-	ID            string    `json:"id"`
-	GoalID        string    `json:"goal_id"`
-	TaskID        string    `json:"task_id"`
-	PhaseID       string    `json:"phase_id,omitempty"`
-	Title         string    `json:"title,omitempty"`
-	Status        string    `json:"status,omitempty"`
-	Summary       string    `json:"summary,omitempty"`
-	AdvancedGoal  bool      `json:"advanced_goal,omitempty"`
-	PhaseComplete bool      `json:"phase_complete,omitempty"`
-	GoalComplete  bool      `json:"goal_complete,omitempty"`
-	NoChange      bool      `json:"no_change,omitempty"`
-	ChangedFiles  []string  `json:"changed_files,omitempty"`
-	Validation    []string  `json:"validation,omitempty"`
-	FollowUps     []string  `json:"follow_ups,omitempty"`
-	Blockers      []string  `json:"blockers,omitempty"`
-	Questions     []string  `json:"questions,omitempty"`
-	DiffFiles     int       `json:"diff_files,omitempty"`
-	Additions     int       `json:"additions,omitempty"`
-	Deletions     int       `json:"deletions,omitempty"`
-	ResultExcerpt string    `json:"result_excerpt,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	GoalID         string    `json:"goal_id"`
+	TaskID         string    `json:"task_id"`
+	PhaseID        string    `json:"phase_id,omitempty"`
+	Title          string    `json:"title,omitempty"`
+	Status         string    `json:"status,omitempty"`
+	Summary        string    `json:"summary,omitempty"`
+	AdvancedGoal   bool      `json:"advanced_goal,omitempty"`
+	PhaseComplete  bool      `json:"phase_complete,omitempty"`
+	GoalComplete   bool      `json:"goal_complete,omitempty"`
+	NoChange       bool      `json:"no_change,omitempty"`
+	ChangedFiles   []string  `json:"changed_files,omitempty"`
+	Validation     []string  `json:"validation,omitempty"`
+	FollowUps      []string  `json:"follow_ups,omitempty"`
+	Blockers       []string  `json:"blockers,omitempty"`
+	Questions      []string  `json:"questions,omitempty"`
+	ReviewDecision string    `json:"review_decision,omitempty"`
+	ReviewSummary  string    `json:"review_summary,omitempty"`
+	ReviewEvidence []string  `json:"review_evidence,omitempty"`
+	DiffFiles      int       `json:"diff_files,omitempty"`
+	Additions      int       `json:"additions,omitempty"`
+	Deletions      int       `json:"deletions,omitempty"`
+	ResultExcerpt  string    `json:"result_excerpt,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type GoalAutopilotRequest struct {
@@ -1024,6 +1027,9 @@ func NormalizeGoalTaskReport(report GoalTaskReport) GoalTaskReport {
 	report.FollowUps = normalizeRunStringList(report.FollowUps, 24)
 	report.Blockers = normalizeRunStringList(report.Blockers, 24)
 	report.Questions = normalizeRunStringList(report.Questions, 12)
+	report.ReviewDecision = strings.TrimSpace(report.ReviewDecision)
+	report.ReviewSummary = strings.TrimSpace(report.ReviewSummary)
+	report.ReviewEvidence = normalizeRunStringList(report.ReviewEvidence, 24)
 	report.ResultExcerpt = strings.TrimSpace(report.ResultExcerpt)
 	if report.DiffFiles < 0 {
 		report.DiffFiles = 0

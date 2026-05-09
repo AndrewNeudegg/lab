@@ -1979,7 +1979,7 @@ func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
 		t.Fatalf("running task = %#v, want running assigned to remote agent", running)
 	}
 
-	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", task.ID, "changed files: service.go", "completed"); err != nil {
+	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", task.ID, "changed files: service.go", "completed", "diff --git a/service.go b/service.go\nnew file mode 100644\n"); err != nil {
 		t.Fatal(err)
 	}
 	completed, err := orch.tasks.Load(task.ID)
@@ -7095,7 +7095,9 @@ func TestGoalAutopilotReviewsReadyRemoteTaskWithoutMergeQueue(t *testing.T) {
 	}
 	task.Status = taskstore.StatusReadyForReview
 	task.AssignedTo = "remote:remote1-agent"
-	task.Result = "remote agent finished; ready for review."
+	task.Result = `remote agent finished; ready for review.
+Implemented the remote feature.
+GOAL_REPORT: {"summary":"Implemented the remote feature","advanced_goal":true,"phase_complete":true,"goal_complete":false,"changed_files":["src/feature.js"],"validation":["bun test"],"follow_ups":[],"blockers":[],"questions":[]}`
 	task.RemoteDiff = "diff --git a/src/grid.js b/src/grid.js\nnew file mode 100644\n"
 	if err := orch.tasks.Save(task); err != nil {
 		t.Fatal(err)
@@ -7115,8 +7117,8 @@ func TestGoalAutopilotReviewsReadyRemoteTaskWithoutMergeQueue(t *testing.T) {
 	if reviewed.Status != taskstore.StatusAwaitingVerification {
 		t.Fatalf("status = %q, want awaiting verification", reviewed.Status)
 	}
-	if !strings.Contains(reviewed.Result, "ReviewerAgent acknowledged remote result") {
-		t.Fatalf("result = %q, want remote review acknowledgement", reviewed.Result)
+	if !strings.Contains(reviewed.Result, "ReviewerAgent independently reviewed remote result") {
+		t.Fatalf("result = %q, want remote review scrutiny", reviewed.Result)
 	}
 	events, err := orch.events.ReadDay(time.Now().UTC())
 	if err != nil {
@@ -7154,6 +7156,70 @@ func TestGoalAutopilotReviewsReadyRemoteTaskWithoutMergeQueue(t *testing.T) {
 	case <-delegate.started:
 		t.Fatal("local worker started while reviewing remote Autopilot task")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGoalAutopilotBlocksUnverifiedRemoteReview(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build replacement data grid",
+		Objective:     "Build a replacement for AG Grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 2},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusReadyForReview
+	task.AssignedTo = "remote:remote1"
+	task.Result = "remote agent finished; ready for review.\nChanged some notes, no validation."
+	task.RemoteDiff = "diff --git a/notes.txt b/notes.txt\nnew file mode 100644\n"
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want remote review block", changed)
+	}
+	blocked, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Status != taskstore.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", blocked.Status)
+	}
+	if !strings.Contains(blocked.Result, "could not verify remote Goal progress") {
+		t.Fatalf("result = %q, want independent review failure", blocked.Result)
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.TaskReports) == 0 || loaded.TaskReports[0].TaskID != taskID || loaded.TaskReports[0].ReviewDecision != goalTaskReviewMisaligned {
+		t.Fatalf("task reports = %#v, want persisted misaligned review report", loaded.TaskReports)
 	}
 }
 
@@ -7303,6 +7369,60 @@ GOAL_REPORT: {"summary":"Foundation complete","advanced_goal":true,"phase_comple
 	case <-delegate.started:
 		t.Fatal("local worker started for remote Autopilot task")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGoalTaskReportDoesNotTrustPromptNoChangeText(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:        "goal_grid",
+		Title:     "Build replacement data grid",
+		Objective: "Build a replacement for AG Grid.",
+		Kind:      assistantstore.GoalKindBuild,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusActive,
+			CurrentPhaseID: "phase_01_foundation",
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:        "phase_01_foundation",
+				Title:     "Build grid foundation",
+				Objective: "Create the core grid foundation.",
+				Status:    assistantstore.GoalPlanPhaseStatusInProgress,
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	task := taskstore.Task{
+		ID:          "task_grid_report",
+		GoalID:      goal.ID,
+		GoalPhaseID: "phase_01_foundation",
+		Title:       "Build grid foundation",
+		Goal:        "If no code, docs, configuration, or workflow change is required, make no edits and start the final result with `No change required:`.",
+		Status:      taskstore.StatusAwaitingVerification,
+		Target:      remote1ExecutionTarget(),
+		Result: `remote agent finished; ready for review.
+user
+If no code, docs, configuration, or workflow change is required, make no edits and start the final result with ` + "`No change required:`" + `.
+assistant
+Built the grid foundation.
+GOAL_REPORT: {"summary":"Built the grid foundation","advanced_goal":true,"phase_complete":true,"goal_complete":false,"changed_files":["src/grid.js"],"validation":["bun test"],"follow_ups":[],"blockers":[],"questions":[]}`,
+		RemoteDiff: "diff --git a/src/grid.js b/src/grid.js\nnew file mode 100644\n",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	report := orch.goalTaskReportFromTask(ctx, goal, task)
+	if report.NoChange {
+		t.Fatalf("report = %#v, prompt no-change text must not override structured diff evidence", report)
+	}
+	if !report.AdvancedGoal || report.ReviewDecision != goalTaskReviewVerifiedProgress {
+		t.Fatalf("report = %#v, want verified progress", report)
 	}
 }
 
@@ -7512,6 +7632,33 @@ func TestGoalAutopilotStopsAfterRepeatedNoProgressReports(t *testing.T) {
 	}
 	if len(loaded.Decisions) == 0 || loaded.Decisions[0].Decision != assistantstore.GoalSupervisorDecisionPauseBlocked || !strings.Contains(loaded.Decisions[0].StopReason, "no measurable progress") {
 		t.Fatalf("decisions = %#v, want supervisor no-progress block", loaded.Decisions)
+	}
+}
+
+func TestGoalAutopilotDoesNotTreatDiffReportsAsNoProgress(t *testing.T) {
+	reports := []assistantstore.GoalTaskReport{
+		{
+			TaskID:       "task_with_diff_2",
+			Summary:      "Added grid editing",
+			AdvancedGoal: false,
+			NoChange:     true,
+			ChangedFiles: []string{"src/grid.js"},
+			DiffFiles:    1,
+			CreatedAt:    time.Now().UTC(),
+		},
+		{
+			TaskID:       "task_with_diff_1",
+			Summary:      "Added grid foundation",
+			AdvancedGoal: false,
+			NoChange:     true,
+			ChangedFiles: []string{"src/grid-core.js"},
+			DiffFiles:    1,
+			CreatedAt:    time.Now().UTC().Add(-time.Minute),
+		},
+	}
+	blocked, reason := recentGoalReportsShowNoProgress(reports)
+	if blocked {
+		t.Fatalf("blocked = true, reason %q; diff-backed reports must not be treated as no progress only because no_change was mis-set", reason)
 	}
 }
 

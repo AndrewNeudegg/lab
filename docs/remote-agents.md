@@ -201,12 +201,14 @@ Remote tasks do not. For a remote task:
 
 1. The remote agent runs the worker in the selected remote directory.
 2. The remote agent reports output, validation, and the captured remote diff back to `homelabd`.
-3. `review <task>` acknowledges the remote result and moves the task to `awaiting_verification`. If the remote worker reports `No change required: <reason>`, `homelabd` records `no_change_required` instead so the operator can accept the no-change conclusion or reopen the task with corrected instructions.
+3. `review <task>` runs a remote-result review and then moves the task to `awaiting_verification` only when there is independent evidence to inspect. For Goal-linked tasks, the reviewer compares the captured diff, changed files, validation evidence, and selected Goal phase before counting the work as progress. If the remote worker reports `No change required: <reason>` and no diff is available, `homelabd` records `no_change_required` instead so the operator can accept the no-change conclusion or reopen the task with corrected instructions. If there is no diff, missing validation, or a diff that does not align with the Goal, review blocks the task for rerun or reopening.
 4. Human verification happens against the named remote machine/directory.
 5. `accept <task>` closes it, or `reopen <task> <reason>` queues more remote work.
 
 No local merge approval is created for remote tasks because the control plane cannot prove that the remote checkout corresponds to its own repo.
 
-For Autopilot Goals, remote review uses the same acknowledgement transition as manual remote review. When the remote task reaches `ready_for_review` and the Goal policy allows `review_task`, `homelabd` moves it to `awaiting_verification` without consulting the local merge queue. The next `accept_task` gate can then close the task or pause/block according to the Goal policy.
+For Autopilot Goals, remote review uses the same independent-review transition as manual remote review. When the remote task reaches `ready_for_review` and the Goal policy allows `review_task`, `homelabd` reviews the captured remote evidence without consulting the local merge queue. The next `accept_task` gate can then close the task or pause/block according to the Goal policy. A worker `GOAL_REPORT` is treated as a claim, not proof: the stored Goal task report includes a reviewer decision such as `verified_progress`, `needs_validation`, `misaligned`, `insufficient_evidence`, or `no_change`.
 
 Use `homelabctl task diff <task_id>` or the dashboard `Changes vs main` panel to inspect the captured remote patch. If the remote completion predates diff capture and the workdir path is still accessible from the control plane, `GET /tasks/{task_id}/diff` computes the current remote working-tree diff directly from that path. If neither source is available, the task still shows the remote result and validation, but the diff panel tells the operator that no remote diff is available.
+
+Build Goals should maintain a durable feature or parity matrix in the target repository. The worker prompt asks the agent to create or update that matrix, select one concrete slice, and report the files, validation, remaining gaps, blockers, and questions in the final `GOAL_REPORT:` line. This gives the supervisor a product scorecard instead of a stream of broad “continue building” tasks.

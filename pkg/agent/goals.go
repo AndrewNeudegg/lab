@@ -1335,7 +1335,7 @@ func recentGoalReportsShowNoProgress(reports []assistantstore.GoalTaskReport) (b
 	}
 	noProgress := 0
 	for _, report := range reports[:assistantMinInt(len(reports), 3)] {
-		if report.NoChange || (!report.AdvancedGoal && report.DiffFiles == 0) {
+		if goalReportShowsNoProgress(report) {
 			noProgress++
 		}
 	}
@@ -1343,6 +1343,25 @@ func recentGoalReportsShowNoProgress(reports []assistantstore.GoalTaskReport) (b
 		return true, "Two recent Goal-linked tasks reported no measurable progress; Autopilot needs a plan revision or operator input."
 	}
 	return false, ""
+}
+
+func goalReportShowsNoProgress(report assistantstore.GoalTaskReport) bool {
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	hasDiff := report.DiffFiles > 0 || len(report.ChangedFiles) > 0
+	switch report.ReviewDecision {
+	case goalTaskReviewVerifiedProgress, goalTaskReviewBlockedWithProgress:
+		return false
+	case goalTaskReviewNeedsValidation:
+		return false
+	case goalTaskReviewMisaligned:
+		return true
+	case goalTaskReviewInsufficientEvidence, goalTaskReviewNoChange:
+		return true
+	}
+	if hasDiff {
+		return false
+	}
+	return report.NoChange || !report.AdvancedGoal
 }
 
 func goalPlanComplete(plan *assistantstore.GoalPlan) bool {
@@ -1493,9 +1512,9 @@ func phase(idValue, title, objective string, dependsOn []string) assistantstore.
 		Status:    assistantstore.GoalPlanPhaseStatusPending,
 		DependsOn: dependsOn,
 		AcceptanceCriteria: []string{
-			"The task report states what changed for this phase.",
-			"Validation evidence or a clear blocker is recorded.",
-			"The supervisor can decide the next phase without rereading raw worker logs.",
+			"Changed files and validation evidence map to the phase objective.",
+			"Remaining gaps or blockers are recorded as concrete follow-ups or questions.",
+			"The supervisor can choose the next slice from durable repo evidence, not only raw worker logs.",
 		},
 	}
 }
@@ -1526,6 +1545,8 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 		kindInstruction = "Inspect the watched condition, gather evidence, and make only the bounded change or follow-up needed by the condition."
 	case assistantstore.GoalKindMaintenance:
 		kindInstruction = "Pick one bounded upkeep issue that improves reliability, clarity, tests, docs, or operator ergonomics."
+	case assistantstore.GoalKindBuild:
+		kindInstruction = "Pick one bounded product slice from a durable feature matrix or create that matrix first, then implement and validate the slice end to end."
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Autopilot task for %s Goal `%s`: %s\n\nObjective: %s", goal.Kind, goal.ID, goal.Title, goal.Objective)
@@ -1569,12 +1590,17 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 	fmt.Fprintf(&b, "\n- %s", kindInstruction)
 	b.WriteString("\n- Work the selected slice to completion in this task, including implementation, docs, focused tests, and required browser UAT for changed UI.")
 	b.WriteString("\n- Do not split the work into a daily drip. If the Goal needs one large feature, build the largest coherent safe slice this task can complete.")
+	if goal.Kind == assistantstore.GoalKindBuild {
+		b.WriteString("\n- Maintain a durable feature/parity matrix in the target repo. If the repo has no matrix yet, create one before coding, mark the current slice, and update it with evidence before handoff.")
+		b.WriteString("\n- Close a concrete matrix item. Avoid broad \"continue building\" work unless it is backed by specific acceptance criteria, changed files, validation, and remaining gaps.")
+	}
 	b.WriteString("\n- Use existing approval, merge, restart, and verification gates. Autopilot may pass those gates for this Goal when checks succeed.")
 	b.WriteString("\n- If the next step needs credentials, private operator judgement, destructive action, or unresolved product direction, stop and report the blocker instead of guessing.")
 	b.WriteString("\n- Do not repeat previous task work. Use the recent structured Goal reports and selected phase to choose a concrete next step.")
 	b.WriteString("\n\nGoal supervisor report contract:")
 	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_REPORT:`.")
 	b.WriteString("\nThe object must include: summary, advanced_goal, phase_complete, goal_complete, changed_files, validation, follow_ups, blockers, questions.")
+	b.WriteString("\nThe reviewer will independently compare the diff, validation, and changed files against the Goal; do not claim progress unless the task materially advances the selected phase.")
 	b.WriteString("\nUse questions for product or operator decisions that should block further Autopilot tasks.")
 	if len(goal.SuccessCriteria) > 0 {
 		b.WriteString("\n\nGoal success criteria:")
@@ -2016,7 +2042,7 @@ func (o *Orchestrator) reflectGoalTaskCompletion(ctx context.Context, t taskstor
 		return
 	}
 	now := time.Now().UTC()
-	report := o.goalTaskReportFromTask(ctx, t)
+	report := o.goalTaskReportFromTask(ctx, goal, t)
 	if err := store.SaveTaskReport(report); err != nil {
 		o.log().Warn("goal task report save failed", "error", err, "goal", goalID, "task", t.ID)
 	}
@@ -2084,7 +2110,7 @@ func (o *Orchestrator) reflectGoalTaskCompletion(ctx context.Context, t taskstor
 	o.appendGoalEvent(ctx, "assistant.goal.task.reflected", goal, map[string]any{"goal_id": goal.ID, "task_id": t.ID})
 }
 
-func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, t taskstore.Task) assistantstore.GoalTaskReport {
+func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistantstore.Goal, t taskstore.Task) assistantstore.GoalTaskReport {
 	now := time.Now().UTC()
 	report := assistantstore.GoalTaskReport{
 		ID:            "greport_" + safeGoalReportID(t.ID),
@@ -2123,15 +2149,38 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, t taskstore.T
 			}
 		}
 	}
-	lowerResult := strings.ToLower(t.Result)
-	if strings.Contains(lowerResult, "no change required") || strings.Contains(lowerResult, "no diff") {
+	explicitNoChange := t.Status == taskstore.StatusNoChangeRequired || workerReportedNoChangeRequired(t.Result)
+	hasDiffEvidence := report.DiffFiles > 0 || len(report.ChangedFiles) > 0
+	if explicitNoChange && !hasDiffEvidence {
 		report.NoChange = true
 		report.AdvancedGoal = false
 	}
-	if report.DiffFiles == 0 && len(report.ChangedFiles) == 0 && !report.NoChange && !strings.Contains(lowerResult, "changed files") {
+	if hasDiffEvidence && report.NoChange {
+		report.NoChange = false
+	}
+	if !hasDiffEvidence && !report.NoChange {
 		report.AdvancedGoal = false
 	}
 	if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+		report.PhaseComplete = false
+		report.GoalComplete = false
+	}
+	review := reviewGoalTaskProgress(goal, report)
+	report.ReviewDecision = review.Decision
+	report.ReviewSummary = review.Summary
+	report.ReviewEvidence = review.Evidence
+	switch review.Decision {
+	case goalTaskReviewVerifiedProgress, goalTaskReviewBlockedWithProgress:
+		report.AdvancedGoal = true
+		report.NoChange = false
+	case goalTaskReviewNeedsValidation, goalTaskReviewMisaligned, goalTaskReviewInsufficientEvidence:
+		report.AdvancedGoal = false
+		report.PhaseComplete = false
+		report.GoalComplete = false
+		report.NoChange = false
+	case goalTaskReviewNoChange:
+		report.AdvancedGoal = false
+		report.NoChange = true
 		report.PhaseComplete = false
 		report.GoalComplete = false
 	}
@@ -2152,6 +2201,8 @@ type structuredGoalReport struct {
 }
 
 func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
+	var latest structuredGoalReport
+	found := false
 	for _, line := range strings.Split(result, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(strings.ToUpper(trimmed), "GOAL_REPORT:") {
@@ -2166,10 +2217,11 @@ func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
 			report.FollowUps = normalizeGoalReportStrings(report.FollowUps, 24)
 			report.Blockers = normalizeGoalReportStrings(report.Blockers, 24)
 			report.Questions = normalizeGoalReportStrings(report.Questions, 12)
-			return report, true
+			latest = report
+			found = true
 		}
 	}
-	return structuredGoalReport{}, false
+	return latest, found
 }
 
 func normalizeGoalReportStrings(values []string, limit int) []string {
@@ -2244,6 +2296,181 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 	goal.Plan = &plan
 	if goal.Autopilot != nil {
 		goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
+	}
+}
+
+const (
+	goalTaskReviewVerifiedProgress     = "verified_progress"
+	goalTaskReviewBlockedWithProgress  = "blocked_with_progress"
+	goalTaskReviewNeedsValidation      = "needs_validation"
+	goalTaskReviewMisaligned           = "misaligned"
+	goalTaskReviewInsufficientEvidence = "insufficient_evidence"
+	goalTaskReviewNoChange             = "no_change"
+)
+
+type goalTaskProgressReview struct {
+	Decision string
+	Summary  string
+	Evidence []string
+}
+
+func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.GoalTaskReport) goalTaskProgressReview {
+	goal = assistantstore.NormalizeGoal(goal)
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	hasDiff := report.DiffFiles > 0 || len(report.ChangedFiles) > 0
+	hasValidation := len(report.Validation) > 0
+	if !hasDiff {
+		if report.NoChange {
+			return goalTaskProgressReview{
+				Decision: goalTaskReviewNoChange,
+				Summary:  "Worker reported no change and independent diff evidence found no changed files.",
+				Evidence: nonEmptyStringSlice(firstNonEmptyString(report.Summary, "No changed files were reported.")),
+			}
+		}
+		return goalTaskProgressReview{
+			Decision: goalTaskReviewInsufficientEvidence,
+			Summary:  "No changed files or captured diff were available, so Goal progress could not be independently verified.",
+			Evidence: nonEmptyStringSlice(firstNonEmptyString(report.Summary, "No changed files were reported.")),
+		}
+	}
+
+	phase, _ := goalPlanPhaseByID(goal.Plan, report.PhaseID)
+	evidence := []string{fmt.Sprintf("Diff evidence: %d files, +%d/-%d.", report.DiffFiles, report.Additions, report.Deletions)}
+	if len(report.ChangedFiles) > 0 {
+		evidence = append(evidence, "Changed files: "+strings.Join(report.ChangedFiles[:assistantMinInt(len(report.ChangedFiles), 10)], ", ")+".")
+	}
+	if hasValidation {
+		evidence = append(evidence, "Validation: "+strings.Join(report.Validation[:assistantMinInt(len(report.Validation), 4)], "; ")+".")
+	}
+	if report.Summary != "" {
+		evidence = append(evidence, "Worker summary: "+report.Summary)
+	}
+
+	score := goalAlignmentScore(goal, phase, report)
+	hasProductFile := goalReportHasProductFile(report)
+	if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+		if score > 0 {
+			return goalTaskProgressReview{
+				Decision: goalTaskReviewBlockedWithProgress,
+				Summary:  "The task changed files that appear relevant to the Goal, but reported blockers or questions that must be handled before completion.",
+				Evidence: evidence,
+			}
+		}
+		return goalTaskProgressReview{
+			Decision: goalTaskReviewMisaligned,
+			Summary:  "The task changed files and reported blockers or questions, but the changed files did not clearly align with the Goal.",
+			Evidence: evidence,
+		}
+	}
+	if score > 0 && hasValidation {
+		return goalTaskProgressReview{
+			Decision: goalTaskReviewVerifiedProgress,
+			Summary:  "Changed files, validation evidence, and Goal/phase terms line up, so the task is counted as verified progress.",
+			Evidence: evidence,
+		}
+	}
+	if score > 0 && !hasValidation {
+		return goalTaskProgressReview{
+			Decision: goalTaskReviewNeedsValidation,
+			Summary:  "Changed files appear relevant to the Goal, but no validation evidence was reported; Autopilot should verify or rerun before treating it as progress.",
+			Evidence: evidence,
+		}
+	}
+	if hasProductFile && !hasValidation {
+		evidence = append(evidence, "Changed product files did not share clear Goal or phase terms.")
+	}
+	return goalTaskProgressReview{
+		Decision: goalTaskReviewMisaligned,
+		Summary:  "The task produced a diff, but independent file and validation evidence did not clearly align it to the Goal.",
+		Evidence: evidence,
+	}
+}
+
+func goalReportHasProductFile(report assistantstore.GoalTaskReport) bool {
+	for _, path := range report.ChangedFiles {
+		path = strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+		switch {
+		case strings.HasPrefix(path, "src/"),
+			strings.HasPrefix(path, "lib/"),
+			strings.HasPrefix(path, "cmd/"),
+			strings.HasPrefix(path, "pkg/"),
+			strings.HasPrefix(path, "internal/"),
+			strings.HasPrefix(path, "web/"),
+			strings.HasPrefix(path, "tests/"),
+			strings.HasPrefix(path, "test/"),
+			strings.HasPrefix(path, "e2e/"),
+			strings.HasPrefix(path, "examples/"),
+			strings.HasPrefix(path, "docs/"),
+			strings.HasSuffix(path, ".go"),
+			strings.HasSuffix(path, ".js"),
+			strings.HasSuffix(path, ".ts"),
+			strings.HasSuffix(path, ".tsx"),
+			strings.HasSuffix(path, ".css"),
+			strings.HasSuffix(path, ".html"),
+			strings.HasSuffix(path, ".md"):
+			return true
+		}
+	}
+	return false
+}
+
+func goalAlignmentScore(goal assistantstore.Goal, phase assistantstore.GoalPlanPhase, report assistantstore.GoalTaskReport) int {
+	goalText := strings.Join([]string{
+		goal.Title,
+		goal.Objective,
+		goal.Details,
+		strings.Join(goal.SuccessCriteria, " "),
+		strings.Join(goal.Constraints, " "),
+		phase.Title,
+		phase.Objective,
+		strings.Join(phase.AcceptanceCriteria, " "),
+	}, " ")
+	goalTerms := significantGoalTerms(goalText)
+	if len(goalTerms) == 0 {
+		return 0
+	}
+	evidenceText := strings.Join([]string{
+		strings.Join(report.ChangedFiles, " "),
+		strings.Join(report.Validation, " "),
+	}, " ")
+	evidenceTerms := significantGoalTerms(evidenceText)
+	score := 0
+	for term := range evidenceTerms {
+		if goalTerms[term] {
+			score++
+		}
+	}
+	return score
+}
+
+func significantGoalTerms(text string) map[string]bool {
+	out := map[string]bool{}
+	var b strings.Builder
+	flush := func() {
+		token := strings.TrimSpace(b.String())
+		b.Reset()
+		if len(token) < 3 || goalReviewStopTerm(token) {
+			return
+		}
+		out[token] = true
+	}
+	for _, r := range strings.ToLower(text) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+func goalReviewStopTerm(token string) bool {
+	switch token {
+	case "the", "and", "for", "with", "that", "this", "from", "into", "task", "goal", "phase", "build", "add", "make", "work", "done", "file", "files", "test", "tests", "docs", "src", "code", "change", "changed", "validation", "report", "summary", "objective", "details", "supporting", "support", "capability", "capabilities":
+		return true
+	default:
+		return false
 	}
 }
 

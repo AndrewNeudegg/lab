@@ -397,6 +397,27 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 		t.Fatalf("created timeline = %#v", timeline)
 	}
 
+	updated := requestJSON(t, mux, http.MethodPatch, "/assistant/goals/"+timeline.Goal.ID, `{
+		"objective":"Keep the operator briefed every morning and call out blockers.",
+		"details":"",
+		"autopilot":{"budget_tasks":-1}
+	}`, "", http.StatusOK)
+	var updatedTimeline struct {
+		Goal struct {
+			Objective string `json:"objective"`
+			Details   string `json:"details"`
+			Autopilot struct {
+				BudgetTasks int `json:"budget_tasks"`
+			} `json:"autopilot"`
+		} `json:"goal"`
+	}
+	if err := json.NewDecoder(updated.Body).Decode(&updatedTimeline); err != nil {
+		t.Fatal(err)
+	}
+	if updatedTimeline.Goal.Objective != "Keep the operator briefed every morning and call out blockers." || updatedTimeline.Goal.Details != "" || updatedTimeline.Goal.Autopilot.BudgetTasks != -1 {
+		t.Fatalf("updated timeline = %#v, want edited objective and unlimited Autopilot task limit", updatedTimeline)
+	}
+
 	listed := requestJSON(t, mux, http.MethodGet, "/assistant/goals", "", "", http.StatusOK)
 	var listResponse struct {
 		Goals []struct {

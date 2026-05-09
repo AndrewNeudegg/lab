@@ -181,7 +181,7 @@ describe('assistant model', () => {
     expect(assistantGoalKindLabel('build')).toBe('Build Goal');
     expect(assistantGoalKindShortLabel('maintenance')).toBe('Maintenance');
     expect(assistantGoalExecutionLabel('autopilot')).toBe('Autopilot');
-    expect(assistantGoalAutopilotStatusLabel('budget_exhausted')).toBe('Budget exhausted');
+    expect(assistantGoalAutopilotStatusLabel('budget_exhausted')).toBe('Task limit exhausted');
     expect(assistantGoalAutopilotTone('blocked')).toBe('amber');
     expect(activeAssistantGoals(goals).map((value) => value.id)).toEqual([
       'goal_due',

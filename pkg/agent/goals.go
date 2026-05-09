@@ -158,67 +158,85 @@ func (o *Orchestrator) UpdateGoal(ctx context.Context, goalID string, req assist
 		return assistantstore.GoalTimeline{}, err
 	}
 	now := time.Now().UTC()
-	if value := strings.TrimSpace(req.Title); value != "" {
+	if req.HasField("title") {
+		value := strings.TrimSpace(req.Title)
+		if value == "" {
+			return assistantstore.GoalTimeline{}, fmt.Errorf("goal title is required")
+		}
 		goal.Title = value
 	}
-	if value := strings.TrimSpace(req.Objective); value != "" {
+	if req.HasField("objective") {
+		value := strings.TrimSpace(req.Objective)
+		if value == "" {
+			return assistantstore.GoalTimeline{}, fmt.Errorf("goal objective is required")
+		}
 		goal.Objective = value
 	}
-	if strings.TrimSpace(req.Details) != "" {
+	if req.HasField("details") {
 		goal.Details = req.Details
 	}
-	if strings.TrimSpace(req.Status) != "" {
+	if req.HasField("status") {
 		goal.Status = req.Status
 		if assistantstore.NormalizeGoal(goal).Status == assistantstore.GoalStatusArchived && goal.ArchivedAt == nil {
 			archived := now
 			goal.ArchivedAt = &archived
 		}
 	}
-	if strings.TrimSpace(req.Kind) != "" {
+	if req.HasField("kind") {
 		goal.Kind = req.Kind
 	}
-	if strings.TrimSpace(req.ExecutionMode) != "" {
+	if req.HasField("execution_mode") {
 		goal.ExecutionMode = req.ExecutionMode
 	}
-	if req.Target != nil {
+	if req.HasField("target") {
 		goal.Target = req.Target
 	}
-	if req.Autopilot != nil {
-		goal.Autopilot = req.Autopilot
-		if strings.TrimSpace(req.ExecutionMode) == "" {
+	if req.HasField("autopilot") && req.Autopilot != nil {
+		goal.Autopilot = mergeGoalAutopilotPatch(goal.Autopilot, req.Autopilot)
+		if !req.HasField("execution_mode") {
 			goal.ExecutionMode = assistantstore.GoalExecutionModeAutopilot
 		}
 	}
-	if strings.TrimSpace(req.Priority) != "" {
+	if req.HasField("priority") {
 		goal.Priority = req.Priority
 	}
-	if strings.TrimSpace(req.Autonomy) != "" {
+	if req.HasField("autonomy") {
 		goal.Autonomy = req.Autonomy
 	}
-	if strings.TrimSpace(req.Cadence) != "" {
+	if req.HasField("cadence") {
 		goal.Cadence = req.Cadence
 	}
-	if strings.TrimSpace(req.NextCheckAt) != "" {
+	if req.HasField("next_check_at") {
 		nextCheckAt, err := assistantstore.ParseGoalTime(req.NextCheckAt)
 		if err != nil {
 			return assistantstore.GoalTimeline{}, fmt.Errorf("next_check_at must be RFC3339: %w", err)
 		}
 		goal.NextCheckAt = nextCheckAt
 	}
-	if len(req.SuccessCriteria) > 0 {
+	if req.HasField("success_criteria") {
 		goal.SuccessCriteria = req.SuccessCriteria
 	}
-	if len(req.Constraints) > 0 {
+	if req.HasField("constraints") {
 		goal.Constraints = req.Constraints
 	}
-	if strings.TrimSpace(req.ProgressSummary) != "" {
+	if req.HasField("progress_summary") {
 		goal.ProgressSummary = req.ProgressSummary
 	}
-	if len(req.OpenQuestions) > 0 {
+	if req.HasField("open_questions") {
 		goal.OpenQuestions = req.OpenQuestions
 	}
+	shouldReconcile := goalUpdateShouldReconcile(goal, req)
 	goal.UpdatedAt = now
 	goal = assistantstore.NormalizeGoal(goal)
+	if goal.Autopilot != nil && goal.Autopilot.Status == assistantstore.GoalAutopilotStatusBudgetExhausted && goalAutopilotBudgetAllowsMore(*goal.Autopilot) {
+		goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
+		goal.Autopilot.StopReasons = nil
+		goal.Autopilot.LastStepAt = &now
+		shouldReconcile = true
+		if goal.Status == assistantstore.GoalStatusBlocked {
+			goal.Status = assistantstore.GoalStatusActive
+		}
+	}
 	if goal.Status != assistantstore.GoalStatusArchived {
 		goal.ArchivedAt = nil
 	}
@@ -226,7 +244,104 @@ func (o *Orchestrator) UpdateGoal(ctx context.Context, goalID string, req assist
 		return assistantstore.GoalTimeline{}, err
 	}
 	o.appendGoalEvent(ctx, "assistant.goal.updated", goal, map[string]any{"goal": goal})
+	_ = store.SaveNote(assistantstore.GoalNote{
+		ID:        id.New("gnote"),
+		GoalID:    goal.ID,
+		Kind:      "updated",
+		Title:     "Goal updated",
+		Body:      goalUpdateNote(req, goal),
+		CreatedBy: "assistant",
+		CreatedAt: now,
+	})
+	if shouldReconcile && goal.ExecutionMode == assistantstore.GoalExecutionModeAutopilot && goal.Autopilot != nil && goal.Autopilot.Status == assistantstore.GoalAutopilotStatusRunning {
+		_, _, err = o.reconcileGoalAutopilot(ctx, store, goal)
+		if err != nil {
+			return assistantstore.GoalTimeline{}, err
+		}
+	}
 	return o.LoadGoal(goal.ID)
+}
+
+func mergeGoalAutopilotPatch(current *assistantstore.GoalAutopilot, patch *assistantstore.GoalAutopilot) *assistantstore.GoalAutopilot {
+	if patch == nil {
+		return current
+	}
+	merged := assistantstore.NormalizeGoalAutopilot(current)
+	if strings.TrimSpace(patch.Status) != "" {
+		merged.Status = patch.Status
+	}
+	if patch.BudgetTasks != 0 {
+		merged.BudgetTasks = patch.BudgetTasks
+	}
+	if patch.MaxRuntimeMinutes != 0 {
+		merged.MaxRuntimeMinutes = patch.MaxRuntimeMinutes
+	}
+	if patch.StartedAt != nil {
+		merged.StartedAt = patch.StartedAt
+	}
+	if patch.LastStepAt != nil {
+		merged.LastStepAt = patch.LastStepAt
+	}
+	if len(patch.StopReasons) > 0 {
+		merged.StopReasons = append([]string(nil), patch.StopReasons...)
+	}
+	if len(patch.AllowedActions) > 0 {
+		merged.AllowedActions = append([]string(nil), patch.AllowedActions...)
+	}
+	if strings.TrimSpace(patch.CurrentTaskID) != "" {
+		merged.CurrentTaskID = patch.CurrentTaskID
+	}
+	normalized := assistantstore.NormalizeGoalAutopilot(&merged)
+	return &normalized
+}
+
+func goalUpdateShouldReconcile(goal assistantstore.Goal, req assistantstore.GoalUpdateRequest) bool {
+	if goal.ExecutionMode != assistantstore.GoalExecutionModeAutopilot || goal.Autopilot == nil {
+		return false
+	}
+	if req.HasField("status") && assistantstore.NormalizeGoal(goal).Status != assistantstore.GoalStatusActive {
+		return false
+	}
+	for _, field := range []string{"title", "objective", "details", "kind", "target", "autopilot", "success_criteria", "constraints", "open_questions"} {
+		if req.HasField(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func goalUpdateNote(req assistantstore.GoalUpdateRequest, goal assistantstore.Goal) string {
+	labels := []string{}
+	fields := []struct {
+		key   string
+		label string
+	}{
+		{"title", "title"},
+		{"objective", "objective"},
+		{"details", "details"},
+		{"status", "status"},
+		{"kind", "type"},
+		{"execution_mode", "execution mode"},
+		{"target", "target"},
+		{"autopilot", "Autopilot settings"},
+		{"priority", "priority"},
+		{"autonomy", "autonomy"},
+		{"cadence", "cadence"},
+		{"next_check_at", "next check"},
+		{"success_criteria", "success criteria"},
+		{"constraints", "constraints"},
+		{"progress_summary", "progress summary"},
+		{"open_questions", "open questions"},
+	}
+	for _, field := range fields {
+		if req.HasField(field.key) {
+			labels = append(labels, field.label)
+		}
+	}
+	if len(labels) == 0 {
+		return "Goal metadata refreshed."
+	}
+	return fmt.Sprintf("Updated %s for `%s`.", strings.Join(labels, ", "), goal.Title)
 }
 
 func (o *Orchestrator) AddGoalWatch(ctx context.Context, goalID string, req assistantstore.GoalWatchRequest) (assistantstore.GoalTimeline, error) {
@@ -377,7 +492,7 @@ func (o *Orchestrator) updateGoalAutopilotLifecycle(ctx context.Context, goalID,
 			goal.Status = assistantstore.GoalStatusActive
 		}
 	case "resume":
-		if autopilot.Status == assistantstore.GoalAutopilotStatusBudgetExhausted && autopilot.BudgetTasks <= autopilot.TasksStarted {
+		if autopilot.Status == assistantstore.GoalAutopilotStatusBudgetExhausted && !goalAutopilotBudgetAllowsMore(autopilot) {
 			return assistantstore.GoalTimeline{}, "", fmt.Errorf("resume needs budget_tasks greater than tasks_started (%d)", autopilot.TasksStarted)
 		}
 		if autopilot.StartedAt == nil {
@@ -437,7 +552,7 @@ func (o *Orchestrator) updateGoalAutopilotLifecycle(ctx context.Context, goalID,
 }
 
 func applyGoalAutopilotRequest(autopilot *assistantstore.GoalAutopilot, req assistantstore.GoalAutopilotRequest) {
-	if req.BudgetTasks > 0 {
+	if req.BudgetTasks != 0 {
 		autopilot.BudgetTasks = req.BudgetTasks
 	}
 	if req.MaxRuntimeMinutes > 0 {
@@ -462,9 +577,9 @@ func goalAutopilotActionNote(action string, goal assistantstore.Goal) string {
 	}
 	switch action {
 	case "start":
-		return fmt.Sprintf("Autopilot started for this %s Goal with a %d task budget.", goal.Kind, budget)
+		return fmt.Sprintf("Autopilot started for this %s Goal with %s.", goal.Kind, goalAutopilotTaskLimitLabel(budget))
 	case "resume":
-		return fmt.Sprintf("Autopilot resumed for this %s Goal. Tasks started: %d/%d.", goal.Kind, tasksStarted, budget)
+		return fmt.Sprintf("Autopilot resumed for this %s Goal. Tasks started: %s.", goal.Kind, goalAutopilotProgressLabel(tasksStarted, budget))
 	case "pause":
 		return "Autopilot paused. Existing linked tasks are not cancelled, but no new Goal task will be created while paused."
 	case "stop":
@@ -523,8 +638,8 @@ func (o *Orchestrator) reconcileGoalAutopilot(ctx context.Context, store *assist
 	if current, ok := o.currentGoalAutopilotTask(goal); ok {
 		return o.reconcileGoalAutopilotTask(ctx, store, goal, current)
 	}
-	if goal.Autopilot.TasksStarted >= goal.Autopilot.BudgetTasks {
-		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBudgetExhausted, fmt.Sprintf("Autopilot task budget exhausted (%d/%d).", goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks))
+	if !goalAutopilotBudgetAllowsMore(*goal.Autopilot) {
+		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBudgetExhausted, fmt.Sprintf("Autopilot task limit exhausted (%s).", goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)))
 	}
 	if !goalAutopilotAllows(goal, "create_task") {
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Autopilot policy does not allow creating tasks.")
@@ -735,7 +850,7 @@ func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assis
 		GoalID:    goal.ID,
 		Kind:      "autopilot",
 		Title:     "Autopilot task created",
-		Body:      fmt.Sprintf("Created %s task %s for this %s Goal (%d/%d task budget).", goal.ExecutionMode, taskShortID(created.Task.ID), goal.Kind, goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks),
+		Body:      fmt.Sprintf("Created %s task %s for this %s Goal (%s task limit).", goal.ExecutionMode, taskShortID(created.Task.ID), goal.Kind, goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)),
 		TaskID:    created.Task.ID,
 		CreatedBy: "assistant",
 		CreatedAt: now,
@@ -833,6 +948,25 @@ func goalAutopilotAllows(goal assistantstore.Goal, action string) bool {
 		}
 	}
 	return false
+}
+
+func goalAutopilotBudgetAllowsMore(autopilot assistantstore.GoalAutopilot) bool {
+	autopilot = assistantstore.NormalizeGoalAutopilot(&autopilot)
+	return autopilot.BudgetTasks == assistantstore.GoalAutopilotUnlimitedBudget || autopilot.TasksStarted < autopilot.BudgetTasks
+}
+
+func goalAutopilotTaskLimitLabel(budget int) string {
+	if budget == assistantstore.GoalAutopilotUnlimitedBudget {
+		return "an unlimited task limit"
+	}
+	return fmt.Sprintf("a %d task limit", budget)
+}
+
+func goalAutopilotProgressLabel(started, budget int) string {
+	if budget == assistantstore.GoalAutopilotUnlimitedBudget {
+		return fmt.Sprintf("%d/unlimited", started)
+	}
+	return fmt.Sprintf("%d/%d", started, budget)
 }
 
 func goalTimePtr(value time.Time) *time.Time {
@@ -1012,7 +1146,7 @@ func (o *Orchestrator) formatGoalsReply() (string, error) {
 		}
 		fmt.Fprintf(&b, "\n- `%s` %s [%s %s %s]", goal.ID, goal.Title, goal.Kind, mode, goal.Status)
 		if goal.Autopilot != nil && goal.ExecutionMode == assistantstore.GoalExecutionModeAutopilot {
-			fmt.Fprintf(&b, " Autopilot: %s %d/%d", goal.Autopilot.Status, goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)
+			fmt.Fprintf(&b, " Autopilot: %s %s", goal.Autopilot.Status, goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks))
 		}
 		if goal.ProgressSummary != "" {
 			fmt.Fprintf(&b, ": %s", truncateAssistantRunText(goal.ProgressSummary, 120))
@@ -1033,7 +1167,7 @@ func (o *Orchestrator) formatGoalReply(goalID string) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal `%s`: %s\nType: %s\nMode: %s\nStatus: %s\nObjective: %s", goal.ID, goal.Title, goal.Kind, goal.ExecutionMode, goal.Status, goal.Objective)
 	if goal.Autopilot != nil {
-		fmt.Fprintf(&b, "\nAutopilot: %s (%d/%d tasks)", goal.Autopilot.Status, goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)
+		fmt.Fprintf(&b, "\nAutopilot: %s (%s tasks)", goal.Autopilot.Status, goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks))
 		if goal.Autopilot.CurrentTaskID != "" {
 			fmt.Fprintf(&b, "\nCurrent Autopilot task: %s", goal.Autopilot.CurrentTaskID)
 		}

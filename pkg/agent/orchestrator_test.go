@@ -6947,6 +6947,103 @@ func TestGoalAutopilotStartCreatesRemoteTaskWithoutLocalWorker(t *testing.T) {
 	}
 }
 
+func TestGoalUpdateUnlimitedTaskLimitResumesBudgetExhaustedAutopilot(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "remote1-agent",
+		Machine: "vm-remote1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build remote grid",
+		Objective:     "Build the first grid slice.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 1},
+		Target: &taskstore.ExecutionTarget{
+			Mode:      "remote",
+			AgentID:   "remote1-agent",
+			WorkdirID: "remote1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTaskID := started.Goal.Autopilot.CurrentTaskID
+	firstTask, err := orch.tasks.Load(firstTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTask.Status = taskstore.StatusDone
+	if err := orch.tasks.Save(firstTask); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want exhausted Autopilot update", changed)
+	}
+	exhausted, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exhausted.Goal.Autopilot == nil || exhausted.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusBudgetExhausted {
+		t.Fatalf("autopilot = %#v, want task limit exhausted", exhausted.Goal.Autopilot)
+	}
+
+	updated, err := orch.UpdateGoal(ctx, timeline.Goal.ID, assistantstore.GoalUpdateRequest{
+		Objective: "Build the revised grid slice from the edited Goal text.",
+		Autopilot: &assistantstore.GoalAutopilot{
+			BudgetTasks: assistantstore.GoalAutopilotUnlimitedBudget,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Goal.Autopilot == nil || updated.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning || updated.Goal.Autopilot.BudgetTasks != assistantstore.GoalAutopilotUnlimitedBudget || updated.Goal.Autopilot.TasksStarted != 2 {
+		t.Fatalf("autopilot = %#v, want running unlimited with another task started", updated.Goal.Autopilot)
+	}
+	nextTaskID := updated.Goal.Autopilot.CurrentTaskID
+	if nextTaskID == "" || nextTaskID == firstTaskID {
+		t.Fatalf("current task = %q, want new task after editing exhausted Goal", nextTaskID)
+	}
+	nextTask, err := orch.tasks.Load(nextTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(nextTask.Goal, "Build the revised grid slice from the edited Goal text.") {
+		t.Fatalf("task goal = %q, want edited objective", nextTask.Goal)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started for remote resumed Autopilot task")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestGoalAutopilotReviewsReadyRemoteTaskWithoutMergeQueue(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),

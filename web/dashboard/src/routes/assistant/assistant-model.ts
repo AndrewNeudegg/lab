@@ -275,7 +275,7 @@ export const assistantGoalAutopilotStatusLabel = (status = '') => {
     case 'completed':
       return 'Completed';
     case 'budget_exhausted':
-      return 'Budget exhausted';
+      return 'Task limit exhausted';
     case 'stopped':
       return 'Stopped';
     default:

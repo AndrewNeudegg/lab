@@ -471,6 +471,27 @@ func TestGoalCreateAndAutopilotCommandsUseTypedEndpoints(t *testing.T) {
 			t.Fatalf("body = %#v, want budget_tasks 5", observed.Body)
 		}
 	})
+
+	t.Run("edit", func(t *testing.T) {
+		var observed observedRequest
+		_, stderr, code := runAgainstServer(t, []string{"goal", "edit", "goal_123", "--title", "Build the thing", "--budget-tasks", "-1", "--details", "", "Build the revised thing"}, "", func(rw http.ResponseWriter, req *http.Request) {
+			observed = observeRequest(t, req)
+			writeTestJSON(t, rw, http.StatusOK, map[string]any{"ok": true})
+		})
+		if code != 0 {
+			t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+		}
+		if observed.Method != http.MethodPatch || observed.Path != "/assistant/goals/goal_123" {
+			t.Fatalf("request = %s %s, want PATCH Goal edit", observed.Method, observed.Path)
+		}
+		if observed.Body["title"] != "Build the thing" || observed.Body["objective"] != "Build the revised thing" || observed.Body["details"] != "" {
+			t.Fatalf("body = %#v, want edited title, objective, and blank details", observed.Body)
+		}
+		autopilot, ok := observed.Body["autopilot"].(map[string]any)
+		if !ok || autopilot["budget_tasks"] != float64(-1) {
+			t.Fatalf("autopilot = %#v, want unlimited task limit", observed.Body["autopilot"])
+		}
+	})
 }
 
 func TestAgentCommandsUseAgentEndpoints(t *testing.T) {

@@ -26,11 +26,20 @@ describe('assistant page composition', () => {
 	    expect(pageSource).toContain("type GoalTargetMode = 'auto' | 'local' | 'remote'");
 	    expect(pageSource).toContain('client.listWorkspaces()');
 	    expect(pageSource).toContain('target: goalTargetFromForm()');
+	    expect(pageSource).toContain('target: goalTargetFromEditForm()');
 	    expect(pageSource).toContain('<option value="auto">Auto route</option>');
 	    expect(pageSource).toContain('<option value="remote">Remote project</option>');
 	    expect(pageSource).toContain('<option value="local">Local homelabd</option>');
 	    expect(pageSource).toContain('<dt>Target</dt>');
 	    expect(pageSource).toContain('{targetLabel(selectedGoal.target)}');
 	    expect(pageSource).toContain('{targetLabel(action.target)}');
+	  });
+
+	  test('lets operators edit existing Goal text and task limits', () => {
+	    expect(pageSource).toContain('aria-label="Edit Assistant Goal"');
+	    expect(pageSource).toContain('client.updateAssistantGoal(selectedGoalId');
+	    expect(pageSource).toContain('Autopilot task limit');
+	    expect(pageSource).toContain('placeholder="-1 = unlimited"');
+	    expect(pageSource).not.toContain('GOAL_AUTOPILOT_TASK_BUDGET_MAX');
 	  });
 	});

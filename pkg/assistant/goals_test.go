@@ -1,6 +1,7 @@
 package assistant
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -109,6 +110,10 @@ func TestNormalizeGoalAutopilotDefaults(t *testing.T) {
 	if len(goal.Autopilot.AllowedActions) == 0 {
 		t.Fatalf("allowed actions = %#v, want defaults", goal.Autopilot.AllowedActions)
 	}
+	unlimited := NormalizeGoalAutopilot(&GoalAutopilot{BudgetTasks: -50})
+	if unlimited.BudgetTasks != GoalAutopilotUnlimitedBudget {
+		t.Fatalf("unlimited budget = %d, want %d", unlimited.BudgetTasks, GoalAutopilotUnlimitedBudget)
+	}
 
 	guided := NormalizeGoal(Goal{ID: "goal_guided", Title: "Guided", Autopilot: &GoalAutopilot{Status: GoalAutopilotStatusRunning}, CreatedAt: now, UpdatedAt: now})
 	if guided.ExecutionMode != GoalExecutionModeAutopilot || guided.Autopilot == nil {
@@ -118,5 +123,21 @@ func TestNormalizeGoalAutopilotDefaults(t *testing.T) {
 	guided = NormalizeGoal(guided)
 	if guided.Autopilot != nil {
 		t.Fatalf("guided autopilot = %#v, want nil", guided.Autopilot)
+	}
+}
+
+func TestGoalUpdateRequestTracksExplicitFields(t *testing.T) {
+	var req GoalUpdateRequest
+	if err := json.Unmarshal([]byte(`{"details":"","success_criteria":[],"autopilot":{"budget_tasks":-1}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if !req.HasField("details") || !req.HasField("success_criteria") || !req.HasField("autopilot") {
+		t.Fatalf("present fields not tracked: %#v", req)
+	}
+	if req.Details != "" || len(req.SuccessCriteria) != 0 || req.Autopilot == nil || req.Autopilot.BudgetTasks != -1 {
+		t.Fatalf("decoded request = %#v", req)
+	}
+	if req.HasField("title") {
+		t.Fatalf("title unexpectedly present in %#v", req)
 	}
 }

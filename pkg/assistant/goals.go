@@ -15,6 +15,8 @@ import (
 )
 
 const (
+	GoalAutopilotUnlimitedBudget = -1
+
 	GoalStatusActive    = "active"
 	GoalStatusPaused    = "paused"
 	GoalStatusBlocked   = "blocked"
@@ -109,6 +111,7 @@ type GoalUpdateRequest struct {
 	Constraints     []string                   `json:"constraints,omitempty"`
 	ProgressSummary string                     `json:"progress_summary,omitempty"`
 	OpenQuestions   []string                   `json:"open_questions,omitempty"`
+	present         map[string]bool
 }
 
 type GoalAutopilot struct {
@@ -573,6 +576,66 @@ func (s *GoalStore) assessmentsDir() string {
 	return filepath.Join(s.dir, "assessments")
 }
 
+func (r *GoalUpdateRequest) UnmarshalJSON(data []byte) error {
+	type goalUpdateRequest GoalUpdateRequest
+	var decoded goalUpdateRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = GoalUpdateRequest(decoded)
+	r.present = make(map[string]bool, len(raw))
+	for key := range raw {
+		r.present[key] = true
+	}
+	return nil
+}
+
+func (r GoalUpdateRequest) HasField(name string) bool {
+	if len(r.present) > 0 {
+		return r.present[name]
+	}
+	switch name {
+	case "title":
+		return r.Title != ""
+	case "objective":
+		return r.Objective != ""
+	case "details":
+		return r.Details != ""
+	case "status":
+		return r.Status != ""
+	case "kind":
+		return r.Kind != ""
+	case "execution_mode":
+		return r.ExecutionMode != ""
+	case "target":
+		return r.Target != nil
+	case "autopilot":
+		return r.Autopilot != nil
+	case "priority":
+		return r.Priority != ""
+	case "autonomy":
+		return r.Autonomy != ""
+	case "cadence":
+		return r.Cadence != ""
+	case "next_check_at":
+		return r.NextCheckAt != ""
+	case "success_criteria":
+		return len(r.SuccessCriteria) > 0
+	case "constraints":
+		return len(r.Constraints) > 0
+	case "progress_summary":
+		return r.ProgressSummary != ""
+	case "open_questions":
+		return len(r.OpenQuestions) > 0
+	default:
+		return false
+	}
+}
+
 func NormalizeGoal(goal Goal) Goal {
 	goal.ID = strings.TrimSpace(goal.ID)
 	goal.Title = strings.TrimSpace(goal.Title)
@@ -651,7 +714,7 @@ func NormalizeGoalAutopilot(autopilot *GoalAutopilot) GoalAutopilot {
 	}
 	value.Status = normalizeGoalAutopilotStatus(value.Status)
 	if value.BudgetTasks < 0 {
-		value.BudgetTasks = 0
+		value.BudgetTasks = GoalAutopilotUnlimitedBudget
 	}
 	if value.BudgetTasks == 0 {
 		value.BudgetTasks = 1

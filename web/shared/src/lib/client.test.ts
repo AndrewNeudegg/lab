@@ -591,7 +591,10 @@ describe('homelabd client', () => {
       cadence: 'daily'
     });
     const loaded = await client.getAssistantGoal('goal_1');
-    const updated = await client.updateAssistantGoal('goal_1', { status: 'paused' });
+    const updated = await client.updateAssistantGoal('goal_1', {
+      objective: 'Keep the operator briefed with more context.',
+      autopilot: { budget_tasks: -1 }
+    });
     const checked = await client.checkAssistantGoal('goal_1');
     const autopilot = await client.updateAssistantGoalAutopilot('goal_1', 'start', { budget_tasks: 3 });
     await client.addAssistantGoalWatch('goal_1', { title: 'Morning readiness' });
@@ -620,7 +623,10 @@ describe('homelabd client', () => {
       cadence: 'daily'
     });
     expect(requests[3].init?.method).toBe('PATCH');
-    expect(requests[3].body).toEqual({ status: 'paused' });
+    expect(requests[3].body).toEqual({
+      objective: 'Keep the operator briefed with more context.',
+      autopilot: { budget_tasks: -1 }
+    });
     expect(requests[5].init?.method).toBe('POST');
     expect(requests[5].body).toEqual({ budget_tasks: 3 });
   });

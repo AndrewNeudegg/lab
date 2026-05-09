@@ -664,7 +664,7 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
           body.execution_mode === 'autopilot'
             ? {
                 status: 'ready',
-                budget_tasks: body.autopilot?.budget_tasks || 1,
+                budget_tasks: body.autopilot?.budget_tasks ?? 1,
                 tasks_started: 0,
                 current_task_id: ''
               }
@@ -707,7 +707,7 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
               : action === 'resume' || action === 'start'
                 ? 'running'
                 : 'ready',
-        budget_tasks: body.budget_tasks || goal.autopilot?.budget_tasks || 4,
+        budget_tasks: body.budget_tasks ?? goal.autopilot?.budget_tasks ?? 4,
         tasks_started: action === 'start' ? Math.max(goal.autopilot?.tasks_started || 0, 1) : goal.autopilot?.tasks_started || 0,
         current_task_id: action === 'start' || action === 'resume' ? 'task_goal_autopilot' : goal.autopilot?.current_task_id || ''
       };
@@ -792,11 +792,37 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
     }
 
     if (route.request().method() === 'PATCH' && goalID) {
-      const body = route.request().postDataJSON() as { status?: string };
-      if (body.status) {
-        goal.status = body.status;
-        goal.updated_at = now;
+      const body = route.request().postDataJSON() as {
+        title?: string;
+        objective?: string;
+        details?: string;
+        status?: string;
+        kind?: string;
+        execution_mode?: string;
+        target?: unknown;
+        autopilot?: { budget_tasks?: number; status?: string };
+        autonomy?: string;
+        cadence?: string;
+      };
+      for (const [key, value] of Object.entries(body)) {
+        if (key === 'autopilot') {
+          goal.autopilot = {
+            ...(goal.autopilot || { tasks_started: 0, status: 'ready', current_task_id: '' }),
+            ...(value as Record<string, unknown>)
+          };
+          if (
+            goal.autopilot.status === 'budget_exhausted' &&
+            (goal.autopilot.budget_tasks || 1) < 0
+          ) {
+            goal.autopilot.status = 'running';
+          }
+          continue;
+        }
+        if (value !== undefined) {
+          goal[key] = value;
+        }
       }
+      goal.updated_at = now;
       await route.fulfill({ json: timelineForGoal(goal) });
       return;
     }
@@ -1052,18 +1078,32 @@ for (const viewport of [
       await goalForm.getByLabel('Objective').fill('Keep unanswered inbox items visible until resolved.');
       await goalForm.getByLabel('Goal type').selectOption('build');
       await goalForm.getByLabel('Execution mode').selectOption('autopilot');
-      await expect(goalForm.getByLabel('Autopilot task budget')).toHaveAttribute('max', '500');
-      await goalForm.getByLabel('Autopilot task budget').fill('500');
+      await expect(goalForm.getByLabel('Autopilot task limit')).toHaveAttribute('min', '-1');
+      await goalForm.getByLabel('Autopilot task limit').fill('4');
       await goalForm.getByLabel('Autonomy').selectOption('create_tasks');
       await goalForm.getByLabel('Details').fill('Create bounded tasks only when a response needs work.');
       await goalForm.getByRole('button', { name: 'Create Goal' }).click();
       const createdGoalRegion = page.getByLabel('Selected Assistant Goal');
       await expect(createdGoalRegion).toContainText('Keep unanswered inbox items visible until resolved.');
       await expect(createdGoalRegion).toContainText('Build Goal / Autopilot mode');
-      await expect(createdGoalRegion).toContainText('Autopilot Ready / 0/500 tasks');
+      await expect(createdGoalRegion).toContainText('Autopilot Ready / 0/4 tasks');
+      await createdGoalRegion.getByRole('button', { name: 'Edit Goal' }).click();
+      const editGoalForm = createdGoalRegion.locator('form[aria-label="Edit Assistant Goal"]');
+      await expect(editGoalForm.getByLabel('Title')).toHaveValue('Inbox follow-up');
+      await editGoalForm
+        .getByLabel('Objective')
+        .fill('Keep unanswered inbox items visible until resolved and assigned.');
+      await editGoalForm.getByLabel('Autopilot task limit').fill('-1');
+      await editGoalForm.getByRole('button', { name: 'Save Goal' }).click();
+      if (!viewport.mobile) {
+        await expect(goalsPanel.getByRole('status')).toContainText('Goal saved.');
+      }
+      await expect(editGoalForm).toHaveCount(0);
+      await expect(createdGoalRegion).toContainText('Keep unanswered inbox items visible until resolved and assigned.');
+      await expect(createdGoalRegion).toContainText('Autopilot Ready / 0/unlimited tasks');
       await createdGoalRegion.getByRole('button', { name: 'Start Autopilot' }).click();
       await expect(createdGoalRegion).toContainText('Autopilot Running');
-      await expect(createdGoalRegion).toContainText('Autopilot Running / 1/500 tasks');
+      await expect(createdGoalRegion).toContainText('Autopilot Running / 1/unlimited tasks');
       await expect(createdGoalRegion.getByLabel('Goal linked tasks')).toContainText('Autopilot task');
       if (viewport.mobile) {
         await page.getByRole('button', { name: 'Back to Goal list' }).click();

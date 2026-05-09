@@ -47,7 +47,6 @@
 	  type MobilePanel = 'runs' | 'detail';
 	  type DetailKind = 'goal' | 'run';
 	  type GoalTargetMode = 'auto' | 'local' | 'remote';
-	  const GOAL_AUTOPILOT_TASK_BUDGET_MAX = 500;
 
 	  let runs: AssistantRun[] = [];
 	  let signals: AssistantSignalCandidate[] = [];
@@ -62,6 +61,8 @@
   let runStarting = false;
   let goalCreating = false;
   let goalChecking = false;
+  let goalEditing = false;
+  let goalSaving = false;
   let goalAutopilotUpdating = false;
   let runArchiving = false;
   let signalUpdating: string[] = [];
@@ -85,6 +86,7 @@
 	  let dueGoals: AssistantGoal[] = [];
 	  let onlineWorkspaceItems: HomelabdRemoteWorkspace[] = [];
 	  let selectedGoalWorkspace: HomelabdRemoteWorkspace | undefined;
+	  let selectedGoalEditWorkspace: HomelabdRemoteWorkspace | undefined;
 	  let goalFormOpen = false;
   let goalTitle = '';
   let goalObjective = '';
@@ -96,6 +98,16 @@
 	  let goalDetails = '';
 	  let goalTargetMode: GoalTargetMode = 'auto';
 	  let goalTargetWorkspaceId = '';
+	  let goalEditTitle = '';
+	  let goalEditObjective = '';
+	  let goalEditDetails = '';
+	  let goalEditKind = 'build';
+	  let goalEditExecutionMode = 'guided';
+	  let goalEditAutopilotBudget: number | string = 4;
+	  let goalEditCadence = '';
+	  let goalEditAutonomy = 'observe';
+	  let goalEditTargetMode: GoalTargetMode = 'auto';
+	  let goalEditTargetWorkspaceId = '';
 	  let lastAppliedRouteRunId = '';
   let pendingRouteRunId = '';
   let pendingOverviewRoute = false;
@@ -103,7 +115,8 @@
   const normaliseGoalAutopilotTaskBudget = (value: number | string | undefined) => {
     const parsed = typeof value === 'number' ? value : Number(value);
     const finite = Number.isFinite(parsed) ? parsed : 1;
-    return Math.min(GOAL_AUTOPILOT_TASK_BUDGET_MAX, Math.max(1, Math.floor(finite)));
+    const rounded = Math.floor(finite);
+    return rounded < 0 ? -1 : Math.max(1, rounded);
   };
 
   $: activeRuns = assistantRunsForView(runs, 'active');
@@ -123,8 +136,18 @@
 	  ) {
 	    goalTargetWorkspaceId = onlineWorkspaceItems[0]?.id || workspaces[0].id;
 	  }
+	  $: if (
+	    workspaces.length &&
+	    !workspaces.some((workspace) => workspace.id === goalEditTargetWorkspaceId)
+	  ) {
+	    goalEditTargetWorkspaceId = onlineWorkspaceItems[0]?.id || workspaces[0].id;
+	  }
 	  $: selectedGoalWorkspace =
 	    workspaces.find((workspace) => workspace.id === goalTargetWorkspaceId) ||
+	    onlineWorkspaceItems[0] ||
+	    workspaces[0];
+	  $: selectedGoalEditWorkspace =
+	    workspaces.find((workspace) => workspace.id === goalEditTargetWorkspaceId) ||
 	    onlineWorkspaceItems[0] ||
 	    workspaces[0];
 	  $: runSpaces = [
@@ -366,26 +389,43 @@
 	      .join(' / ');
 	  };
 
-	  const goalTargetFromForm = (): HomelabdTaskTarget | undefined => {
-	    if (goalTargetMode === 'local') {
+	  const goalTargetFromFields = (
+	    mode: GoalTargetMode,
+	    workspace: HomelabdRemoteWorkspace | undefined
+	  ): HomelabdTaskTarget | undefined => {
+	    if (mode === 'local') {
 	      return { mode: 'local' };
 	    }
-	    if (goalTargetMode === 'remote' && selectedGoalWorkspace) {
+	    if (mode === 'remote' && workspace) {
 	      return {
 	        mode: 'remote',
-	        project_id: selectedGoalWorkspace.project_id,
-	        agent_id: selectedGoalWorkspace.agent_id,
-	        machine: selectedGoalWorkspace.machine,
-	        workdir_id: selectedGoalWorkspace.workdir_id,
-	        workdir: selectedGoalWorkspace.workdir,
-	        repo_url: selectedGoalWorkspace.repo_url,
-	        branch: selectedGoalWorkspace.branch,
-	        labels: selectedGoalWorkspace.labels,
-	        backend: selectedGoalWorkspace.backend
+	        project_id: workspace.project_id,
+	        agent_id: workspace.agent_id,
+	        machine: workspace.machine,
+	        workdir_id: workspace.workdir_id,
+	        workdir: workspace.workdir,
+	        repo_url: workspace.repo_url,
+	        branch: workspace.branch,
+	        labels: workspace.labels,
+	        backend: workspace.backend
 	      };
 	    }
 	    return { mode: 'auto' };
 	  };
+
+	  const goalTargetFromForm = (): HomelabdTaskTarget | undefined =>
+	    goalTargetFromFields(goalTargetMode, selectedGoalWorkspace);
+
+	  const goalTargetFromEditForm = (): HomelabdTaskTarget | undefined =>
+	    goalTargetFromFields(goalEditTargetMode, selectedGoalEditWorkspace);
+
+	  const workspaceMatchesGoalTarget = (workspace: HomelabdRemoteWorkspace, target?: HomelabdTaskTarget) =>
+	    Boolean(
+	      target &&
+	        ((target.workdir_id && workspace.workdir_id === target.workdir_id) ||
+	          (target.project_id && workspace.project_id === target.project_id) ||
+	          (target.workdir && workspace.workdir === target.workdir))
+	    );
 
 	  const formatAssistantTime = (value?: string) => {
     if (!value) {
@@ -570,7 +610,10 @@
       return 'Guided';
     }
     const started = autopilot.tasks_started || 0;
-    const budget = autopilot.budget_tasks || 1;
+    const budget = autopilot.budget_tasks ?? 1;
+    if (budget < 0) {
+      return `${started}/unlimited tasks`;
+    }
     return `${started}/${budget} tasks`;
   };
 
@@ -704,6 +747,7 @@
     mobilePanel = 'detail';
     goalNotice = '';
     goalError = '';
+    goalEditing = false;
     await refreshGoalTimeline(goalId);
     revealDetailIfCompact();
   };
@@ -758,6 +802,70 @@
     }
   };
 
+  const openSelectedGoalEditor = () => {
+    if (!selectedGoal) {
+      return;
+    }
+    const targetMode = (selectedGoal.target?.mode || 'auto') as GoalTargetMode;
+    goalEditTitle = selectedGoal.title || '';
+    goalEditObjective = selectedGoal.objective || '';
+    goalEditDetails = selectedGoal.details || '';
+    goalEditKind = selectedGoal.kind || 'build';
+    goalEditExecutionMode = selectedGoal.execution_mode || 'guided';
+    goalEditAutopilotBudget = selectedGoal.autopilot?.budget_tasks ?? 4;
+    goalEditCadence = selectedGoal.cadence || '';
+    goalEditAutonomy = selectedGoal.autonomy || 'observe';
+    goalEditTargetMode = targetMode === 'local' || targetMode === 'remote' ? targetMode : 'auto';
+    const matchingWorkspace = workspaces.find((workspace) => workspaceMatchesGoalTarget(workspace, selectedGoal.target));
+    goalEditTargetWorkspaceId = matchingWorkspace?.id || selectedGoalEditWorkspace?.id || selectedGoalWorkspace?.id || '';
+    goalEditing = true;
+    goalNotice = '';
+    goalError = '';
+  };
+
+  const saveSelectedGoal = async () => {
+    if (!selectedGoalId) {
+      return;
+    }
+    const title = goalEditTitle.trim();
+    const objective = goalEditObjective.trim();
+    if (!title || !objective) {
+      goalError = 'Goal title and objective are required.';
+      return;
+    }
+    goalSaving = true;
+    goalError = '';
+    goalNotice = '';
+    try {
+      const timeline = await client.updateAssistantGoal(selectedGoalId, {
+        title,
+        objective,
+        details: goalEditDetails.trim(),
+        kind: goalEditKind,
+        execution_mode: goalEditExecutionMode,
+        cadence: goalEditCadence.trim(),
+        autonomy: goalEditAutonomy.trim(),
+        target: goalTargetFromEditForm(),
+        autopilot:
+          goalEditExecutionMode === 'autopilot'
+            ? {
+                ...(selectedGoal?.autopilot || { status: 'ready' }),
+                budget_tasks: normaliseGoalAutopilotTaskBudget(goalEditAutopilotBudget)
+              }
+            : undefined
+      });
+      goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
+      selectedGoalTimeline = timeline;
+      selectedGoalId = timeline.goal.id;
+      goalEditing = false;
+      goalNotice = `Goal saved.`;
+    } catch (err) {
+      goalError = err instanceof Error ? err.message : 'Unable to save Goal.';
+    } finally {
+      goalSaving = false;
+    }
+  };
+
   const checkSelectedGoal = async () => {
     if (!selectedGoalId) {
       return;
@@ -807,7 +915,7 @@
     try {
       const request =
         action === 'start' || action === 'resume'
-          ? { budget_tasks: selectedGoal?.autopilot?.budget_tasks || normaliseGoalAutopilotTaskBudget(goalAutopilotBudget) }
+          ? { budget_tasks: selectedGoal?.autopilot?.budget_tasks ?? normaliseGoalAutopilotTaskBudget(goalAutopilotBudget) }
           : {};
       const response = await client.updateAssistantGoalAutopilot(selectedGoalId, action, request);
       const timeline = response.timeline;
@@ -1131,12 +1239,12 @@
 	            {/if}
             {#if goalExecutionMode === 'autopilot'}
               <label>
-                <span>Autopilot task budget</span>
+                <span>Autopilot task limit</span>
                 <input
                   bind:value={goalAutopilotBudget}
                   type="number"
-                  min="1"
-                  max={GOAL_AUTOPILOT_TASK_BUDGET_MAX}
+                  min="-1"
+                  placeholder="-1 = unlimited"
                   inputmode="numeric"
                 />
               </label>
@@ -1392,6 +1500,14 @@
               {/if}
               <button
                 type="button"
+                class="text-action"
+                disabled={goalSaving}
+                on:click={() => (goalEditing ? (goalEditing = false) : openSelectedGoalEditor())}
+              >
+                {goalEditing ? 'Close edit' : 'Edit Goal'}
+              </button>
+              <button
+                type="button"
                 class="primary-action"
                 disabled={goalChecking}
                 on:click={() => void checkSelectedGoal()}
@@ -1454,6 +1570,105 @@
               </button>
             </div>
           </header>
+
+          {#if goalEditing}
+            <form class="goal-form goal-edit-form" aria-label="Edit Assistant Goal" on:submit|preventDefault={() => void saveSelectedGoal()}>
+              <label>
+                <span>Title</span>
+                <input bind:value={goalEditTitle} autocomplete="off" />
+              </label>
+              <label>
+                <span>Objective</span>
+                <textarea bind:value={goalEditObjective} rows="3"></textarea>
+              </label>
+              <div class="form-grid">
+                <label>
+                  <span>Goal type</span>
+                  <select bind:value={goalEditKind}>
+                    <option value="build">Build</option>
+                    <option value="routine">Routine</option>
+                    <option value="watch">Watch</option>
+                    <option value="maintenance">Maintenance</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Execution mode</span>
+                  <select bind:value={goalEditExecutionMode}>
+                    <option value="guided">Guided</option>
+                    <option value="autopilot">Autopilot</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Cadence</span>
+                  <select bind:value={goalEditCadence}>
+                    <option value="daily">Daily</option>
+                    <option value="hourly">Hourly</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="">Manual</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Autonomy</span>
+                  <select bind:value={goalEditAutonomy}>
+                    <option value="observe">Observe</option>
+                    <option value="propose">Propose</option>
+                    <option value="create_tasks">Create tasks</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Target</span>
+                  <select bind:value={goalEditTargetMode}>
+                    <option value="auto">Auto route</option>
+                    <option value="remote">Remote project</option>
+                    <option value="local">Local homelabd</option>
+                  </select>
+                </label>
+                {#if goalEditTargetMode === 'remote'}
+                  <label>
+                    <span>Project</span>
+                    <select bind:value={goalEditTargetWorkspaceId} disabled={!workspaces.length}>
+                      {#each workspaces as workspace}
+                        <option value={workspace.id}>
+                          {workspaceLabel(workspace)} / {workspace.agent_name || workspace.agent_id} / {workspace.status}
+                        </option>
+                      {/each}
+                    </select>
+                  </label>
+                {/if}
+              </div>
+              {#if goalEditTargetMode === 'remote'}
+                <p class="goal-target-context">{workspaceDetail(selectedGoalEditWorkspace)}</p>
+              {/if}
+              {#if goalEditExecutionMode === 'autopilot'}
+                <label>
+                  <span>Autopilot task limit</span>
+                  <input
+                    bind:value={goalEditAutopilotBudget}
+                    type="number"
+                    min="-1"
+                    placeholder="-1 = unlimited"
+                    inputmode="numeric"
+                  />
+                </label>
+              {/if}
+              <label>
+                <span>Details</span>
+                <textarea bind:value={goalEditDetails} rows="3"></textarea>
+              </label>
+              <div class="form-actions">
+                <button
+                  type="submit"
+                  class="primary-action"
+                  disabled={goalSaving || !goalEditTitle.trim() || !goalEditObjective.trim() || Boolean(goalEditTargetMode === 'remote' && !selectedGoalEditWorkspace)}
+                >
+                  {goalSaving ? 'Saving' : 'Save Goal'}
+                </button>
+                <button type="button" class="text-action" disabled={goalSaving} on:click={() => (goalEditing = false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          {/if}
 
           <dl class="record-summary goal-summary" aria-label="Assistant Goal summary">
             <div>
@@ -2435,6 +2650,13 @@
     gap: 0.55rem;
   }
 
+  .goal-edit-form {
+    padding: 0.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--surface, #ffffff);
+  }
+
   .goal-form label {
     display: grid;
     gap: 0.25rem;
@@ -2472,6 +2694,13 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.55rem;
+  }
+
+  .form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    justify-content: flex-end;
   }
 
   .goal-list {

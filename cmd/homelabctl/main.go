@@ -58,6 +58,16 @@ func (f *stringListFlag) Set(value string) error {
 	return nil
 }
 
+func flagSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(flag *flag.Flag) {
+		if flag.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func run(args []string, in io.Reader, out, errOut io.Writer, getenv func(string) string, httpClient *http.Client) int {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -267,7 +277,7 @@ func (c cli) assistant(args []string) error {
 
 func (c cli) goal(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl goal <create|list|show|check|autopilot|pause|archive|note|watch>")
+		return fmt.Errorf("usage: homelabctl goal <create|edit|list|show|check|autopilot|pause|archive|note|watch>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -317,6 +327,8 @@ func (c cli) goal(args []string) error {
 		})
 	case "create", "new", "add":
 		return c.goalCreate(args[1:])
+	case "edit", "update":
+		return c.goalEdit(args[1:])
 	default:
 		return c.goalCreate(args)
 	}
@@ -337,7 +349,7 @@ func (c cli) goalCreate(args []string) error {
 	priority := flags.String("priority", "", "goal priority")
 	autonomy := flags.String("autonomy", "", "goal autonomy")
 	cadence := flags.String("cadence", "", "goal cadence, such as daily, hourly, or 4h")
-	budgetTasks := flags.Int("budget-tasks", 0, "autopilot task budget")
+	budgetTasks := flags.Int("budget-tasks", 0, "autopilot task limit; use -1 for unlimited")
 	var successCriteria stringListFlag
 	var constraints stringListFlag
 	flags.Var(&successCriteria, "success", "success criterion; repeat for multiple criteria")
@@ -370,7 +382,7 @@ func (c cli) goalCreate(args []string) error {
 	if target := taskTargetFromFlags(*targetMode, *projectID, *agentID, *workdirID, *workdirPath, ""); len(target) > 0 {
 		body["target"] = target
 	}
-	if *budgetTasks > 0 {
+	if *budgetTasks != 0 {
 		body["autopilot"] = map[string]any{"budget_tasks": *budgetTasks}
 	}
 	if value := strings.TrimSpace(*priority); value != "" {
@@ -391,6 +403,84 @@ func (c cli) goalCreate(args []string) error {
 	return c.do(http.MethodPost, "/assistant/goals", body)
 }
 
+func (c cli) goalEdit(args []string) error {
+	if len(args) < 1 || strings.HasPrefix(strings.TrimSpace(args[0]), "-") {
+		return fmt.Errorf("usage: homelabctl goal edit <goal_id> [--title TITLE] [--budget-tasks N|-1] [--target auto|local|remote] [objective]")
+	}
+	goalID := strings.TrimSpace(args[0])
+	flags := flag.NewFlagSet("goal edit", flag.ContinueOnError)
+	flags.SetOutput(c.err)
+	title := flags.String("title", "", "goal title")
+	objectiveFlag := flags.String("objective", "", "goal objective")
+	details := flags.String("details", "", "long-form goal details")
+	status := flags.String("status", "", "goal status")
+	kind := flags.String("kind", "", "goal kind: build, routine, watch, or maintenance")
+	mode := flags.String("mode", "", "goal execution mode: guided or autopilot")
+	targetMode := flags.String("target", "", "goal task target: auto, local, or remote")
+	projectID := flags.String("project", "", "remote project/workspace id for Goal tasks")
+	agentID := flags.String("agent", "", "remote agent id for Goal tasks")
+	workdirID := flags.String("workdir", "", "remote workdir id for Goal tasks")
+	workdirPath := flags.String("workdir-path", "", "remote workdir path for Goal tasks")
+	priority := flags.String("priority", "", "goal priority")
+	autonomy := flags.String("autonomy", "", "goal autonomy")
+	cadence := flags.String("cadence", "", "goal cadence, such as daily, hourly, or 4h")
+	budgetTasks := flags.Int("budget-tasks", 0, "autopilot task limit; use -1 for unlimited")
+	var successCriteria stringListFlag
+	var constraints stringListFlag
+	flags.Var(&successCriteria, "success", "success criterion; repeat for multiple criteria")
+	flags.Var(&constraints, "constraint", "constraint; repeat for multiple constraints")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	objective := strings.TrimSpace(strings.Join(flags.Args(), " "))
+	body := map[string]any{}
+	if flagSet(flags, "title") {
+		body["title"] = strings.TrimSpace(*title)
+	}
+	if flagSet(flags, "objective") {
+		body["objective"] = strings.TrimSpace(*objectiveFlag)
+	} else if objective != "" {
+		body["objective"] = objective
+	}
+	if flagSet(flags, "details") {
+		body["details"] = strings.TrimSpace(*details)
+	}
+	if flagSet(flags, "status") {
+		body["status"] = strings.TrimSpace(*status)
+	}
+	if flagSet(flags, "kind") {
+		body["kind"] = strings.TrimSpace(*kind)
+	}
+	if flagSet(flags, "mode") {
+		body["execution_mode"] = strings.TrimSpace(*mode)
+	}
+	if target := taskTargetFromFlags(*targetMode, *projectID, *agentID, *workdirID, *workdirPath, ""); len(target) > 0 {
+		body["target"] = target
+	}
+	if flagSet(flags, "budget-tasks") {
+		body["autopilot"] = map[string]any{"budget_tasks": *budgetTasks}
+	}
+	if flagSet(flags, "priority") {
+		body["priority"] = strings.TrimSpace(*priority)
+	}
+	if flagSet(flags, "autonomy") {
+		body["autonomy"] = strings.TrimSpace(*autonomy)
+	}
+	if flagSet(flags, "cadence") {
+		body["cadence"] = strings.TrimSpace(*cadence)
+	}
+	if flagSet(flags, "success") {
+		body["success_criteria"] = []string(successCriteria)
+	}
+	if flagSet(flags, "constraint") {
+		body["constraints"] = []string(constraints)
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("goal edit needs at least one changed field")
+	}
+	return c.do(http.MethodPatch, path("assistant", "goals", goalID), body)
+}
+
 func (c cli) goalAutopilot(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: homelabctl goal autopilot <start|pause|resume|stop> [--budget-tasks N] [--max-minutes N] <goal_id>")
@@ -401,7 +491,7 @@ func (c cli) goalAutopilot(args []string) error {
 	}
 	flags := flag.NewFlagSet("goal autopilot "+action, flag.ContinueOnError)
 	flags.SetOutput(c.err)
-	budgetTasks := flags.Int("budget-tasks", 0, "autopilot task budget")
+	budgetTasks := flags.Int("budget-tasks", 0, "autopilot task limit; use -1 for unlimited")
 	maxMinutes := flags.Int("max-minutes", 0, "autopilot runtime budget in minutes")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -410,7 +500,7 @@ func (c cli) goalAutopilot(args []string) error {
 		return fmt.Errorf("usage: homelabctl goal autopilot %s [--budget-tasks N] [--max-minutes N] <goal_id>", action)
 	}
 	body := map[string]any{}
-	if *budgetTasks > 0 {
+	if *budgetTasks != 0 {
 		body["budget_tasks"] = *budgetTasks
 	}
 	if *maxMinutes > 0 {

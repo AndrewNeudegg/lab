@@ -114,3 +114,33 @@ func TestGeminiRejectsEmptyTextPart(t *testing.T) {
 		t.Fatalf("error = %q, want empty content with finish reason", err.Error())
 	}
 }
+
+func TestGeminiRejectsTruncatedStructuredContent(t *testing.T) {
+	skipIfNoLoopback(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"{\"decision\":\"recommend\""}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":8,"totalTokenCount":10}}`))
+	}))
+	defer server.Close()
+
+	provider := NewGemini(server.URL, "test")
+	provider.client = server.Client()
+
+	_, err := provider.Complete(context.Background(), CompletionRequest{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		ResponseFormat: &ResponseFormat{
+			Name:   "structured",
+			Schema: json.RawMessage(`{"type":"object","properties":{"decision":{"type":"string"}}}`),
+			Strict: true,
+		},
+	})
+	if err == nil {
+		t.Fatal("Complete returned nil error for truncated structured content")
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("error = %v, want retryable truncated structured content error", err)
+	}
+	if !strings.Contains(err.Error(), "incomplete structured content") || !strings.Contains(err.Error(), "MAX_TOKENS") {
+		t.Fatalf("error = %q, want incomplete structured content with finish reason", err.Error())
+	}
+}

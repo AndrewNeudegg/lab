@@ -72,6 +72,27 @@ func TestSummarizeToolRepairsMalformedJSONSummary(t *testing.T) {
 	}
 }
 
+func TestSummarizeToolRejectsStructuralJSONFragment(t *testing.T) {
+	provider := &summaryProvider{content: `{`}
+	raw, err := NewSummarizeTool(provider, "summary-model").Run(context.Background(), json.RawMessage(`{"text":"Work this task to completion if possible. Task goal: repair Assistant structured output","purpose":"task_title","max_characters":84}`))
+	if err != nil {
+		t.Fatalf("run summarize: %v", err)
+	}
+	var result SummaryResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !result.Fallback {
+		t.Fatalf("fallback = false, want extractive fallback for JSON fragment")
+	}
+	if result.Summary == "{" || result.Summary == "" {
+		t.Fatalf("summary = %q, want usable extractive fallback", result.Summary)
+	}
+	if len(result.Notes) == 0 || !strings.Contains(result.Notes[0], "malformed JSON") {
+		t.Fatalf("notes = %#v, want malformed JSON diagnostic", result.Notes)
+	}
+}
+
 func TestSummarizeToolClipsModelOutputToMaxCharacters(t *testing.T) {
 	provider := &summaryProvider{content: `{"summary":"Make active task list titles concise and useful"}`}
 	raw, err := NewSummarizeTool(provider, "summary-model").Run(context.Background(), json.RawMessage(`{"text":"make active task list titles concise and useful","purpose":"task_title","max_characters":24}`))

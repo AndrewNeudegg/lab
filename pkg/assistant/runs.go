@@ -76,15 +76,27 @@ type Run struct {
 }
 
 type RunDecisionCompiler struct {
-	Status      string                  `json:"status,omitempty"`
-	Source      string                  `json:"source,omitempty"`
-	Summary     string                  `json:"summary,omitempty"`
-	Checks      []string                `json:"checks,omitempty"`
-	Contracts   []RunCapabilityContract `json:"contracts,omitempty"`
-	Scorecard   *RunDecisionScorecard   `json:"scorecard,omitempty"`
-	PolicyHints []RunPolicyHint         `json:"policy_hints,omitempty"`
-	Repairs     []string                `json:"repairs,omitempty"`
-	Rejections  []string                `json:"rejections,omitempty"`
+	Status      string                    `json:"status,omitempty"`
+	Source      string                    `json:"source,omitempty"`
+	Summary     string                    `json:"summary,omitempty"`
+	Checks      []string                  `json:"checks,omitempty"`
+	Contracts   []RunCapabilityContract   `json:"contracts,omitempty"`
+	Scorecard   *RunDecisionScorecard     `json:"scorecard,omitempty"`
+	PolicyHints []RunPolicyHint           `json:"policy_hints,omitempty"`
+	ModelOutput *RunModelOutputDiagnostic `json:"model_output,omitempty"`
+	Repairs     []string                  `json:"repairs,omitempty"`
+	Rejections  []string                  `json:"rejections,omitempty"`
+}
+
+type RunModelOutputDiagnostic struct {
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ResponseMode  string `json:"response_mode,omitempty"`
+	FinishReason  string `json:"finish_reason,omitempty"`
+	ContentLength int    `json:"content_length,omitempty"`
+	Excerpt       string `json:"excerpt,omitempty"`
+	Tail          string `json:"tail,omitempty"`
+	ParseError    string `json:"parse_error,omitempty"`
 }
 
 type RunCapabilityContract struct {

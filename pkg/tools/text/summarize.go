@@ -143,6 +143,9 @@ func (t SummarizeTool) llmSummary(ctx context.Context, text, purpose string, max
 	if summary == "" {
 		return "", providerName, modelName, fmt.Errorf("model returned an empty summary")
 	}
+	if summaryLooksLikeJSONFragment(summary) {
+		return "", providerName, modelName, fmt.Errorf("model returned malformed JSON instead of a summary")
+	}
 	return summary, providerName, modelName, nil
 }
 
@@ -295,6 +298,21 @@ func cleanSummaryText(value string, maxCharacters int) string {
 			return clipSummary(value, maxCharacters)
 		}
 	}
+}
+
+func summaryLooksLikeJSONFragment(value string) bool {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "{", "}", "[", "]", "{ }", "[ ]":
+		return true
+	}
+	if value == "" {
+		return false
+	}
+	if (strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[")) && !json.Valid([]byte(value)) {
+		return true
+	}
+	return strings.Count(value, "{") > strings.Count(value, "}") || strings.Count(value, "[") > strings.Count(value, "]")
 }
 
 func looseSummaryTextField(value string, keys ...string) string {

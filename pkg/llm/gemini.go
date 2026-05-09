@@ -75,8 +75,15 @@ func (p *Gemini) Complete(ctx context.Context, req CompletionRequest) (Completio
 	if strings.TrimSpace(content) == "" {
 		return CompletionResponse{}, geminiNoContentError(wire)
 	}
+	finishReason := strings.TrimSpace(candidate.FinishReason)
+	if req.ResponseFormat != nil {
+		if err := geminiStructuredFinishError(finishReason); err != nil {
+			return CompletionResponse{}, err
+		}
+	}
 	return CompletionResponse{
-		Message: Message{Role: "assistant", Content: content},
+		Message:      Message{Role: "assistant", Content: content},
+		FinishReason: finishReason,
 		Usage: Usage{
 			InputTokens:  wire.UsageMetadata.PromptTokenCount,
 			OutputTokens: wire.UsageMetadata.CandidatesTokenCount,
@@ -144,6 +151,19 @@ func geminiNoContentError(wire geminiResponse) error {
 		return err
 	default:
 		return Retryable(err)
+	}
+}
+
+func geminiStructuredFinishError(reason string) error {
+	switch strings.ToUpper(strings.TrimSpace(reason)) {
+	case "", "STOP":
+		return nil
+	case "MAX_TOKENS":
+		return Retryable(fmt.Errorf("gemini provider returned incomplete structured content: %s", reason))
+	case "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION", "SPII":
+		return fmt.Errorf("gemini provider blocked structured content: %s", reason)
+	default:
+		return Retryable(fmt.Errorf("gemini provider returned unfinished structured content: %s", reason))
 	}
 }
 

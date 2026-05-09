@@ -103,6 +103,75 @@ func TestOpenAICompatibleSendsJSONSchemaResponseFormatToOpenAI(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleNormalisesStrictOptionalProperties(t *testing.T) {
+	skipIfNoLoopback(t)
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"{\"title\":\"Done\",\"detail\":null}"}}]}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatible("openai", server.URL+"/api.openai.com/v1", "test")
+	provider.client = server.Client()
+
+	_, err := provider.Complete(context.Background(), CompletionRequest{
+		Model:    "gpt-5.1",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		ResponseFormat: &ResponseFormat{
+			Name:   "strict_response",
+			Strict: true,
+			Schema: json.RawMessage(`{
+				"type":"object",
+				"additionalProperties":false,
+				"properties":{
+					"title":{"type":"string"},
+					"detail":{"type":"string"},
+					"finding":{
+						"type":"object",
+						"additionalProperties":false,
+						"properties":{
+							"title":{"type":"string"},
+							"severity":{"type":"string","enum":["info","warning"]}
+						},
+						"required":["title"]
+					}
+				},
+				"required":["title"]
+			}`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := payload["response_format"].(map[string]any)["json_schema"].(map[string]any)["schema"].(map[string]any)
+	if got := stringSetFromTestSlice(schema["required"].([]any)); !got["title"] || !got["detail"] || !got["finding"] {
+		t.Fatalf("root required = %#v, want every property required", schema["required"])
+	}
+	properties := schema["properties"].(map[string]any)
+	detail := properties["detail"].(map[string]any)
+	if !testTypeContainsNull(detail["type"]) {
+		t.Fatalf("detail type = %#v, want nullable optional property", detail["type"])
+	}
+	finding := properties["finding"].(map[string]any)
+	if !testTypeContainsNull(finding["type"]) {
+		t.Fatalf("finding type = %#v, want nullable optional object", finding["type"])
+	}
+	findingRequired := stringSetFromTestSlice(finding["required"].([]any))
+	if !findingRequired["title"] || !findingRequired["severity"] {
+		t.Fatalf("finding required = %#v, want every nested property required", finding["required"])
+	}
+	severity := finding["properties"].(map[string]any)["severity"].(map[string]any)
+	if !testTypeContainsNull(severity["type"]) {
+		t.Fatalf("severity type = %#v, want nullable optional enum", severity["type"])
+	}
+	if !testEnumContainsNull(severity["enum"]) {
+		t.Fatalf("severity enum = %#v, want null allowed with nullable enum", severity["enum"])
+	}
+}
+
 func TestOpenAICompatibleSendsToolsAndDecodesToolCalls(t *testing.T) {
 	skipIfNoLoopback(t)
 	var payload map[string]any
@@ -177,6 +246,42 @@ func TestOpenAICompatibleDoesNotSendJSONSchemaToSelfHostedByDefault(t *testing.T
 	if _, ok := payload["response_format"]; ok {
 		t.Fatalf("self-hosted payload unexpectedly included response_format: %#v", payload)
 	}
+}
+
+func stringSetFromTestSlice(values []any) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			out[text] = true
+		}
+	}
+	return out
+}
+
+func testTypeContainsNull(value any) bool {
+	values, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range values {
+		if item == "null" {
+			return true
+		}
+	}
+	return false
+}
+
+func testEnumContainsNull(value any) bool {
+	values, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range values {
+		if item == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func skipIfNoLoopback(t *testing.T) {

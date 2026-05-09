@@ -11,7 +11,18 @@ import (
 
 var assistantTrailingJSONCommaPattern = regexp.MustCompile(`,\s*([}\]])`)
 
+type assistantRunCompileDiagnostics struct {
+	Provider     string
+	Model        string
+	ResponseMode string
+	FinishReason string
+}
+
 func (o *Orchestrator) compileAssistantRunDecision(run assistantstore.Run, content, source, fallbackReason string) assistantRunDecision {
+	return o.compileAssistantRunDecisionWithDiagnostics(run, content, source, fallbackReason, assistantRunCompileDiagnostics{})
+}
+
+func (o *Orchestrator) compileAssistantRunDecisionWithDiagnostics(run assistantstore.Run, content, source, fallbackReason string, diagnostics assistantRunCompileDiagnostics) assistantRunDecision {
 	scorecard := assistantCompilerScorecardFromRun(run)
 	audit := &assistantstore.RunDecisionCompiler{
 		Source:      strings.TrimSpace(source),
@@ -23,6 +34,9 @@ func (o *Orchestrator) compileAssistantRunDecision(run assistantstore.Run, conte
 	audit.Scorecard.PolicyHintCount = len(audit.PolicyHints)
 	if audit.Source == "" {
 		audit.Source = "model"
+	}
+	if strings.TrimSpace(content) != "" || diagnostics.Provider != "" || diagnostics.Model != "" || diagnostics.FinishReason != "" {
+		audit.ModelOutput = assistantRunModelOutputDiagnostic(content, diagnostics, "")
 	}
 
 	var decision assistantRunDecision
@@ -41,6 +55,11 @@ func (o *Orchestrator) compileAssistantRunDecision(run assistantstore.Run, conte
 			audit.Source = "deterministic"
 			audit.Summary = reason
 			audit.Rejections = append(audit.Rejections, "model output rejected: "+truncateAssistantRunText(err.Error(), 220))
+			if audit.ModelOutput == nil {
+				audit.ModelOutput = assistantRunModelOutputDiagnostic(content, diagnostics, err.Error())
+			} else {
+				audit.ModelOutput.ParseError = truncateAssistantRunText(err.Error(), 500)
+			}
 			audit.Scorecard.FallbackUsed = true
 			decision = fallbackAssistantRunDecisionWithReason(run, reason)
 		} else {
@@ -75,6 +94,25 @@ func (o *Orchestrator) compileAssistantRunDecision(run assistantstore.Run, conte
 	}
 	decision.Compiler = audit
 	return decision
+}
+
+func assistantRunModelOutputDiagnostic(content string, diagnostics assistantRunCompileDiagnostics, parseError string) *assistantstore.RunModelOutputDiagnostic {
+	content = strings.TrimSpace(content)
+	out := &assistantstore.RunModelOutputDiagnostic{
+		Provider:      strings.TrimSpace(diagnostics.Provider),
+		Model:         strings.TrimSpace(diagnostics.Model),
+		ResponseMode:  strings.TrimSpace(diagnostics.ResponseMode),
+		FinishReason:  strings.TrimSpace(diagnostics.FinishReason),
+		ContentLength: len(content),
+		ParseError:    truncateAssistantRunText(strings.TrimSpace(parseError), 500),
+	}
+	if content != "" {
+		out.Excerpt = truncateAssistantRunText(content, 900)
+		if len(content) > 900 {
+			out.Tail = truncateAssistantRunTextFromEnd(content, 900)
+		}
+	}
+	return out
 }
 
 func parseAssistantRunDecisionWithRepair(content string) (assistantRunDecision, []string, error) {

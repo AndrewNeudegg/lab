@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -65,7 +66,7 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 		jsonSchema := map[string]any{
 			"name":   req.ResponseFormat.Name,
 			"strict": req.ResponseFormat.Strict,
-			"schema": json.RawMessage(req.ResponseFormat.Schema),
+			"schema": openAIStrictResponseSchema(req.ResponseFormat),
 		}
 		if req.ResponseFormat.Description != "" {
 			jsonSchema["description"] = req.ResponseFormat.Description
@@ -102,7 +103,8 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 	}
 	var wire struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Role      string `json:"role"`
 				Content   string `json:"content"`
 				ToolCalls []struct {
@@ -144,10 +146,15 @@ func (p *OpenAICompatible) Complete(ctx context.Context, req CompletionRequest) 
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	}
 	message := wire.Choices[0].Message
+	finishReason := strings.TrimSpace(wire.Choices[0].FinishReason)
+	if req.ResponseFormat != nil && openAIStructuredFinishRetryable(finishReason) {
+		return CompletionResponse{}, Retryable(fmt.Errorf("openai provider returned incomplete structured content: %s", finishReason))
+	}
 	return CompletionResponse{
-		Message:   Message{Role: message.Role, Content: message.Content},
-		ToolCalls: openAIToolCalls(message.ToolCalls),
-		Usage:     usage,
+		Message:      Message{Role: message.Role, Content: message.Content},
+		ToolCalls:    openAIToolCalls(message.ToolCalls),
+		Usage:        usage,
+		FinishReason: finishReason,
 	}, nil
 }
 
@@ -194,4 +201,149 @@ func openAIToolCalls(calls []struct {
 		out = append(out, ToolCall{ID: call.ID, Name: call.Function.Name, Args: args})
 	}
 	return out
+}
+
+func openAIStructuredFinishRetryable(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "", "stop", "tool_calls", "function_call":
+		return false
+	case "length", "max_tokens":
+		return true
+	default:
+		return false
+	}
+}
+
+func openAIStrictResponseSchema(format *ResponseFormat) json.RawMessage {
+	if format == nil {
+		return nil
+	}
+	if len(format.Schema) == 0 || !format.Strict {
+		return json.RawMessage(format.Schema)
+	}
+	normalised, err := normaliseOpenAIStrictSchema(format.Schema)
+	if err != nil {
+		return json.RawMessage(format.Schema)
+	}
+	return normalised
+}
+
+func normaliseOpenAIStrictSchema(raw json.RawMessage) (json.RawMessage, error) {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	normalised := normaliseOpenAIStrictSchemaValue(value)
+	return json.Marshal(normalised)
+}
+
+func normaliseOpenAIStrictSchemaValue(value any) any {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	out := make(map[string]any, len(object)+1)
+	for key, child := range object {
+		out[key] = normaliseOpenAIStrictSchemaChild(key, child)
+	}
+	properties, hasProperties := object["properties"].(map[string]any)
+	if !hasProperties {
+		return out
+	}
+	required := stringSetFromAnySlice(object["required"])
+	propertyNames := make([]string, 0, len(properties))
+	normalisedProperties := make(map[string]any, len(properties))
+	for key, child := range properties {
+		propertyNames = append(propertyNames, key)
+		normalised := normaliseOpenAIStrictSchemaValue(child)
+		if !required[key] {
+			normalised = openAISchemaWithNull(normalised)
+		}
+		normalisedProperties[key] = normalised
+	}
+	sort.Strings(propertyNames)
+	out["properties"] = normalisedProperties
+	out["required"] = propertyNames
+	if _, ok := out["additionalProperties"]; !ok {
+		out["additionalProperties"] = false
+	}
+	return out
+}
+
+func normaliseOpenAIStrictSchemaChild(key string, value any) any {
+	switch key {
+	case "properties", "required", "additionalProperties":
+		return value
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		return normaliseOpenAIStrictSchemaValue(typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, normaliseOpenAIStrictSchemaValue(item))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func stringSetFromAnySlice(value any) map[string]bool {
+	out := map[string]bool{}
+	values, ok := value.([]any)
+	if !ok {
+		return out
+	}
+	for _, item := range values {
+		if text, ok := item.(string); ok {
+			out[text] = true
+		}
+	}
+	return out
+}
+
+func openAISchemaWithNull(value any) any {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	out := make(map[string]any, len(object)+1)
+	for key, child := range object {
+		out[key] = child
+	}
+	switch typed := out["type"].(type) {
+	case string:
+		if typed != "null" {
+			out["type"] = []any{typed, "null"}
+		}
+	case []any:
+		if !anySliceContainsString(typed, "null") {
+			out["type"] = append(append([]any{}, typed...), "null")
+		}
+	}
+	if enumValues, ok := out["enum"].([]any); ok && !anySliceContainsNil(enumValues) {
+		out["enum"] = append(append([]any{}, enumValues...), nil)
+	}
+	return out
+}
+
+func anySliceContainsString(values []any, want string) bool {
+	for _, value := range values {
+		if text, ok := value.(string); ok && text == want {
+			return true
+		}
+	}
+	return false
+}
+
+func anySliceContainsNil(values []any) bool {
+	for _, value := range values {
+		if value == nil {
+			return true
+		}
+	}
+	return false
 }

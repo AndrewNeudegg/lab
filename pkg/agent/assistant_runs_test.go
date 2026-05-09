@@ -716,6 +716,54 @@ func TestAssistantRunFallsBackWhenModelReturnsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestAssistantRunRetriesInvalidJSONDecision(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	provider := &scriptedProvider{contents: []string{
+		`{"decision":`,
+		`{
+			"decision":"no_op",
+			"summary":"No actionable signal is open.",
+			"changed":[],
+			"concerns":[],
+			"opportunities":[],
+			"recommended_actions":[]
+		}`,
+	}}
+	orch.provider = provider
+	orch.model = "assistant-model"
+
+	run, _, err := orch.StartAssistantRun(context.Background(), assistantstore.RunRequest{
+		TriggerLabel: "Regression structured retry check",
+	})
+	if err != nil {
+		t.Fatalf("StartAssistantRun returned error: %v", err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("provider requests = %d, want initial decision plus repair retry", len(provider.requests))
+	}
+	if run.Compiler == nil || run.Compiler.Status != "repaired" || run.Compiler.Scorecard == nil || !run.Compiler.Scorecard.JSONRepaired {
+		t.Fatalf("compiler = %#v, want repaired compiler after structured retry", run.Compiler)
+	}
+	if run.Compiler.Scorecard.FallbackUsed {
+		t.Fatalf("scorecard = %#v, want no deterministic fallback after successful retry", run.Compiler.Scorecard)
+	}
+	if run.Compiler.ModelOutput == nil || run.Compiler.ModelOutput.ResponseMode != "json_schema_retry" {
+		t.Fatalf("model output diagnostic = %#v, want retry diagnostic", run.Compiler.ModelOutput)
+	}
+	if run.Decision != assistantstore.RunDecisionNoop || len(run.Changed) != 0 {
+		t.Fatalf("run decision/changed = %q/%#v, want accepted no-op", run.Decision, run.Changed)
+	}
+	signals, err := orch.ListAssistantSignalCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, signal := range signals {
+		if signal.Kind == "assistant_self_repair" {
+			t.Fatalf("signals = %#v, want no self-repair signal after successful retry", signals)
+		}
+	}
+}
+
 func TestAssistantSignalCreateTaskSuppressesMatchingRunRecommendations(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	now := time.Date(2026, 5, 7, 21, 20, 51, 0, time.UTC)

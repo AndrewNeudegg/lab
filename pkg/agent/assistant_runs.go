@@ -1569,10 +1569,79 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 		reason := "Fallback deterministic scan used because no language model provider is configured."
 		return o.compileAssistantRunDecision(run, "", "deterministic", reason), llm.CompletionResponse{}, nil
 	}
-	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
-		Model:       o.model,
+	req := assistantRunDecisionCompletionRequest(run, o.model, 1800, "")
+	resp, err := o.provider.Complete(ctx, req)
+	if err != nil {
+		reason := assistantFallbackReason("Deterministic fallback scan used because the model call failed", err)
+		return o.compileAssistantRunDecision(run, "", "deterministic", reason), llm.CompletionResponse{Provider: o.provider.Name(), Model: o.model}, nil
+	}
+	decision := o.compileAssistantRunDecisionWithDiagnostics(run, resp.Message.Content, "model", "", assistantRunDiagnosticsFromResponse(resp, "json_schema"))
+	if !assistantDecisionNeedsStructuredRetry(decision) {
+		return decision, resp, nil
+	}
+	repairResp, repairErr := o.provider.Complete(ctx, assistantRunDecisionCompletionRequest(run, o.model, 2200, resp.Message.Content))
+	if repairErr != nil {
+		if decision.Compiler != nil {
+			decision.Compiler.Rejections = append(decision.Compiler.Rejections, "structured JSON retry failed: "+truncateAssistantRunText(repairErr.Error(), 220))
+			assistantFinalizeCompilerScorecard(decision.Compiler)
+		}
+		return decision, resp, nil
+	}
+	repairedDecision := o.compileAssistantRunDecisionWithDiagnostics(run, repairResp.Message.Content, "model_repair", "", assistantRunDiagnosticsFromResponse(repairResp, "json_schema_retry"))
+	if assistantDecisionNeedsStructuredRetry(repairedDecision) {
+		if decision.Compiler != nil {
+			decision.Compiler.Rejections = append(decision.Compiler.Rejections, "structured JSON retry returned invalid JSON")
+			assistantFinalizeCompilerScorecard(decision.Compiler)
+		}
+		return decision, combineAssistantRunResponses(resp, repairResp), nil
+	}
+	if repairedDecision.Compiler != nil {
+		repairedDecision.Compiler.Repairs = append(repairedDecision.Compiler.Repairs, "Retried malformed structured model output and accepted the repaired Assistant decision.")
+		if repairedDecision.Compiler.Status == "accepted" {
+			repairedDecision.Compiler.Status = "repaired"
+		}
+		if repairedDecision.Compiler.Scorecard != nil {
+			repairedDecision.Compiler.Scorecard.JSONRepaired = true
+		}
+		assistantFinalizeCompilerScorecard(repairedDecision.Compiler)
+	}
+	return repairedDecision, combineAssistantRunResponses(resp, repairResp), nil
+}
+
+func assistantRunDecisionCompletionRequest(run assistantstore.Run, model string, maxTokens int, repairContent string) llm.CompletionRequest {
+	systemLines := []string{
+		"You are homelabd's proactive executive layer.",
+		"Use the harness: Tasks are for changing things, Knowledge is for durable research and memory, and Workflows are for repeatable thinking.",
+		"Goals are durable operator desires. Each goal can include objective, details, success criteria, constraints, cadence, autonomy, progress, and linked tasks. Keep Goals moving with one small next action when evidence supports it.",
+		"Treat snapshot.signals as the pre-scored watchlist. Each signal can include why_now, evidence, safe_actions, and suggested_next_step so any source can plug in without source-specific reasoning.",
+		"Prefer high-score, high-confidence signals, ground recommendations in their evidence, use only safe_actions, and do not recommend suppressed signals.",
+		"Do not claim to have executed actions unless the snapshot already proves they happened.",
+		"Prefer no-op when there is no actionable signal. Prefer recommendations over mutation.",
+		"Return exactly one JSON object matching the schema.",
+	}
+	userContent := "Assistant run request and compact state snapshot:\n" + mustJSON(map[string]any{
+		"trigger":  run.Trigger,
+		"autonomy": run.Autonomy,
+		"goal":     run.Goal,
+		"snapshot": run.Snapshot,
+	})
+	if strings.TrimSpace(repairContent) != "" {
+		systemLines = []string{
+			"You repair malformed structured JSON for homelabd Assistant decisions.",
+			"Use only the supplied Assistant run request, snapshot, and prior malformed output.",
+			"Return exactly one complete JSON object matching the schema and no prose.",
+		}
+		userContent = strings.Join([]string{
+			userContent,
+			"",
+			"Prior malformed model output:",
+			truncateAssistantRunText(repairContent, 6000),
+		}, "\n")
+	}
+	return llm.CompletionRequest{
+		Model:       model,
 		Temperature: 0.1,
-		MaxTokens:   1800,
+		MaxTokens:   maxTokens,
 		ResponseFormat: &llm.ResponseFormat{
 			Name:        "assistant_proactive_run",
 			Description: "Decision output from a bounded proactive assistant run.",
@@ -1581,34 +1650,46 @@ func (o *Orchestrator) evaluateAssistantRun(ctx context.Context, run assistantst
 		},
 		Messages: []llm.Message{
 			{
-				Role: "system",
-				Content: strings.Join([]string{
-					"You are homelabd's proactive executive layer.",
-					"Use the harness: Tasks are for changing things, Knowledge is for durable research and memory, and Workflows are for repeatable thinking.",
-					"Goals are durable operator desires. Each goal can include objective, details, success criteria, constraints, cadence, autonomy, progress, and linked tasks. Keep Goals moving with one small next action when evidence supports it.",
-					"Treat snapshot.signals as the pre-scored watchlist. Each signal can include why_now, evidence, safe_actions, and suggested_next_step so any source can plug in without source-specific reasoning.",
-					"Prefer high-score, high-confidence signals, ground recommendations in their evidence, use only safe_actions, and do not recommend suppressed signals.",
-					"Do not claim to have executed actions unless the snapshot already proves they happened.",
-					"Prefer no-op when there is no actionable signal. Prefer recommendations over mutation.",
-					"Return exactly one JSON object matching the schema.",
-				}, "\n"),
+				Role:    "system",
+				Content: strings.Join(systemLines, "\n"),
 			},
 			{
-				Role: "user",
-				Content: "Assistant run request and compact state snapshot:\n" + mustJSON(map[string]any{
-					"trigger":  run.Trigger,
-					"autonomy": run.Autonomy,
-					"goal":     run.Goal,
-					"snapshot": run.Snapshot,
-				}),
+				Role:    "user",
+				Content: userContent,
 			},
 		},
-	})
-	if err != nil {
-		reason := assistantFallbackReason("Deterministic fallback scan used because the model call failed", err)
-		return o.compileAssistantRunDecision(run, "", "deterministic", reason), llm.CompletionResponse{Provider: o.provider.Name(), Model: o.model}, nil
 	}
-	return o.compileAssistantRunDecision(run, resp.Message.Content, "model", ""), resp, nil
+}
+
+func assistantRunDiagnosticsFromResponse(resp llm.CompletionResponse, responseMode string) assistantRunCompileDiagnostics {
+	return assistantRunCompileDiagnostics{
+		Provider:     resp.Provider,
+		Model:        resp.Model,
+		ResponseMode: responseMode,
+		FinishReason: resp.FinishReason,
+	}
+}
+
+func assistantDecisionNeedsStructuredRetry(decision assistantRunDecision) bool {
+	if decision.Compiler == nil || decision.Compiler.Status != "fallback" || decision.Compiler.Scorecard == nil || !decision.Compiler.Scorecard.FallbackUsed {
+		return false
+	}
+	text := strings.ToLower(strings.Join(append([]string{decision.Compiler.Summary}, decision.Compiler.Rejections...), " "))
+	return strings.Contains(text, "invalid json") || strings.Contains(text, "empty model response")
+}
+
+func combineAssistantRunResponses(first, second llm.CompletionResponse) llm.CompletionResponse {
+	out := second
+	out.Usage.InputTokens += first.Usage.InputTokens
+	out.Usage.OutputTokens += first.Usage.OutputTokens
+	out.Usage.TotalTokens += first.Usage.TotalTokens
+	if out.Provider == "" {
+		out.Provider = first.Provider
+	}
+	if out.Model == "" {
+		out.Model = first.Model
+	}
+	return out
 }
 
 func assistantFallbackReason(prefix string, err error) string {
@@ -1821,6 +1902,14 @@ func truncateAssistantRunText(value string, max int) string {
 		return value
 	}
 	return value[:max] + "...[truncated]"
+}
+
+func truncateAssistantRunTextFromEnd(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return "[truncated]..." + value[len(value)-max:]
 }
 
 func (o *Orchestrator) assistantHealthSnapshot(ctx context.Context) assistantstore.RunSystemSnapshot {

@@ -39,6 +39,23 @@ const (
 	GoalAutopilotStatusBudgetExhausted = "budget_exhausted"
 	GoalAutopilotStatusStopped         = "stopped"
 
+	GoalPlanStatusActive    = "active"
+	GoalPlanStatusBlocked   = "blocked"
+	GoalPlanStatusCompleted = "completed"
+
+	GoalPlanPhaseStatusPending    = "pending"
+	GoalPlanPhaseStatusInProgress = "in_progress"
+	GoalPlanPhaseStatusBlocked    = "blocked"
+	GoalPlanPhaseStatusCompleted  = "completed"
+	GoalPlanPhaseStatusSkipped    = "skipped"
+
+	GoalSupervisorDecisionCreateTask   = "create_task"
+	GoalSupervisorDecisionAskQuestion  = "ask_question"
+	GoalSupervisorDecisionMarkComplete = "mark_complete"
+	GoalSupervisorDecisionPauseBlocked = "pause_blocked"
+	GoalSupervisorDecisionWait         = "wait"
+	GoalSupervisorDecisionRevisePlan   = "revise_plan"
+
 	GoalSignalStatusActive    = "active"
 	GoalSignalStatusResolved  = "resolved"
 	GoalSignalStatusDismissed = "dismissed"
@@ -58,6 +75,7 @@ type Goal struct {
 	ExecutionMode   string                     `json:"execution_mode,omitempty"`
 	Target          *taskstore.ExecutionTarget `json:"target,omitempty"`
 	Autopilot       *GoalAutopilot             `json:"autopilot,omitempty"`
+	Plan            *GoalPlan                  `json:"plan,omitempty"`
 	Priority        string                     `json:"priority,omitempty"`
 	Autonomy        string                     `json:"autonomy"`
 	Cadence         string                     `json:"cadence,omitempty"`
@@ -124,6 +142,67 @@ type GoalAutopilot struct {
 	StopReasons       []string   `json:"stop_reasons,omitempty"`
 	AllowedActions    []string   `json:"allowed_actions,omitempty"`
 	CurrentTaskID     string     `json:"current_task_id,omitempty"`
+	CurrentPhaseID    string     `json:"current_phase_id,omitempty"`
+	LastDecisionID    string     `json:"last_decision_id,omitempty"`
+}
+
+type GoalPlan struct {
+	Status         string          `json:"status,omitempty"`
+	Summary        string          `json:"summary,omitempty"`
+	CurrentPhaseID string          `json:"current_phase_id,omitempty"`
+	Phases         []GoalPlanPhase `json:"phases,omitempty"`
+	CreatedAt      time.Time       `json:"created_at,omitempty"`
+	UpdatedAt      time.Time       `json:"updated_at,omitempty"`
+}
+
+type GoalPlanPhase struct {
+	ID                 string   `json:"id"`
+	Title              string   `json:"title"`
+	Objective          string   `json:"objective,omitempty"`
+	Status             string   `json:"status,omitempty"`
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
+	DependsOn          []string `json:"depends_on,omitempty"`
+	TaskIDs            []string `json:"task_ids,omitempty"`
+	Evidence           []string `json:"evidence,omitempty"`
+}
+
+type GoalSupervisorDecision struct {
+	ID         string    `json:"id"`
+	GoalID     string    `json:"goal_id"`
+	Decision   string    `json:"decision"`
+	Summary    string    `json:"summary,omitempty"`
+	Rationale  string    `json:"rationale,omitempty"`
+	PhaseID    string    `json:"phase_id,omitempty"`
+	TaskID     string    `json:"task_id,omitempty"`
+	TaskGoal   string    `json:"task_goal,omitempty"`
+	Questions  []string  `json:"questions,omitempty"`
+	StopReason string    `json:"stop_reason,omitempty"`
+	Evidence   []string  `json:"evidence,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type GoalTaskReport struct {
+	ID            string    `json:"id"`
+	GoalID        string    `json:"goal_id"`
+	TaskID        string    `json:"task_id"`
+	PhaseID       string    `json:"phase_id,omitempty"`
+	Title         string    `json:"title,omitempty"`
+	Status        string    `json:"status,omitempty"`
+	Summary       string    `json:"summary,omitempty"`
+	AdvancedGoal  bool      `json:"advanced_goal,omitempty"`
+	PhaseComplete bool      `json:"phase_complete,omitempty"`
+	GoalComplete  bool      `json:"goal_complete,omitempty"`
+	NoChange      bool      `json:"no_change,omitempty"`
+	ChangedFiles  []string  `json:"changed_files,omitempty"`
+	Validation    []string  `json:"validation,omitempty"`
+	FollowUps     []string  `json:"follow_ups,omitempty"`
+	Blockers      []string  `json:"blockers,omitempty"`
+	Questions     []string  `json:"questions,omitempty"`
+	DiffFiles     int       `json:"diff_files,omitempty"`
+	Additions     int       `json:"additions,omitempty"`
+	Deletions     int       `json:"deletions,omitempty"`
+	ResultExcerpt string    `json:"result_excerpt,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type GoalAutopilotRequest struct {
@@ -218,6 +297,7 @@ type GoalSnapshotRef struct {
 	ExecutionMode   string                     `json:"execution_mode,omitempty"`
 	Target          *taskstore.ExecutionTarget `json:"target,omitempty"`
 	Autopilot       *GoalAutopilot             `json:"autopilot,omitempty"`
+	Plan            *GoalPlan                  `json:"plan,omitempty"`
 	Priority        string                     `json:"priority,omitempty"`
 	Autonomy        string                     `json:"autonomy,omitempty"`
 	Cadence         string                     `json:"cadence,omitempty"`
@@ -233,11 +313,13 @@ type GoalSnapshotRef struct {
 }
 
 type GoalTimeline struct {
-	Goal        Goal             `json:"goal"`
-	Watches     []GoalWatch      `json:"watches,omitempty"`
-	Signals     []GoalSignal     `json:"signals,omitempty"`
-	Notes       []GoalNote       `json:"notes,omitempty"`
-	Assessments []GoalAssessment `json:"assessments,omitempty"`
+	Goal        Goal                     `json:"goal"`
+	Watches     []GoalWatch              `json:"watches,omitempty"`
+	Signals     []GoalSignal             `json:"signals,omitempty"`
+	Notes       []GoalNote               `json:"notes,omitempty"`
+	Assessments []GoalAssessment         `json:"assessments,omitempty"`
+	Decisions   []GoalSupervisorDecision `json:"decisions,omitempty"`
+	TaskReports []GoalTaskReport         `json:"task_reports,omitempty"`
 }
 
 type GoalStore struct {
@@ -541,6 +623,92 @@ func (s *GoalStore) ListAssessments(goalID string) ([]GoalAssessment, error) {
 	return assessments, nil
 }
 
+func (s *GoalStore) SaveDecision(decision GoalSupervisorDecision) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if decision.CreatedAt.IsZero() {
+		decision.CreatedAt = time.Now().UTC()
+	}
+	decision = NormalizeGoalSupervisorDecision(decision)
+	return s.writeJSONLocked(s.decisionsDir(), decision.ID, decision)
+}
+
+func (s *GoalStore) ListDecisions(goalID string) ([]GoalSupervisorDecision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.decisionsDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []GoalSupervisorDecision{}, nil
+		}
+		return nil, err
+	}
+	var decisions []GoalSupervisorDecision
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.decisionsDir(), entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var decision GoalSupervisorDecision
+		if err := json.Unmarshal(b, &decision); err != nil {
+			return nil, err
+		}
+		decision = NormalizeGoalSupervisorDecision(decision)
+		if goalID != "" && decision.GoalID != goalID {
+			continue
+		}
+		decisions = append(decisions, decision)
+	}
+	sort.SliceStable(decisions, func(i, j int) bool { return decisions[i].CreatedAt.After(decisions[j].CreatedAt) })
+	return decisions, nil
+}
+
+func (s *GoalStore) SaveTaskReport(report GoalTaskReport) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if report.CreatedAt.IsZero() {
+		report.CreatedAt = time.Now().UTC()
+	}
+	report = NormalizeGoalTaskReport(report)
+	return s.writeJSONLocked(s.taskReportsDir(), report.ID, report)
+}
+
+func (s *GoalStore) ListTaskReports(goalID string) ([]GoalTaskReport, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.taskReportsDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []GoalTaskReport{}, nil
+		}
+		return nil, err
+	}
+	var reports []GoalTaskReport
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.taskReportsDir(), entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var report GoalTaskReport
+		if err := json.Unmarshal(b, &report); err != nil {
+			return nil, err
+		}
+		report = NormalizeGoalTaskReport(report)
+		if goalID != "" && report.GoalID != goalID {
+			continue
+		}
+		reports = append(reports, report)
+	}
+	sort.SliceStable(reports, func(i, j int) bool { return reports[i].CreatedAt.After(reports[j].CreatedAt) })
+	return reports, nil
+}
+
 func (s *GoalStore) writeJSONLocked(dir, id string, value any) error {
 	id = safeGoalFileID(id)
 	if id == "" {
@@ -574,6 +742,14 @@ func (s *GoalStore) notesDir() string {
 
 func (s *GoalStore) assessmentsDir() string {
 	return filepath.Join(s.dir, "assessments")
+}
+
+func (s *GoalStore) decisionsDir() string {
+	return filepath.Join(s.dir, "decisions")
+}
+
+func (s *GoalStore) taskReportsDir() string {
+	return filepath.Join(s.dir, "task_reports")
 }
 
 func (r *GoalUpdateRequest) UnmarshalJSON(data []byte) error {
@@ -657,6 +833,14 @@ func NormalizeGoal(goal Goal) Goal {
 	} else {
 		goal.Autopilot = nil
 	}
+	if goal.Plan != nil {
+		plan := NormalizeGoalPlan(*goal.Plan)
+		if len(plan.Phases) > 0 || plan.Summary != "" {
+			goal.Plan = &plan
+		} else {
+			goal.Plan = nil
+		}
+	}
 	goal.Priority = strings.TrimSpace(goal.Priority)
 	if goal.Priority == "" {
 		goal.Priority = "medium"
@@ -738,6 +922,8 @@ func NormalizeGoalAutopilot(autopilot *GoalAutopilot) GoalAutopilot {
 		}
 	}
 	value.CurrentTaskID = strings.TrimSpace(value.CurrentTaskID)
+	value.CurrentPhaseID = strings.TrimSpace(value.CurrentPhaseID)
+	value.LastDecisionID = strings.TrimSpace(value.LastDecisionID)
 	if value.StartedAt != nil {
 		started := value.StartedAt.UTC()
 		if started.IsZero() {
@@ -755,6 +941,101 @@ func NormalizeGoalAutopilot(autopilot *GoalAutopilot) GoalAutopilot {
 		}
 	}
 	return value
+}
+
+func NormalizeGoalPlan(plan GoalPlan) GoalPlan {
+	plan.Status = normalizeGoalPlanStatus(plan.Status)
+	plan.Summary = strings.TrimSpace(plan.Summary)
+	plan.CurrentPhaseID = strings.TrimSpace(plan.CurrentPhaseID)
+	if plan.CreatedAt.IsZero() {
+		plan.CreatedAt = time.Now().UTC()
+	} else {
+		plan.CreatedAt = plan.CreatedAt.UTC()
+	}
+	if plan.UpdatedAt.IsZero() {
+		plan.UpdatedAt = plan.CreatedAt
+	} else {
+		plan.UpdatedAt = plan.UpdatedAt.UTC()
+	}
+	phases := make([]GoalPlanPhase, 0, len(plan.Phases))
+	seen := map[string]bool{}
+	for index, phase := range plan.Phases {
+		phase = NormalizeGoalPlanPhase(phase, index)
+		if phase.ID == "" || seen[phase.ID] {
+			continue
+		}
+		seen[phase.ID] = true
+		phases = append(phases, phase)
+		if plan.CurrentPhaseID == "" && phase.Status != GoalPlanPhaseStatusCompleted && phase.Status != GoalPlanPhaseStatusSkipped {
+			plan.CurrentPhaseID = phase.ID
+		}
+	}
+	plan.Phases = phases
+	if len(plan.Phases) == 0 {
+		plan.CurrentPhaseID = ""
+	}
+	return plan
+}
+
+func NormalizeGoalPlanPhase(phase GoalPlanPhase, index int) GoalPlanPhase {
+	phase.ID = strings.TrimSpace(phase.ID)
+	if phase.ID == "" {
+		phase.ID = "phase_" + strconv.Itoa(index+1)
+	}
+	phase.Title = strings.TrimSpace(phase.Title)
+	if phase.Title == "" {
+		phase.Title = "Phase " + strconv.Itoa(index+1)
+	}
+	phase.Objective = strings.TrimSpace(phase.Objective)
+	phase.Status = normalizeGoalPlanPhaseStatus(phase.Status)
+	phase.AcceptanceCriteria = normalizeRunStringList(phase.AcceptanceCriteria, 12)
+	phase.DependsOn = normalizeRunStringList(phase.DependsOn, 12)
+	phase.TaskIDs = normalizeRunStringList(phase.TaskIDs, 24)
+	phase.Evidence = normalizeRunStringList(phase.Evidence, 24)
+	return phase
+}
+
+func NormalizeGoalSupervisorDecision(decision GoalSupervisorDecision) GoalSupervisorDecision {
+	decision.ID = strings.TrimSpace(decision.ID)
+	decision.GoalID = strings.TrimSpace(decision.GoalID)
+	decision.Decision = normalizeGoalSupervisorDecision(decision.Decision)
+	decision.Summary = strings.TrimSpace(decision.Summary)
+	decision.Rationale = strings.TrimSpace(decision.Rationale)
+	decision.PhaseID = strings.TrimSpace(decision.PhaseID)
+	decision.TaskID = strings.TrimSpace(decision.TaskID)
+	decision.TaskGoal = strings.TrimSpace(decision.TaskGoal)
+	decision.Questions = normalizeRunStringList(decision.Questions, 12)
+	decision.StopReason = strings.TrimSpace(decision.StopReason)
+	decision.Evidence = normalizeRunStringList(decision.Evidence, 24)
+	decision.CreatedAt = decision.CreatedAt.UTC()
+	return decision
+}
+
+func NormalizeGoalTaskReport(report GoalTaskReport) GoalTaskReport {
+	report.ID = strings.TrimSpace(report.ID)
+	report.GoalID = strings.TrimSpace(report.GoalID)
+	report.TaskID = strings.TrimSpace(report.TaskID)
+	report.PhaseID = strings.TrimSpace(report.PhaseID)
+	report.Title = strings.TrimSpace(report.Title)
+	report.Status = strings.TrimSpace(report.Status)
+	report.Summary = strings.TrimSpace(report.Summary)
+	report.ChangedFiles = normalizeRunStringList(report.ChangedFiles, 64)
+	report.Validation = normalizeRunStringList(report.Validation, 24)
+	report.FollowUps = normalizeRunStringList(report.FollowUps, 24)
+	report.Blockers = normalizeRunStringList(report.Blockers, 24)
+	report.Questions = normalizeRunStringList(report.Questions, 12)
+	report.ResultExcerpt = strings.TrimSpace(report.ResultExcerpt)
+	if report.DiffFiles < 0 {
+		report.DiffFiles = 0
+	}
+	if report.Additions < 0 {
+		report.Additions = 0
+	}
+	if report.Deletions < 0 {
+		report.Deletions = 0
+	}
+	report.CreatedAt = report.CreatedAt.UTC()
+	return report
 }
 
 func NormalizeGoalWatch(watch GoalWatch) GoalWatch {
@@ -876,6 +1157,7 @@ func GoalToSnapshotRef(goal Goal, now time.Time) GoalSnapshotRef {
 		ExecutionMode:   goal.ExecutionMode,
 		Target:          normalizeExecutionTarget(goal.Target),
 		Autopilot:       cloneGoalAutopilot(goal.Autopilot),
+		Plan:            cloneGoalPlan(goal.Plan),
 		Priority:        goal.Priority,
 		Autonomy:        goal.Autonomy,
 		Cadence:         goal.Cadence,
@@ -989,6 +1271,49 @@ func normalizeGoalAutopilotStatus(value string) string {
 	}
 }
 
+func normalizeGoalPlanStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalPlanStatusBlocked:
+		return GoalPlanStatusBlocked
+	case GoalPlanStatusCompleted:
+		return GoalPlanStatusCompleted
+	default:
+		return GoalPlanStatusActive
+	}
+}
+
+func normalizeGoalPlanPhaseStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalPlanPhaseStatusInProgress, "running":
+		return GoalPlanPhaseStatusInProgress
+	case GoalPlanPhaseStatusBlocked:
+		return GoalPlanPhaseStatusBlocked
+	case GoalPlanPhaseStatusCompleted, "done":
+		return GoalPlanPhaseStatusCompleted
+	case GoalPlanPhaseStatusSkipped:
+		return GoalPlanPhaseStatusSkipped
+	default:
+		return GoalPlanPhaseStatusPending
+	}
+}
+
+func normalizeGoalSupervisorDecision(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalSupervisorDecisionAskQuestion:
+		return GoalSupervisorDecisionAskQuestion
+	case GoalSupervisorDecisionMarkComplete:
+		return GoalSupervisorDecisionMarkComplete
+	case GoalSupervisorDecisionPauseBlocked:
+		return GoalSupervisorDecisionPauseBlocked
+	case GoalSupervisorDecisionWait:
+		return GoalSupervisorDecisionWait
+	case GoalSupervisorDecisionRevisePlan:
+		return GoalSupervisorDecisionRevisePlan
+	default:
+		return GoalSupervisorDecisionCreateTask
+	}
+}
+
 func normalizeGoalWatchStatus(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case GoalWatchStatusPaused:
@@ -1072,5 +1397,20 @@ func cloneGoalAutopilot(value *GoalAutopilot) *GoalAutopilot {
 	cloned := NormalizeGoalAutopilot(value)
 	cloned.StopReasons = append([]string(nil), cloned.StopReasons...)
 	cloned.AllowedActions = append([]string(nil), cloned.AllowedActions...)
+	return &cloned
+}
+
+func cloneGoalPlan(value *GoalPlan) *GoalPlan {
+	if value == nil {
+		return nil
+	}
+	cloned := NormalizeGoalPlan(*value)
+	cloned.Phases = append([]GoalPlanPhase(nil), cloned.Phases...)
+	for index := range cloned.Phases {
+		cloned.Phases[index].AcceptanceCriteria = append([]string(nil), cloned.Phases[index].AcceptanceCriteria...)
+		cloned.Phases[index].DependsOn = append([]string(nil), cloned.Phases[index].DependsOn...)
+		cloned.Phases[index].TaskIDs = append([]string(nil), cloned.Phases[index].TaskIDs...)
+		cloned.Phases[index].Evidence = append([]string(nil), cloned.Phases[index].Evidence...)
+	}
 	return &cloned
 }

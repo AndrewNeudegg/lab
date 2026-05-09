@@ -105,14 +105,17 @@ Lifecycle:
 ```mermaid
 flowchart TD
   Start[Start Autopilot] --> Assess[Assess Goal and repo state]
-  Assess --> Plan[Create or update roadmap]
-  Plan --> Task[Create next bounded task]
+  Assess --> Plan[Create or update durable phase plan]
+  Plan --> Decide[Supervisor selects phase, asks, waits, or stops]
+  Decide -->|create task| Task[Create next bounded task with phase context]
+  Decide -->|question| Block[Block and notify]
+  Decide -->|complete| Complete[Complete Goal]
   Task --> Run[Run worker]
   Run --> Review[Run review and tests]
   Review --> Merge{Safe to merge?}
   Merge -->|yes| Restart[Restart affected components]
   Restart --> Verify[Verify behaviour]
-  Verify --> Reflect[Reflect into Goal]
+  Verify --> Reflect[Save structured Goal task report]
   Reflect --> Continue{Done, blocked, or budget left?}
   Continue -->|budget left| Assess
   Continue -->|done| Complete[Complete Goal]
@@ -153,19 +156,31 @@ Required Autopilot fields:
     "max_runtime_minutes": 240,
     "started_at": "2026-05-07T14:00:00Z",
     "last_step_at": "2026-05-07T14:30:00Z",
+    "current_task_id": "task_20260507_143000_abcd1234",
+    "current_phase_id": "phase_02_core",
+    "last_decision_id": "gdec_20260507_143000_1234abcd",
     "stop_reasons": [],
     "allowed_actions": [
       "create_task",
-      "run_worker",
-      "review",
-      "merge",
-      "restart_affected",
-      "verify",
-      "reflect"
+      "run_task",
+      "review_task",
+      "approve_merge",
+      "accept_task",
+      "reflect_goal"
     ]
   }
 }
 ```
+
+Each Autopilot Goal also has a durable supervisor plan:
+
+- `plan.status`: `active`, `blocked`, or `completed`.
+- `plan.current_phase_id`: the phase the supervisor currently expects to advance.
+- `plan.phases[]`: ordered phase IDs, titles, objectives, status, dependencies, linked task IDs, acceptance criteria, and evidence.
+- `decisions[]`: recent supervisor decisions such as `create_task`, `ask_question`, `pause_blocked`, `mark_complete`, `wait`, or `revise_plan`.
+- `task_reports[]`: structured reports extracted from accepted Goal-linked tasks.
+
+The supervisor owns the next-step decision. Workers should not independently decide the long-term roadmap. After every accepted linked task, the supervisor reads the latest structured report, marks phases complete or blocked, chooses the next dependency-ready phase, and includes prior report context in the next task prompt. It stops instead of creating another task when open questions exist, the plan is blocked, recent reports show repeated no-progress work, the Goal is complete, or the Autopilot policy/budget disallows further work. A budget of `-1` means unlimited tasks, but unlimited does not override blockers, questions, policy, review gates, or stop commands.
 
 Initial Autopilot MVP should be conservative:
 
@@ -175,7 +190,7 @@ Initial Autopilot MVP should be conservative:
 - require all review checks to pass before merge
 - stop after one failed task/review/restart
 - stop when the Goal produces an open question
-- cap task count and runtime
+- cap task count and runtime unless the operator sets the task limit to `-1`
 - notify through the Goal timeline and Assistant run receipts
 
 ## Goal Types
@@ -332,8 +347,11 @@ When a Goal creates a task, the task prompt must include a report-back contract.
 Required task metadata:
 
 - `goal_id`
+- `goal_phase_id`
 - Goal title and objective
 - Goal details relevant to the task
+- selected Goal plan phase
+- recent structured Goal task reports
 - success criteria
 - constraints and approval rules
 - current progress summary
@@ -343,12 +361,21 @@ Required task metadata:
 
 Workers should be able to report:
 
-- `goal.note.add`
-- `goal.watch.recommend`
-- `goal.signal.create`
-- `goal.blocker.report`
-- `goal.followup.recommend`
-- `goal.progress.update`
+- `summary`
+- `advanced_goal`
+- `phase_complete`
+- `goal_complete`
+- `changed_files`
+- `validation`
+- `follow_ups`
+- `blockers`
+- `questions`
+
+The accepted report format is a single final-result line:
+
+```text
+GOAL_REPORT: {"summary":"Core grid rendering works","advanced_goal":true,"phase_complete":true,"goal_complete":false,"changed_files":["src/grid.ts"],"validation":["bun test"],"follow_ups":["Add keyboard navigation"],"blockers":[],"questions":[]}
+```
 
 The task agent often discovers what the assistant should keep watching. That information must not be buried in a final summary only.
 
@@ -456,6 +483,8 @@ Suggested data directories:
 - `data/assistant_goals/signals/*.json`
 - `data/assistant_goals/assessments/*.json`
 - `data/assistant_goals/notes/*.json`
+- `data/assistant_goals/decisions/*.json`
+- `data/assistant_goals/task_reports/*.json`
 
 Add HTTP and CLI operations:
 
@@ -465,7 +494,9 @@ Add HTTP and CLI operations:
 - update Goal
 - pause Goal
 - archive Goal
+- edit Goal text, target, mode, cadence, autonomy, and Autopilot task limit
 - check Goal now
+- start, pause, resume, or stop Autopilot
 - add note
 - create or remove watch
 - list Goal timeline

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,18 @@ func (o *Orchestrator) ListGoals() ([]assistantstore.Goal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.ListGoals()
+	goals, err := store.ListGoals()
+	if err != nil {
+		return nil, err
+	}
+	for index := range goals {
+		goal, err := o.ensureGoalPlan(store, goals[index])
+		if err != nil {
+			return nil, err
+		}
+		goals[index] = goal
+	}
+	return goals, nil
 }
 
 func (o *Orchestrator) LoadGoal(goalID string) (assistantstore.GoalTimeline, error) {
@@ -35,6 +47,10 @@ func (o *Orchestrator) LoadGoal(goalID string) (assistantstore.GoalTimeline, err
 		return assistantstore.GoalTimeline{}, err
 	}
 	goal, err := store.LoadGoal(goalID)
+	if err != nil {
+		return assistantstore.GoalTimeline{}, err
+	}
+	goal, err = o.ensureGoalPlan(store, goal)
 	if err != nil {
 		return assistantstore.GoalTimeline{}, err
 	}
@@ -54,13 +70,38 @@ func (o *Orchestrator) LoadGoal(goalID string) (assistantstore.GoalTimeline, err
 	if err != nil {
 		return assistantstore.GoalTimeline{}, err
 	}
+	decisions, err := store.ListDecisions(goal.ID)
+	if err != nil {
+		return assistantstore.GoalTimeline{}, err
+	}
+	reports, err := store.ListTaskReports(goal.ID)
+	if err != nil {
+		return assistantstore.GoalTimeline{}, err
+	}
 	return assistantstore.GoalTimeline{
 		Goal:        goal,
 		Watches:     watches,
 		Signals:     signals,
 		Notes:       notes,
 		Assessments: assessments,
+		Decisions:   decisions,
+		TaskReports: reports,
 	}, nil
+}
+
+func (o *Orchestrator) ensureGoalPlan(store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.Goal, error) {
+	goal = assistantstore.NormalizeGoal(goal)
+	if goal.Plan != nil {
+		return goal, nil
+	}
+	now := time.Now().UTC()
+	plan := buildGoalPlan(goal, now)
+	goal.Plan = &plan
+	goal.UpdatedAt = now
+	if err := store.SaveGoal(goal); err != nil {
+		return assistantstore.Goal{}, err
+	}
+	return goal, nil
 }
 
 func (o *Orchestrator) CreateGoal(ctx context.Context, req assistantstore.GoalCreateRequest) (assistantstore.GoalTimeline, error) {
@@ -110,6 +151,10 @@ func (o *Orchestrator) CreateGoal(ctx context.Context, req assistantstore.GoalCr
 		UpdatedAt:       now,
 	}
 	goal = assistantstore.NormalizeGoal(goal)
+	if goal.Plan == nil {
+		plan := buildGoalPlan(goal, now)
+		goal.Plan = &plan
+	}
 	if err := store.SaveGoal(goal); err != nil {
 		return assistantstore.GoalTimeline{}, err
 	}
@@ -226,8 +271,19 @@ func (o *Orchestrator) UpdateGoal(ctx context.Context, goalID string, req assist
 		goal.OpenQuestions = req.OpenQuestions
 	}
 	shouldReconcile := goalUpdateShouldReconcile(goal, req)
+	planNeedsRevision := goalUpdateShouldRevisePlan(req)
 	goal.UpdatedAt = now
 	goal = assistantstore.NormalizeGoal(goal)
+	if planNeedsRevision || goal.Plan == nil {
+		plan := buildGoalPlan(goal, now)
+		goal.Plan = &plan
+	}
+	if goalUpdateShouldUnblockPlan(req, goal) {
+		unblockGoalPlan(&goal, now)
+		if goal.Status == assistantstore.GoalStatusBlocked && len(goal.OpenQuestions) == 0 {
+			goal.Status = assistantstore.GoalStatusActive
+		}
+	}
 	if goal.Autopilot != nil && goal.Autopilot.Status == assistantstore.GoalAutopilotStatusBudgetExhausted && goalAutopilotBudgetAllowsMore(*goal.Autopilot) {
 		goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
 		goal.Autopilot.StopReasons = nil
@@ -242,6 +298,13 @@ func (o *Orchestrator) UpdateGoal(ctx context.Context, goalID string, req assist
 	}
 	if err := store.SaveGoal(goal); err != nil {
 		return assistantstore.GoalTimeline{}, err
+	}
+	if planNeedsRevision {
+		o.saveGoalSupervisorDecision(ctx, store, &goal, assistantstore.GoalSupervisorDecision{
+			Decision:  assistantstore.GoalSupervisorDecisionRevisePlan,
+			Summary:   "Goal plan revised after operator-edited Goal context.",
+			Rationale: "The objective, details, success criteria, constraints, or Goal type changed; stale phase assumptions were replaced before creating more work.",
+		})
 	}
 	o.appendGoalEvent(ctx, "assistant.goal.updated", goal, map[string]any{"goal": goal})
 	_ = store.SaveNote(assistantstore.GoalNote{
@@ -302,12 +365,69 @@ func goalUpdateShouldReconcile(goal assistantstore.Goal, req assistantstore.Goal
 	if req.HasField("status") && assistantstore.NormalizeGoal(goal).Status != assistantstore.GoalStatusActive {
 		return false
 	}
-	for _, field := range []string{"title", "objective", "details", "kind", "target", "autopilot", "success_criteria", "constraints", "open_questions"} {
+	for _, field := range []string{"title", "objective", "details", "status", "kind", "target", "autopilot", "success_criteria", "constraints", "open_questions"} {
 		if req.HasField(field) {
 			return true
 		}
 	}
 	return false
+}
+
+func goalUpdateShouldRevisePlan(req assistantstore.GoalUpdateRequest) bool {
+	for _, field := range []string{"title", "objective", "details", "kind", "success_criteria", "constraints"} {
+		if req.HasField(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func goalUpdateShouldUnblockPlan(req assistantstore.GoalUpdateRequest, goal assistantstore.Goal) bool {
+	if goal.Plan == nil || goal.ExecutionMode != assistantstore.GoalExecutionModeAutopilot || goal.Autopilot == nil {
+		return false
+	}
+	if assistantstore.NormalizeGoalPlan(*goal.Plan).Status != assistantstore.GoalPlanStatusBlocked {
+		return false
+	}
+	if req.HasField("open_questions") && len(goal.OpenQuestions) == 0 {
+		return true
+	}
+	if req.HasField("status") && goal.Status == assistantstore.GoalStatusActive && len(goal.OpenQuestions) == 0 {
+		return true
+	}
+	if req.HasField("autopilot") && goal.Autopilot.Status == assistantstore.GoalAutopilotStatusRunning && len(goal.OpenQuestions) == 0 {
+		return true
+	}
+	return false
+}
+
+func unblockGoalPlan(goal *assistantstore.Goal, now time.Time) {
+	if goal == nil || goal.Plan == nil {
+		return
+	}
+	plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+	if plan.Status != assistantstore.GoalPlanStatusBlocked {
+		return
+	}
+	plan.Status = assistantstore.GoalPlanStatusActive
+	for index := range plan.Phases {
+		if plan.Phases[index].Status != assistantstore.GoalPlanPhaseStatusBlocked {
+			continue
+		}
+		if len(plan.Phases[index].TaskIDs) > 0 {
+			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusInProgress
+		} else {
+			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusPending
+		}
+	}
+	if next, ok := selectGoalPlanPhase(&plan); ok {
+		plan.CurrentPhaseID = next.ID
+	}
+	plan.UpdatedAt = now
+	goal.Plan = &plan
+	if goal.Autopilot != nil {
+		goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
+	}
 }
 
 func goalUpdateNote(req assistantstore.GoalUpdateRequest, goal assistantstore.Goal) string {
@@ -518,6 +638,13 @@ func (o *Orchestrator) updateGoalAutopilotLifecycle(ctx context.Context, goalID,
 	goal.Autopilot = &autopilot
 	goal.UpdatedAt = now
 	goal = assistantstore.NormalizeGoal(goal)
+	if goal.Plan == nil {
+		plan := buildGoalPlan(goal, now)
+		goal.Plan = &plan
+	}
+	if (action == "start" || action == "resume") && len(goal.OpenQuestions) == 0 {
+		unblockGoalPlan(&goal, now)
+	}
 	if err := store.SaveGoal(goal); err != nil {
 		return assistantstore.GoalTimeline{}, "", err
 	}
@@ -622,6 +749,19 @@ func (o *Orchestrator) reconcileGoalAutopilot(ctx context.Context, store *assist
 		return false, "", nil
 	}
 	now := time.Now().UTC()
+	if goal.Plan == nil {
+		plan := buildGoalPlan(goal, now)
+		goal.Plan = &plan
+		goal.UpdatedAt = now
+		if err := store.SaveGoal(goal); err != nil {
+			return false, "", err
+		}
+		o.saveGoalSupervisorDecision(ctx, store, &goal, assistantstore.GoalSupervisorDecision{
+			Decision:  assistantstore.GoalSupervisorDecisionRevisePlan,
+			Summary:   "Created a Goal plan before Autopilot selected more work.",
+			Rationale: "Autopilot needs a durable phase plan so each task advances an explicit part of the objective.",
+		})
+	}
 	if goal.Status == assistantstore.GoalStatusCompleted {
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusCompleted, "Goal is marked completed.")
 	}
@@ -644,7 +784,30 @@ func (o *Orchestrator) reconcileGoalAutopilot(ctx context.Context, store *assist
 	if !goalAutopilotAllows(goal, "create_task") {
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Autopilot policy does not allow creating tasks.")
 	}
-	return o.createGoalAutopilotTask(ctx, store, goal)
+	decision, err := o.goalSupervisorDecision(ctx, store, goal)
+	if err != nil {
+		return false, "", err
+	}
+	switch decision.Decision {
+	case assistantstore.GoalSupervisorDecisionCreateTask:
+		return o.createGoalAutopilotTask(ctx, store, goal, decision)
+	case assistantstore.GoalSupervisorDecisionAskQuestion:
+		goal.OpenQuestions = appendUniqueStrings(goal.OpenQuestions, decision.Questions...)
+		if goal.Autopilot != nil {
+			goal.Autopilot.LastDecisionID = decision.ID
+		}
+		goal.Status = assistantstore.GoalStatusBlocked
+		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, firstNonEmptyString(decision.StopReason, "Autopilot needs operator input before creating another task."))
+	case assistantstore.GoalSupervisorDecisionMarkComplete:
+		return o.completeGoalAutopilot(ctx, store, goal, decision)
+	case assistantstore.GoalSupervisorDecisionPauseBlocked:
+		if goal.Autopilot != nil {
+			goal.Autopilot.LastDecisionID = decision.ID
+		}
+		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, firstNonEmptyString(decision.StopReason, decision.Summary, "Autopilot blocked before creating another task."))
+	default:
+		return false, firstNonEmptyString(decision.Summary, "Autopilot is waiting for more evidence before creating another task."), nil
+	}
 }
 
 func (o *Orchestrator) currentGoalAutopilotTask(goal assistantstore.Goal) (taskstore.Task, bool) {
@@ -813,9 +976,14 @@ func (o *Orchestrator) processGoalAutopilotMergeApproval(ctx context.Context, t 
 	return true, reply, nil
 }
 
-func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal) (bool, string, error) {
+func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal, decision assistantstore.GoalSupervisorDecision) (bool, string, error) {
 	goal = assistantstore.NormalizeGoal(goal)
-	created, err := o.createTaskRecordForGoal(ctx, goalAutopilotTaskGoal(goal), goal)
+	reports, _ := store.ListTaskReports(goal.ID)
+	taskGoal := strings.TrimSpace(decision.TaskGoal)
+	if taskGoal == "" {
+		taskGoal = goalAutopilotTaskGoalForDecision(goal, decision, reports)
+	}
+	created, err := o.createTaskRecordForGoalPhase(ctx, taskGoal, goal, decision.PhaseID)
 	if err != nil {
 		return false, "", err
 	}
@@ -836,21 +1004,27 @@ func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assis
 	goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
 	goal.Autopilot.TasksStarted++
 	goal.Autopilot.CurrentTaskID = created.Task.ID
+	goal.Autopilot.CurrentPhaseID = strings.TrimSpace(decision.PhaseID)
 	goal.Autopilot.LastStepAt = &now
+	goal.Autopilot.LastDecisionID = strings.TrimSpace(decision.ID)
 	goal.LastActionAt = &now
 	goal.UpdatedAt = now
 	if !stringSliceContains(goal.LinkedTasks, created.Task.ID) {
 		goal.LinkedTasks = append(goal.LinkedTasks, created.Task.ID)
 	}
+	markGoalPlanTaskCreated(&goal, decision.PhaseID, created.Task.ID, now)
 	if err := store.SaveGoal(goal); err != nil {
 		return false, "", err
 	}
+	decision.TaskID = created.Task.ID
+	decision.TaskGoal = taskGoal
+	o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
 	_ = store.SaveNote(assistantstore.GoalNote{
 		ID:        id.New("gnote"),
 		GoalID:    goal.ID,
 		Kind:      "autopilot",
 		Title:     "Autopilot task created",
-		Body:      fmt.Sprintf("Created %s task %s for this %s Goal (%s task limit).", goal.ExecutionMode, taskShortID(created.Task.ID), goal.Kind, goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)),
+		Body:      fmt.Sprintf("Created %s task %s for this %s Goal phase `%s` (%s task limit).", goal.ExecutionMode, taskShortID(created.Task.ID), goal.Kind, firstNonEmptyString(decision.PhaseID, "unplanned"), goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)),
 		TaskID:    created.Task.ID,
 		CreatedBy: "assistant",
 		CreatedAt: now,
@@ -889,6 +1063,59 @@ func (o *Orchestrator) startGoalAutopilotTaskIfPossible(ctx context.Context, t t
 	return "Worker started with " + backend + "."
 }
 
+func markGoalPlanTaskCreated(goal *assistantstore.Goal, phaseID, taskID string, now time.Time) {
+	if goal == nil || goal.Plan == nil {
+		return
+	}
+	phaseID = strings.TrimSpace(phaseID)
+	taskID = strings.TrimSpace(taskID)
+	if phaseID == "" || taskID == "" {
+		return
+	}
+	plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+	plan.CurrentPhaseID = phaseID
+	plan.UpdatedAt = now
+	for index := range plan.Phases {
+		if plan.Phases[index].ID != phaseID {
+			continue
+		}
+		if plan.Phases[index].Status == assistantstore.GoalPlanPhaseStatusPending {
+			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusInProgress
+		}
+		if !stringSliceContains(plan.Phases[index].TaskIDs, taskID) {
+			plan.Phases[index].TaskIDs = append(plan.Phases[index].TaskIDs, taskID)
+		}
+		break
+	}
+	goal.Plan = &plan
+}
+
+func (o *Orchestrator) saveGoalSupervisorDecision(ctx context.Context, store *assistantstore.GoalStore, goal *assistantstore.Goal, decision assistantstore.GoalSupervisorDecision) assistantstore.GoalSupervisorDecision {
+	if store == nil || goal == nil {
+		return assistantstore.NormalizeGoalSupervisorDecision(decision)
+	}
+	if strings.TrimSpace(decision.ID) == "" {
+		decision.ID = id.New("gdec")
+	}
+	decision.GoalID = goal.ID
+	if decision.CreatedAt.IsZero() {
+		decision.CreatedAt = time.Now().UTC()
+	}
+	decision = assistantstore.NormalizeGoalSupervisorDecision(decision)
+	if err := store.SaveDecision(decision); err != nil {
+		o.log().Warn("goal supervisor decision save failed", "error", err, "goal", goal.ID)
+		return decision
+	}
+	if goal.Autopilot != nil {
+		goal.Autopilot.LastDecisionID = decision.ID
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "assistant.goal.supervisor.decision", Actor: "Assistant", Payload: eventlog.Payload(map[string]any{
+		"goal_id":  goal.ID,
+		"decision": decision,
+	})})
+	return decision
+}
+
 func (o *Orchestrator) blockOrStopGoalAutopilot(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal, status, reason string) (bool, string, error) {
 	goal = assistantstore.NormalizeGoal(goal)
 	now := time.Now().UTC()
@@ -901,6 +1128,12 @@ func (o *Orchestrator) blockOrStopGoalAutopilot(ctx context.Context, store *assi
 	goal.Autopilot.LastStepAt = &now
 	if status == assistantstore.GoalAutopilotStatusBlocked {
 		goal.Status = assistantstore.GoalStatusBlocked
+		if goal.Plan != nil {
+			plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+			plan.Status = assistantstore.GoalPlanStatusBlocked
+			plan.UpdatedAt = now
+			goal.Plan = &plan
+		}
 	}
 	goal.UpdatedAt = now
 	if err := store.SaveGoal(goal); err != nil {
@@ -950,6 +1183,213 @@ func goalAutopilotAllows(goal assistantstore.Goal, action string) bool {
 	return false
 }
 
+func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.GoalSupervisorDecision, error) {
+	goal = assistantstore.NormalizeGoal(goal)
+	now := time.Now().UTC()
+	reports, err := store.ListTaskReports(goal.ID)
+	if err != nil {
+		return assistantstore.GoalSupervisorDecision{}, err
+	}
+	if len(goal.OpenQuestions) > 0 {
+		decision := assistantstore.GoalSupervisorDecision{
+			Decision:   assistantstore.GoalSupervisorDecisionAskQuestion,
+			Summary:    "Autopilot needs operator answers before it can select the next task.",
+			Rationale:  "Open Goal questions are part of the Goal contract and must block autonomous task creation.",
+			Questions:  append([]string(nil), goal.OpenQuestions...),
+			StopReason: "Autopilot is blocked by open Goal questions.",
+			Evidence:   goalSupervisorEvidence(goal, reports),
+		}
+		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+		return decision, nil
+	}
+	if goal.Plan != nil && assistantstore.NormalizeGoalPlan(*goal.Plan).Status == assistantstore.GoalPlanStatusBlocked {
+		decision := assistantstore.GoalSupervisorDecision{
+			Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
+			Summary:    "Goal plan is blocked.",
+			Rationale:  "A linked task reported blockers or questions for the current plan phase.",
+			StopReason: "Goal plan is blocked by the current phase.",
+			Evidence:   goalSupervisorEvidence(goal, reports),
+		}
+		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+		return decision, nil
+	}
+	if recentGoalReportCompletes(reports) || goalPlanComplete(goal.Plan) {
+		decision := assistantstore.GoalSupervisorDecision{
+			Decision:   assistantstore.GoalSupervisorDecisionMarkComplete,
+			Summary:    "Goal plan is complete.",
+			Rationale:  "The latest structured task report or all plan phases indicate the Goal has reached its done condition.",
+			StopReason: "Goal success criteria are satisfied or no remaining plan phase needs work.",
+			Evidence:   goalSupervisorEvidence(goal, reports),
+		}
+		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+		return decision, nil
+	}
+	if noProgress, reason := recentGoalReportsShowNoProgress(reports); noProgress {
+		decision := assistantstore.GoalSupervisorDecision{
+			Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
+			Summary:    "Autopilot stopped before creating another low-value task.",
+			Rationale:  reason,
+			StopReason: reason,
+			Evidence:   goalSupervisorEvidence(goal, reports),
+		}
+		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+		return decision, nil
+	}
+	phase, ok := selectGoalPlanPhase(goal.Plan)
+	if !ok {
+		decision := assistantstore.GoalSupervisorDecision{
+			Decision:   assistantstore.GoalSupervisorDecisionMarkComplete,
+			Summary:    "No remaining Goal plan phase needs work.",
+			Rationale:  "Every known plan phase is completed, skipped, or unavailable.",
+			StopReason: "No remaining plan phase.",
+			Evidence:   goalSupervisorEvidence(goal, reports),
+		}
+		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+		return decision, nil
+	}
+	taskGoal := goalAutopilotTaskGoalForDecision(goal, assistantstore.GoalSupervisorDecision{PhaseID: phase.ID}, reports)
+	decision := assistantstore.GoalSupervisorDecision{
+		ID:        id.New("gdec"),
+		GoalID:    goal.ID,
+		Decision:  assistantstore.GoalSupervisorDecisionCreateTask,
+		Summary:   "Create the next task for plan phase `" + phase.ID + "`.",
+		Rationale: "The selected phase is the next incomplete, dependency-ready phase in the Goal plan.",
+		PhaseID:   phase.ID,
+		TaskGoal:  taskGoal,
+		Evidence:  goalSupervisorEvidence(goal, reports),
+		CreatedAt: now,
+	}
+	return assistantstore.NormalizeGoalSupervisorDecision(decision), nil
+}
+
+func (o *Orchestrator) completeGoalAutopilot(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal, decision assistantstore.GoalSupervisorDecision) (bool, string, error) {
+	goal = assistantstore.NormalizeGoal(goal)
+	now := time.Now().UTC()
+	goal.Status = assistantstore.GoalStatusCompleted
+	if goal.Plan != nil {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		plan.Status = assistantstore.GoalPlanStatusCompleted
+		for index := range plan.Phases {
+			if plan.Phases[index].Status != assistantstore.GoalPlanPhaseStatusSkipped {
+				plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusCompleted
+			}
+		}
+		plan.UpdatedAt = now
+		goal.Plan = &plan
+	}
+	if goal.Autopilot == nil {
+		autopilot := assistantstore.NormalizeGoalAutopilot(nil)
+		goal.Autopilot = &autopilot
+	}
+	goal.Autopilot.Status = assistantstore.GoalAutopilotStatusCompleted
+	goal.Autopilot.CurrentTaskID = ""
+	goal.Autopilot.CurrentPhaseID = ""
+	goal.Autopilot.LastDecisionID = decision.ID
+	goal.Autopilot.LastStepAt = &now
+	goal.Autopilot.StopReasons = appendGoalStopReason(goal.Autopilot.StopReasons, firstNonEmptyString(decision.StopReason, "Goal plan completed."))
+	goal.UpdatedAt = now
+	if err := store.SaveGoal(goal); err != nil {
+		return false, "", err
+	}
+	o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+	_ = store.SaveNote(assistantstore.GoalNote{
+		ID:        id.New("gnote"),
+		GoalID:    goal.ID,
+		Kind:      "autopilot",
+		Title:     "Autopilot completed",
+		Body:      firstNonEmptyString(decision.Summary, decision.StopReason, "Goal plan completed."),
+		CreatedBy: "assistant",
+		CreatedAt: now,
+	})
+	o.appendGoalEvent(ctx, "assistant.goal.autopilot.completed", goal, map[string]any{"goal_id": goal.ID, "reason": decision.StopReason, "autopilot": goal.Autopilot})
+	return true, firstNonEmptyString(decision.StopReason, decision.Summary, "Goal completed."), nil
+}
+
+func goalSupervisorEvidence(goal assistantstore.Goal, reports []assistantstore.GoalTaskReport) []string {
+	var evidence []string
+	if goal.Plan != nil {
+		phase, ok := selectGoalPlanPhase(goal.Plan)
+		if ok {
+			evidence = append(evidence, "next phase: "+phase.ID+" - "+phase.Title)
+		}
+	}
+	for _, report := range reports {
+		if len(evidence) >= 6 {
+			break
+		}
+		evidence = append(evidence, fmt.Sprintf("task %s: %s", taskShortID(report.TaskID), firstNonEmptyString(report.Summary, report.Status)))
+	}
+	return evidence
+}
+
+func recentGoalReportCompletes(reports []assistantstore.GoalTaskReport) bool {
+	if len(reports) == 0 {
+		return false
+	}
+	return reports[0].GoalComplete
+}
+
+func recentGoalReportsShowNoProgress(reports []assistantstore.GoalTaskReport) (bool, string) {
+	if len(reports) < 2 {
+		return false, ""
+	}
+	noProgress := 0
+	for _, report := range reports[:assistantMinInt(len(reports), 3)] {
+		if report.NoChange || (!report.AdvancedGoal && report.DiffFiles == 0) {
+			noProgress++
+		}
+	}
+	if noProgress >= 2 {
+		return true, "Two recent Goal-linked tasks reported no measurable progress; Autopilot needs a plan revision or operator input."
+	}
+	return false, ""
+}
+
+func goalPlanComplete(plan *assistantstore.GoalPlan) bool {
+	if plan == nil || len(plan.Phases) == 0 {
+		return false
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	if planValue.Status == assistantstore.GoalPlanStatusCompleted {
+		return true
+	}
+	for _, phase := range planValue.Phases {
+		if phase.Status != assistantstore.GoalPlanPhaseStatusCompleted && phase.Status != assistantstore.GoalPlanPhaseStatusSkipped {
+			return false
+		}
+	}
+	return true
+}
+
+func selectGoalPlanPhase(plan *assistantstore.GoalPlan) (assistantstore.GoalPlanPhase, bool) {
+	if plan == nil {
+		return assistantstore.GoalPlanPhase{}, false
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	completed := map[string]bool{}
+	for _, phase := range planValue.Phases {
+		if phase.Status == assistantstore.GoalPlanPhaseStatusCompleted || phase.Status == assistantstore.GoalPlanPhaseStatusSkipped {
+			completed[phase.ID] = true
+		}
+	}
+	for _, phase := range planValue.Phases {
+		if phase.Status == assistantstore.GoalPlanPhaseStatusCompleted || phase.Status == assistantstore.GoalPlanPhaseStatusSkipped || phase.Status == assistantstore.GoalPlanPhaseStatusBlocked {
+			continue
+		}
+		ready := true
+		for _, dep := range phase.DependsOn {
+			if !completed[dep] {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			return phase, true
+		}
+	}
+	return assistantstore.GoalPlanPhase{}, false
+}
+
 func goalAutopilotBudgetAllowsMore(autopilot assistantstore.GoalAutopilot) bool {
 	autopilot = assistantstore.NormalizeGoalAutopilot(&autopilot)
 	return autopilot.BudgetTasks == assistantstore.GoalAutopilotUnlimitedBudget || autopilot.TasksStarted < autopilot.BudgetTasks
@@ -974,8 +1414,110 @@ func goalTimePtr(value time.Time) *time.Time {
 	return &value
 }
 
-func goalAutopilotTaskGoal(goal assistantstore.Goal) string {
+func buildGoalPlan(goal assistantstore.Goal, now time.Time) assistantstore.GoalPlan {
 	goal = assistantstore.NormalizeGoal(goal)
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	phases := goalPlanPhases(goal)
+	current := ""
+	if len(phases) > 0 {
+		current = phases[0].ID
+	}
+	return assistantstore.NormalizeGoalPlan(assistantstore.GoalPlan{
+		Status:         assistantstore.GoalPlanStatusActive,
+		Summary:        "Supervisor plan for " + goal.Title,
+		CurrentPhaseID: current,
+		Phases:         phases,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+}
+
+func goalPlanPhases(goal assistantstore.Goal) []assistantstore.GoalPlanPhase {
+	if len(goal.SuccessCriteria) > 0 {
+		phases := make([]assistantstore.GoalPlanPhase, 0, len(goal.SuccessCriteria)+1)
+		var previous string
+		for index, criterion := range goal.SuccessCriteria {
+			idValue := fmt.Sprintf("phase_%02d", index+1)
+			phase := assistantstore.GoalPlanPhase{
+				ID:        idValue,
+				Title:     truncateAssistantRunText(firstLine(criterion), 80),
+				Objective: criterion,
+				Status:    assistantstore.GoalPlanPhaseStatusPending,
+				DependsOn: nonEmptyStringSlice(previous),
+				AcceptanceCriteria: []string{
+					"Evidence shows this success criterion is satisfied.",
+					"Validation or inspection result is recorded in the task report.",
+				},
+			}
+			phases = append(phases, phase)
+			previous = idValue
+		}
+		return phases
+	}
+	switch goal.Kind {
+	case assistantstore.GoalKindRoutine:
+		return linkedGoalPlanPhases(
+			phase("phase_01_baseline", "Understand the routine state", "Inspect current inputs, outputs, cadence, and failure modes for this routine.", nil),
+			phase("phase_02_cycle", "Run one complete routine cycle", "Perform the routine end to end and update durable state or notes.", []string{"phase_01_baseline"}),
+			phase("phase_03_harden", "Harden repeated execution", "Add checks, docs, or workflow improvements that make the routine reliable.", []string{"phase_02_cycle"}),
+		)
+	case assistantstore.GoalKindWatch:
+		return linkedGoalPlanPhases(
+			phase("phase_01_signal", "Define the watched signal", "Inspect the condition and identify concrete evidence that should trigger action.", nil),
+			phase("phase_02_response", "Implement the response path", "Create the smallest safe response, task, note, or workflow for the watched condition.", []string{"phase_01_signal"}),
+			phase("phase_03_verify", "Verify watch usefulness", "Prove the watch can be reviewed, suppressed, or acted on without noise.", []string{"phase_02_response"}),
+		)
+	case assistantstore.GoalKindMaintenance:
+		return linkedGoalPlanPhases(
+			phase("phase_01_diagnose", "Diagnose maintenance scope", "Identify the highest-value upkeep issue and current evidence.", nil),
+			phase("phase_02_repair", "Make the maintenance improvement", "Apply the smallest cohesive repair with focused tests and docs.", []string{"phase_01_diagnose"}),
+			phase("phase_03_verify", "Verify reliability", "Run the relevant checks and record any remaining maintenance risk.", []string{"phase_02_repair"}),
+		)
+	default:
+		return linkedGoalPlanPhases(
+			phase("phase_01_foundation", "Establish the architecture and baseline", "Inspect the target repo, define the clean-room architecture, and create the first usable foundation.", nil),
+			phase("phase_02_core", "Build the core capability", "Implement the central behaviour needed for the Goal to be useful end to end.", []string{"phase_01_foundation"}),
+			phase("phase_03_parity", "Expand feature parity", "Add the next set of important features, styling, compatibility, or operational behaviours.", []string{"phase_02_core"}),
+			phase("phase_04_validation", "Prove completion", "Add examples, tests, docs, performance or browser evidence, and close remaining gaps against the Goal.", []string{"phase_03_parity"}),
+		)
+	}
+}
+
+func phase(idValue, title, objective string, dependsOn []string) assistantstore.GoalPlanPhase {
+	return assistantstore.GoalPlanPhase{
+		ID:        idValue,
+		Title:     title,
+		Objective: objective,
+		Status:    assistantstore.GoalPlanPhaseStatusPending,
+		DependsOn: dependsOn,
+		AcceptanceCriteria: []string{
+			"The task report states what changed for this phase.",
+			"Validation evidence or a clear blocker is recorded.",
+			"The supervisor can decide the next phase without rereading raw worker logs.",
+		},
+	}
+}
+
+func linkedGoalPlanPhases(phases ...assistantstore.GoalPlanPhase) []assistantstore.GoalPlanPhase {
+	return phases
+}
+
+func nonEmptyStringSlice(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(value)}
+}
+
+func goalAutopilotTaskGoal(goal assistantstore.Goal) string {
+	return goalAutopilotTaskGoalForDecision(goal, assistantstore.GoalSupervisorDecision{}, nil)
+}
+
+func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assistantstore.GoalSupervisorDecision, reports []assistantstore.GoalTaskReport) string {
+	goal = assistantstore.NormalizeGoal(goal)
+	phase, hasPhase := goalPlanPhaseByID(goal.Plan, decision.PhaseID)
 	kindInstruction := "Pick the next bounded implementation slice that measurably advances the objective."
 	switch goal.Kind {
 	case assistantstore.GoalKindRoutine:
@@ -987,11 +1529,41 @@ func goalAutopilotTaskGoal(goal assistantstore.Goal) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Autopilot task for %s Goal `%s`: %s\n\nObjective: %s", goal.Kind, goal.ID, goal.Title, goal.Objective)
+	if hasPhase {
+		fmt.Fprintf(&b, "\n\nSelected Goal plan phase:\n- Phase ID: %s\n- Title: %s\n- Objective: %s", phase.ID, phase.Title, phase.Objective)
+		if len(phase.AcceptanceCriteria) > 0 {
+			b.WriteString("\n- Phase acceptance:")
+			for _, criterion := range phase.AcceptanceCriteria {
+				fmt.Fprintf(&b, "\n  - %s", criterion)
+			}
+		}
+	}
 	if goal.Details != "" {
 		fmt.Fprintf(&b, "\n\nDetails:\n%s", goal.Details)
 	}
 	if goal.ProgressSummary != "" {
 		fmt.Fprintf(&b, "\n\nCurrent progress:\n%s", goal.ProgressSummary)
+	}
+	if goal.Plan != nil {
+		b.WriteString("\n\nGoal plan:")
+		for _, phase := range goal.Plan.Phases {
+			fmt.Fprintf(&b, "\n- %s [%s]: %s", phase.ID, phase.Status, phase.Title)
+		}
+	}
+	if len(reports) > 0 {
+		b.WriteString("\n\nRecent structured Goal task reports:")
+		for _, report := range reports[:assistantMinInt(len(reports), 4)] {
+			fmt.Fprintf(&b, "\n- Task %s phase %s: %s", taskShortID(report.TaskID), firstNonEmptyString(report.PhaseID, "unknown"), firstNonEmptyString(report.Summary, report.Status))
+			if len(report.ChangedFiles) > 0 {
+				fmt.Fprintf(&b, " Changed files: %s.", strings.Join(report.ChangedFiles[:assistantMinInt(len(report.ChangedFiles), 8)], ", "))
+			}
+			if len(report.FollowUps) > 0 {
+				fmt.Fprintf(&b, " Follow-ups: %s.", strings.Join(report.FollowUps[:assistantMinInt(len(report.FollowUps), 4)], "; "))
+			}
+			if len(report.Blockers) > 0 {
+				fmt.Fprintf(&b, " Blockers: %s.", strings.Join(report.Blockers[:assistantMinInt(len(report.Blockers), 4)], "; "))
+			}
+		}
 	}
 	b.WriteString("\n\nAutopilot work mode:")
 	fmt.Fprintf(&b, "\n- %s", kindInstruction)
@@ -999,6 +1571,11 @@ func goalAutopilotTaskGoal(goal assistantstore.Goal) string {
 	b.WriteString("\n- Do not split the work into a daily drip. If the Goal needs one large feature, build the largest coherent safe slice this task can complete.")
 	b.WriteString("\n- Use existing approval, merge, restart, and verification gates. Autopilot may pass those gates for this Goal when checks succeed.")
 	b.WriteString("\n- If the next step needs credentials, private operator judgement, destructive action, or unresolved product direction, stop and report the blocker instead of guessing.")
+	b.WriteString("\n- Do not repeat previous task work. Use the recent structured Goal reports and selected phase to choose a concrete next step.")
+	b.WriteString("\n\nGoal supervisor report contract:")
+	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_REPORT:`.")
+	b.WriteString("\nThe object must include: summary, advanced_goal, phase_complete, goal_complete, changed_files, validation, follow_ups, blockers, questions.")
+	b.WriteString("\nUse questions for product or operator decisions that should block further Autopilot tasks.")
 	if len(goal.SuccessCriteria) > 0 {
 		b.WriteString("\n\nGoal success criteria:")
 		for _, criterion := range goal.SuccessCriteria {
@@ -1012,6 +1589,19 @@ func goalAutopilotTaskGoal(goal assistantstore.Goal) string {
 		}
 	}
 	return b.String()
+}
+
+func goalPlanPhaseByID(plan *assistantstore.GoalPlan, phaseID string) (assistantstore.GoalPlanPhase, bool) {
+	phaseID = strings.TrimSpace(phaseID)
+	if plan == nil || phaseID == "" {
+		return assistantstore.GoalPlanPhase{}, false
+	}
+	for _, phase := range plan.Phases {
+		if phase.ID == phaseID {
+			return phase, true
+		}
+	}
+	return assistantstore.GoalPlanPhase{}, false
 }
 
 func (o *Orchestrator) handleGoalCommand(ctx context.Context, fields []string, message string) (string, error) {
@@ -1290,6 +1880,10 @@ func (o *Orchestrator) assistantGoalSnapshotRefs(now time.Time, selectedGoalID s
 }
 
 func (o *Orchestrator) createTaskRecordForGoal(ctx context.Context, taskGoal string, goal assistantstore.Goal) (createdTask, error) {
+	return o.createTaskRecordForGoalPhase(ctx, taskGoal, goal, "")
+}
+
+func (o *Orchestrator) createTaskRecordForGoalPhase(ctx context.Context, taskGoal string, goal assistantstore.Goal, phaseID string) (createdTask, error) {
 	taskGoal = strings.TrimSpace(taskGoal)
 	if taskGoal == "" {
 		return createdTask{}, nil
@@ -1297,6 +1891,7 @@ func (o *Orchestrator) createTaskRecordForGoal(ctx context.Context, taskGoal str
 	goal = assistantstore.NormalizeGoal(goal)
 	created, _, err := o.createTaskRecordWithRoutedTarget(ctx, taskGoalWithGoalContext(taskGoal, goal), goal.Target, nil, taskCreateOptions{
 		GoalID:        goal.ID,
+		GoalPhaseID:   strings.TrimSpace(phaseID),
 		ExecutionMode: goal.ExecutionMode,
 		GoalKind:      goal.Kind,
 	})
@@ -1421,12 +2016,32 @@ func (o *Orchestrator) reflectGoalTaskCompletion(ctx context.Context, t taskstor
 		return
 	}
 	now := time.Now().UTC()
-	result := strings.TrimSpace(t.Result)
-	if result == "" {
-		result = "Task completed."
+	report := o.goalTaskReportFromTask(ctx, t)
+	if err := store.SaveTaskReport(report); err != nil {
+		o.log().Warn("goal task report save failed", "error", err, "goal", goalID, "task", t.ID)
 	}
-	goal.ProgressSummary = truncateAssistantRunText("Latest linked task completed: "+friendlyTaskTitle(t)+". "+result, 600)
+	applyGoalTaskReportToPlan(&goal, report, now)
+	goal.ProgressSummary = truncateAssistantRunText("Latest linked task completed: "+friendlyTaskTitle(t)+". "+firstNonEmptyString(report.Summary, "Task completed."), 600)
 	goal.LastActionAt = &now
+	if report.GoalComplete {
+		goal.Status = assistantstore.GoalStatusCompleted
+		if goal.Autopilot != nil {
+			goal.Autopilot.Status = assistantstore.GoalAutopilotStatusCompleted
+			goal.Autopilot.StopReasons = appendGoalStopReason(goal.Autopilot.StopReasons, "Linked task reported the Goal complete.")
+			goal.Autopilot.CurrentTaskID = ""
+			goal.Autopilot.CurrentPhaseID = ""
+			goal.Autopilot.LastStepAt = &now
+		}
+	}
+	if len(report.Questions) > 0 {
+		goal.OpenQuestions = appendUniqueStrings(goal.OpenQuestions, report.Questions...)
+		if goal.ExecutionMode == assistantstore.GoalExecutionModeAutopilot && goal.Autopilot != nil && goal.Status != assistantstore.GoalStatusCompleted {
+			goal.Status = assistantstore.GoalStatusBlocked
+			goal.Autopilot.Status = assistantstore.GoalAutopilotStatusBlocked
+			goal.Autopilot.StopReasons = appendGoalStopReason(goal.Autopilot.StopReasons, "Linked task asked Goal questions.")
+			goal.Autopilot.LastStepAt = &now
+		}
+	}
 	if goal.Status == assistantstore.GoalStatusActive || goal.Status == assistantstore.GoalStatusBlocked {
 		goal.NextCheckAt = assistantstore.GoalNextCheckTime(goal, now)
 	}
@@ -1448,7 +2063,7 @@ func (o *Orchestrator) reflectGoalTaskCompletion(ctx context.Context, t taskstor
 		CreatedBy: "assistant",
 		CreatedAt: now,
 	})
-	for _, recommendation := range extractGoalWatchRecommendations(result) {
+	for _, recommendation := range extractGoalWatchRecommendations(t.Result) {
 		watch := assistantstore.GoalWatch{
 			ID:              id.New("gwatch"),
 			GoalID:          goal.ID,
@@ -1467,6 +2082,179 @@ func (o *Orchestrator) reflectGoalTaskCompletion(ctx context.Context, t taskstor
 		}
 	}
 	o.appendGoalEvent(ctx, "assistant.goal.task.reflected", goal, map[string]any{"goal_id": goal.ID, "task_id": t.ID})
+}
+
+func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, t taskstore.Task) assistantstore.GoalTaskReport {
+	now := time.Now().UTC()
+	report := assistantstore.GoalTaskReport{
+		ID:            "greport_" + safeGoalReportID(t.ID),
+		GoalID:        strings.TrimSpace(t.GoalID),
+		TaskID:        strings.TrimSpace(t.ID),
+		PhaseID:       strings.TrimSpace(t.GoalPhaseID),
+		Title:         friendlyTaskTitle(t),
+		Status:        strings.TrimSpace(t.Status),
+		Summary:       goalTaskResultSummary(t.Result),
+		AdvancedGoal:  true,
+		ResultExcerpt: truncateAssistantRunText(t.Result, 900),
+		CreatedAt:     now,
+	}
+	if structured, ok := parseStructuredGoalReport(t.Result); ok {
+		report.Summary = firstNonEmptyString(structured.Summary, report.Summary)
+		report.AdvancedGoal = structured.AdvancedGoal
+		report.PhaseComplete = structured.PhaseComplete
+		report.GoalComplete = structured.GoalComplete
+		report.NoChange = structured.NoChange
+		report.ChangedFiles = structured.ChangedFiles
+		report.Validation = structured.Validation
+		report.FollowUps = structured.FollowUps
+		report.Blockers = structured.Blockers
+		report.Questions = structured.Questions
+	}
+	if diff, err := o.TaskDiff(ctx, t.ID); err == nil {
+		report.DiffFiles = diff.Summary.Files
+		report.Additions = diff.Summary.Additions
+		report.Deletions = diff.Summary.Deletions
+		if len(report.ChangedFiles) == 0 {
+			for _, file := range diff.Files {
+				report.ChangedFiles = append(report.ChangedFiles, file.Path)
+				if len(report.ChangedFiles) >= 64 {
+					break
+				}
+			}
+		}
+	}
+	lowerResult := strings.ToLower(t.Result)
+	if strings.Contains(lowerResult, "no change required") || strings.Contains(lowerResult, "no diff") {
+		report.NoChange = true
+		report.AdvancedGoal = false
+	}
+	if report.DiffFiles == 0 && len(report.ChangedFiles) == 0 && !report.NoChange && !strings.Contains(lowerResult, "changed files") {
+		report.AdvancedGoal = false
+	}
+	if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+		report.PhaseComplete = false
+		report.GoalComplete = false
+	}
+	return assistantstore.NormalizeGoalTaskReport(report)
+}
+
+type structuredGoalReport struct {
+	Summary       string   `json:"summary"`
+	AdvancedGoal  bool     `json:"advanced_goal"`
+	PhaseComplete bool     `json:"phase_complete"`
+	GoalComplete  bool     `json:"goal_complete"`
+	NoChange      bool     `json:"no_change"`
+	ChangedFiles  []string `json:"changed_files"`
+	Validation    []string `json:"validation"`
+	FollowUps     []string `json:"follow_ups"`
+	Blockers      []string `json:"blockers"`
+	Questions     []string `json:"questions"`
+}
+
+func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
+	for _, line := range strings.Split(result, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(strings.ToUpper(trimmed), "GOAL_REPORT:") {
+			continue
+		}
+		raw := strings.TrimSpace(trimmed[len("GOAL_REPORT:"):])
+		var report structuredGoalReport
+		if err := json.Unmarshal([]byte(raw), &report); err == nil {
+			report.Summary = strings.TrimSpace(report.Summary)
+			report.ChangedFiles = normalizeGoalReportStrings(report.ChangedFiles, 64)
+			report.Validation = normalizeGoalReportStrings(report.Validation, 24)
+			report.FollowUps = normalizeGoalReportStrings(report.FollowUps, 24)
+			report.Blockers = normalizeGoalReportStrings(report.Blockers, 24)
+			report.Questions = normalizeGoalReportStrings(report.Questions, 12)
+			return report, true
+		}
+	}
+	return structuredGoalReport{}, false
+}
+
+func normalizeGoalReportStrings(values []string, limit int) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
+		if value == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func goalTaskResultSummary(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return "Task completed."
+	}
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(strings.ToUpper(line), "GOAL_REPORT:") {
+			continue
+		}
+		return truncateAssistantRunText(line, 240)
+	}
+	return truncateAssistantRunText(result, 240)
+}
+
+func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.GoalTaskReport, now time.Time) {
+	if goal == nil || goal.Plan == nil || strings.TrimSpace(report.PhaseID) == "" {
+		return
+	}
+	plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+	for index := range plan.Phases {
+		if plan.Phases[index].ID != report.PhaseID {
+			continue
+		}
+		if !stringSliceContains(plan.Phases[index].TaskIDs, report.TaskID) {
+			plan.Phases[index].TaskIDs = append(plan.Phases[index].TaskIDs, report.TaskID)
+		}
+		if report.PhaseComplete || report.GoalComplete {
+			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusCompleted
+		} else if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusBlocked
+		} else {
+			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusInProgress
+		}
+		if report.Summary != "" {
+			plan.Phases[index].Evidence = appendUniqueStrings(plan.Phases[index].Evidence, report.Summary)
+		}
+		break
+	}
+	if report.GoalComplete {
+		plan.Status = assistantstore.GoalPlanStatusCompleted
+	} else if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+		plan.Status = assistantstore.GoalPlanStatusBlocked
+	}
+	if next, ok := selectGoalPlanPhase(&plan); ok {
+		plan.CurrentPhaseID = next.ID
+	} else if plan.Status != assistantstore.GoalPlanStatusBlocked {
+		plan.Status = assistantstore.GoalPlanStatusCompleted
+		plan.CurrentPhaseID = ""
+	}
+	plan.UpdatedAt = now
+	goal.Plan = &plan
+	if goal.Autopilot != nil {
+		goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
+	}
+}
+
+func safeGoalReportID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return id.New("task")
+	}
+	value = strings.ReplaceAll(value, string(filepath.Separator), "_")
+	value = strings.ReplaceAll(value, "..", "_")
+	return value
 }
 
 func (o *Orchestrator) appendGoalEvent(ctx context.Context, eventType string, goal assistantstore.Goal, payload map[string]any) {
@@ -1608,6 +2396,7 @@ func goalActionSummaries(run assistantstore.Run, goalID string) []string {
 
 type taskCreateOptions struct {
 	GoalID        string
+	GoalPhaseID   string
 	ExecutionMode string
 	GoalKind      string
 }

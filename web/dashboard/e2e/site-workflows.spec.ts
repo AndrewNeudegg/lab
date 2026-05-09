@@ -285,6 +285,93 @@ const assistantGoal = {
   next_check_at: now
 };
 
+const assistantAutopilotGoal = {
+  id: 'goal_site_grid',
+  title: 'Grid rebuild',
+  objective: 'Build a replacement for AG Grid with editing, validation, and keyboard support.',
+  details: 'Use the remote project and keep phases visible to the operator.',
+  kind: 'build',
+  execution_mode: 'autopilot',
+  status: 'active',
+  priority: 'high',
+  autonomy: 'create_tasks',
+  cadence: '',
+  target: { mode: 'remote', project_id: 'remote1', agent_id: 'remote1-agent', workdir_id: 'remote1' },
+  autopilot: {
+    status: 'running',
+    budget_tasks: -1,
+    tasks_started: 2,
+    current_task_id: 'task_goal_grid_core',
+    current_phase_id: 'phase_02_core',
+    last_decision_id: 'gdec_goal_grid_next'
+  },
+  plan: {
+    status: 'active',
+    summary: 'Supervisor plan for Grid rebuild',
+    current_phase_id: 'phase_02_core',
+    phases: [
+      {
+        id: 'phase_01_foundation',
+        title: 'Establish the architecture and baseline',
+        objective: 'Inspect the target repo and create the first usable foundation.',
+        status: 'completed',
+        task_ids: ['task_goal_grid_foundation'],
+        evidence: ['Foundation complete']
+      },
+      {
+        id: 'phase_02_core',
+        title: 'Build the core capability',
+        objective: 'Implement rendering, editing, and validation needed for end-to-end use.',
+        status: 'in_progress',
+        depends_on: ['phase_01_foundation'],
+        task_ids: ['task_goal_grid_core']
+      }
+    ],
+    created_at: now,
+    updated_at: now
+  },
+  linked_tasks: ['task_goal_grid_foundation', 'task_goal_grid_core'],
+  progress_summary: 'Foundation complete; core rendering is next.',
+  created_by: 'operator',
+  created_at: now,
+  updated_at: now,
+  next_check_at: ''
+};
+
+const assistantGoalDecision = {
+  id: 'gdec_goal_grid_next',
+  goal_id: assistantAutopilotGoal.id,
+  decision: 'create_task',
+  summary: 'Create the next task for plan phase `phase_02_core`.',
+  rationale: 'The selected phase is the next incomplete, dependency-ready phase in the Goal plan.',
+  phase_id: 'phase_02_core',
+  task_id: 'task_goal_grid_core',
+  evidence: ['task gridfound: Foundation complete'],
+  created_at: now
+};
+
+const assistantGoalTaskReport = {
+  id: 'greport_goal_grid_foundation',
+  goal_id: assistantAutopilotGoal.id,
+  task_id: 'task_goal_grid_foundation',
+  phase_id: 'phase_01_foundation',
+  title: 'Foundation task',
+  status: 'done',
+  summary: 'Foundation complete',
+  advanced_goal: true,
+  phase_complete: true,
+  goal_complete: false,
+  changed_files: ['src/grid.ts'],
+  validation: ['bun test'],
+  follow_ups: ['Build core rendering'],
+  blockers: [],
+  questions: [],
+  diff_files: 1,
+  additions: 80,
+  deletions: 0,
+  created_at: now
+};
+
 const assistantGoalWatch = {
   id: 'gwatch_site_daily',
   goal_id: assistantGoal.id,
@@ -495,15 +582,19 @@ const mockDashboardApis = async (page: Page) => {
     });
   });
   const assistantRuns = [assistantRun];
-  const assistantGoals: any[] = [assistantGoal];
+  const assistantGoals: any[] = [assistantGoal, assistantAutopilotGoal];
   const assistantGoalWatches: any[] = [assistantGoalWatch];
   const assistantGoalNotes: any[] = [assistantGoalNote];
+  const assistantGoalDecisions: any[] = [assistantGoalDecision];
+  const assistantGoalTaskReports: any[] = [assistantGoalTaskReport];
   const assistantGoalTimeline = (goal: any) => ({
     goal,
     watches: assistantGoalWatches.filter((watch) => watch.goal_id === goal.id),
     signals: [],
     notes: assistantGoalNotes.filter((note) => note.goal_id === goal.id),
-    assessments: []
+    assessments: [],
+    decisions: assistantGoalDecisions.filter((decision) => decision.goal_id === goal.id),
+    task_reports: assistantGoalTaskReports.filter((report) => report.goal_id === goal.id)
   });
   await page.route(/\/api\/assistant\/runs(?:\/[^?]+)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -1049,6 +1140,18 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await expect(dailyGoal).toBeVisible();
     await dailyGoal.click();
     await expect(page.getByLabel('Selected Assistant Goal')).toContainText('Morning mail watch');
+    if (mobile) {
+      await page.getByRole('button', { name: 'Back to Goal list' }).click();
+    }
+    const gridGoal = goalsPanel.getByRole('button', { name: /Grid rebuild/ });
+    await expect(gridGoal).toBeVisible();
+    await gridGoal.click();
+    const selectedGoalRecord = page.getByLabel('Selected Assistant Goal');
+    await expect(selectedGoalRecord).toContainText('Supervisor plan for Grid rebuild');
+    await expect(selectedGoalRecord).toContainText('Build the core capability');
+    await expect(selectedGoalRecord).toContainText('Decision trail');
+    await expect(selectedGoalRecord).toContainText('Foundation complete');
+    await expect(selectedGoalRecord).toContainText('Build core rendering');
     if (mobile) {
       await page.getByRole('button', { name: 'Back to Goal list' }).click();
     }

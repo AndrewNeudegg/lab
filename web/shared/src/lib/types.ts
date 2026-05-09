@@ -790,6 +790,7 @@ export interface AssistantGoal {
   execution_mode?: string;
   target?: HomelabdTaskTarget;
   autopilot?: AssistantGoalAutopilot;
+  plan?: AssistantGoalPlan;
   priority?: string;
   autonomy: string;
   cadence?: string;
@@ -818,6 +819,7 @@ export interface AssistantGoalSnapshotRef {
   execution_mode?: string;
   target?: HomelabdTaskTarget;
   autopilot?: AssistantGoalAutopilot;
+  plan?: AssistantGoalPlan;
   priority?: string;
   autonomy?: string;
   cadence?: string;
@@ -879,6 +881,67 @@ export interface AssistantGoalAutopilot {
   stop_reasons?: string[];
   allowed_actions?: string[];
   current_task_id?: string;
+  current_phase_id?: string;
+  last_decision_id?: string;
+}
+
+export interface AssistantGoalPlan {
+  status: string;
+  summary?: string;
+  current_phase_id?: string;
+  phases?: AssistantGoalPlanPhase[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AssistantGoalPlanPhase {
+  id: string;
+  title: string;
+  objective?: string;
+  status: string;
+  acceptance_criteria?: string[];
+  depends_on?: string[];
+  task_ids?: string[];
+  evidence?: string[];
+}
+
+export interface AssistantGoalSupervisorDecision {
+  id: string;
+  goal_id: string;
+  decision: string;
+  summary?: string;
+  rationale?: string;
+  phase_id?: string;
+  task_id?: string;
+  task_goal?: string;
+  questions?: string[];
+  stop_reason?: string;
+  evidence?: string[];
+  created_at: string;
+}
+
+export interface AssistantGoalTaskReport {
+  id: string;
+  goal_id: string;
+  task_id: string;
+  phase_id?: string;
+  title?: string;
+  status?: string;
+  summary?: string;
+  advanced_goal?: boolean;
+  phase_complete?: boolean;
+  goal_complete?: boolean;
+  no_change?: boolean;
+  changed_files?: string[];
+  validation?: string[];
+  follow_ups?: string[];
+  blockers?: string[];
+  questions?: string[];
+  diff_files?: number;
+  additions?: number;
+  deletions?: number;
+  result_excerpt?: string;
+  created_at: string;
 }
 
 export interface AssistantGoalAutopilotRequest {
@@ -974,6 +1037,8 @@ export interface AssistantGoalTimeline {
   signals?: AssistantGoalSignal[];
   notes?: AssistantGoalNote[];
   assessments?: AssistantGoalAssessment[];
+  decisions?: AssistantGoalSupervisorDecision[];
+  task_reports?: AssistantGoalTaskReport[];
 }
 
 export interface AssistantGoalsResponse {

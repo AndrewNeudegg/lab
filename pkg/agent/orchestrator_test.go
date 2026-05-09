@@ -6881,6 +6881,7 @@ func TestGoalAutopilotStartCreatesTypedTask(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Autopilot worker stub to finish")
 	}
+	waitForTaskInactive(t, orch, task.ID)
 }
 
 func TestGoalAutopilotStartCreatesRemoteTaskWithoutLocalWorker(t *testing.T) {
@@ -7153,6 +7154,364 @@ func TestGoalAutopilotReviewsReadyRemoteTaskWithoutMergeQueue(t *testing.T) {
 	case <-delegate.started:
 		t.Fatal("local worker started while reviewing remote Autopilot task")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGoalAutopilotCreatesPlanAndPhaseTaskContext(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build replacement data grid",
+		Objective:     "Build a replacement for AG Grid that can render, edit, and validate tabular data.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeline.Goal.Plan == nil || len(timeline.Goal.Plan.Phases) < 2 {
+		t.Fatalf("plan = %#v, want durable multi-phase Goal plan", timeline.Goal.Plan)
+	}
+
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Goal.Plan == nil || len(started.Goal.Plan.Phases) < 2 {
+		t.Fatalf("started plan = %#v, want durable multi-phase Goal plan", started.Goal.Plan)
+	}
+	firstPhase := started.Goal.Plan.Phases[0]
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.GoalPhaseID != firstPhase.ID {
+		t.Fatalf("task phase = %q, want first plan phase %q", task.GoalPhaseID, firstPhase.ID)
+	}
+	for _, want := range []string{
+		"Selected Goal plan phase",
+		firstPhase.Title,
+		"Goal plan:",
+		"Goal supervisor report contract",
+		"GOAL_REPORT:",
+	} {
+		if !strings.Contains(task.Goal, want) {
+			t.Fatalf("task goal missing %q:\n%s", want, task.Goal)
+		}
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Decisions) == 0 || loaded.Decisions[0].Decision != assistantstore.GoalSupervisorDecisionCreateTask || loaded.Decisions[0].PhaseID != firstPhase.ID {
+		t.Fatalf("decisions = %#v, want create_task decision for first phase", loaded.Decisions)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started for remote Autopilot task")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGoalAutopilotUsesTaskReportBeforeNextPhase(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build replacement data grid",
+		Objective:     "Build a replacement for AG Grid that can render, edit, and validate tabular data.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTaskID := started.Goal.Autopilot.CurrentTaskID
+	firstPhaseID := started.Goal.Autopilot.CurrentPhaseID
+	firstTask, err := orch.tasks.Load(firstTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTask.Status = taskstore.StatusAwaitingVerification
+	firstTask.Result = `Foundation complete.
+GOAL_REPORT: {"summary":"Foundation complete","advanced_goal":true,"phase_complete":true,"goal_complete":false,"changed_files":["src/grid.ts"],"validation":["go test ./..."],"follow_ups":["Build core rendering"],"blockers":[],"questions":[]}`
+	firstTask.RemoteDiff = "diff --git a/src/grid.ts b/src/grid.ts\nnew file mode 100644\n"
+	if err := orch.tasks.Save(firstTask); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want task acceptance and next phase creation", changed)
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.CurrentTaskID == "" || loaded.Goal.Autopilot.CurrentTaskID == firstTaskID {
+		t.Fatalf("autopilot = %#v, want new current task", loaded.Goal.Autopilot)
+	}
+	if len(loaded.TaskReports) != 1 || loaded.TaskReports[0].Summary != "Foundation complete" || !loaded.TaskReports[0].PhaseComplete {
+		t.Fatalf("task reports = %#v, want structured completion report", loaded.TaskReports)
+	}
+	if loaded.Goal.Plan == nil || len(loaded.Goal.Plan.Phases) < 2 || loaded.Goal.Plan.Phases[0].Status != assistantstore.GoalPlanPhaseStatusCompleted {
+		t.Fatalf("plan = %#v, want first phase completed", loaded.Goal.Plan)
+	}
+	nextTask, err := orch.tasks.Load(loaded.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextTask.GoalPhaseID == "" || nextTask.GoalPhaseID == firstPhaseID {
+		t.Fatalf("next task phase = %q, want next dependency-ready phase after %q", nextTask.GoalPhaseID, firstPhaseID)
+	}
+	for _, want := range []string{
+		"Recent structured Goal task reports",
+		"Foundation complete",
+		"Build core rendering",
+		"Do not repeat previous task work",
+	} {
+		if !strings.Contains(nextTask.Goal, want) {
+			t.Fatalf("next task goal missing %q:\n%s", want, nextTask.Goal)
+		}
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started for remote Autopilot task")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGoalAutopilotBlocksOnTaskReportQuestions(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build replacement data grid",
+		Objective:     "Build a replacement for AG Grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusAwaitingVerification
+	task.Result = `Need product direction.
+GOAL_REPORT: {"summary":"Blocked on editing semantics","advanced_goal":true,"phase_complete":false,"goal_complete":false,"changed_files":["src/grid.ts"],"validation":[],"follow_ups":[],"blockers":[],"questions":["Should spreadsheet-style formulas be in scope for v1?"]}`
+	task.RemoteDiff = "diff --git a/src/grid.ts b/src/grid.ts\nnew file mode 100644\n"
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want Autopilot block after accepted report", changed)
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Goal.Status != assistantstore.GoalStatusBlocked || loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusBlocked {
+		t.Fatalf("goal = %#v, want blocked Goal and Autopilot", loaded.Goal)
+	}
+	if !stringSliceContains(loaded.Goal.OpenQuestions, "Should spreadsheet-style formulas be in scope for v1?") {
+		t.Fatalf("open questions = %#v, want task report question", loaded.Goal.OpenQuestions)
+	}
+	if loaded.Goal.Plan == nil || loaded.Goal.Plan.Status != assistantstore.GoalPlanStatusBlocked {
+		t.Fatalf("plan = %#v, want blocked plan", loaded.Goal.Plan)
+	}
+	if len(loaded.TaskReports) != 1 || len(loaded.TaskReports[0].Questions) != 1 {
+		t.Fatalf("task reports = %#v, want question in structured report", loaded.TaskReports)
+	}
+
+	var update assistantstore.GoalUpdateRequest
+	if err := json.Unmarshal([]byte(`{"open_questions":[],"autopilot":{"status":"running"}}`), &update); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := orch.UpdateGoal(ctx, timeline.Goal.ID, update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Goal.Status != assistantstore.GoalStatusActive || resumed.Goal.Autopilot == nil || resumed.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning {
+		t.Fatalf("resumed goal = %#v, want active running Autopilot after questions are cleared", resumed.Goal)
+	}
+	if resumed.Goal.Plan == nil || resumed.Goal.Plan.Status != assistantstore.GoalPlanStatusActive {
+		t.Fatalf("resumed plan = %#v, want active plan after questions are cleared", resumed.Goal.Plan)
+	}
+	if resumed.Goal.Autopilot.CurrentTaskID == "" || resumed.Goal.Autopilot.CurrentTaskID == taskID {
+		t.Fatalf("current task = %q, want a new task after clearing questions", resumed.Goal.Autopilot.CurrentTaskID)
+	}
+}
+
+func TestGoalAutopilotCompletesFromGoalReport(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build small grid",
+		Objective:     "Build a small usable grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusAwaitingVerification
+	task.Result = `Goal complete.
+GOAL_REPORT: {"summary":"Grid goal is complete","advanced_goal":true,"phase_complete":true,"goal_complete":true,"changed_files":["src/grid.ts"],"validation":["go test ./..."],"follow_ups":[],"blockers":[],"questions":[]}`
+	task.RemoteDiff = "diff --git a/src/grid.ts b/src/grid.ts\nnew file mode 100644\n"
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want Autopilot completion", changed)
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Goal.Status != assistantstore.GoalStatusCompleted || loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusCompleted {
+		t.Fatalf("goal = %#v, want completed Goal and Autopilot", loaded.Goal)
+	}
+	if loaded.Goal.Plan == nil || loaded.Goal.Plan.Status != assistantstore.GoalPlanStatusCompleted {
+		t.Fatalf("plan = %#v, want completed plan", loaded.Goal.Plan)
+	}
+	if loaded.Goal.Autopilot.CurrentTaskID != "" {
+		t.Fatalf("current task = %q, want cleared when Goal completes", loaded.Goal.Autopilot.CurrentTaskID)
+	}
+}
+
+func TestGoalAutopilotStopsAfterRepeatedNoProgressReports(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build replacement data grid",
+		Objective:     "Build a replacement for AG Grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal := timeline.Goal
+	if goal.Autopilot == nil {
+		t.Fatal("Goal Autopilot missing")
+	}
+	now := time.Now().UTC()
+	goal.Status = assistantstore.GoalStatusActive
+	goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
+	goal.Autopilot.TasksStarted = 2
+	goal.Autopilot.CurrentTaskID = ""
+	goal.Autopilot.StartedAt = &now
+	goal.Autopilot.LastStepAt = &now
+	goal.UpdatedAt = now
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	for index, taskID := range []string{"task_no_progress_1", "task_no_progress_2"} {
+		if err := store.SaveTaskReport(assistantstore.GoalTaskReport{
+			ID:           fmt.Sprintf("greport_no_progress_%d", index+1),
+			GoalID:       goal.ID,
+			TaskID:       taskID,
+			PhaseID:      goal.Plan.CurrentPhaseID,
+			Title:        "No progress",
+			Status:       taskstore.StatusDone,
+			Summary:      "No measurable progress.",
+			AdvancedGoal: false,
+			NoChange:     true,
+			CreatedAt:    now.Add(-time.Duration(index) * time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want no-progress block", changed)
+	}
+	loaded, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusBlocked {
+		t.Fatalf("autopilot = %#v, want blocked after repeated no-progress reports", loaded.Goal.Autopilot)
+	}
+	if len(loaded.Decisions) == 0 || loaded.Decisions[0].Decision != assistantstore.GoalSupervisorDecisionPauseBlocked || !strings.Contains(loaded.Decisions[0].StopReason, "no measurable progress") {
+		t.Fatalf("decisions = %#v, want supervisor no-progress block", loaded.Decisions)
 	}
 }
 
@@ -7441,6 +7800,33 @@ func newTestOrchestrator(t *testing.T, delegate *delegateStub) *Orchestrator {
 	).
 		WithMemory(memstore.NewStore(filepath.Join(cfg.DataDir, "memory"))).
 		WithWorkflows(workflowstore.NewStore(filepath.Join(cfg.DataDir, "workflows")))
+}
+
+func registerRemote1Agent(t *testing.T, orch *Orchestrator) {
+	t.Helper()
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "remote1-agent",
+		Machine: "vm-remote1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      "/home/lab/remote1",
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func remote1ExecutionTarget() *taskstore.ExecutionTarget {
+	return &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "remote1-agent",
+		WorkdirID: "remote1",
+	}
 }
 
 func gitTestRun(t *testing.T, dir string, args ...string) {

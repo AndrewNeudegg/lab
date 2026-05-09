@@ -9,6 +9,9 @@
     createHomelabdClient,
     Navbar,
     type AssistantGoal,
+    type AssistantGoalPlanPhase,
+    type AssistantGoalSupervisorDecision,
+    type AssistantGoalTaskReport,
     type AssistantGoalTimeline,
 	    type AssistantRun,
 	    type AssistantRunAction,
@@ -50,11 +53,15 @@
 
 	  let runs: AssistantRun[] = [];
 	  let signals: AssistantSignalCandidate[] = [];
-	  let goals: AssistantGoal[] = [];
-	  let workspaces: HomelabdRemoteWorkspace[] = [];
+  let goals: AssistantGoal[] = [];
+  let workspaces: HomelabdRemoteWorkspace[] = [];
   let selectedGoalId = '';
   let selectedGoal: AssistantGoal | undefined;
   let selectedGoalTimeline: AssistantGoalTimeline | undefined;
+  let selectedGoalPlan: AssistantGoal['plan'];
+  let selectedGoalPlanPhases: AssistantGoalPlanPhase[] = [];
+  let latestGoalDecision: AssistantGoalSupervisorDecision | undefined;
+  let latestGoalReports: AssistantGoalTaskReport[] = [];
   let selectedRunId = '';
   let selectedRun: AssistantRun | undefined;
   let runsLoading = true;
@@ -124,6 +131,10 @@
   $: visibleRuns = runView === 'archived' ? archivedRuns : activeRuns;
   $: selectedRun = selectAssistantRun(runs, selectedRunId);
   $: selectedGoal = selectAssistantGoal(goals, selectedGoalId);
+  $: selectedGoalPlan = selectedGoalTimeline?.goal.plan || selectedGoal?.plan;
+  $: selectedGoalPlanPhases = selectedGoalPlan?.phases || [];
+  $: latestGoalDecision = selectedGoalTimeline?.decisions?.[0];
+  $: latestGoalReports = selectedGoalTimeline?.task_reports?.slice(0, 4) || [];
   $: displayedActions = visibleRecommendedActions(selectedRun);
   $: openRunActions = activeRuns.reduce((total, run) => total + runOpenActionCount(run), 0);
 	  $: activeSignals = signals.filter((signal) => !signal.suppressed && !signal.created_task_id);
@@ -620,8 +631,83 @@
   const goalProgress = (goal: AssistantGoal | undefined) =>
     goal?.progress_summary || goal?.objective || 'Goal is waiting for its first Assistant assessment.';
 
-  const goalTimelineCount = (kind: 'watches' | 'notes' | 'assessments') =>
+  const goalTimelineCount = (kind: 'watches' | 'notes' | 'assessments' | 'decisions' | 'task_reports') =>
     selectedGoalTimeline?.[kind]?.length || 0;
+
+  const goalPlanStatusTone = (status: string | undefined) => {
+    switch (status) {
+      case 'completed':
+        return 'green';
+      case 'blocked':
+        return 'red';
+      case 'in_progress':
+      case 'active':
+        return 'blue';
+      case 'pending':
+        return 'amber';
+      default:
+        return 'gray';
+    }
+  };
+
+  const goalDecisionTone = (decision: string | undefined) => {
+    switch (decision) {
+      case 'create_task':
+      case 'revise_plan':
+        return 'blue';
+      case 'mark_complete':
+        return 'green';
+      case 'ask_question':
+      case 'pause_blocked':
+        return 'red';
+      case 'wait':
+        return 'amber';
+      default:
+        return 'gray';
+    }
+  };
+
+  const goalTaskReportTone = (report: AssistantGoalTaskReport) => {
+    if (report.goal_complete || report.phase_complete) {
+      return 'green';
+    }
+    if (report.questions?.length || report.blockers?.length) {
+      return 'red';
+    }
+    if (report.no_change) {
+      return 'amber';
+    }
+    return report.advanced_goal ? 'blue' : 'gray';
+  };
+
+  const goalPhaseMeta = (phase: AssistantGoalPlanPhase) =>
+    [
+      phase.task_ids?.length ? plural(phase.task_ids.length, 'task') : 'no tasks yet',
+      phase.depends_on?.length ? `after ${phase.depends_on.join(', ')}` : ''
+    ]
+      .filter(Boolean)
+      .join(' / ');
+
+  const goalDecisionMeta = (decision: AssistantGoalSupervisorDecision | undefined) =>
+    decision
+      ? [
+          formatAssistantTime(decision.created_at),
+          decision.phase_id ? `phase ${decision.phase_id}` : '',
+          decision.task_id ? shortAssistantId(decision.task_id) : ''
+        ]
+          .filter(Boolean)
+          .join(' / ')
+      : '';
+
+  const goalTaskReportMeta = (report: AssistantGoalTaskReport) =>
+    [
+      report.phase_id ? `phase ${report.phase_id}` : '',
+      report.diff_files ? plural(report.diff_files, 'file') : '',
+      report.additions || report.deletions ? `+${report.additions || 0} / -${report.deletions || 0}` : '',
+      formatAssistantTime(report.created_at)
+    ]
+      .filter(Boolean)
+      .join(' / ');
 
   const compilerStatusTone = (run: AssistantRun | undefined) => {
     switch (run?.compiler?.status) {
@@ -1730,6 +1816,131 @@
               {/if}
             </div>
           </section>
+
+          {#if selectedGoal.execution_mode === 'autopilot'}
+            <div class="goal-detail-grid">
+              <section class="detail-section" aria-label="Goal supervisor plan">
+                <header class="section-heading">
+                  <div>
+                    <p>Supervisor</p>
+                    <h3>Plan</h3>
+                  </div>
+                  <span>{selectedGoalPlanPhases.length ? plural(selectedGoalPlanPhases.length, 'phase') : 'No plan'}</span>
+                </header>
+                {#if selectedGoalPlan}
+                  <div class="goal-plan-summary">
+                    <span class={`status ${goalPlanStatusTone(selectedGoalPlan.status)}`}>
+                      {labelFromSlug(selectedGoalPlan.status || 'active')}
+                    </span>
+                    <p>{selectedGoalPlan.summary || 'Autopilot is using this phase plan to choose one bounded task at a time.'}</p>
+                  </div>
+                  {#if selectedGoalPlanPhases.length}
+                    <ol class="goal-plan-list">
+                      {#each selectedGoalPlanPhases as phase}
+                        <li class:current={phase.id === selectedGoalPlan.current_phase_id}>
+                          <div>
+                            <span class={`dot ${goalPlanStatusTone(phase.status)}`} aria-hidden="true"></span>
+                            <div>
+                              <strong>{phase.title}</strong>
+                              <small>{goalPhaseMeta(phase)}</small>
+                            </div>
+                            <span class={`status ${goalPlanStatusTone(phase.status)}`}>
+                              {labelFromSlug(phase.status)}
+                            </span>
+                          </div>
+                          {#if phase.objective}
+                            <p>{phase.objective}</p>
+                          {/if}
+                          {#if phase.evidence?.length}
+                            <small>Evidence: {phase.evidence.slice(0, 2).join(' / ')}</small>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ol>
+                  {:else}
+                    <p>No phases have been recorded for this Goal yet.</p>
+                  {/if}
+                {:else}
+                  <p>No supervisor plan has been recorded. Starting or resuming Autopilot will create one before the next task.</p>
+                {/if}
+              </section>
+
+              <section class="detail-section" aria-label="Goal supervisor decisions and task reports">
+                <header class="section-heading">
+                  <div>
+                    <p>Autopilot</p>
+                    <h3>Decision trail</h3>
+                  </div>
+                  <span>{plural(goalTimelineCount('task_reports'), 'report')}</span>
+                </header>
+                {#if latestGoalDecision}
+                  <article class="supervisor-card">
+                    <header>
+                      <span class={`status ${goalDecisionTone(latestGoalDecision.decision)}`}>
+                        {labelFromSlug(latestGoalDecision.decision)}
+                      </span>
+                      <small>{goalDecisionMeta(latestGoalDecision)}</small>
+                    </header>
+                    <strong>{latestGoalDecision.summary || 'Supervisor decision recorded.'}</strong>
+                    {#if latestGoalDecision.rationale}
+                      <p>{latestGoalDecision.rationale}</p>
+                    {/if}
+                    {#if latestGoalDecision.stop_reason}
+                      <small>Stop reason: {latestGoalDecision.stop_reason}</small>
+                    {/if}
+                    {#if latestGoalDecision.questions?.length}
+                      <ul class="compact-list">
+                        {#each latestGoalDecision.questions.slice(0, 3) as question}
+                          <li>{question}</li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </article>
+                {:else}
+                  <p>No supervisor decision has been recorded yet.</p>
+                {/if}
+
+                {#if latestGoalReports.length}
+                  <div class="record-list">
+                    {#each latestGoalReports as report}
+                      <article class="signal-card goal-report-card">
+                        <span class={`dot ${goalTaskReportTone(report)}`} aria-hidden="true"></span>
+                        <div>
+                          <div class="report-title">
+                            <strong>{report.summary || report.title || 'Task report'}</strong>
+                            <span class={`status ${goalTaskReportTone(report)}`}>
+                              {report.goal_complete
+                                ? 'goal complete'
+                                : report.phase_complete
+                                  ? 'phase complete'
+                                  : report.no_change
+                                    ? 'no progress'
+                                    : report.advanced_goal
+                                      ? 'advanced'
+                                      : 'reported'}
+                            </span>
+                          </div>
+                          <small>{goalTaskReportMeta(report) || shortAssistantId(report.task_id)}</small>
+                          {#if report.changed_files?.length}
+                            <small>Changed: {report.changed_files.slice(0, 4).join(', ')}</small>
+                          {/if}
+                          {#if report.follow_ups?.length}
+                            <p>Next: {report.follow_ups.slice(0, 2).join(' / ')}</p>
+                          {/if}
+                          {#if report.blockers?.length || report.questions?.length}
+                            <p>{[...(report.blockers || []), ...(report.questions || [])].slice(0, 2).join(' / ')}</p>
+                          {/if}
+                          <a href={`/tasks?task=${report.task_id}`}>Open reported task</a>
+                        </div>
+                      </article>
+                    {/each}
+                  </div>
+                {:else}
+                  <p>No structured task reports have been accepted for this Goal yet.</p>
+                {/if}
+              </section>
+            </div>
+          {/if}
 
           <div class="goal-detail-grid">
             <section class="detail-section" aria-label="Goal watches">
@@ -2873,6 +3084,95 @@
     min-width: 0;
   }
 
+  .goal-plan-summary,
+  .goal-plan-list li,
+  .supervisor-card,
+  .goal-report-card > div,
+  .report-title {
+    min-width: 0;
+  }
+
+  .goal-plan-summary,
+  .supervisor-card {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .goal-plan-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .goal-plan-list,
+  .compact-list {
+    display: grid;
+    gap: 0.5rem;
+    margin: 0;
+    padding-left: 1.1rem;
+  }
+
+  .goal-plan-list li {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.65rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .goal-plan-list li.current {
+    border-color: var(--accent, #2563eb);
+    box-shadow: inset 3px 0 0 var(--accent, #2563eb);
+  }
+
+  .goal-plan-list li > div,
+  .supervisor-card header,
+  .report-title {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .goal-plan-list li > div > div {
+    display: grid;
+    gap: 0.1rem;
+    min-width: 0;
+    margin-right: auto;
+  }
+
+  .goal-plan-list strong,
+  .supervisor-card strong,
+  .report-title strong {
+    color: var(--text-strong, #0f172a);
+    overflow-wrap: anywhere;
+  }
+
+  .goal-plan-list small,
+  .goal-plan-list li > small,
+  .supervisor-card small,
+  .goal-report-card small {
+    color: var(--assistant-muted, #475569);
+    font-size: 0.75rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  .supervisor-card {
+    padding: 0.75rem;
+    border: 1px solid var(--border-soft, #dbe3ef);
+    border-radius: 8px;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .supervisor-card header,
+  .report-title {
+    justify-content: space-between;
+  }
+
+  .goal-report-card .status {
+    margin-top: -0.05rem;
+  }
+
   .task-link-list {
     display: flex;
     flex-wrap: wrap;
@@ -3480,6 +3780,8 @@
   :global(html[data-theme='dark'] .signal-inbox-row),
   :global(html[data-theme='dark'] .recommendation-card),
   :global(html[data-theme='dark'] .signal-card),
+  :global(html[data-theme='dark'] .goal-plan-list li),
+  :global(html[data-theme='dark'] .supervisor-card),
   :global(html[data-theme='dark'] .object-list article),
   :global(html[data-theme='dark'] .receipt-list li),
   :global(html[data-theme='dark'] .token-list li),

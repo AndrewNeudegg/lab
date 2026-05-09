@@ -4409,6 +4409,7 @@ func (o *Orchestrator) createTaskRecordWithOptions(ctx context.Context, goal str
 	t := taskstore.Task{
 		ID:            taskID,
 		GoalID:        strings.TrimSpace(opts.GoalID),
+		GoalPhaseID:   strings.TrimSpace(opts.GoalPhaseID),
 		ExecutionMode: strings.TrimSpace(opts.ExecutionMode),
 		GoalKind:      strings.TrimSpace(opts.GoalKind),
 		Title:         o.summarizeTaskTitle(ctx, taskID, goal),
@@ -4480,6 +4481,7 @@ func (o *Orchestrator) createRemoteTaskRecordWithOptions(ctx context.Context, go
 	task := taskstore.Task{
 		ID:                 taskID,
 		GoalID:             strings.TrimSpace(opts.GoalID),
+		GoalPhaseID:        strings.TrimSpace(opts.GoalPhaseID),
 		ExecutionMode:      strings.TrimSpace(opts.ExecutionMode),
 		GoalKind:           strings.TrimSpace(opts.GoalKind),
 		Title:              o.summarizeTaskTitle(ctx, taskID, goal),
@@ -4854,10 +4856,14 @@ func remoteAcceptanceCriteria(goal string, target taskstore.ExecutionTarget, opt
 	}
 	where := firstNonEmptyString(target.Machine, target.AgentID, "the remote agent")
 	if strings.EqualFold(strings.TrimSpace(opts.ExecutionMode), assistantstore.GoalExecutionModeAutopilot) {
+		phase := strings.TrimSpace(opts.GoalPhaseID)
+		if phase == "" {
+			phase = "the selected Goal plan phase"
+		}
 		return criteria(
-			"Remote agent runs in "+firstNonEmptyString(target.Workdir, "the selected directory")+" and names the concrete implementation slice chosen for "+subject+".",
+			"Remote agent runs in "+firstNonEmptyString(target.Workdir, "the selected directory")+" and names the concrete implementation slice chosen for "+subject+" and "+phase+".",
 			"Implementation measurably advances "+subject+", or the result starts with `No change required:` and explains why no patch was needed.",
-			"Final result states changed files, captured diff status, validation performed, and any follow-up needed on "+where+".",
+			"Final result states changed files, captured diff status, validation performed, any follow-up needed on "+where+", and a GOAL_REPORT JSON block.",
 		)
 	}
 	return criteria(

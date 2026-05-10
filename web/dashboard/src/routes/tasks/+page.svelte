@@ -603,6 +603,26 @@
 
   const diffStatusLabel = (status = '') => status.replaceAll('_', ' ') || 'modified';
 
+  const diffSourceLabel = (diff?: HomelabdTaskDiffResponse) => {
+    if (!diff) {
+      return '';
+    }
+    switch (diff.source) {
+      case 'local_review_snapshot':
+        return 'Review snapshot';
+      case 'remote_agent_task_snapshot':
+        return 'Remote task snapshot';
+      case 'remote_completion_snapshot_legacy':
+        return 'Legacy remote snapshot';
+      case 'remote_live_worktree_fallback':
+        return 'Live remote fallback';
+      case 'local_live_branch_diff':
+        return 'Live branch diff';
+      default:
+        return diff.snapshot ? 'Task diff snapshot' : 'Live diff';
+    }
+  };
+
   const diffFileTitle = (file: ParsedDiffFile) =>
     file.oldPath && file.oldPath !== file.path ? `${file.oldPath} -> ${file.path}` : file.path;
 
@@ -1902,11 +1922,22 @@
               </p>
             {:else if currentTaskDiff}
               <div class="diff-meta">
-                <span>{currentTaskDiff.base_label || 'main'} -> {currentTaskDiff.head_label || shortID(currentTaskDiff.task_id)}</span>
+                <div class="diff-meta-main">
+                  <span>{currentTaskDiff.base_label || 'main'} -> {currentTaskDiff.head_label || shortID(currentTaskDiff.task_id)}</span>
+                  <small>
+                    {diffSourceLabel(currentTaskDiff)}
+                    {#if currentTaskDiff.captured_at}
+                      / captured {compactTime(currentTaskDiff.captured_at)}
+                    {/if}
+                  </small>
+                </div>
                 {#if currentTaskDiff.base_ref && currentTaskDiff.head_ref}
                   <code>{currentTaskDiff.base_ref.slice(0, 8)}...{currentTaskDiff.head_ref.slice(0, 8)}</code>
                 {/if}
               </div>
+              {#if currentTaskDiff.warning}
+                <p class="diff-warning" role="note">{currentTaskDiff.warning}</p>
+              {/if}
 
               <div class="diff-layout">
                 <nav class="diff-file-list" aria-label="Changed files">
@@ -3679,10 +3710,32 @@
     background: var(--diff-bg-muted);
   }
 
+  .diff-meta-main {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .diff-meta-main span,
+  .diff-meta-main small {
+    overflow-wrap: anywhere;
+  }
+
   .diff-meta code {
     font-family:
       "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     font-size: 0.72rem;
+  }
+
+  .diff-warning {
+    margin: 0;
+    padding: 0.6rem 0.85rem;
+    border-bottom: 1px solid var(--diff-border);
+    color: color-mix(in srgb, var(--warning, #d97706) 70%, var(--text, #172033));
+    background: color-mix(in srgb, var(--warning, #d97706) 10%, var(--surface, #ffffff));
+    font-size: 0.78rem;
+    font-weight: 750;
+    overflow-wrap: anywhere;
   }
 
   .diff-layout {

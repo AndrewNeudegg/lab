@@ -978,10 +978,14 @@ func (s *Server) handleAgent(rw http.ResponseWriter, req *http.Request) {
 		writeJSON(rw, http.StatusOK, map[string]any{"assignment": assignment})
 	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "complete" && req.Method == http.MethodPost:
 		var in struct {
-			Status string `json:"status"`
-			Result string `json:"result"`
-			Error  string `json:"error"`
-			Diff   string `json:"diff"`
+			Status      string `json:"status"`
+			Result      string `json:"result"`
+			Error       string `json:"error"`
+			Diff        string `json:"diff"`
+			DiffSource  string `json:"diff_source"`
+			DiffBaseRef string `json:"diff_base_ref"`
+			DiffHeadRef string `json:"diff_head_ref"`
+			DiffWarning string `json:"diff_warning"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(rw, http.StatusBadRequest, err.Error())
@@ -991,7 +995,20 @@ func (s *Server) handleAgent(rw http.ResponseWriter, req *http.Request) {
 		if strings.TrimSpace(result) == "" {
 			result = in.Error
 		}
-		reply, err := s.Orchestrator.CompleteRemoteTask(req.Context(), agentID, parts[2], result, in.Status, in.Diff)
+		snapshot := taskstore.TaskDiffSnapshot{
+			Source:    strings.TrimSpace(in.DiffSource),
+			BaseRef:   strings.TrimSpace(in.DiffBaseRef),
+			BaseLabel: "remote baseline",
+			HeadRef:   strings.TrimSpace(in.DiffHeadRef),
+			HeadLabel: agentID,
+			RawDiff:   in.Diff,
+			Warning:   strings.TrimSpace(in.DiffWarning),
+		}
+		if strings.TrimSpace(snapshot.Source) == "" && strings.TrimSpace(snapshot.RawDiff) != "" {
+			snapshot.Source = "remote_completion_snapshot_legacy"
+			snapshot.Warning = "This legacy remote diff was captured before task-scoped baselines were available; it may include earlier uncommitted remote work."
+		}
+		reply, err := s.Orchestrator.CompleteRemoteTaskWithSnapshot(req.Context(), agentID, parts[2], result, in.Status, snapshot)
 		if err != nil {
 			writeError(rw, http.StatusConflict, err.Error())
 			return

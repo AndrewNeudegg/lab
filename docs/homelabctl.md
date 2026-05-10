@@ -138,7 +138,7 @@ go run ./cmd/homelabctl runs task_123
 go run ./cmd/homelabctl diff task_123
 ```
 
-`task diff` and its top-level `diff` alias call `GET /tasks/{task_id}/diff`. Plain output starts with a compact file/addition/deletion summary and then prints the raw patch. Local tasks use the task branch diff; remote tasks use the captured remote working-tree patch when available. Add `-json` to inspect the structured response used by the dashboard diff viewer.
+`task diff` and its top-level `diff` alias call `GET /tasks/{task_id}/diff`. Plain output starts with a compact file/addition/deletion summary, prints the diff source and any warning, then prints the raw patch. Reviewed local tasks and new remote tasks return immutable task diff snapshots. If no snapshot exists, the response is marked as a live branch or remote worktree fallback so operators know it may not match historical task state. Add `-json` to inspect the structured response used by the dashboard diff viewer, including `source`, `snapshot`, `captured_at`, and `sha256`.
 
 Some orchestrator actions, such as `delegate`, `ux`, `refresh`, and `test`, are chat commands rather than dedicated HTTP endpoints. `homelabctl` sends those shortcuts through `/message`:
 

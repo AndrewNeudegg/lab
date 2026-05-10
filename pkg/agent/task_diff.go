@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,8 @@ import (
 
 type TaskDiff struct {
 	TaskID      string          `json:"task_id"`
+	Source      string          `json:"source,omitempty"`
+	Snapshot    bool            `json:"snapshot,omitempty"`
 	BaseRef     string          `json:"base_ref,omitempty"`
 	BaseLabel   string          `json:"base_label,omitempty"`
 	HeadRef     string          `json:"head_ref,omitempty"`
@@ -24,6 +28,9 @@ type TaskDiff struct {
 	RawDiff     string          `json:"raw_diff"`
 	Summary     TaskDiffSummary `json:"summary"`
 	Files       []TaskDiffFile  `json:"files"`
+	CapturedAt  *time.Time      `json:"captured_at,omitempty"`
+	SHA256      string          `json:"sha256,omitempty"`
+	Warning     string          `json:"warning,omitempty"`
 	GeneratedAt time.Time       `json:"generated_at"`
 }
 
@@ -51,6 +58,9 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 	if err != nil {
 		return TaskDiff{}, err
 	}
+	if t.DiffSnapshot != nil {
+		return taskDiffFromSnapshot(taskID, *t.DiffSnapshot), nil
+	}
 	if remoteTask(t) {
 		raw := strings.TrimSpace(t.RemoteDiff)
 		workspace := firstNonEmptyString(t.Workspace)
@@ -60,11 +70,18 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 			headLabel = firstNonEmptyString(t.Target.AgentID, t.Target.Machine, "remote task")
 		}
 		baseLabel := "remote agent"
+		source := "remote_diff_unavailable"
+		warning := ""
 		if raw == "" && workspaceHasGit(workspace) {
 			raw, err = workingTreeDiff(ctx, workspace)
 			if err != nil {
 				return TaskDiff{}, err
 			}
+			source = "remote_live_worktree_fallback"
+			warning = "This diff was generated from the current remote checkout because no immutable task snapshot is stored; it may include later or earlier work."
+		} else if raw != "" {
+			source = "remote_completion_snapshot_legacy"
+			warning = "This legacy remote diff was captured before task-scoped baselines were available; it may include earlier uncommitted remote work."
 		}
 		if raw == "no diff" {
 			raw = ""
@@ -79,12 +96,15 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 		additions, deletions := diffLineStats(raw)
 		return TaskDiff{
 			TaskID:      taskID,
+			Source:      source,
+			Snapshot:    raw != "" && source == "remote_completion_snapshot_legacy",
 			BaseLabel:   baseLabel,
 			HeadLabel:   headLabel,
 			Workspace:   workspace,
 			RawDiff:     raw,
 			Summary:     TaskDiffSummary{Files: len(files), Additions: additions, Deletions: deletions},
 			Files:       files,
+			Warning:     warning,
 			GeneratedAt: time.Now().UTC(),
 		}, nil
 	}
@@ -110,8 +130,94 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 		RawDiff:     raw,
 		Summary:     TaskDiffSummary{Files: len(files), Additions: additions, Deletions: deletions},
 		Files:       files,
+		Source:      "local_live_branch_diff",
+		Warning:     "This diff was generated live from the current task workspace; store a review snapshot before merging to preserve history.",
 		GeneratedAt: time.Now().UTC(),
 	}, nil
+}
+
+func taskDiffFromSnapshot(taskID string, snapshot task.TaskDiffSnapshot) TaskDiff {
+	raw := strings.TrimSpace(snapshot.RawDiff)
+	if raw == "no diff" {
+		raw = ""
+	}
+	files := make([]TaskDiffFile, 0, len(snapshot.Files))
+	for _, file := range snapshot.Files {
+		files = append(files, TaskDiffFile{
+			Path:      file.Path,
+			OldPath:   file.OldPath,
+			Status:    file.Status,
+			Additions: file.Additions,
+			Deletions: file.Deletions,
+			Binary:    file.Binary,
+		})
+	}
+	if files == nil {
+		files = []TaskDiffFile{}
+	}
+	capturedAt := snapshot.CapturedAt
+	return TaskDiff{
+		TaskID:      taskID,
+		Source:      firstNonEmptyString(snapshot.Source, "task_diff_snapshot"),
+		Snapshot:    true,
+		BaseRef:     snapshot.BaseRef,
+		BaseLabel:   snapshot.BaseLabel,
+		HeadRef:     snapshot.HeadRef,
+		HeadLabel:   snapshot.HeadLabel,
+		Workspace:   snapshot.Workspace,
+		RawDiff:     raw,
+		Summary:     TaskDiffSummary{Files: snapshot.Summary.Files, Additions: snapshot.Summary.Additions, Deletions: snapshot.Summary.Deletions},
+		Files:       files,
+		CapturedAt:  &capturedAt,
+		SHA256:      snapshot.SHA256,
+		Warning:     snapshot.Warning,
+		GeneratedAt: time.Now().UTC(),
+	}
+}
+
+func buildTaskDiffSnapshot(raw, source, baseRef, baseLabel, headRef, headLabel, workspace, warning string, capturedAt time.Time) task.TaskDiffSnapshot {
+	raw = strings.TrimSpace(raw)
+	if raw == "no diff" {
+		raw = ""
+	}
+	if capturedAt.IsZero() {
+		capturedAt = time.Now().UTC()
+	}
+	files := diffFileSummaries(raw)
+	if files == nil {
+		files = []TaskDiffFile{}
+	}
+	additions, deletions := diffLineStats(raw)
+	snapshotFiles := make([]task.TaskDiffSnapshotFile, 0, len(files))
+	for _, file := range files {
+		snapshotFiles = append(snapshotFiles, task.TaskDiffSnapshotFile{
+			Path:      file.Path,
+			OldPath:   file.OldPath,
+			Status:    file.Status,
+			Additions: file.Additions,
+			Deletions: file.Deletions,
+			Binary:    file.Binary,
+		})
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return task.TaskDiffSnapshot{
+		Source:    strings.TrimSpace(source),
+		BaseRef:   strings.TrimSpace(baseRef),
+		BaseLabel: strings.TrimSpace(baseLabel),
+		HeadRef:   strings.TrimSpace(headRef),
+		HeadLabel: strings.TrimSpace(headLabel),
+		Workspace: strings.TrimSpace(workspace),
+		RawDiff:   raw,
+		Summary: task.TaskDiffSnapshotSummary{
+			Files:     len(snapshotFiles),
+			Additions: additions,
+			Deletions: deletions,
+		},
+		Files:      snapshotFiles,
+		CapturedAt: capturedAt,
+		SHA256:     hex.EncodeToString(sum[:]),
+		Warning:    strings.TrimSpace(warning),
+	}
 }
 
 func (o *Orchestrator) taskDiffRaw(ctx context.Context, t task.Task) (raw, baseRef, baseLabel, headRef, headLabel string, err error) {

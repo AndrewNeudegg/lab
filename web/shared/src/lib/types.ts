@@ -120,9 +120,25 @@ export interface HomelabdTask {
   merge_queue_entered_at?: string;
   workspace?: string;
   result?: string;
+  diff_snapshot?: HomelabdTaskDiffSnapshot;
   remote_diff?: string;
   remote_diff_captured_at?: string;
   plan?: HomelabdTaskPlan;
+}
+
+export interface HomelabdTaskDiffSnapshot {
+  source?: string;
+  base_ref?: string;
+  base_label?: string;
+  head_ref?: string;
+  head_label?: string;
+  workspace?: string;
+  raw_diff: string;
+  summary: HomelabdTaskDiffSummary;
+  files?: HomelabdTaskDiffFile[];
+  captured_at: string;
+  sha256?: string;
+  warning?: string;
 }
 
 export interface HomelabdTaskAttachment {
@@ -1476,6 +1492,8 @@ export interface HomelabdTaskDiffFile {
 
 export interface HomelabdTaskDiffResponse {
   task_id: string;
+  source?: string;
+  snapshot?: boolean;
   base_ref?: string;
   base_label?: string;
   head_ref?: string;
@@ -1484,6 +1502,9 @@ export interface HomelabdTaskDiffResponse {
   raw_diff: string;
   summary: HomelabdTaskDiffSummary;
   files: HomelabdTaskDiffFile[];
+  captured_at?: string;
+  sha256?: string;
+  warning?: string;
   generated_at: string;
 }
 

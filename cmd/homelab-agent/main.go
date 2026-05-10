@@ -268,7 +268,7 @@ func startRemoteHeartbeatLoop(ctx context.Context, every time.Duration, send fun
 }
 
 type agentControl interface {
-	complete(ctx context.Context, agentID, taskID, status, result, errorText, diff string) error
+	complete(ctx context.Context, agentID, taskID, status, result, errorText string, diff gitDiffSnapshot) error
 }
 
 type assignmentRunner interface {
@@ -279,6 +279,7 @@ func executeAssignment(ctx context.Context, client agentControl, runner assignme
 	if assignment == nil {
 		return nil
 	}
+	baseline, baselineErr := captureGitTreeSnapshot(ctx, assignment.Workdir)
 	result, runErr := runner.Run(ctx, agentrunner.RunRequest{
 		Backend:     firstNonEmpty(assignment.Backend, fallbackBackend),
 		TaskID:      assignment.TaskID,
@@ -300,22 +301,127 @@ func executeAssignment(ctx context.Context, client agentControl, runner assignme
 	} else if workerReportedNoChangeRequired(body) {
 		status = "no_change_required"
 	}
-	diff, diffErr := captureGitDiff(ctx, assignment.Workdir)
+	diff, diffErr := captureGitDiff(ctx, assignment.Workdir, baseline)
+	if baselineErr != nil {
+		body = appendResultNote(body, "Remote diff baseline capture failed: "+baselineErr.Error())
+	}
 	if diffErr != nil {
 		body = appendResultNote(body, "Remote diff capture failed: "+diffErr.Error())
 	}
 	return client.complete(ctx, agentID, assignment.TaskID, status, body, errorText, diff)
 }
 
-func captureGitDiff(ctx context.Context, workdir string) (string, error) {
+type gitTreeSnapshot struct {
+	Tree string
+}
+
+type gitDiffSnapshot struct {
+	RawDiff string
+	Source  string
+	BaseRef string
+	HeadRef string
+	Warning string
+}
+
+func captureGitTreeSnapshot(ctx context.Context, workdir string) (gitTreeSnapshot, error) {
 	workdir = strings.TrimSpace(workdir)
 	if workdir == "" {
-		return "", nil
+		return gitTreeSnapshot{}, nil
 	}
 	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
-		return "", nil
+		return gitTreeSnapshot{}, nil
 	}
-	return remoteWorkingTreeDiff(ctx, workdir)
+	tree, err := worktreeTree(ctx, workdir)
+	if err != nil {
+		return gitTreeSnapshot{}, err
+	}
+	return gitTreeSnapshot{Tree: tree}, nil
+}
+
+func captureGitDiff(ctx context.Context, workdir string, baseline gitTreeSnapshot) (gitDiffSnapshot, error) {
+	workdir = strings.TrimSpace(workdir)
+	if workdir == "" {
+		return gitDiffSnapshot{}, nil
+	}
+	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
+		return gitDiffSnapshot{}, nil
+	}
+	if strings.TrimSpace(baseline.Tree) != "" {
+		headTree, err := worktreeTree(ctx, workdir)
+		if err != nil {
+			return gitDiffSnapshot{}, err
+		}
+		diffOut, err := exec.CommandContext(ctx, "git", "-C", workdir, "diff", "--binary", baseline.Tree, headTree, "--", ".").CombinedOutput()
+		if err != nil {
+			return gitDiffSnapshot{}, fmt.Errorf("git diff task snapshot: %w: %s", err, strings.TrimSpace(string(diffOut)))
+		}
+		return gitDiffSnapshot{
+			RawDiff: string(diffOut),
+			Source:  "remote_agent_task_snapshot",
+			BaseRef: baseline.Tree,
+			HeadRef: headTree,
+		}, nil
+	}
+	diff, err := remoteWorkingTreeDiff(ctx, workdir)
+	return gitDiffSnapshot{
+		RawDiff: diff,
+		Source:  "remote_live_worktree_fallback",
+		Warning: "Remote agent could not create a task baseline, so this diff was generated from the current checkout and may include unrelated work.",
+	}, err
+}
+
+func worktreeTree(ctx context.Context, workdir string) (string, error) {
+	indexFile, err := os.CreateTemp("", "homelab-agent-index-*")
+	if err != nil {
+		return "", err
+	}
+	indexPath := indexFile.Name()
+	_ = indexFile.Close()
+	defer os.Remove(indexPath)
+	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	if out, err := gitCommand(ctx, workdir, env, nil, "read-tree", "HEAD"); err != nil {
+		if _, emptyErr := gitCommand(ctx, workdir, env, nil, "read-tree", "--empty"); emptyErr != nil {
+			return "", fmt.Errorf("git read-tree HEAD: %w: %s", err, strings.TrimSpace(out))
+		}
+	}
+	pathspecs, err := gitCommand(ctx, workdir, nil, nil, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return "", fmt.Errorf("git ls-files snapshot: %w: %s", err, strings.TrimSpace(pathspecs))
+	}
+	filtered := filterSnapshotPathspecs(pathspecs)
+	if len(filtered) > 0 {
+		if out, err := gitCommand(ctx, workdir, env, strings.NewReader(string(filtered)), "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+			return "", fmt.Errorf("git add snapshot: %w: %s", err, strings.TrimSpace(out))
+		}
+	}
+	tree, err := gitCommand(ctx, workdir, env, nil, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("git write-tree snapshot: %w: %s", err, strings.TrimSpace(tree))
+	}
+	return strings.TrimSpace(tree), nil
+}
+
+func gitCommand(ctx context.Context, workdir string, env []string, stdin io.Reader, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workdir}, args...)...)
+	if env != nil {
+		cmd.Env = env
+	}
+	cmd.Stdin = stdin
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func filterSnapshotPathspecs(raw string) []byte {
+	var b strings.Builder
+	for _, rel := range strings.Split(raw, "\x00") {
+		rel = strings.TrimSpace(rel)
+		if skipRemoteUntrackedDiffPath(rel) {
+			continue
+		}
+		b.WriteString(rel)
+		b.WriteByte(0)
+	}
+	return []byte(b.String())
 }
 
 func remoteWorkingTreeDiff(ctx context.Context, workdir string) (string, error) {
@@ -407,12 +513,16 @@ func (c controlClient) claim(ctx context.Context, agentID, backend string) (*rem
 	return out.Assignment, nil
 }
 
-func (c controlClient) complete(ctx context.Context, agentID, taskID, status, result, errorText, diff string) error {
+func (c controlClient) complete(ctx context.Context, agentID, taskID, status, result, errorText string, diff gitDiffSnapshot) error {
 	return c.do(ctx, http.MethodPost, "/agents/"+agentID+"/tasks/"+taskID+"/complete", map[string]any{
-		"status": status,
-		"result": result,
-		"error":  errorText,
-		"diff":   diff,
+		"status":        status,
+		"result":        result,
+		"error":         errorText,
+		"diff":          diff.RawDiff,
+		"diff_source":   diff.Source,
+		"diff_base_ref": diff.BaseRef,
+		"diff_head_ref": diff.HeadRef,
+		"diff_warning":  diff.Warning,
 	}, nil)
 }
 

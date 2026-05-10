@@ -219,14 +219,21 @@ func TestExecuteAssignmentReportsCapturedGitDiff(t *testing.T) {
 	}
 	gitAgentTestRun(t, workdir, "add", "README.md")
 	gitAgentTestRun(t, workdir, "commit", "-m", "base")
-	if err := os.MkdirAll(filepath.Join(workdir, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workdir, "src", "grid.js"), []byte("export const ready = true;\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("base\npreexisting\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	runner := &fakeAssignmentRunner{result: agentrunner.RunResult{Output: "done\n"}}
+	runner := &fakeAssignmentRunner{
+		result: agentrunner.RunResult{Output: "done\n"},
+		mutate: func(req agentrunner.RunRequest) {
+			if err := os.MkdirAll(filepath.Join(req.Workspace, "src"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(req.Workspace, "src", "grid.js"), []byte("export const ready = true;\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
 	client := &fakeAgentControl{}
 	if err := executeAssignment(context.Background(), client, runner, "desk", "codex", &remoteagent.Assignment{
 		TaskID:      "task_1",
@@ -237,6 +244,12 @@ func TestExecuteAssignmentReportsCapturedGitDiff(t *testing.T) {
 	}
 	if client.status != "completed" || !strings.Contains(client.diff, "new file mode") || !strings.Contains(client.diff, "+export const ready = true;") {
 		t.Fatalf("completion = %#v, want captured untracked diff", client)
+	}
+	if strings.Contains(client.diff, "preexisting") {
+		t.Fatalf("diff = %q, want task-scoped diff without preexisting worktree changes", client.diff)
+	}
+	if client.diffSource != "remote_agent_task_snapshot" || client.diffBaseRef == "" || client.diffHeadRef == "" {
+		t.Fatalf("diff metadata source/base/head = %q/%q/%q, want task snapshot metadata", client.diffSource, client.diffBaseRef, client.diffHeadRef)
 	}
 }
 
@@ -282,29 +295,39 @@ type fakeAssignmentRunner struct {
 	request agentrunner.RunRequest
 	result  agentrunner.RunResult
 	err     error
+	mutate  func(agentrunner.RunRequest)
 }
 
 func (r *fakeAssignmentRunner) Run(ctx context.Context, req agentrunner.RunRequest) (agentrunner.RunResult, error) {
 	r.request = req
+	if r.mutate != nil {
+		r.mutate(req)
+	}
 	return r.result, r.err
 }
 
 type fakeAgentControl struct {
-	agentID   string
-	taskID    string
-	status    string
-	result    string
-	errorText string
-	diff      string
+	agentID     string
+	taskID      string
+	status      string
+	result      string
+	errorText   string
+	diff        string
+	diffSource  string
+	diffBaseRef string
+	diffHeadRef string
 }
 
-func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, status, result, errorText, diff string) error {
+func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, status, result, errorText string, diff gitDiffSnapshot) error {
 	c.agentID = agentID
 	c.taskID = taskID
 	c.status = status
 	c.result = result
 	c.errorText = errorText
-	c.diff = diff
+	c.diff = diff.RawDiff
+	c.diffSource = diff.Source
+	c.diffBaseRef = diff.BaseRef
+	c.diffHeadRef = diff.HeadRef
 	return nil
 }
 

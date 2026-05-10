@@ -1676,6 +1676,9 @@ func TestTaskDiffEndpointReturnsStructuredBranchDiff(t *testing.T) {
 	if got.Summary.Files != 1 || got.Summary.Additions != 1 || got.Summary.Deletions != 0 {
 		t.Fatalf("summary = %#v, want one added line in one file", got.Summary)
 	}
+	if got.Source != "local_live_branch_diff" || got.Snapshot {
+		t.Fatalf("source/snapshot = %q/%v, want live branch diff", got.Source, got.Snapshot)
+	}
 	if len(got.Files) != 1 || got.Files[0].Path != "app.txt" || got.Files[0].Status != "modified" {
 		t.Fatalf("files = %#v, want modified app.txt", got.Files)
 	}
@@ -1749,11 +1752,94 @@ func TestTaskDiffEndpointReturnsRemoteWorkingTreeDiff(t *testing.T) {
 	if got.BaseLabel != "remote base" || got.Workspace != repo {
 		t.Fatalf("labels/workspace = %q/%q, want remote working tree diff", got.BaseLabel, got.Workspace)
 	}
+	if got.Source != "remote_live_worktree_fallback" || got.Warning == "" {
+		t.Fatalf("source/warning = %q/%q, want live fallback warning", got.Source, got.Warning)
+	}
 	if got.Summary.Files != 1 || got.Files[0].Status != "added" || got.Files[0].Path != "src/grid.js" {
 		t.Fatalf("files = %#v summary=%#v, want one added untracked file", got.Files, got.Summary)
 	}
 	if !strings.Contains(got.RawDiff, "new file mode") || !strings.Contains(got.RawDiff, "+export const ready = true;") {
 		t.Fatalf("raw diff = %q, want untracked file patch", got.RawDiff)
+	}
+}
+
+func TestTaskDiffEndpointPrefersStoredSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "remote")
+	gitHTTPTestRun(t, "", "init", "--initial-branch=main", repo)
+	gitHTTPTestRun(t, repo, "config", "user.email", "test@example.com")
+	gitHTTPTestRun(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitHTTPTestRun(t, repo, "add", "README.md")
+	gitHTTPTestRun(t, repo, "commit", "-m", "base")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\nlater live change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.DataDir = filepath.Join(dir, "data")
+	cfg.Repo.Root = filepath.Join(dir, "control")
+	cfg.Repo.WorkspaceRoot = filepath.Join(dir, "workspaces")
+	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
+	orch := agent.NewOrchestrator(
+		cfg,
+		eventlog.NewStore(filepath.Join(cfg.DataDir, "events")),
+		tasks,
+		approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals")),
+		tool.NewRegistry(),
+		tool.NewPolicy(nil),
+		nil,
+		"",
+	)
+	taskID := "task_20260508_snapshot"
+	now := time.Now().UTC()
+	if err := tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "remote grid",
+		Goal:       "build remote grid",
+		Status:     taskstore.StatusDone,
+		AssignedTo: "OrchestratorAgent",
+		Target:     &taskstore.ExecutionTarget{Mode: "remote", AgentID: "desk", Machine: "desk.local", Workdir: repo},
+		DiffSnapshot: &taskstore.TaskDiffSnapshot{
+			Source:     "remote_agent_task_snapshot",
+			BaseRef:    "base-tree",
+			BaseLabel:  "remote baseline",
+			HeadRef:    "head-tree",
+			HeadLabel:  "desk",
+			Workspace:  repo,
+			RawDiff:    "diff --git a/src/grid.js b/src/grid.js\nnew file mode 100644\n--- /dev/null\n+++ b/src/grid.js\n@@ -0,0 +1 @@\n+task scoped\n",
+			Summary:    taskstore.TaskDiffSnapshotSummary{Files: 1, Additions: 1, Deletions: 0},
+			Files:      []taskstore.TaskDiffSnapshotFile{{Path: "src/grid.js", Status: "added", Additions: 1}},
+			CapturedAt: now,
+			SHA256:     "abc123",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := Server{Orchestrator: orch}
+	mux := http.NewServeMux()
+	server.register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/tasks/"+taskID+"/diff", nil)
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rw.Code, rw.Body.String())
+	}
+	var got agent.TaskDiff
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Snapshot || got.Source != "remote_agent_task_snapshot" || got.SHA256 != "abc123" {
+		t.Fatalf("snapshot/source/sha = %v/%q/%q, want stored snapshot", got.Snapshot, got.Source, got.SHA256)
+	}
+	if strings.Contains(got.RawDiff, "later live change") || !strings.Contains(got.RawDiff, "task scoped") {
+		t.Fatalf("raw diff = %q, want stored snapshot not live worktree", got.RawDiff)
 	}
 }
 

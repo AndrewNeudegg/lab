@@ -60,9 +60,40 @@ type Task struct {
 	MergeQueueEnteredAt  *time.Time            `json:"merge_queue_entered_at,omitempty"`
 	Workspace            string                `json:"workspace,omitempty"`
 	Result               string                `json:"result,omitempty"`
+	DiffSnapshot         *TaskDiffSnapshot     `json:"diff_snapshot,omitempty"`
 	RemoteDiff           string                `json:"remote_diff,omitempty"`
 	RemoteDiffCapturedAt *time.Time            `json:"remote_diff_captured_at,omitempty"`
 	Plan                 *TaskPlan             `json:"plan,omitempty"`
+}
+
+type TaskDiffSnapshot struct {
+	Source     string                  `json:"source,omitempty"`
+	BaseRef    string                  `json:"base_ref,omitempty"`
+	BaseLabel  string                  `json:"base_label,omitempty"`
+	HeadRef    string                  `json:"head_ref,omitempty"`
+	HeadLabel  string                  `json:"head_label,omitempty"`
+	Workspace  string                  `json:"workspace,omitempty"`
+	RawDiff    string                  `json:"raw_diff"`
+	Summary    TaskDiffSnapshotSummary `json:"summary"`
+	Files      []TaskDiffSnapshotFile  `json:"files,omitempty"`
+	CapturedAt time.Time               `json:"captured_at"`
+	SHA256     string                  `json:"sha256,omitempty"`
+	Warning    string                  `json:"warning,omitempty"`
+}
+
+type TaskDiffSnapshotSummary struct {
+	Files     int `json:"files"`
+	Additions int `json:"additions"`
+	Deletions int `json:"deletions"`
+}
+
+type TaskDiffSnapshotFile struct {
+	Path      string `json:"path"`
+	OldPath   string `json:"old_path,omitempty"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Binary    bool   `json:"binary,omitempty"`
 }
 
 type Attachment struct {

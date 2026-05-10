@@ -34,7 +34,7 @@ approve approval_...
 
 The `agents` command lists external backend definitions, not remote machines. Remote machines are listed with `homelabctl agent list` or on the dashboard Tasks page.
 
-`diff <task_id>` uses the dedicated task diff API. In chat it returns a compact summary; `homelabctl task diff <task_id>` prints the raw patch; the dashboard task record shows the same comparison or remote working-tree patch in the highlighted `Changes vs main` panel with split and unified views.
+`diff <task_id>` uses the dedicated task diff API. In chat it returns a compact summary; `homelabctl task diff <task_id>` prints the raw patch; the dashboard task record shows the same comparison in the highlighted `Changes vs main` panel with split and unified views. Reviewed local tasks and new remote tasks use immutable diff snapshots so history survives merge, accept, cleanup, and later remote work. Older records can still show a clearly marked live fallback when no snapshot exists.
 
 ## Configuration
 

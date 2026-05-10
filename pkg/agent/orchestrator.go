@@ -1818,6 +1818,14 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 }
 
 func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, result, status string, remoteDiff ...string) (string, error) {
+	snapshot := taskstore.TaskDiffSnapshot{}
+	if len(remoteDiff) > 0 {
+		snapshot = buildTaskDiffSnapshot(remoteDiff[0], "remote_completion_snapshot_legacy", "", "remote base", "", agentID, "", "This legacy remote diff was captured before task-scoped baselines were available; it may include earlier uncommitted remote work.", time.Now().UTC())
+	}
+	return o.CompleteRemoteTaskWithSnapshot(ctx, agentID, taskID, result, status, snapshot)
+}
+
+func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agentID, taskID, result, status string, snapshot taskstore.TaskDiffSnapshot) (string, error) {
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
@@ -1833,10 +1841,26 @@ func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, 
 	t.Result = strings.TrimSpace(result)
 	t.RemoteDiff = ""
 	t.RemoteDiffCapturedAt = nil
-	if len(remoteDiff) > 0 {
-		t.RemoteDiff = strings.TrimSpace(remoteDiff[0])
+	if strings.TrimSpace(snapshot.Source) != "" || strings.TrimSpace(snapshot.RawDiff) != "" || !snapshot.CapturedAt.IsZero() {
+		if snapshot.CapturedAt.IsZero() {
+			snapshot.CapturedAt = time.Now().UTC()
+		}
+		if strings.TrimSpace(snapshot.Source) == "" {
+			snapshot.Source = "remote_agent_task_snapshot"
+		}
+		if strings.TrimSpace(snapshot.HeadLabel) == "" {
+			snapshot.HeadLabel = agentID
+		}
+		if strings.TrimSpace(snapshot.Workspace) == "" && t.Target != nil {
+			snapshot.Workspace = t.Target.Workdir
+		}
+		if snapshot.SHA256 == "" || (snapshot.Summary.Files == 0 && strings.TrimSpace(snapshot.RawDiff) != "") {
+			snapshot = buildTaskDiffSnapshot(snapshot.RawDiff, snapshot.Source, snapshot.BaseRef, snapshot.BaseLabel, snapshot.HeadRef, snapshot.HeadLabel, snapshot.Workspace, snapshot.Warning, snapshot.CapturedAt)
+		}
+		t.DiffSnapshot = &snapshot
+		t.RemoteDiff = strings.TrimSpace(snapshot.RawDiff)
 		if t.RemoteDiff != "" {
-			capturedAt := time.Now().UTC()
+			capturedAt := snapshot.CapturedAt
 			t.RemoteDiffCapturedAt = &capturedAt
 		}
 	}
@@ -7948,6 +7972,12 @@ func (o *Orchestrator) describeTaskDiff(ctx context.Context, selector string) (s
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Diff for %s against %s: %d changed file(s), +%d/-%d.", shortID, base, diff.Summary.Files, diff.Summary.Additions, diff.Summary.Deletions)
+	if strings.TrimSpace(diff.Source) != "" {
+		fmt.Fprintf(&b, "\nSource: %s.", diff.Source)
+	}
+	if strings.TrimSpace(diff.Warning) != "" {
+		fmt.Fprintf(&b, "\nWarning: %s", strings.TrimSpace(diff.Warning))
+	}
 	limit := len(diff.Files)
 	if limit > 8 {
 		limit = 8
@@ -8084,6 +8114,22 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		_, _ = o.processMergeQueueHead(ctx, "merge queue head produced no diff")
 		return fmt.Sprintf("ReviewerAgent: no diff to approve.\nTask %s is blocked because the worker produced no changes and did not report `No change required:`.\nNext: `delegate %s to codex finish the task`, `run %s`, or `delete %s`.", shortID, shortID, shortID, shortID), nil
 	}
+	var diffSnapshot *taskstore.TaskDiffSnapshot
+	if strings.TrimSpace(diffOut) != "" {
+		baseRef, baseLabel, headRef, headLabel := "", "", "", ""
+		if workspaceHasGit(t.Workspace) {
+			if ref, err := gitOutput(ctx, o.cfg.Repo.Root, "rev-parse", "HEAD"); err == nil {
+				baseRef = ref
+				baseLabel = gitLabel(ctx, o.cfg.Repo.Root, ref)
+			}
+			if ref, err := gitOutput(ctx, t.Workspace, "rev-parse", "HEAD"); err == nil {
+				headRef = ref
+				headLabel = gitLabel(ctx, t.Workspace, ref)
+			}
+		}
+		snapshot := buildTaskDiffSnapshot(diffOut, "local_review_snapshot", baseRef, firstNonEmptyString(baseLabel, "main"), headRef, firstNonEmptyString(headLabel, shortID), t.Workspace, "", time.Now().UTC())
+		diffSnapshot = &snapshot
+	}
 	diffNeedsUIUX := diffRequiresUIUXReview(diffOut)
 	uiUXRequired := opts.forceUIUX || diffNeedsUIUX
 	if uiUXRequired && !taskPlanHasUIUXBrief(t.Plan) {
@@ -8209,6 +8255,9 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 	}
 	if restartPlan != "" {
 		t.Result += "\nRestart plan: " + restartPlan
+	}
+	if diffSnapshot != nil {
+		t.DiffSnapshot = diffSnapshot
 	}
 	_ = o.tasks.Save(t)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.requested", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(req)})

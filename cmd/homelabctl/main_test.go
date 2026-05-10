@@ -713,6 +713,8 @@ func TestTaskDiffCommandPrintsRawPatch(t *testing.T) {
 		observed = observeRequest(t, req)
 		writeTestJSON(t, rw, http.StatusOK, map[string]any{
 			"raw_diff": "diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -1 +1,2 @@\n base\n+changed\n",
+			"source":   "local_review_snapshot",
+			"snapshot": true,
 			"summary":  map[string]any{"files": 1, "additions": 1, "deletions": 0},
 			"files":    []any{},
 		})
@@ -723,8 +725,10 @@ func TestTaskDiffCommandPrintsRawPatch(t *testing.T) {
 	if observed.Method != http.MethodGet || observed.Path != "/tasks/task_123/diff" {
 		t.Fatalf("request = %s %s, want GET /tasks/task_123/diff", observed.Method, observed.Path)
 	}
-	if !strings.Contains(stdout, "# 1 changed file(s), +1/-0") || !strings.Contains(stdout, "+changed") {
-		t.Fatalf("stdout = %q, want summary and raw diff", stdout)
+	if !strings.Contains(stdout, "# 1 changed file(s), +1/-0") ||
+		!strings.Contains(stdout, "# source: local_review_snapshot snapshot") ||
+		!strings.Contains(stdout, "+changed") {
+		t.Fatalf("stdout = %q, want summary, source, and raw diff", stdout)
 	}
 }
 
@@ -768,6 +772,8 @@ func TestTaskDiffCommandPrintsRemoteRawPatch(t *testing.T) {
 			"base_label": "remote base",
 			"head_label": "desk",
 			"raw_diff":   "diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -0,0 +1 @@\n+remote\n",
+			"source":     "remote_live_worktree_fallback",
+			"warning":    "live fallback",
 			"summary":    map[string]any{"files": 1, "additions": 1, "deletions": 0},
 			"files":      []any{},
 		})
@@ -775,7 +781,9 @@ func TestTaskDiffCommandPrintsRemoteRawPatch(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "# 1 changed file(s), +1/-0") || !strings.Contains(stdout, "+remote") {
+	if !strings.Contains(stdout, "# 1 changed file(s), +1/-0") ||
+		!strings.Contains(stdout, "# warning: live fallback") ||
+		!strings.Contains(stdout, "+remote") {
 		t.Fatalf("stdout = %q, want remote raw diff", stdout)
 	}
 }

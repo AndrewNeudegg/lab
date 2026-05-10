@@ -175,6 +175,8 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('parseUnifiedDiff');
     expect(pageSource).toContain('buildSplitRows');
     expect(pageSource).toContain('inlineChangeSegments');
+    expect(pageSource).toContain('diffSourceLabel');
+    expect(pageSource).toContain('currentTaskDiff.warning');
     expect(pageSource).toContain('aria-label="Changed files"');
     expect(pageSource).toContain('aria-label="Split diff"');
     expect(pageSource).toContain('aria-label="Unified diff"');

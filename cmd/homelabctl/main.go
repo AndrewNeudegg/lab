@@ -1496,6 +1496,9 @@ func (c cli) printTaskDiff(endpoint string) error {
 	}
 	var diff struct {
 		BaseLabel string `json:"base_label"`
+		Source    string `json:"source"`
+		Snapshot  bool   `json:"snapshot"`
+		Warning   string `json:"warning"`
 		RawDiff   string `json:"raw_diff"`
 		Summary   struct {
 			Files     int `json:"files"`
@@ -1515,6 +1518,16 @@ func (c cli) printTaskDiff(endpoint string) error {
 		return nil
 	}
 	fmt.Fprintf(c.out, "# %d changed file(s), +%d/-%d\n", diff.Summary.Files, diff.Summary.Additions, diff.Summary.Deletions)
+	if strings.TrimSpace(diff.Source) != "" {
+		provenance := diff.Source
+		if diff.Snapshot {
+			provenance += " snapshot"
+		}
+		fmt.Fprintf(c.out, "# source: %s\n", provenance)
+	}
+	if strings.TrimSpace(diff.Warning) != "" {
+		fmt.Fprintf(c.out, "# warning: %s\n", strings.TrimSpace(diff.Warning))
+	}
 	fmt.Fprint(c.out, diff.RawDiff)
 	if !strings.HasSuffix(diff.RawDiff, "\n") {
 		fmt.Fprintln(c.out)

@@ -86,6 +86,21 @@ go run ./cmd/homelab-agent \
 
 The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory, sends stdout/stderr back as the task result, and captures the remote git working-tree patch after completion. The captured patch includes uncommitted tracked changes and untracked files, excluding ignored runtime state such as `.agent-*`. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 3,600 seconds, or 1 hour. If the worker reaches that deadline, the remote task is recorded as `timed_out` rather than `blocked` so the operator can retry with clearer instructions or a longer timeout. The default Codex backend disables Codex's own sandbox because local tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
 
+Use `external_agents.<backend>.wrapper_command` and `wrapper_args` on each remote agent when a repository needs a custom shell before the CLI starts. The wrapper is agent-local configuration, not goal text. It receives `HOMELABD_WORKSPACE` and the backend command as arguments, so one machine can run a Nix-aware wrapper, another can use a VM bootstrap script, and a third can execute the CLI directly. A NixOS remote can use a repository script such as `/home/lab/remote1/scripts/agent-env`:
+
+```json
+{
+  "external_agents": {
+    "codex": {
+      "command": "/nix/store/.../bin/codex",
+      "args": ["--dangerously-bypass-approvals-and-sandbox", "exec", "--skip-git-repo-check"],
+      "wrapper_command": "/home/lab/remote1/scripts/agent-env",
+      "wrapper_args": []
+    }
+  }
+}
+```
+
 Remote agents do not need to run in this repository. Each advertised `workdir` can be a different checkout, a different project, or a non-git directory. `homelabd` stores the path as execution context only; it does not assume that remote path has the same HEAD, branch, or repository root as the control-plane checkout.
 
 Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are configured, `homelab-agent` falls back to the configured `repo.root`, which is useful for local development but too easy to point at the wrong tree on a real machine.

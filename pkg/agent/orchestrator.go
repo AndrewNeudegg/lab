@@ -1809,6 +1809,7 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			_ = o.tasks.Save(t)
 			return nil, fmt.Errorf("remote task %s target is invalid: %w", t.ID, err)
 		}
+		retryInstruction := latestRemoteRetryInstruction(t.Result)
 		if backend == "" {
 			backend = firstNonEmptyString(target.Backend, "codex")
 		}
@@ -1829,6 +1830,10 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			"workdir":  target.Workdir,
 			"backend":  backend,
 		})})
+		instruction := defaultRemoteAgentInstruction(t, agent)
+		if retryInstruction != "" {
+			instruction = appendRemoteRetryInstruction(instruction, retryInstruction)
+		}
 		return &remoteagent.Assignment{
 			TaskID:      t.ID,
 			Title:       t.Title,
@@ -1839,7 +1844,7 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			RepoURL:     target.RepoURL,
 			Branch:      target.Branch,
 			Backend:     backend,
-			Instruction: defaultRemoteAgentInstruction(t, agent),
+			Instruction: instruction,
 		}, nil
 	}
 	return nil, nil
@@ -5967,6 +5972,27 @@ func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) st
 		agentDiagramGuidance,
 		"Inspect the directory first. If this task depends on another project, name the dependency, the expected version/commit/API, and the coordination order instead of guessing. If no code, docs, configuration, or workflow change is required, make no edits and start the final result with `No change required:` followed by the reason. Otherwise make the smallest practical change, run relevant validation, and report changed files plus commands run.",
 	}, "\n")
+}
+
+const remoteRetryQueuedPrefix = "remote retry queued:"
+
+func latestRemoteRetryInstruction(result string) string {
+	lines := strings.Split(strings.ReplaceAll(result, "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if instruction, ok := strings.CutPrefix(line, remoteRetryQueuedPrefix); ok {
+			return strings.TrimSpace(instruction)
+		}
+	}
+	return ""
+}
+
+func appendRemoteRetryInstruction(instruction, retryInstruction string) string {
+	retryInstruction = strings.TrimSpace(retryInstruction)
+	if retryInstruction == "" {
+		return strings.TrimSpace(instruction)
+	}
+	return strings.TrimSpace(instruction) + "\n\nRetry instruction from operator:\n" + retryInstruction
 }
 
 func (o *Orchestrator) showTask(taskID string) (string, error) {

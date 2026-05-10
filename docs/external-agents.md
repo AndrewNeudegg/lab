@@ -46,7 +46,7 @@ CLAUDE_CMD=claude
 GEMINI_CMD=gemini
 ```
 
-`CODEX_CLI`, `CLAUDE_CLI`, and `GEMINI_CLI` are also accepted. The default Codex backend is configured for trusted task worktrees: it passes `--dangerously-bypass-approvals-and-sandbox` and `CODEX_UNSAFE_ALLOW_NO_SANDBOX=1` so Codex does not remount `.git` read-only inside the already-isolated worktree. `config.json` can override the command, args, environment, timeout, and description:
+`CODEX_CLI`, `CLAUDE_CLI`, and `GEMINI_CLI` are also accepted. The default Codex backend is configured for trusted task worktrees: it passes `--dangerously-bypass-approvals-and-sandbox` and `CODEX_UNSAFE_ALLOW_NO_SANDBOX=1` so Codex does not remount `.git` read-only inside the already-isolated worktree. `config.json` can override the command, args, optional wrapper, environment, timeout, and description:
 
 ```json
 {
@@ -55,6 +55,8 @@ GEMINI_CMD=gemini
       "enabled": true,
       "command": "codex",
       "args": ["--dangerously-bypass-approvals-and-sandbox", "exec", "--skip-git-repo-check"],
+      "wrapper_command": "/srv/project/scripts/agent-env",
+      "wrapper_args": [],
       "env": {
         "CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1"
       },
@@ -62,6 +64,20 @@ GEMINI_CMD=gemini
     }
   }
 }
+```
+
+Use `wrapper_command` when the agent binary needs a project-specific execution environment before the backend starts. The wrapper receives `wrapper_args`, then the configured backend command and args. It runs in the task workspace and gets `HOMELABD_WORKSPACE`, `HOMELABD_TASK_ID`, `HOMELABD_BACKEND`, and `HOMELABD_EXTERNAL_RUN_ID`, so a wrapper can enter a Nix shell, set up PATH, select a language toolchain, or delegate to a project script:
+
+```sh
+#!/usr/bin/env sh
+set -eu
+
+workspace="${HOMELABD_WORKSPACE:-$PWD}"
+if [ -f "$workspace/flake.nix" ]; then
+  exec nix develop "$workspace" -c "$@"
+fi
+
+exec "$@"
 ```
 
 The default external-agent timeout is `3600` seconds, or 1 hour. Set

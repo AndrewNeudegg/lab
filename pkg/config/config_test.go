@@ -142,6 +142,28 @@ func TestWithDefaultsPreservesCustomCodexArgs(t *testing.T) {
 	}
 }
 
+func TestWithDefaultsPreservesExternalAgentWrapper(t *testing.T) {
+	cfg := Config{
+		ExternalAgents: map[string]ExternalAgentConfig{
+			"codex": {
+				Enabled:        true,
+				Command:        "codex",
+				Args:           []string{"exec"},
+				WrapperCommand: "/srv/project/scripts/agent-env",
+				WrapperArgs:    []string{"--nix"},
+			},
+		},
+	}
+
+	got := cfg.WithDefaults().ExternalAgents["codex"]
+	if got.WrapperCommand != "/srv/project/scripts/agent-env" {
+		t.Fatalf("wrapper command = %q, want preserved custom wrapper", got.WrapperCommand)
+	}
+	if strings.Join(got.WrapperArgs, " ") != "--nix" {
+		t.Fatalf("wrapper args = %#v, want preserved custom wrapper args", got.WrapperArgs)
+	}
+}
+
 func TestDefaultSupervisorIncludesDisabledRemoteAgentTemplate(t *testing.T) {
 	cfg := Default()
 	var agentApp *SupervisorAppConfig

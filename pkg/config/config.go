@@ -199,6 +199,8 @@ type ExternalAgentConfig struct {
 	Enabled        bool              `json:"enabled"`
 	Command        string            `json:"command"`
 	Args           []string          `json:"args,omitempty"`
+	WrapperCommand string            `json:"wrapper_command,omitempty"`
+	WrapperArgs    []string          `json:"wrapper_args,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds"`
 	Description    string            `json:"description,omitempty"`

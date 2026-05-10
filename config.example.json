@@ -213,6 +213,8 @@
       "enabled": true,
       "command": "codex",
       "args": ["--dangerously-bypass-approvals-and-sandbox", "exec", "--skip-git-repo-check"],
+      "wrapper_command": "",
+      "wrapper_args": [],
       "env": {
         "CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1"
       },

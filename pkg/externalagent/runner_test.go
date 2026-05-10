@@ -86,6 +86,83 @@ func TestRunnerPassesConfiguredAgentEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunnerWrapsConfiguredCommand(t *testing.T) {
+	workspace := t.TempDir()
+	wrapper := filepath.Join(t.TempDir(), "agent-wrapper.sh")
+	if err := os.WriteFile(wrapper, []byte(`#!/bin/sh
+printf 'wrapper-workdir:%s\n' "$PWD"
+if [ "${1:-}" = "--unused-arg" ]; then
+  printf 'wrapper-arg:%s\n' "$1"
+  shift
+fi
+printf 'wrapped-command:%s\n' "$1"
+exec "$@"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"codex": {
+			Enabled:        true,
+			Command:        "sh",
+			Args:           []string{"-c", "printf 'agent:%s:%s:%s\\n' \"$HOMELABD_TASK_ID\" \"$HOMELABD_WORKSPACE\" \"$(cat)\""},
+			WrapperCommand: wrapper,
+			WrapperArgs:    []string{"--unused-arg"},
+			TimeoutSeconds: 5,
+		},
+	})
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Backend:     "codex",
+		TaskID:      "task_wrapper",
+		Workspace:   workspace,
+		Instruction: "use the wrapper",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"wrapper-workdir:" + workspace,
+		"wrapper-arg:--unused-arg",
+		"wrapped-command:sh",
+		"agent:task_wrapper:" + workspace + ":use the wrapper",
+	} {
+		if !strings.Contains(result.Output, want) {
+			t.Fatalf("output = %q, want %q", result.Output, want)
+		}
+	}
+	gotCommand := strings.Join(result.Command, " ")
+	if !strings.Contains(gotCommand, wrapper+" --unused-arg sh") {
+		t.Fatalf("command = %#v, want wrapper command displayed before agent command", result.Command)
+	}
+}
+
+func TestRunnerListUsesWrapperAvailabilityWhenConfigured(t *testing.T) {
+	runner := NewRunner(map[string]config.ExternalAgentConfig{
+		"wrapped": {
+			Enabled:        true,
+			Command:        "homelabd-command-that-only-exists-inside-wrapper",
+			WrapperCommand: "sh",
+		},
+		"direct": {
+			Enabled: true,
+			Command: "homelabd-command-that-does-not-exist",
+		},
+	})
+
+	agents := runner.List()
+	byName := map[string]Agent{}
+	for _, agent := range agents {
+		byName[agent.Name] = agent
+	}
+	if !byName["wrapped"].Available {
+		t.Fatalf("wrapped agent available = false, want true because wrapper command exists")
+	}
+	if byName["direct"].Available {
+		t.Fatalf("direct agent available = true, want false because command is missing")
+	}
+}
+
 func TestRunnerRejectsMissingWorkspaceBeforeExecuting(t *testing.T) {
 	runner := NewRunner(map[string]config.ExternalAgentConfig{
 		"codex": {Enabled: true, Command: "sh", Args: []string{"-c", "exit 99"}},

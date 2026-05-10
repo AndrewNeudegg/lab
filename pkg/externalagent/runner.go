@@ -34,6 +34,8 @@ type Agent struct {
 	Available   bool     `json:"available"`
 	Command     string   `json:"command,omitempty"`
 	Args        []string `json:"args,omitempty"`
+	Wrapper     string   `json:"wrapper,omitempty"`
+	WrapperArgs []string `json:"wrapper_args,omitempty"`
 	Description string   `json:"description,omitempty"`
 }
 
@@ -82,9 +84,11 @@ func (r *Runner) List() []Agent {
 		agents = append(agents, Agent{
 			Name:        name,
 			Enabled:     cfg.Enabled,
-			Available:   cfg.Enabled && cfg.Command != "" && commandAvailable(cfg.Command),
+			Available:   agentAvailable(cfg),
 			Command:     cfg.Command,
 			Args:        redactArgs(cfg.Args),
+			Wrapper:     cfg.WrapperCommand,
+			WrapperArgs: redactArgs(cfg.WrapperArgs),
 			Description: cfg.Description,
 		})
 	}
@@ -117,8 +121,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	childCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	started := time.Now().UTC()
-	args := append([]string{}, cfg.Args...)
-	cmd := exec.CommandContext(childCtx, cfg.Command, args...)
+	invocation := externalAgentInvocation(cfg)
+	cmd := exec.CommandContext(childCtx, invocation.Command, invocation.Args...)
 	cmd.Dir = req.Workspace
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error {
@@ -146,7 +150,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Backend:   req.Backend,
 		TaskID:    req.TaskID,
 		Workspace: req.Workspace,
-		Command:   append([]string{cfg.Command}, redactArgs(args)...),
+		Command:   invocation.Display,
 		StartedAt: started,
 	}
 	trace := &outputTrace{
@@ -183,6 +187,36 @@ func timeoutForConfig(cfg config.ExternalAgentConfig) time.Duration {
 		return timeout
 	}
 	return time.Duration(config.DefaultExternalAgentTimeoutSeconds) * time.Second
+}
+
+type agentInvocation struct {
+	Command string
+	Args    []string
+	Display []string
+}
+
+func externalAgentInvocation(cfg config.ExternalAgentConfig) agentInvocation {
+	command := strings.TrimSpace(cfg.Command)
+	args := append([]string{}, cfg.Args...)
+	wrapper := strings.TrimSpace(cfg.WrapperCommand)
+	if wrapper == "" {
+		return agentInvocation{
+			Command: command,
+			Args:    args,
+			Display: append([]string{command}, redactArgs(args)...),
+		}
+	}
+	wrapperArgs := append([]string{}, cfg.WrapperArgs...)
+	wrappedArgs := append(wrapperArgs, command)
+	wrappedArgs = append(wrappedArgs, args...)
+	display := append([]string{wrapper}, redactArgs(wrapperArgs)...)
+	display = append(display, command)
+	display = append(display, redactArgs(args)...)
+	return agentInvocation{
+		Command: wrapper,
+		Args:    wrappedArgs,
+		Display: display,
+	}
 }
 
 type outputTrace struct {
@@ -248,6 +282,16 @@ func commandAvailable(command string) bool {
 	}
 	_, err := exec.LookPath(command)
 	return err == nil
+}
+
+func agentAvailable(cfg config.ExternalAgentConfig) bool {
+	if !cfg.Enabled || strings.TrimSpace(cfg.Command) == "" {
+		return false
+	}
+	if strings.TrimSpace(cfg.WrapperCommand) != "" {
+		return commandAvailable(cfg.WrapperCommand)
+	}
+	return commandAvailable(cfg.Command)
 }
 
 func redactArgs(args []string) []string {

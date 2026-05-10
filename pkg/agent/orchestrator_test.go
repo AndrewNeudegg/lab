@@ -2449,9 +2449,20 @@ func TestRemoteTaskRetryAndReopenKeepSameRemoteTarget(t *testing.T) {
 		t.Fatalf("requeued = %#v, want queued for same remote target with updated backend", requeued)
 	}
 
-	requeued.Status = taskstore.StatusDone
-	requeued.AssignedTo = "OrchestratorAgent"
-	if err := orch.tasks.Save(requeued); err != nil {
+	retryAssignment, err := orch.ClaimRemoteTask(context.Background(), agent, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryAssignment == nil || retryAssignment.Backend != "claude" || !strings.Contains(retryAssignment.Instruction, "Retry instruction from operator:\ntry a smaller change") {
+		t.Fatalf("retry assignment = %#v, want backend and operator retry instruction", retryAssignment)
+	}
+	claimed, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.Status = taskstore.StatusDone
+	claimed.AssignedTo = "OrchestratorAgent"
+	if err := orch.tasks.Save(claimed); err != nil {
 		t.Fatal(err)
 	}
 	reopenReply, err := orch.reopenTask(context.Background(), taskID, "cross-repo API changed")

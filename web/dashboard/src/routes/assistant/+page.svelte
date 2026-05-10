@@ -2818,12 +2818,12 @@
             </div>
           </details>
         </article>
-      {:else if runsLoading}
+      {:else if selectedDetailKind !== 'goal' && runsLoading}
         <div class="empty-record">
           <h2>Loading Assistant runs</h2>
           <p>Fetching proactive checks, recommendations, evidence, and receipts.</p>
         </div>
-      {:else}
+      {:else if selectedDetailKind !== 'goal'}
         <div class="empty-record">
           <h2>No Assistant run selected</h2>
           <p>Select a run from the queue or start a proactive check.</p>
@@ -3772,12 +3772,16 @@
   }
 
   .goal-blocker-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: flex-start;
+    gap: 0.75rem;
   }
 
   .goal-blocker-panel > div:first-child {
     display: grid;
     gap: 0.28rem;
+    min-width: 0;
   }
 
   .goal-blocker-panel small {
@@ -3793,6 +3797,8 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.45rem;
+    max-width: 100%;
+    min-width: 0;
   }
 
   .blocker-evidence-list {
@@ -3834,21 +3840,43 @@
   }
 
   .notice-action {
-    flex: 0 0 auto;
+    box-sizing: border-box;
+    flex: 0 1 auto;
+    max-width: 100%;
+    text-align: center;
+    white-space: normal;
   }
 
   .record-header {
     align-items: flex-start;
+    flex-wrap: wrap;
+    min-width: 0;
     padding: 1rem;
     border: 1px solid var(--border-soft, #dbe3ef);
     border-radius: 8px;
     background: var(--surface, #ffffff);
   }
 
+  .record-header > div {
+    min-width: 0;
+  }
+
+  .record-header > div:not(.record-actions) {
+    flex: 1 1 18rem;
+  }
+
   .record-actions {
-    flex: 0 0 auto;
+    flex: 1 1 18rem;
     justify-content: flex-end;
     flex-wrap: wrap;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .record-actions .text-action,
+  .record-actions .primary-action,
+  .record-actions .danger-action {
+    box-sizing: border-box;
   }
 
   .back-to-runs {
@@ -4277,6 +4305,15 @@
       flex-direction: column;
     }
 
+    .record-header > div:not(.record-actions),
+    .record-actions {
+      flex: 0 1 auto;
+    }
+
+    .record-actions {
+      width: 100%;
+    }
+
     .back-to-runs {
       display: inline-flex;
     }
@@ -4302,7 +4339,17 @@
     }
 
     .blocker-actions {
+      display: grid;
+      grid-template-columns: 1fr;
       justify-content: flex-start;
+      width: 100%;
+    }
+
+    .goal-blocker-panel {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .goal-blocker-panel .notice-action {
       width: 100%;
     }
 

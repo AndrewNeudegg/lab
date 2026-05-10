@@ -331,6 +331,52 @@ const assistantGoal = {
   next_check_at: now
 };
 
+const blockedGoalID = 'goal_grid_rebuild';
+const blockedGoalBlockerTrace = {
+  source_type: 'task_report',
+  source_id: 'greport_task_goal_grid_core',
+  source_url: `/assistant?goal=${blockedGoalID}`,
+  goal_id: blockedGoalID,
+  phase_id: 'phase_03_parity',
+  phase_title: 'Expand feature parity',
+  blocking_task_id: 'task_goal_grid_core',
+  blocking_task_url: '/tasks?task=task_goal_grid_core',
+  review_decision: 'blocked_with_progress',
+  reason:
+    'Task grid_core reported blocker: npm pack --dry-run cannot run because npm is unavailable in this environment.',
+  operator_action: 'Open the blocking task, resolve or accept the blocker, then resume Autopilot.',
+  blockers: ['npm pack --dry-run cannot run because npm is unavailable.'],
+  followups: ['Install npm in the task environment or accept a different package validation path.'],
+  created_at: now
+};
+
+const blockedAssistantGoal = {
+  id: blockedGoalID,
+  title: 'Grid rebuild',
+  objective: 'Build a clean-room AG Grid replacement with enterprise behaviours and browser validation.',
+  details: 'Work in phases and keep the operator informed when the environment blocks validation.',
+  kind: 'build',
+  execution_mode: 'autopilot',
+  status: 'blocked',
+  priority: 'high',
+  autonomy: 'create_tasks',
+  cadence: 'manual',
+  linked_tasks: ['task_goal_grid_core'],
+  progress_summary: 'Autopilot is blocked by missing package validation tooling.',
+  blocker_trace: blockedGoalBlockerTrace,
+  autopilot: {
+    status: 'blocked',
+    budget_tasks: 500,
+    tasks_started: 110,
+    current_task_id: 'task_goal_grid_core'
+  },
+  created_by: 'operator',
+  created_at: now,
+  updated_at: now,
+  last_checked_at: now,
+  next_check_at: ''
+};
+
 const assistantGoalWatch = {
   id: 'gwatch_daily_mail',
   goal_id: assistantGoal.id,
@@ -420,7 +466,10 @@ const mockShellApis = async (page: Page) => {
   });
 };
 
-const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boolean } = {}) => {
+const mockAssistantApis = async (
+  page: Page,
+  options: { includeFailedRun?: boolean; includeBlockedGoal?: boolean } = {}
+) => {
   await mockShellApis(page);
   const archivedRun = {
     ...clone(assistantRun),
@@ -471,12 +520,15 @@ const mockAssistantApis = async (page: Page, options: { includeFailedRun?: boole
   };
   const runs = options.includeFailedRun ? [failedRun, clone(assistantRun), archivedRun] : [clone(assistantRun), archivedRun];
   const signals: any[] = [clone(assistantSignal)];
-  const goals: any[] = [clone(assistantGoal)];
+  const goals: any[] = options.includeBlockedGoal
+    ? [clone(assistantGoal), clone(blockedAssistantGoal)]
+    : [clone(assistantGoal)];
   const watches: any[] = [clone(assistantGoalWatch)];
   const notes: any[] = [clone(assistantGoalNote)];
   const assessments: any[] = [clone(assistantGoalAssessment)];
   const timelineForGoal = (goal: any) => ({
     goal,
+    blocker_trace: goal.blocker_trace,
     watches: watches.filter((watch) => watch.goal_id === goal.id),
     signals: [],
     notes: notes.filter((note) => note.goal_id === goal.id),
@@ -1246,6 +1298,85 @@ for (const viewport of [
       await page.evaluate(() => window.scrollTo({ top: 0 }));
       await expect(page).toHaveScreenshot(`assistant-ui-quality-${viewport.name}.png`, {
         fullPage: !viewport.mobile,
+        animations: 'disabled'
+      });
+    });
+
+    test('keeps blocked Goal actions readable beside long blocker text', async ({ page }) => {
+      await initLightTheme(page);
+      await mockAssistantApis(page, { includeBlockedGoal: true });
+      await page.goto(`/assistant?goal=${blockedGoalID}`);
+      await expectAssistantReady(page);
+
+      const selectedGoalRegion = page.locator('article[aria-label="Selected Assistant Goal"]');
+      await expect(selectedGoalRegion).toContainText('Grid rebuild');
+      const blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(blockerTrace).toBeVisible();
+      await expect(blockerTrace).toContainText('Blocked by task');
+      await expect(blockerTrace).toContainText('npm pack --dry-run cannot run');
+      await expect(blockerTrace.getByRole('link', { name: 'Open blocking task' })).toHaveAttribute(
+        'href',
+        '/tasks?task=task_goal_grid_core'
+      );
+      await expect(blockerTrace.getByRole('button', { name: 'Check Goal now' })).toBeVisible();
+      await expect(blockerTrace.getByRole('button', { name: 'Resume Autopilot' })).toBeVisible();
+
+      const layout = await blockerTrace.evaluate((panel) => {
+        const panelRect = panel.getBoundingClientRect();
+        const copyRect = panel.querySelector(':scope > div:first-child')?.getBoundingClientRect();
+        const actionRects = Array.from(panel.querySelectorAll('.notice-action')).map((action) => {
+          const rect = action.getBoundingClientRect();
+          return {
+            label: (action.textContent || action.getAttribute('aria-label') || '').trim(),
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+            width: rect.width
+          };
+        });
+        const intersects = (left: DOMRect, right: (typeof actionRects)[number]) =>
+          left.left < right.right &&
+          left.right > right.left &&
+          left.top < right.bottom &&
+          left.bottom > right.top;
+        return {
+          panelWidth: panelRect.width,
+          outOfBounds: actionRects
+            .filter(
+              (rect) =>
+                rect.left < panelRect.left - 1 ||
+                rect.right > panelRect.right + 1 ||
+                rect.top < panelRect.top - 1 ||
+                rect.bottom > panelRect.bottom + 1
+            )
+            .map((rect) => rect.label),
+          overlapsCopy: copyRect ? actionRects.filter((rect) => intersects(copyRect, rect)).map((rect) => rect.label) : [],
+          actionWidths: actionRects.map((rect) => rect.width)
+        };
+      });
+      expect(layout.outOfBounds, JSON.stringify(layout)).toEqual([]);
+      expect(layout.overlapsCopy, JSON.stringify(layout)).toEqual([]);
+      if (viewport.mobile) {
+        expect(
+          layout.actionWidths.every((width) => width >= layout.panelWidth - 28),
+          JSON.stringify(layout)
+        ).toBe(true);
+        const headerLayout = await selectedGoalRegion.locator('.record-header').evaluate((header) => {
+          const visibleChildren = Array.from(header.children)
+            .map((child) => child.getBoundingClientRect())
+            .filter((rect) => rect.width > 0 && rect.height > 0)
+            .sort((left, right) => left.top - right.top);
+          const gaps = visibleChildren.slice(1).map((rect, index) => rect.top - visibleChildren[index].bottom);
+          return { gaps, maxGap: Math.max(0, ...gaps) };
+        });
+        expect(headerLayout.maxGap, JSON.stringify(headerLayout)).toBeLessThanOrEqual(18);
+      }
+
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
+      await blockerTrace.scrollIntoViewIfNeeded();
+      await expect(blockerTrace).toHaveScreenshot(`assistant-goal-blocker-${viewport.name}.png`, {
         animations: 'disabled'
       });
     });

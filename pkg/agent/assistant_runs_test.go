@@ -1098,6 +1098,49 @@ func TestAssistantRunFallsBackWhenModelCallFails(t *testing.T) {
 	}
 }
 
+func TestAssistantRunUsesProviderFallbackBeforeDeterministicFallback(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	orch.provider = llm.NewFallbackProvider([]llm.ProviderCandidate{
+		{
+			Name:     "gemini",
+			Model:    "gemini-flash-latest",
+			Provider: failingAssistantProvider{err: llm.RetryableAfter(errors.New("gemini provider returned 429 Too Many Requests"), time.Second)},
+		},
+		{
+			Name:  "openai",
+			Model: "gpt-5.1",
+			Provider: &staticProvider{content: `{
+				"decision":"no_op",
+				"summary":"No findings.",
+				"changed":[],
+				"concerns":[],
+				"opportunities":[],
+				"recommended_actions":[]
+			}`},
+		},
+	})
+	orch.model = "gemini-flash-latest"
+
+	run, _, err := orch.StartAssistantRun(context.Background(), assistantstore.RunRequest{
+		TriggerLabel: "Regression provider chain check",
+	})
+	if err != nil {
+		t.Fatalf("StartAssistantRun returned error: %v", err)
+	}
+
+	if run.Provider != "openai" || run.Model != "gpt-5.1" {
+		t.Fatalf("provider/model = %q/%q, want OpenAI fallback response", run.Provider, run.Model)
+	}
+	if run.Compiler == nil || run.Compiler.Scorecard == nil || run.Compiler.Scorecard.FallbackUsed {
+		t.Fatalf("compiler = %#v, want accepted model response without deterministic fallback", run.Compiler)
+	}
+	for _, changed := range run.Changed {
+		if strings.Contains(changed, "Deterministic fallback") {
+			t.Fatalf("changed = %#v, deterministic fallback should not be used after provider fallback succeeds", run.Changed)
+		}
+	}
+}
+
 func TestAssistantRunDecisionAcceptsGenericSignalSource(t *testing.T) {
 	signal := newAssistantRunSignal(assistantstore.RunSignal{
 		Kind:              "chat_quality_regression",
@@ -1437,6 +1480,152 @@ func TestAssistantRunLifecycleKeepsOnlyLatestNoopStatusActive(t *testing.T) {
 		if !run.Archived || run.ArchivedBy != "assistant-lifecycle" || !strings.Contains(run.ArchivedReason, "newer no-action") {
 			t.Fatalf("run %s = %#v, want archived as superseded by newer nominal status", id, run)
 		}
+	}
+}
+
+func TestAssistantRunLifecycleArchivesActionlessRecommendations(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	if err := store.Save(assistantstore.Run{
+		ID:       "arun_actionless_recommendation",
+		Status:   assistantstore.RunStatusCompleted,
+		Decision: assistantstore.RunDecisionRecommend,
+		Trigger:  assistantstore.RunTrigger{Kind: "schedule", Label: "Scheduled proactive check"},
+		Autonomy: assistantstore.RunAutonomyObserve,
+		Summary:  "No new urgent action found; known signals are suppressed.",
+		Opportunities: []assistantstore.RunFinding{{
+			Title:   "Suppressed known signal",
+			Surface: "assistant",
+		}},
+		Snapshot:   assistantstore.RunSnapshot{GeneratedAt: now},
+		CreatedAt:  now,
+		FinishedAt: now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := orch.maintainAssistantRuns(context.Background(), store, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived != 1 {
+		t.Fatalf("archived = %d, want actionless recommendation archived", archived)
+	}
+	run, err := store.Load("arun_actionless_recommendation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.Archived || !strings.Contains(run.ArchivedReason, "No open recommendation") {
+		t.Fatalf("run = %#v, want archived actionless recommendation", run)
+	}
+}
+
+func TestAssistantRunLifecycleConsolidatesDuplicateRecommendations(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store, err := orch.assistantRunStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	newer := assistantstore.Run{
+		ID:       "arun_duplicate_newer",
+		Status:   assistantstore.RunStatusCompleted,
+		Decision: assistantstore.RunDecisionRecommend,
+		Trigger:  assistantstore.RunTrigger{Kind: "schedule", Label: "Scheduled proactive check"},
+		Autonomy: assistantstore.RunAutonomyPropose,
+		Summary:  "Plan the next AG Grid parity slice.",
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:            "action_1",
+			Kind:          "task",
+			Fingerprint:   "sig_ag_grid_phase3",
+			Title:         "Plan Phase 3 parity slice for Open Enterprise Grid",
+			Rationale:     "Autopilot needs one concrete next slice.",
+			TargetSurface: "goals",
+			Status:        "recommended",
+		}},
+		Snapshot:   assistantstore.RunSnapshot{GeneratedAt: base.Add(time.Minute)},
+		CreatedAt:  base.Add(time.Minute),
+		FinishedAt: base.Add(time.Minute),
+		UpdatedAt:  base.Add(time.Minute),
+	}
+	olderSameFingerprint := newer
+	olderSameFingerprint.ID = "arun_duplicate_older_fingerprint"
+	olderSameFingerprint.CreatedAt = base
+	olderSameFingerprint.FinishedAt = base
+	olderSameFingerprint.UpdatedAt = base
+	olderSameFingerprint.Snapshot.GeneratedAt = base
+	olderSameFingerprint.RecommendedActions = []assistantstore.RunAction{{
+		ID:            "action_1",
+		Kind:          "task",
+		Fingerprint:   "sig_ag_grid_phase3",
+		Title:         "Define Phase 3 feature-parity slice for AG Grid alternative",
+		Rationale:     "Autopilot needs one concrete next slice.",
+		TargetSurface: "goals",
+		Status:        "recommended",
+	}}
+	olderSameTitle := newer
+	olderSameTitle.ID = "arun_duplicate_older_title"
+	olderSameTitle.CreatedAt = base.Add(-time.Minute)
+	olderSameTitle.FinishedAt = base.Add(-time.Minute)
+	olderSameTitle.UpdatedAt = base.Add(-time.Minute)
+	olderSameTitle.Snapshot.GeneratedAt = base.Add(-time.Minute)
+	olderSameTitle.RecommendedActions = []assistantstore.RunAction{{
+		ID:            "action_1",
+		Kind:          "task",
+		Fingerprint:   "sig_other_task",
+		Title:         "Plan Phase 3 parity slice for Open Enterprise Grid",
+		Rationale:     "Autopilot needs one concrete next slice.",
+		TargetSurface: "goals",
+		Status:        "recommended",
+	}}
+	olderSimilarTitle := newer
+	olderSimilarTitle.ID = "arun_duplicate_older_similar_title"
+	olderSimilarTitle.CreatedAt = base.Add(-2 * time.Minute)
+	olderSimilarTitle.FinishedAt = base.Add(-2 * time.Minute)
+	olderSimilarTitle.UpdatedAt = base.Add(-2 * time.Minute)
+	olderSimilarTitle.Snapshot.GeneratedAt = base.Add(-2 * time.Minute)
+	olderSimilarTitle.RecommendedActions = []assistantstore.RunAction{{
+		ID:            "action_1",
+		Kind:          "task",
+		Fingerprint:   "sig_other_review_task",
+		Title:         "Define an Open Enterprise Grid Phase 3 parity plan",
+		Rationale:     "Autopilot needs one concrete next slice.",
+		TargetSurface: "goals",
+		Status:        "recommended",
+	}}
+	for _, run := range []assistantstore.Run{olderSimilarTitle, olderSameTitle, olderSameFingerprint, newer} {
+		if err := store.Save(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	archived, err := orch.maintainAssistantRuns(context.Background(), store, base.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived != 3 {
+		t.Fatalf("archived = %d, want three duplicate recommendations archived", archived)
+	}
+	for _, id := range []string{"arun_duplicate_older_fingerprint", "arun_duplicate_older_title", "arun_duplicate_older_similar_title"} {
+		run, err := store.Load(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !run.Archived || !strings.Contains(run.ArchivedReason, "newer Assistant decision") {
+			t.Fatalf("run %s = %#v, want duplicate archive", id, run)
+		}
+	}
+	kept, err := store.Load("arun_duplicate_newer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Archived {
+		t.Fatalf("newer run = %#v, want active canonical recommendation", kept)
 	}
 }
 

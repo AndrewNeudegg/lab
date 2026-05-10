@@ -271,15 +271,15 @@ func buildProvider(cfg config.Config) (llm.Provider, string, error) {
 			candidates = append(candidates, llm.ProviderCandidate{Name: "openai", Model: model, Provider: provider})
 		}
 	}
-	return llm.NewFallbackProvider(candidates), candidates[0].Model, nil
+	return llm.WithRetry(llm.NewFallbackProvider(candidates), llm.RetryConfig{}), candidates[0].Model, nil
 }
 
 func buildSingleProvider(name string, providerCfg config.ProviderConfig) (llm.Provider, string, error) {
 	switch providerCfg.Type {
 	case "gemini":
-		return llm.WithRetry(llm.NewGemini(providerCfg.BaseURL, providerCfg.APIKey), llm.RetryConfig{}), providerCfg.Model, nil
+		return llm.NewGemini(providerCfg.BaseURL, providerCfg.APIKey), providerCfg.Model, nil
 	case "openai-compatible", "":
-		return llm.WithRetry(llm.NewOpenAICompatible(name, providerCfg.BaseURL, providerCfg.APIKey), llm.RetryConfig{}), providerCfg.Model, nil
+		return llm.NewOpenAICompatible(name, providerCfg.BaseURL, providerCfg.APIKey), providerCfg.Model, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported provider type %q", providerCfg.Type)
 	}

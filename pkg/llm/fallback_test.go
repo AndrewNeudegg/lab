@@ -53,6 +53,18 @@ func TestFallbackProviderClassifiesCandidateFailures(t *testing.T) {
 	}
 }
 
+func TestFallbackProviderUsesPrimaryCapabilities(t *testing.T) {
+	provider := NewFallbackProvider([]ProviderCandidate{
+		{Name: "primary", Provider: capableStaticProvider{staticProvider: staticProvider{name: "primary"}, caps: ProviderCapabilities{NativeJSONSchema: true, SystemInstruction: true}}},
+		{Name: "secondary", Provider: staticProvider{name: "secondary", content: "ok"}},
+	})
+
+	caps := CapabilitiesOf(provider)
+	if !caps.NativeJSONSchema || !caps.SystemInstruction {
+		t.Fatalf("capabilities = %#v, want primary provider capabilities", caps)
+	}
+}
+
 type staticProvider struct {
 	name    string
 	content string
@@ -66,4 +78,13 @@ func (p staticProvider) Complete(context.Context, CompletionRequest) (Completion
 		return CompletionResponse{}, p.err
 	}
 	return CompletionResponse{Message: Message{Role: "assistant", Content: p.content}}, nil
+}
+
+type capableStaticProvider struct {
+	staticProvider
+	caps ProviderCapabilities
+}
+
+func (p capableStaticProvider) Capabilities() ProviderCapabilities {
+	return p.caps
 }

@@ -342,7 +342,7 @@ func (s *RunStore) Save(run Run) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, run.ID+".json"), append(b, '\n'), 0o644)
+	return writeRunFileAtomic(filepath.Join(s.dir, run.ID+".json"), append(b, '\n'))
 }
 
 func (s *RunStore) Load(id string) (Run, error) {
@@ -438,10 +438,41 @@ func (s *RunStore) SetArchived(id string, archived bool, actor, reason string, n
 	if err != nil {
 		return Run{}, err
 	}
-	if err := os.WriteFile(filepath.Join(s.dir, run.ID+".json"), append(b, '\n'), 0o644); err != nil {
+	if err := writeRunFileAtomic(filepath.Join(s.dir, run.ID+".json"), append(b, '\n')); err != nil {
 		return Run{}, err
 	}
 	return run, nil
+}
+
+func writeRunFileAtomic(path string, content []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func NormalizeRun(run Run) Run {

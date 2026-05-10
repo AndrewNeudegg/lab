@@ -93,6 +93,13 @@ func (p *FallbackProvider) Name() string {
 	return "fallback(" + strings.Join(names, "->") + ")"
 }
 
+func (p *FallbackProvider) Capabilities() ProviderCapabilities {
+	if len(p.candidates) == 0 {
+		return ProviderCapabilities{}
+	}
+	return CapabilitiesOf(p.candidates[0].Provider)
+}
+
 func (p *FallbackProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	if len(p.candidates) == 0 {
 		return CompletionResponse{}, fmt.Errorf("no LLM providers configured")

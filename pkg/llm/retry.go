@@ -112,6 +112,10 @@ func (p *RetryProvider) Name() string {
 	return p.inner.Name()
 }
 
+func (p *RetryProvider) Capabilities() ProviderCapabilities {
+	return CapabilitiesOf(p.inner)
+}
+
 func (p *RetryProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	var lastErr error
 	for attempt := 1; attempt <= p.cfg.MaxAttempts; attempt++ {

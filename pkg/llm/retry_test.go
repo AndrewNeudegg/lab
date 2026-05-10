@@ -64,6 +64,15 @@ func TestRetryProviderHonoursRetryAfterDelay(t *testing.T) {
 	}
 }
 
+func TestRetryProviderDelegatesCapabilities(t *testing.T) {
+	provider := WithRetry(capableSequenceProvider{caps: ProviderCapabilities{ToolCalling: true, MaxTokensField: "max_completion_tokens"}}, RetryConfig{})
+
+	caps := CapabilitiesOf(provider)
+	if !caps.ToolCalling || caps.MaxTokensField != "max_completion_tokens" {
+		t.Fatalf("capabilities = %#v, want delegated inner provider capabilities", caps)
+	}
+}
+
 func TestRetryAfterHeaderParsesSecondsAndHTTPDate(t *testing.T) {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	if got := RetryAfterHeader("3", now); got != 3*time.Second {
@@ -104,6 +113,20 @@ func (p *retryAfterSequenceProvider) Complete(context.Context, CompletionRequest
 	if p.calls <= p.failures {
 		return CompletionResponse{}, RetryableAfter(fmt.Errorf("provider returned 429 Too Many Requests"), p.retryAfter)
 	}
+	return CompletionResponse{Message: Message{Role: "assistant", Content: "ok"}}, nil
+}
+
+type capableSequenceProvider struct {
+	caps ProviderCapabilities
+}
+
+func (p capableSequenceProvider) Name() string { return "capable" }
+
+func (p capableSequenceProvider) Capabilities() ProviderCapabilities {
+	return p.caps
+}
+
+func (p capableSequenceProvider) Complete(context.Context, CompletionRequest) (CompletionResponse, error) {
 	return CompletionResponse{Message: Message{Role: "assistant", Content: "ok"}}, nil
 }
 

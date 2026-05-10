@@ -862,11 +862,24 @@ func (o *Orchestrator) maintainAssistantRuns(ctx context.Context, store *assista
 	if err != nil {
 		return 0, err
 	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		return assistantRunReferenceTime(runs[i]).After(assistantRunReferenceTime(runs[j]))
+	})
 	archived := 0
 	latestNoopStatusRunID := assistantLatestNoopStatusRunID(runs)
+	activeRecommendationKeys := map[string]string{}
+	var activeRecommendations []assistantIndexedRecommendation
 	for _, run := range runs {
-		reason, ok := o.assistantRunAutoArchiveReason(run, now, latestNoopStatusRunID)
+		reason, ok := o.assistantRunAutoArchiveReason(run, now, latestNoopStatusRunID, activeRecommendationKeys, activeRecommendations)
 		if !ok {
+			if !run.Archived && run.Status != assistantstore.RunStatusRunning {
+				for _, key := range assistantOpenRecommendationKeys(run, now) {
+					if _, exists := activeRecommendationKeys[key]; !exists {
+						activeRecommendationKeys[key] = run.ID
+					}
+				}
+				activeRecommendations = append(activeRecommendations, assistantOpenRecommendations(run, now)...)
+			}
 			continue
 		}
 		archiveAssistantRunForLifecycle(&run, now, reason)
@@ -910,7 +923,7 @@ func archiveAssistantRunForLifecycle(run *assistantstore.Run, now time.Time, rea
 	return true
 }
 
-func (o *Orchestrator) assistantRunAutoArchiveReason(run assistantstore.Run, now time.Time, latestNoopStatusRunID string) (string, bool) {
+func (o *Orchestrator) assistantRunAutoArchiveReason(run assistantstore.Run, now time.Time, latestNoopStatusRunID string, activeRecommendationKeys map[string]string, activeRecommendations []assistantIndexedRecommendation) (string, bool) {
 	if run.Archived || run.Status == assistantstore.RunStatusRunning {
 		return "", false
 	}
@@ -930,6 +943,12 @@ func (o *Orchestrator) assistantRunAutoArchiveReason(run assistantstore.Run, now
 	if run.Status == assistantstore.RunStatusFailed && len(run.RecommendedActions) == 0 {
 		return "Run failed without producing an operator decision; no operator action remains.", true
 	}
+	if run.Status == assistantstore.RunStatusCompleted && run.Decision != assistantstore.RunDecisionNoop && len(run.RecommendedActions) == 0 {
+		return "No open recommendation remains for operator review.", true
+	}
+	if duplicateID, duplicate := assistantDuplicateRecommendationRun(run, now, activeRecommendationKeys, activeRecommendations); duplicate {
+		return "A newer Assistant decision already tracks the same open recommendation: " + duplicateID + ".", true
+	}
 	if len(run.RecommendedActions) > 0 && assistantRunActionsSettled(run, now) {
 		window := time.Duration(o.cfg.Assistant.DecisionSettledAutoArchiveSeconds) * time.Second
 		if window <= 0 || now.Sub(reference) >= window {
@@ -943,6 +962,164 @@ func assistantNoopStatusRun(run assistantstore.Run) bool {
 	return run.Status == assistantstore.RunStatusCompleted &&
 		run.Decision == assistantstore.RunDecisionNoop &&
 		len(run.RecommendedActions) == 0
+}
+
+type assistantIndexedRecommendation struct {
+	RunID  string
+	GoalID string
+	Action assistantstore.RunAction
+}
+
+func assistantDuplicateRecommendationRun(run assistantstore.Run, now time.Time, activeRecommendationKeys map[string]string, activeRecommendations []assistantIndexedRecommendation) (string, bool) {
+	if len(activeRecommendationKeys) == 0 && len(activeRecommendations) == 0 {
+		return "", false
+	}
+	actions := assistantOpenRecommendations(run, now)
+	if len(actions) == 0 {
+		return "", false
+	}
+	duplicateID := ""
+	for _, action := range actions {
+		actionDuplicateID := assistantDuplicateRecommendationID(action, activeRecommendationKeys, activeRecommendations)
+		if actionDuplicateID == "" {
+			return "", false
+		}
+		if duplicateID == "" {
+			duplicateID = actionDuplicateID
+		}
+	}
+	return duplicateID, true
+}
+
+func assistantDuplicateRecommendationID(action assistantIndexedRecommendation, activeRecommendationKeys map[string]string, activeRecommendations []assistantIndexedRecommendation) string {
+	for _, key := range assistantRecommendationActionKeys(assistantstore.Run{GoalID: action.GoalID}, action.Action) {
+		if seenRunID := activeRecommendationKeys[key]; seenRunID != "" {
+			return seenRunID
+		}
+	}
+	for _, seen := range activeRecommendations {
+		if assistantRecommendationsSubstantiallyOverlap(action, seen) {
+			return seen.RunID
+		}
+	}
+	return ""
+}
+
+func assistantOpenRecommendations(run assistantstore.Run, now time.Time) []assistantIndexedRecommendation {
+	var out []assistantIndexedRecommendation
+	for _, action := range run.RecommendedActions {
+		if assistantRunActionSettled(action, now) {
+			continue
+		}
+		out = append(out, assistantIndexedRecommendation{
+			RunID:  run.ID,
+			GoalID: firstNonEmptyString(action.GoalID, run.GoalID),
+			Action: action,
+		})
+	}
+	return out
+}
+
+func assistantOpenRecommendationKeys(run assistantstore.Run, now time.Time) []string {
+	actionKeys := assistantOpenRecommendationActionKeys(run, now)
+	seen := map[string]bool{}
+	var out []string
+	for _, keys := range actionKeys {
+		for _, key := range keys {
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func assistantOpenRecommendationActionKeys(run assistantstore.Run, now time.Time) [][]string {
+	var out [][]string
+	for _, action := range run.RecommendedActions {
+		if assistantRunActionSettled(action, now) {
+			continue
+		}
+		keys := assistantRecommendationActionKeys(run, action)
+		if len(keys) > 0 {
+			out = append(out, keys)
+		}
+	}
+	return out
+}
+
+func assistantRecommendationsSubstantiallyOverlap(left, right assistantIndexedRecommendation) bool {
+	if !strings.EqualFold(strings.TrimSpace(left.Action.Kind), strings.TrimSpace(right.Action.Kind)) {
+		return false
+	}
+	if left.GoalID != "" && right.GoalID != "" && left.GoalID != right.GoalID {
+		return false
+	}
+	leftSurface := strings.Trim(strings.ToLower(strings.TrimSpace(left.Action.TargetSurface)), "/")
+	rightSurface := strings.Trim(strings.ToLower(strings.TrimSpace(right.Action.TargetSurface)), "/")
+	if leftSurface != "" && rightSurface != "" && leftSurface != rightSurface {
+		return false
+	}
+	if assistantTextSubstantiallyOverlaps(left.Action.Title, right.Action.Title) {
+		return true
+	}
+	leftPurpose := firstNonEmptyString(left.Action.TaskGoal, left.Action.KnowledgeQuery, left.Action.WorkflowHint, left.Action.Rationale)
+	rightPurpose := firstNonEmptyString(right.Action.TaskGoal, right.Action.KnowledgeQuery, right.Action.WorkflowHint, right.Action.Rationale)
+	return assistantTextSubstantiallyOverlaps(leftPurpose, rightPurpose)
+}
+
+func assistantRecommendationActionKeys(run assistantstore.Run, action assistantstore.RunAction) []string {
+	var keys []string
+	if fingerprint := assistantstore.SignalFingerprint(action.Fingerprint); strings.TrimSpace(action.Fingerprint) != "" {
+		keys = append(keys, "fingerprint:"+fingerprint)
+	}
+	if title := assistantRecommendationTitleKey(run, action); title != "" {
+		keys = append(keys, "title:"+title)
+	}
+	if semantic := assistantRecommendationSemanticKey(run, action); semantic != "" {
+		keys = append(keys, "semantic:"+semantic)
+	}
+	return keys
+}
+
+func assistantRecommendationTitleKey(run assistantstore.Run, action assistantstore.RunAction) string {
+	parts := []string{
+		strings.ToLower(strings.TrimSpace(action.Kind)),
+		strings.ToLower(strings.TrimSpace(firstNonEmptyString(action.GoalID, run.GoalID))),
+		strings.ToLower(strings.Trim(strings.TrimSpace(action.TargetSurface), "/")),
+		assistantNormalizeRecommendationText(action.Title),
+	}
+	return assistantJoinRecommendationKeyParts(parts)
+}
+
+func assistantRecommendationSemanticKey(run assistantstore.Run, action assistantstore.RunAction) string {
+	parts := []string{
+		strings.ToLower(strings.TrimSpace(action.Kind)),
+		strings.ToLower(strings.TrimSpace(firstNonEmptyString(action.GoalID, run.GoalID))),
+		strings.ToLower(strings.Trim(strings.TrimSpace(action.TargetSurface), "/")),
+		assistantNormalizeRecommendationText(action.Title),
+		assistantNormalizeRecommendationText(firstNonEmptyString(action.TaskGoal, action.KnowledgeQuery, action.WorkflowHint)),
+	}
+	return assistantJoinRecommendationKeyParts(parts)
+}
+
+func assistantJoinRecommendationKeyParts(parts []string) string {
+	compacted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			compacted = append(compacted, part)
+		}
+	}
+	return strings.Join(compacted, "|")
+}
+
+func assistantNormalizeRecommendationText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Trim(value, " \t\r\n.,:;!?")
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func assistantRunReferenceTime(run assistantstore.Run) time.Time {

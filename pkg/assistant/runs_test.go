@@ -1,6 +1,7 @@
 package assistant
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -47,6 +48,36 @@ func TestRunStoreListsRunsNewestFirst(t *testing.T) {
 	}
 	if runs[0].ID != "arun_new" || runs[1].ID != "arun_old" {
 		t.Fatalf("runs order = %#v, want newest first", []string{runs[0].ID, runs[1].ID})
+	}
+}
+
+func TestRunStoreListIgnoresAtomicWriteTempFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "assistant_runs")
+	store := NewRunStore(dir)
+	now := time.Date(2026, 5, 10, 11, 0, 0, 0, time.UTC)
+	if err := store.Save(Run{
+		ID:        "arun_complete",
+		Status:    RunStatusCompleted,
+		Decision:  RunDecisionNoop,
+		Trigger:   RunTrigger{Kind: "manual", Label: "Complete run"},
+		Autonomy:  RunAutonomyObserve,
+		Summary:   "No action.",
+		Snapshot:  RunSnapshot{GeneratedAt: now},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".arun_partial.json.tmp-123"), []byte(`{"id":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != "arun_complete" {
+		t.Fatalf("runs = %#v, want only completed run", runs)
 	}
 }
 

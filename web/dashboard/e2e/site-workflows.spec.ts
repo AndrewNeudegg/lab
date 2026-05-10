@@ -292,13 +292,13 @@ const assistantAutopilotGoal = {
   details: 'Use the remote project and keep phases visible to the operator.',
   kind: 'build',
   execution_mode: 'autopilot',
-  status: 'active',
+  status: 'blocked',
   priority: 'high',
   autonomy: 'create_tasks',
   cadence: '',
   target: { mode: 'remote', project_id: 'remote1', agent_id: 'remote1-agent', workdir_id: 'remote1' },
   autopilot: {
-    status: 'running',
+    status: 'blocked',
     budget_tasks: -1,
     tasks_started: 2,
     current_task_id: 'task_goal_grid_core',
@@ -306,7 +306,7 @@ const assistantAutopilotGoal = {
     last_decision_id: 'gdec_goal_grid_next'
   },
   plan: {
-    status: 'active',
+    status: 'blocked',
     summary: 'Supervisor plan for Grid rebuild',
     current_phase_id: 'phase_02_core',
     phases: [
@@ -322,7 +322,7 @@ const assistantAutopilotGoal = {
         id: 'phase_02_core',
         title: 'Build the core capability',
         objective: 'Implement rendering, editing, and validation needed for end-to-end use.',
-        status: 'in_progress',
+        status: 'blocked',
         depends_on: ['phase_01_foundation'],
         task_ids: ['task_goal_grid_core']
       }
@@ -331,21 +331,44 @@ const assistantAutopilotGoal = {
     updated_at: now
   },
   linked_tasks: ['task_goal_grid_foundation', 'task_goal_grid_core'],
-  progress_summary: 'Foundation complete; core rendering is next.',
+  progress_summary: 'Foundation complete; core rendering is blocked on package validation.',
   created_by: 'operator',
   created_at: now,
   updated_at: now,
   next_check_at: ''
 };
 
+const assistantGoalBlockerTrace = {
+  status: 'blocked',
+  source_type: 'task_report',
+  source_id: 'greport_goal_grid_core',
+  decision_id: 'gdec_goal_grid_next',
+  decision: 'pause_blocked',
+  goal_id: assistantAutopilotGoal.id,
+  phase_id: 'phase_02_core',
+  phase_title: 'Build the core capability',
+  blocking_task_id: 'task_goal_grid_core',
+  review_decision: 'blocked_with_progress',
+  reason: 'Task grid_core reported blocker: npm pack --dry-run cannot run because npm is unavailable.',
+  operator_action: 'Open the blocking task, resolve or accept the blocker, then resume Autopilot.',
+  source_url: `/assistant?goal=${assistantAutopilotGoal.id}`,
+  blocking_task_url: '/tasks?task=task_goal_grid_core',
+  blockers: ['npm pack --dry-run cannot run because npm is unavailable.'],
+  follow_ups: ['Run npm pack --dry-run in an environment with npm installed.'],
+  created_at: '2026-04-28T12:05:00.000Z'
+};
+
+(assistantAutopilotGoal as any).blocker_trace = assistantGoalBlockerTrace;
+
 const assistantGoalDecision = {
   id: 'gdec_goal_grid_next',
   goal_id: assistantAutopilotGoal.id,
-  decision: 'create_task',
-  summary: 'Create the next task for plan phase `phase_02_core`.',
-  rationale: 'The selected phase is the next incomplete, dependency-ready phase in the Goal plan.',
+  decision: 'pause_blocked',
+  summary: 'Goal plan is blocked.',
+  rationale: 'A linked task reported blockers or questions for the current plan phase.',
   phase_id: 'phase_02_core',
   task_id: 'task_goal_grid_core',
+  stop_reason: 'Goal plan is blocked by the current phase.',
   evidence: ['task gridfound: Foundation complete'],
   created_at: now
 };
@@ -370,6 +393,30 @@ const assistantGoalTaskReport = {
   additions: 80,
   deletions: 0,
   created_at: now
+};
+
+const assistantGoalBlockingTaskReport = {
+  id: 'greport_goal_grid_core',
+  goal_id: assistantAutopilotGoal.id,
+  task_id: 'task_goal_grid_core',
+  phase_id: 'phase_02_core',
+  title: 'Core rendering task',
+  status: 'done',
+  summary: 'Core rendering made progress, but package validation is blocked.',
+  advanced_goal: true,
+  phase_complete: false,
+  goal_complete: false,
+  changed_files: ['src/grid-core.ts'],
+  validation: ['bun test'],
+  follow_ups: ['Run npm pack --dry-run in an environment with npm installed.'],
+  blockers: ['npm pack --dry-run cannot run because npm is unavailable.'],
+  questions: [],
+  review_decision: 'blocked_with_progress',
+  review_summary: 'Progress landed, but validation is incomplete.',
+  diff_files: 1,
+  additions: 120,
+  deletions: 4,
+  created_at: '2026-04-28T12:05:00.000Z'
 };
 
 const assistantGoalWatch = {
@@ -586,9 +633,10 @@ const mockDashboardApis = async (page: Page) => {
   const assistantGoalWatches: any[] = [assistantGoalWatch];
   const assistantGoalNotes: any[] = [assistantGoalNote];
   const assistantGoalDecisions: any[] = [assistantGoalDecision];
-  const assistantGoalTaskReports: any[] = [assistantGoalTaskReport];
+  const assistantGoalTaskReports: any[] = [assistantGoalBlockingTaskReport, assistantGoalTaskReport];
   const assistantGoalTimeline = (goal: any) => ({
     goal,
+    blocker_trace: goal.blocker_trace,
     watches: assistantGoalWatches.filter((watch) => watch.goal_id === goal.id),
     signals: [],
     notes: assistantGoalNotes.filter((note) => note.goal_id === goal.id),
@@ -1151,6 +1199,11 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await gridGoal.click();
     const selectedGoalRecord = page.getByLabel('Selected Assistant Goal');
     await expect(selectedGoalRecord).toContainText('Supervisor plan for Grid rebuild');
+    await expect(selectedGoalRecord.getByLabel('Goal blocker trace')).toContainText('Blocked by task');
+    await expect(selectedGoalRecord.getByRole('link', { name: 'Open blocking task' })).toHaveAttribute(
+      'href',
+      '/tasks?task=task_goal_grid_core'
+    );
     await expect(selectedGoalRecord).toContainText('Build the core capability');
     await expect(selectedGoalRecord).toContainText('Decision trail');
     await expect(selectedGoalRecord).toContainText('Foundation complete');

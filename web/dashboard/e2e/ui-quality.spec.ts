@@ -42,6 +42,35 @@ const task = {
   }
 };
 
+const blockerTaskID = 'task_20260428_120500_block111';
+const blockerTask = {
+  ...task,
+  id: blockerTaskID,
+  goal_id: 'goal_ui_quality',
+  execution_mode: 'autopilot',
+  goal_kind: 'build',
+  title: 'Validate Goal blocker copy',
+  goal: 'Make blocked Autopilot tasks explain what is blocking progress.',
+  result: 'Goal blocker trace rendered for operator review.',
+  goal_blocker_trace: {
+    status: 'blocked',
+    source_type: 'task_report',
+    source_id: 'greport_ui_quality',
+    goal_id: 'goal_ui_quality',
+    phase_id: 'phase_ui_quality',
+    phase_title: 'Review blocking UX',
+    blocking_task_id: blockerTaskID,
+    review_decision: 'needs_validation',
+    reason: 'Task block111 needs validation evidence before Autopilot can continue.',
+    operator_action: 'Complete the missing validation or accept that it is not required, then resume Autopilot.',
+    source_url: '/assistant?goal=goal_ui_quality',
+    blocking_task_url: `/tasks?task=${blockerTaskID}`,
+    blockers: ['Browser validation is required before the Goal can resume.'],
+    follow_ups: ['Run the task-page browser UAT and attach the result.'],
+    created_at: now
+  }
+};
+
 const freezeTime = async (page: Page) => {
   await page.addInitScript((fixedNow) => {
     const RealDate = Date;
@@ -61,13 +90,17 @@ const freezeTime = async (page: Page) => {
   }, now);
 };
 
-const mockTaskApis = async (page: Page) => {
+const mockTaskApis = async (page: Page, taskItems = [task]) => {
   await freezeTime(page);
   await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
-    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+    await route.fulfill({ json: { attention: { red: 0, amber: taskItems.length, total: taskItems.length } } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+$/, async (route) => {
+    const taskId = new URL(route.request().url()).pathname.split('/').pop() || '';
+    await route.fulfill({ json: taskItems.find((item) => item.id === taskId) || taskItems[0] });
   });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
-    await route.fulfill({ json: { tasks: [task] } });
+    await route.fulfill({ json: { tasks: taskItems } });
   });
   await page.route(/\/api\/settings$/, async (route) => {
     await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
@@ -78,7 +111,7 @@ const mockTaskApis = async (page: Page) => {
         approvals: [
           {
             id: 'approval_uiux',
-            task_id: taskID,
+            task_id: taskItems[0].id,
             tool: 'git.merge_approved',
             status: 'pending',
             reason: 'merge reviewed task branch into repo root',
@@ -103,7 +136,7 @@ const mockTaskApis = async (page: Page) => {
   await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {
     await route.fulfill({
       json: {
-        task_id: taskID,
+        task_id: taskItems[0].id,
         raw_diff: '',
         summary: { files: 0, additions: 0, deletions: 0 },
         files: [],
@@ -154,6 +187,27 @@ for (const viewport of [
 
       await expectNoAxeViolations(page);
       await expect(page).toHaveScreenshot(`tasks-ui-quality-${viewport.name}.png`, {
+        fullPage: true,
+        animations: 'disabled'
+      });
+    });
+
+    test('Goal blocker trace shows the blocking reason, action, and links', async ({ page }) => {
+      await mockTaskApis(page, [blockerTask]);
+      await page.goto(`/tasks?task=${blockerTaskID}`);
+      await expect(page.getByRole('heading', { name: 'Validate Goal blocker copy' })).toBeVisible();
+      const blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(blockerTrace).toContainText('This task is blocking Goal Autopilot');
+      await expect(blockerTrace).toContainText('Task block111 needs validation evidence');
+      await expect(blockerTrace).toContainText('Complete the missing validation');
+      await expect(blockerTrace.getByRole('link', { name: 'Open Goal' })).toHaveAttribute(
+        'href',
+        '/assistant?goal=goal_ui_quality'
+      );
+
+      await expectNoAxeViolations(page);
+      await blockerTrace.scrollIntoViewIfNeeded();
+      await expect(page).toHaveScreenshot(`tasks-goal-blocker-${viewport.name}.png`, {
         fullPage: true,
         animations: 'disabled'
       });

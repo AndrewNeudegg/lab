@@ -9,6 +9,7 @@
     createHomelabdClient,
     Navbar,
     type AssistantGoal,
+    type AssistantGoalBlockerTrace,
     type AssistantGoalPlanPhase,
     type AssistantGoalSupervisorDecision,
     type AssistantGoalTaskReport,
@@ -60,6 +61,8 @@
   let selectedGoalTimeline: AssistantGoalTimeline | undefined;
   let selectedGoalPlan: AssistantGoal['plan'];
   let selectedGoalPlanPhases: AssistantGoalPlanPhase[] = [];
+  let selectedGoalBlockerTrace: AssistantGoalBlockerTrace | undefined;
+  let selectedRunGoalBlockerTrace: AssistantGoalBlockerTrace | undefined;
   let latestGoalDecision: AssistantGoalSupervisorDecision | undefined;
   let latestGoalReports: AssistantGoalTaskReport[] = [];
   let selectedRunId = '';
@@ -120,7 +123,9 @@
 	  let goalEditTargetMode: GoalTargetMode = 'auto';
 	  let goalEditTargetWorkspaceId = '';
 	  let lastAppliedRouteRunId = '';
+  let lastAppliedRouteGoalId = '';
   let pendingRouteRunId = '';
+  let pendingRouteGoalId = '';
   let pendingOverviewRoute = false;
 
   const normaliseGoalAutopilotTaskBudget = (value: number | string | undefined) => {
@@ -138,6 +143,9 @@
   $: selectedGoal = selectAssistantGoal(goals, selectedGoalId);
   $: selectedGoalPlan = selectedGoalTimeline?.goal.plan || selectedGoal?.plan;
   $: selectedGoalPlanPhases = selectedGoalPlan?.phases || [];
+  $: selectedGoalBlockerTrace =
+    selectedGoalTimeline?.blocker_trace || selectedGoalTimeline?.goal.blocker_trace || selectedGoal?.blocker_trace;
+  $: selectedRunGoalBlockerTrace = goalBlockerTraceForRun(selectedRun);
   $: latestGoalDecision = selectedGoalTimeline?.decisions?.[0];
   $: latestGoalReports = selectedGoalTimeline?.task_reports?.slice(0, 4) || [];
   $: displayedActions = visibleRecommendedActions(selectedRun);
@@ -272,11 +280,14 @@
   };
 
   const currentRunRouteId = () => (browser ? $page.url.searchParams.get('run') || '' : '');
+  const currentGoalRouteId = () => (browser ? $page.url.searchParams.get('goal') || '' : '');
   const currentRunRouteView = (): AssistantRunView =>
     browser && $page.url.searchParams.get('view') === 'archived' ? 'archived' : 'active';
 
   const currentRoutePath = () =>
     browser ? `${$page.url.pathname}${$page.url.search}${$page.url.hash}` : '';
+
+  const assistantGoalURL = (goalId: string) => `/assistant?goal=${encodeURIComponent(goalId)}`;
 
   const revealDetailIfCompact = () => {
     if (typeof window === 'undefined' || !window.matchMedia('(max-width: 760px)').matches) {
@@ -312,10 +323,33 @@
     revealDetailIfCompact();
   };
 
+  const applyRouteGoalSelection = (goalId: string) => {
+    if (!goalId) {
+      return;
+    }
+    selectedGoalId = goalId;
+    selectedDetailKind = 'goal';
+    mobilePanel = 'detail';
+    goalNotice = '';
+    goalError = '';
+    goalEditing = false;
+    void refreshGoalTimeline(goalId);
+    revealDetailIfCompact();
+  };
+
   const applySyncedRunSelection = () => {
     const routeRunId = currentRunRouteId();
+    const routeGoalId = currentGoalRouteId();
     const routeView = currentRunRouteView();
     runView = routeView;
+    if (routeGoalId && goals.some((goal) => goal.id === routeGoalId)) {
+      selectedGoalId = routeGoalId;
+      selectedDetailKind = 'goal';
+      lastAppliedRouteGoalId = routeGoalId;
+      mobilePanel = 'detail';
+      void refreshGoalTimeline(routeGoalId);
+      return;
+    }
     const routeRun = runs.find((run) => run.id === routeRunId);
     if (routeRunId && routeRun) {
       runView = assistantRunView(routeRun);
@@ -349,9 +383,28 @@
     runView = nextView;
     pendingOverviewRoute = false;
     pendingRouteRunId = runId;
+    pendingRouteGoalId = '';
     void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
       if (pendingRouteRunId === runId) {
         pendingRouteRunId = '';
+      }
+    });
+  };
+
+  const navigateToGoal = (goalId: string, replaceState = false) => {
+    if (!browser || !goalId) {
+      return;
+    }
+    const next = assistantGoalURL(goalId);
+    if (currentRoutePath() === next) {
+      return;
+    }
+    pendingOverviewRoute = false;
+    pendingRouteGoalId = goalId;
+    pendingRouteRunId = '';
+    void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
+      if (pendingRouteGoalId === goalId) {
+        pendingRouteGoalId = '';
       }
     });
   };
@@ -368,7 +421,9 @@
     }
     pendingOverviewRoute = true;
     pendingRouteRunId = '';
+    pendingRouteGoalId = '';
     lastAppliedRouteRunId = '';
+    lastAppliedRouteGoalId = '';
     void goto(next, { keepFocus: true, noScroll: true, replaceState }).catch(() => {
       pendingOverviewRoute = false;
     });
@@ -671,6 +726,95 @@
   const goalTimelineCount = (kind: 'watches' | 'notes' | 'assessments' | 'decisions' | 'task_reports') =>
     selectedGoalTimeline?.[kind]?.length || 0;
 
+  const goalBlockerSourceLabel = (trace: AssistantGoalBlockerTrace | undefined) => {
+    switch (trace?.source_type) {
+      case 'task_report':
+        return 'task report';
+      case 'open_questions':
+        return 'Goal question';
+      case 'goal_decision':
+        return 'supervisor decision';
+      case 'autopilot':
+        return 'Autopilot stop reason';
+      case 'goal_plan':
+        return 'Goal plan';
+      default:
+        return '';
+    }
+  };
+
+  const goalBlockerTitle = (trace: AssistantGoalBlockerTrace | undefined) => {
+    if (!trace) {
+      return 'Goal is not blocked';
+    }
+    if (trace.blocking_task_id) {
+      return `Blocked by task ${shortAssistantId(trace.blocking_task_id)}`;
+    }
+    return `Blocked by ${goalBlockerSourceLabel(trace) || 'Goal supervisor'}`;
+  };
+
+  const goalBlockerMeta = (trace: AssistantGoalBlockerTrace | undefined) =>
+    [
+      trace?.phase_title ? `Phase: ${trace.phase_title}` : '',
+      goalBlockerSourceLabel(trace),
+      trace?.review_decision ? `Review: ${labelFromSlug(trace.review_decision)}` : '',
+      trace?.created_at ? formatAssistantTime(trace.created_at) : ''
+    ]
+      .filter(Boolean)
+      .join(' / ');
+
+  const goalBlockerInlineLabel = (trace: AssistantGoalBlockerTrace | undefined) =>
+    trace
+      ? [
+          trace.blocking_task_id ? `Blocking task ${shortAssistantId(trace.blocking_task_id)}` : goalBlockerSourceLabel(trace),
+          trace.phase_title
+        ]
+          .filter(Boolean)
+          .join(' / ')
+      : '';
+
+  const goalBlockerEvidence = (trace: AssistantGoalBlockerTrace | undefined) =>
+    [
+      ...(trace?.blockers || []),
+      ...(trace?.questions || []),
+      ...(trace?.follow_ups || []),
+      ...(trace?.evidence || [])
+    ].slice(0, 3);
+
+  const runRelatedGoalID = (run: AssistantRun | undefined) => {
+    if (!run) {
+      return '';
+    }
+    return (
+      run.goal_id ||
+      run.snapshot?.goals?.[0]?.id ||
+      run.recommended_actions?.find((action) => action.goal_id)?.goal_id ||
+      run.concerns?.find((finding) => finding.goal_id)?.goal_id ||
+      run.opportunities?.find((finding) => finding.goal_id)?.goal_id ||
+      ''
+    );
+  };
+
+  const goalBlockerTraceForRun = (run: AssistantRun | undefined) => {
+    const goalId = runRelatedGoalID(run);
+    if (!goalId) {
+      return undefined;
+    }
+    return (
+      goals.find((goal) => goal.id === goalId)?.blocker_trace ||
+      run?.snapshot?.goals?.find((goal) => goal.id === goalId)?.blocker_trace
+    );
+  };
+
+  const parseAssistantTime = (value: string | undefined) => {
+    const parsed = Date.parse(value || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const runGoalBlockerIsNewer = (run: AssistantRun | undefined, trace: AssistantGoalBlockerTrace | undefined) =>
+    parseAssistantTime(trace?.created_at) >
+    parseAssistantTime(run?.updated_at || run?.finished_at || run?.started_at || run?.created_at);
+
   const goalPlanStatusTone = (status: string | undefined) => {
     switch (status) {
       case 'completed':
@@ -866,14 +1010,8 @@
     if (!goalId) {
       return;
     }
-    selectedGoalId = goalId;
-    selectedDetailKind = 'goal';
-    mobilePanel = 'detail';
-    goalNotice = '';
-    goalError = '';
-    goalEditing = false;
-    await refreshGoalTimeline(goalId);
-    revealDetailIfCompact();
+    applyRouteGoalSelection(goalId);
+    navigateToGoal(goalId);
   };
 
   const createGoal = async () => {
@@ -1149,7 +1287,30 @@
       return;
     }
     const runId = to.url.searchParams.get('run') || '';
+    const goalId = to.url.searchParams.get('goal') || '';
     const routeView: AssistantRunView = to.url.searchParams.get('view') === 'archived' ? 'archived' : 'active';
+    if (goalId) {
+      pendingOverviewRoute = false;
+      pendingRouteRunId = '';
+      if (pendingRouteGoalId === goalId) {
+        lastAppliedRouteGoalId = goalId;
+        pendingRouteGoalId = '';
+        void refreshGoalTimeline(goalId);
+        return;
+      }
+      if (goalId === selectedGoalId) {
+        lastAppliedRouteGoalId = goalId;
+        selectedDetailKind = 'goal';
+        mobilePanel = 'detail';
+        void refreshGoalTimeline(goalId);
+        return;
+      }
+      if (goals.some((goal) => goal.id === goalId)) {
+        applyRouteGoalSelection(goalId);
+        lastAppliedRouteGoalId = goalId;
+      }
+      return;
+    }
     if (!runId) {
       runView = routeView;
       const candidates = assistantRunsForView(runs, runView);
@@ -1163,11 +1324,14 @@
       }
       pendingOverviewRoute = false;
       pendingRouteRunId = '';
+      pendingRouteGoalId = '';
       lastAppliedRouteRunId = '';
+      lastAppliedRouteGoalId = '';
       showRunList();
       return;
     }
     pendingOverviewRoute = false;
+    pendingRouteGoalId = '';
     if (pendingRouteRunId === runId) {
       const pendingRun = runs.find((run) => run.id === runId);
       runView = pendingRun ? assistantRunView(pendingRun) : routeView;
@@ -1192,6 +1356,17 @@
 
   $: if (browser) {
     const routeRunId = currentRunRouteId();
+    const routeGoalId = currentGoalRouteId();
+    if (
+      routeGoalId &&
+      goals.some((goal) => goal.id === routeGoalId) &&
+      !pendingOverviewRoute &&
+      routeGoalId !== lastAppliedRouteGoalId &&
+      routeGoalId !== pendingRouteGoalId
+    ) {
+      applyRouteGoalSelection(routeGoalId);
+      lastAppliedRouteGoalId = routeGoalId;
+    }
     if (
       routeRunId &&
       runs.some((run) => run.id === routeRunId) &&
@@ -1419,6 +1594,11 @@
 	                  </span>
                   <small>{goalSubtitle(goal)}</small>
                   <em>{goalProgress(goal)}</em>
+                  {#if goal.blocker_trace}
+                    <span class="goal-blocker-inline">
+                      {goalBlockerInlineLabel(goal.blocker_trace) || goal.blocker_trace.reason}
+                    </span>
+                  {/if}
                 </span>
               </button>
             {/each}
@@ -1799,6 +1979,53 @@
                 </button>
               </div>
             </form>
+          {/if}
+
+          {#if selectedGoalBlockerTrace}
+            <section class="notice warning goal-blocker-panel" role="alert" aria-label="Goal blocker trace">
+              <div>
+                <strong>{goalBlockerTitle(selectedGoalBlockerTrace)}</strong>
+                {#if goalBlockerMeta(selectedGoalBlockerTrace)}
+                  <small>{goalBlockerMeta(selectedGoalBlockerTrace)}</small>
+                {/if}
+                <p>{selectedGoalBlockerTrace.reason}</p>
+                {#if selectedGoalBlockerTrace.operator_action}
+                  <p>{selectedGoalBlockerTrace.operator_action}</p>
+                {/if}
+                {#if goalBlockerEvidence(selectedGoalBlockerTrace).length}
+                  <ul class="compact-list blocker-evidence-list" aria-label="Blocker evidence">
+                    {#each goalBlockerEvidence(selectedGoalBlockerTrace) as item}
+                      <li>{item}</li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+              <div class="blocker-actions" role="group" aria-label="Goal blocker actions">
+                {#if selectedGoalBlockerTrace.blocking_task_url}
+                  <a class="text-action notice-action" href={selectedGoalBlockerTrace.blocking_task_url}>
+                    Open blocking task
+                  </a>
+                {/if}
+                <button
+                  type="button"
+                  class="text-action notice-action"
+                  disabled={goalChecking}
+                  on:click={() => void checkSelectedGoal()}
+                >
+                  {goalChecking ? 'Checking' : 'Check Goal now'}
+                </button>
+                {#if selectedGoal.execution_mode === 'autopilot'}
+                  <button
+                    type="button"
+                    class="primary-action notice-action"
+                    disabled={goalAutopilotUpdating || selectedGoal.status === 'archived'}
+                    on:click={() => void updateSelectedGoalAutopilot('resume')}
+                  >
+                    Resume Autopilot
+                  </button>
+                {/if}
+              </div>
+            </section>
           {/if}
 
           <dl class="record-summary goal-summary" aria-label="Assistant Goal summary">
@@ -2249,6 +2476,35 @@
             </section>
           {/if}
 
+          {#if selectedRunGoalBlockerTrace}
+            <section class="notice warning goal-blocker-panel run-blocker-panel" role="status" aria-label="Current Goal blocker trace">
+              <div>
+                <strong>
+                  {runGoalBlockerIsNewer(selectedRun, selectedRunGoalBlockerTrace)
+                    ? 'Newer Goal blocker exists'
+                    : 'Current Goal blocker'}
+                </strong>
+                {#if goalBlockerMeta(selectedRunGoalBlockerTrace)}
+                  <small>{goalBlockerMeta(selectedRunGoalBlockerTrace)}</small>
+                {/if}
+                <p>{selectedRunGoalBlockerTrace.reason}</p>
+                {#if selectedRunGoalBlockerTrace.operator_action}
+                  <p>{selectedRunGoalBlockerTrace.operator_action}</p>
+                {/if}
+              </div>
+              <div class="blocker-actions" role="group" aria-label="Current Goal blocker actions">
+                {#if selectedRunGoalBlockerTrace.source_url}
+                  <a class="text-action notice-action" href={selectedRunGoalBlockerTrace.source_url}>Open Goal</a>
+                {/if}
+                {#if selectedRunGoalBlockerTrace.blocking_task_url}
+                  <a class="text-action notice-action" href={selectedRunGoalBlockerTrace.blocking_task_url}>
+                    Open blocking task
+                  </a>
+                {/if}
+              </div>
+            </section>
+          {/if}
+
           {#if selectedRun.error}
             <section class="notice error" role={selectedRun.archived ? 'status' : 'alert'}>
               <div>
@@ -2293,6 +2549,9 @@
 	                          {targetLabel(action.target)}
 	                        </span>
 	                      {/if}
+                      {#if selectedRunGoalBlockerTrace && runGoalBlockerIsNewer(selectedRun, selectedRunGoalBlockerTrace)}
+                        <span class="status amber">newer blocker</span>
+                      {/if}
 	                    </header>
                     <p>{action.rationale}</p>
                     {#if actionSupportText(action)}
@@ -3024,6 +3283,20 @@
     -webkit-box-orient: vertical;
   }
 
+  .goal-blocker-inline {
+    display: inline-flex;
+    width: fit-content;
+    max-width: 100%;
+    padding: 0.12rem 0.42rem;
+    border-radius: 999px;
+    color: #92400e;
+    background: #fef3c7;
+    font-size: 0.68rem;
+    font-weight: 850;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
   .run-spaces h2 {
     margin: 0;
     color: var(--text, #172033);
@@ -3476,8 +3749,15 @@
     background: #eff6ff;
   }
 
+  .notice.warning {
+    color: #7c2d12;
+    border-color: #fed7aa;
+    background: #fff7ed;
+  }
+
   .notice strong,
-  .notice p {
+  .notice p,
+  .notice small {
     margin: 0;
   }
 
@@ -3489,6 +3769,36 @@
 
   .notice > div {
     min-width: 0;
+  }
+
+  .goal-blocker-panel {
+    align-items: flex-start;
+  }
+
+  .goal-blocker-panel > div:first-child {
+    display: grid;
+    gap: 0.28rem;
+  }
+
+  .goal-blocker-panel small {
+    color: currentColor;
+    font-size: 0.74rem;
+    font-weight: 800;
+    opacity: 0.82;
+  }
+
+  .blocker-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
+  }
+
+  .blocker-evidence-list {
+    color: currentColor;
+    font-size: 0.78rem;
+    line-height: 1.35;
   }
 
   .notice-dismiss {
@@ -3925,6 +4235,13 @@
     background: #172554 !important;
   }
 
+  :global(html[data-theme='dark'] .notice.warning),
+  :global(html[data-theme='dark'] .goal-blocker-inline) {
+    color: #fed7aa !important;
+    border-color: rgb(251 191 36 / 0.55) !important;
+    background: #431407 !important;
+  }
+
   @media (max-width: 760px) {
     .assistant-page {
       display: block;
@@ -3981,6 +4298,11 @@
     .action-toolbar {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      width: 100%;
+    }
+
+    .blocker-actions {
+      justify-content: flex-start;
       width: 100%;
     }
 

@@ -42,6 +42,11 @@ type Server struct {
 	terminal   *terminalManager
 }
 
+type taskDetailResponse struct {
+	taskstore.Task
+	GoalBlockerTrace *assistant.GoalBlockerTrace `json:"goal_blocker_trace,omitempty"`
+}
+
 func (s *Server) Listen(ctx context.Context) error {
 	mux := http.NewServeMux()
 	s.register(mux)
@@ -798,7 +803,12 @@ func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
 			writeError(rw, http.StatusNotFound, err.Error())
 			return
 		}
-		writeJSON(rw, http.StatusOK, task)
+		trace, err := s.Orchestrator.GoalBlockerTraceForTask(task)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, taskDetailResponse{Task: task, GoalBlockerTrace: trace})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "runs" && req.Method == http.MethodGet {

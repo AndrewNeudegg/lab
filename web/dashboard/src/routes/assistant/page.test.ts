@@ -44,4 +44,18 @@ describe('assistant page composition', () => {
 	    expect(pageSource).toContain('placeholder="-1 = unlimited"');
 	    expect(pageSource).not.toContain('GOAL_AUTOPILOT_TASK_BUDGET_MAX');
 	  });
+
+	  test('surfaces canonical Goal blocker traces in lists, detail, and run history', () => {
+	    expect(pageSource).toContain('type AssistantGoalBlockerTrace');
+	    expect(pageSource).toContain('selectedGoalBlockerTrace');
+	    expect(pageSource).toContain('const currentGoalRouteId = () =>');
+	    expect(pageSource).toContain('const assistantGoalURL = (goalId: string)');
+	    expect(pageSource).toContain('const navigateToGoal = (goalId: string, replaceState = false) =>');
+	    expect(pageSource).toContain('goalBlockerTraceForRun');
+	    expect(pageSource).toContain('aria-label="Goal blocker trace"');
+	    expect(pageSource).toContain('Open blocking task');
+	    expect(pageSource).toContain('Resume Autopilot');
+	    expect(pageSource).toContain('Newer Goal blocker exists');
+	    expect(pageSource).toContain('newer blocker');
+	  });
 	});

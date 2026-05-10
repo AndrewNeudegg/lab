@@ -86,6 +86,7 @@ type Goal struct {
 	LinkedWorkflows []string                   `json:"linked_workflows,omitempty"`
 	ProgressSummary string                     `json:"progress_summary,omitempty"`
 	OpenQuestions   []string                   `json:"open_questions,omitempty"`
+	BlockerTrace    *GoalBlockerTrace          `json:"blocker_trace,omitempty"`
 	LastCheckedAt   *time.Time                 `json:"last_checked_at,omitempty"`
 	LastActionAt    *time.Time                 `json:"last_action_at,omitempty"`
 	CreatedBy       string                     `json:"created_by,omitempty"`
@@ -144,6 +145,28 @@ type GoalAutopilot struct {
 	CurrentTaskID     string     `json:"current_task_id,omitempty"`
 	CurrentPhaseID    string     `json:"current_phase_id,omitempty"`
 	LastDecisionID    string     `json:"last_decision_id,omitempty"`
+}
+
+type GoalBlockerTrace struct {
+	Status          string     `json:"status,omitempty"`
+	SourceType      string     `json:"source_type,omitempty"`
+	SourceID        string     `json:"source_id,omitempty"`
+	DecisionID      string     `json:"decision_id,omitempty"`
+	Decision        string     `json:"decision,omitempty"`
+	GoalID          string     `json:"goal_id,omitempty"`
+	PhaseID         string     `json:"phase_id,omitempty"`
+	PhaseTitle      string     `json:"phase_title,omitempty"`
+	BlockingTaskID  string     `json:"blocking_task_id,omitempty"`
+	ReviewDecision  string     `json:"review_decision,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	OperatorAction  string     `json:"operator_action,omitempty"`
+	SourceURL       string     `json:"source_url,omitempty"`
+	BlockingTaskURL string     `json:"blocking_task_url,omitempty"`
+	Blockers        []string   `json:"blockers,omitempty"`
+	Questions       []string   `json:"questions,omitempty"`
+	Evidence        []string   `json:"evidence,omitempty"`
+	FollowUps       []string   `json:"follow_ups,omitempty"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
 }
 
 type GoalPlan struct {
@@ -316,13 +339,14 @@ type GoalSnapshotRef struct {
 }
 
 type GoalTimeline struct {
-	Goal        Goal                     `json:"goal"`
-	Watches     []GoalWatch              `json:"watches,omitempty"`
-	Signals     []GoalSignal             `json:"signals,omitempty"`
-	Notes       []GoalNote               `json:"notes,omitempty"`
-	Assessments []GoalAssessment         `json:"assessments,omitempty"`
-	Decisions   []GoalSupervisorDecision `json:"decisions,omitempty"`
-	TaskReports []GoalTaskReport         `json:"task_reports,omitempty"`
+	Goal         Goal                     `json:"goal"`
+	BlockerTrace *GoalBlockerTrace        `json:"blocker_trace,omitempty"`
+	Watches      []GoalWatch              `json:"watches,omitempty"`
+	Signals      []GoalSignal             `json:"signals,omitempty"`
+	Notes        []GoalNote               `json:"notes,omitempty"`
+	Assessments  []GoalAssessment         `json:"assessments,omitempty"`
+	Decisions    []GoalSupervisorDecision `json:"decisions,omitempty"`
+	TaskReports  []GoalTaskReport         `json:"task_reports,omitempty"`
 }
 
 type GoalStore struct {
@@ -355,6 +379,7 @@ func (s *GoalStore) SaveGoal(goal Goal) error {
 		goal.UpdatedAt = now
 	}
 	goal = NormalizeGoal(goal)
+	goal.BlockerTrace = nil
 	return s.writeJSONLocked(s.goalsDir(), goal.ID, goal)
 }
 

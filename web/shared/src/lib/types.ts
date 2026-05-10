@@ -124,6 +124,7 @@ export interface HomelabdTask {
   remote_diff?: string;
   remote_diff_captured_at?: string;
   plan?: HomelabdTaskPlan;
+  goal_blocker_trace?: AssistantGoalBlockerTrace;
   summary_only?: boolean;
 }
 
@@ -829,6 +830,7 @@ export interface AssistantGoal {
   linked_workflows?: string[];
   progress_summary?: string;
   open_questions?: string[];
+  blocker_trace?: AssistantGoalBlockerTrace;
   last_checked_at?: string;
   last_action_at?: string;
   created_by?: string;
@@ -857,9 +859,32 @@ export interface AssistantGoalSnapshotRef {
   success_criteria?: string[];
   constraints?: string[];
   open_questions?: string[];
+  blocker_trace?: AssistantGoalBlockerTrace;
   linked_tasks?: string[];
   url?: string;
   due?: boolean;
+}
+
+export interface AssistantGoalBlockerTrace {
+  status: string;
+  source_type: string;
+  source_id: string;
+  decision_id?: string;
+  decision?: string;
+  goal_id?: string;
+  phase_id?: string;
+  phase_title?: string;
+  blocking_task_id?: string;
+  review_decision?: string;
+  reason: string;
+  operator_action?: string;
+  source_url?: string;
+  blocking_task_url?: string;
+  blockers?: string[];
+  questions?: string[];
+  evidence?: string[];
+  follow_ups?: string[];
+  created_at?: string;
 }
 
 export interface AssistantGoalCreateRequest {
@@ -968,6 +993,9 @@ export interface AssistantGoalTaskReport {
   diff_files?: number;
   additions?: number;
   deletions?: number;
+  review_decision?: string;
+  review_summary?: string;
+  review_evidence?: string[];
   result_excerpt?: string;
   created_at: string;
 }
@@ -1061,6 +1089,7 @@ export interface AssistantGoalAssessment {
 
 export interface AssistantGoalTimeline {
   goal: AssistantGoal;
+  blocker_trace?: AssistantGoalBlockerTrace;
   watches?: AssistantGoalWatch[];
   signals?: AssistantGoalSignal[];
   notes?: AssistantGoalNote[];

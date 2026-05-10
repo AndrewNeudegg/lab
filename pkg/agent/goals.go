@@ -36,6 +36,10 @@ func (o *Orchestrator) ListGoals() ([]assistantstore.Goal, error) {
 		if err != nil {
 			return nil, err
 		}
+		goal, err = o.attachGoalBlockerTrace(store, goal)
+		if err != nil {
+			return nil, err
+		}
 		goals[index] = goal
 	}
 	return goals, nil
@@ -78,15 +82,54 @@ func (o *Orchestrator) LoadGoal(goalID string) (assistantstore.GoalTimeline, err
 	if err != nil {
 		return assistantstore.GoalTimeline{}, err
 	}
+	trace := assistantstore.DeriveGoalBlockerTrace(goal, decisions, reports)
+	goal.BlockerTrace = trace
 	return assistantstore.GoalTimeline{
-		Goal:        goal,
-		Watches:     watches,
-		Signals:     signals,
-		Notes:       notes,
-		Assessments: assessments,
-		Decisions:   decisions,
-		TaskReports: reports,
+		Goal:         goal,
+		BlockerTrace: trace,
+		Watches:      watches,
+		Signals:      signals,
+		Notes:        notes,
+		Assessments:  assessments,
+		Decisions:    decisions,
+		TaskReports:  reports,
 	}, nil
+}
+
+func (o *Orchestrator) attachGoalBlockerTrace(store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.Goal, error) {
+	decisions, err := store.ListDecisions(goal.ID)
+	if err != nil {
+		return assistantstore.Goal{}, err
+	}
+	reports, err := store.ListTaskReports(goal.ID)
+	if err != nil {
+		return assistantstore.Goal{}, err
+	}
+	goal.BlockerTrace = assistantstore.DeriveGoalBlockerTrace(goal, decisions, reports)
+	return goal, nil
+}
+
+func (o *Orchestrator) GoalBlockerTraceForTask(task taskstore.Task) (*assistantstore.GoalBlockerTrace, error) {
+	if strings.TrimSpace(task.GoalID) == "" {
+		return nil, nil
+	}
+	store, err := o.assistantGoalStore()
+	if err != nil {
+		return nil, err
+	}
+	goal, err := store.LoadGoal(task.GoalID)
+	if err != nil {
+		return nil, err
+	}
+	goal, err = o.ensureGoalPlan(store, goal)
+	if err != nil {
+		return nil, err
+	}
+	goal, err = o.attachGoalBlockerTrace(store, goal)
+	if err != nil {
+		return nil, err
+	}
+	return goal.BlockerTrace, nil
 }
 
 func (o *Orchestrator) ensureGoalPlan(store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.Goal, error) {

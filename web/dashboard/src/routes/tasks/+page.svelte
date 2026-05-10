@@ -153,6 +153,7 @@
   let mergeQueueItems: HomelabdTask[] = [];
   let currentTaskSummary: HomelabdTask | undefined;
   let currentTask: HomelabdTask | undefined;
+  let currentGoalBlockerTrace: HomelabdTask['goal_blocker_trace'] | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
   let currentTaskRuns: WorkerTraceRun[] = [];
   let currentTaskDiff: HomelabdTaskDiffResponse | undefined;
@@ -480,6 +481,7 @@
   $: currentTask = currentTaskSummary
     ? taskDetails[currentTaskSummary.id] || currentTaskSummary
     : undefined;
+  $: currentGoalBlockerTrace = taskGoalBlockerTrace(currentTask);
   $: currentTaskEvents = taskQueueView.currentTaskEvents;
   $: currentTaskRuns = currentTask
     ? buildWorkerTraceRuns(currentTaskEvents, taskRuns[currentTask.id] || [])
@@ -703,7 +705,7 @@
       case 'running':
         return 'No action needed while the worker is running. Stop only if you need to interrupt the run.';
       case 'ready_for_review':
-        return 'No action needed. Review is queued by the merge queue; manual Review is available if needed.';
+        return 'Review is queued automatically. You can wait for the merge queue or run Review now from manual controls.';
       case 'awaiting_approval':
         return pendingApprovalForTask(task, approvals)
           ? 'Review the diff and approve or deny the merge.'
@@ -730,6 +732,54 @@
       default:
         return 'Check the task result and activity before choosing a manual control.';
     }
+  };
+
+  const blockerStatusLabel = (value = '') =>
+    value
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^./, (match) => match.toUpperCase());
+
+  const taskGoalBlockerTrace = (task: HomelabdTask | undefined) => task?.goal_blocker_trace;
+
+  const taskIsGoalBlocker = (task: HomelabdTask | undefined) =>
+    Boolean(task?.id && task.goal_blocker_trace?.blocking_task_id === task.id);
+
+  const taskGoalBlockerTitle = (task: HomelabdTask | undefined) => {
+    const trace = taskGoalBlockerTrace(task);
+    if (!trace) {
+      return 'Goal is not blocked';
+    }
+    if (taskIsGoalBlocker(task)) {
+      return 'This task is blocking Goal Autopilot';
+    }
+    if (trace.blocking_task_id) {
+      return `Goal is blocked by task ${shortID(trace.blocking_task_id)}`;
+    }
+    return 'Goal Autopilot is blocked';
+  };
+
+  const taskGoalBlockerMeta = (task: HomelabdTask | undefined) => {
+    const trace = taskGoalBlockerTrace(task);
+    return [
+      trace?.phase_title ? `Phase: ${trace.phase_title}` : '',
+      trace?.source_type ? blockerStatusLabel(trace.source_type) : '',
+      trace?.review_decision ? `Review: ${blockerStatusLabel(trace.review_decision)}` : '',
+      trace?.created_at ? compactTime(trace.created_at) : ''
+    ]
+      .filter(Boolean)
+      .join(' / ');
+  };
+
+  const taskGoalBlockerEvidence = (task: HomelabdTask | undefined) => {
+    const trace = taskGoalBlockerTrace(task);
+    return [
+      ...(trace?.blockers || []),
+      ...(trace?.questions || []),
+      ...(trace?.follow_ups || []),
+      ...(trace?.evidence || [])
+    ].slice(0, 3);
   };
 
   const actionPanelLabel = (action: PrimaryTaskAction) => {
@@ -1827,6 +1877,37 @@
                 <p>{taskStateDescription(currentTask.status)}</p>
                 <small>{taskOperatorGuidance(currentTask)}</small>
               </section>
+
+              {#if currentGoalBlockerTrace}
+                <section class="state-machine goal-blocker-state" aria-label="Goal blocker trace">
+                  <div>
+                    <span>Goal blocker</span>
+                    <strong>{taskGoalBlockerTitle(currentTask)}</strong>
+                  </div>
+                  {#if taskGoalBlockerMeta(currentTask)}
+                    <small>{taskGoalBlockerMeta(currentTask)}</small>
+                  {/if}
+                  <p>{currentGoalBlockerTrace.reason}</p>
+                  {#if currentGoalBlockerTrace.operator_action}
+                    <small>{currentGoalBlockerTrace.operator_action}</small>
+                  {/if}
+                  {#if taskGoalBlockerEvidence(currentTask).length}
+                    <ul class="goal-blocker-list" aria-label="Goal blocker evidence">
+                      {#each taskGoalBlockerEvidence(currentTask) as item}
+                        <li>{item}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                  <div class="goal-blocker-actions" role="group" aria-label="Goal blocker actions">
+                    {#if currentGoalBlockerTrace.source_url}
+                      <a href={currentGoalBlockerTrace.source_url}>Open Goal</a>
+                    {/if}
+                    {#if currentGoalBlockerTrace.blocking_task_url && !taskIsGoalBlocker(currentTask)}
+                      <a href={currentGoalBlockerTrace.blocking_task_url}>Open blocking task</a>
+                    {/if}
+                  </div>
+                </section>
+              {/if}
 
               {#if currentTask.auto_recovery_attempts}
                 <section class="state-machine" aria-label="Automatic recovery">
@@ -3100,6 +3181,25 @@
     background: #451a1a;
   }
 
+  :global(html[data-theme='dark'] .goal-blocker-state) {
+    border-color: rgb(251 191 36 / 0.55);
+    background: #431407;
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-state span),
+  :global(html[data-theme='dark'] .goal-blocker-state small),
+  :global(html[data-theme='dark'] .goal-blocker-state strong),
+  :global(html[data-theme='dark'] .goal-blocker-state p),
+  :global(html[data-theme='dark'] .goal-blocker-list) {
+    color: #fed7aa;
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-actions a) {
+    color: #fed7aa;
+    border-color: rgb(251 191 36 / 0.55);
+    background: rgb(154 52 18 / 0.45);
+  }
+
   :global(html[data-theme='dark'] .toast-notice) {
     box-shadow: 0 1rem 2rem rgb(0 0 0 / 0.35);
   }
@@ -3599,6 +3699,48 @@
     color: var(--text, #334155);
     font-size: 0.88rem;
     line-height: 1.4;
+  }
+
+  .goal-blocker-state {
+    border-color: #fed7aa;
+    background: #fff7ed;
+  }
+
+  .goal-blocker-state span,
+  .goal-blocker-state small,
+  .goal-blocker-state strong,
+  .goal-blocker-state p {
+    color: #7c2d12;
+  }
+
+  .goal-blocker-list {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0.1rem 0 0;
+    padding-left: 1.1rem;
+    color: #7c2d12;
+    font-size: 0.8rem;
+    line-height: 1.35;
+  }
+
+  .goal-blocker-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .goal-blocker-actions a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2rem;
+    padding: 0 0.65rem;
+    border: 1px solid #fb923c;
+    border-radius: 0.65rem;
+    color: #7c2d12;
+    background: #ffedd5;
+    font-size: 0.78rem;
+    font-weight: 850;
+    text-decoration: none;
   }
 
   .workspace-path,

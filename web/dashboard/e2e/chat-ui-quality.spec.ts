@@ -50,6 +50,9 @@ const seededSessions = [
 ];
 
 const mockShellApis = async (page: Page) => {
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [] } });
   });

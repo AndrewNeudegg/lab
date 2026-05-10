@@ -49,6 +49,9 @@ const mockWorkflowApi = async (page: Page) => {
     }
   ];
 
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.route('**/api/workflows/*/run', async (route) => {
     const id = route.request().url().split('/').at(-2) || workflows[0].id;
     workflows = workflows.map((workflow) =>

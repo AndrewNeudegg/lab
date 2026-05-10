@@ -42,6 +42,12 @@ Use the shared responsive navbar on every dashboard page.
 - Show compact Tasks attention badges only when action is needed. Red counts failed, timed-out, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
 - Keep the navbar pinned to the viewport top on pages with internal scroll regions, including `/chat`, so mobile and desktop operators can reach navigation without first scrolling the conversation.
 
+## Loading Performance
+
+Dashboard list routes must stay lightweight. Task lists, Assistant run lists, Knowledge Space lists, and event lists are overview data: they preserve ids, status, counts, summaries, and short previews, but omit large stored bodies such as task results, remote diffs, raw diff snapshots, attachment data, Assistant run snapshots, Knowledge source content, research chunks, and oversized event payloads. The shared navbar must use `GET /tasks/attention` for the Tasks badge instead of fetching the task list and approvals on every page. Task and Assistant run stores maintain list-summary sidecars as records are saved, and legacy records backfill those sidecars the first time a list is requested. Event lists with `limit=N` read from the tail of the day's JSONL log instead of parsing the whole file. Selected records load complete detail through the existing record endpoints: `GET /tasks/<task_id>`, `GET /assistant/runs/<run_id>`, and `GET /knowledge/spaces/<space_id>`.
+
+Use `detail=full` only for diagnostics that explicitly need a complete list payload. Dashboard pages should not depend on full list payloads because old completed tasks, proactive runs, and event logs can grow into hundreds of megabytes.
+
 ## URL References
 
 Dashboard state that operators naturally share must have a URL and must use SvelteKit navigation, not full document reloads.

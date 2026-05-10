@@ -44,6 +44,7 @@
   const panels: KnowledgePanel[] = ['sources', 'runs', 'artefacts'];
 
   let spaces: HomelabdKnowledgeSpace[] = [];
+  let spaceDetails: Record<string, HomelabdKnowledgeSpace> = {};
   let selectedSpaceId = '';
   let lastAppliedRouteSpaceId = '';
   let lastAppliedAnchorId = '';
@@ -51,6 +52,8 @@
   let activePanel: KnowledgePanel = 'sources';
   let search = '';
   let loading = true;
+  let spaceDetailLoadingId = '';
+  let spaceDetailError = '';
   let creating = false;
   let addingSource = false;
   let asking = false;
@@ -122,7 +125,9 @@
     selectedSpaceId,
     browser ? currentRouteSpaceId() : ''
   );
-  $: selectedSpace = spaces.find((space) => space.id === selectedSpaceId);
+  $: selectedSpace = selectedSpaceId
+    ? spaceDetails[selectedSpaceId] || spaces.find((space) => space.id === selectedSpaceId)
+    : undefined;
   $: latestSelectedReport = activeReport;
   $: displayedAskResult = activeAskResult;
   $: latestSelectedRun = activeRun;
@@ -173,6 +178,14 @@
     researchFormOpen = !(selectedSpace.research_runs?.length);
     selectedSourceIds = (selectedSpace.sources || []).map((source) => source.id);
     addSourceOpen = !(selectedSpace.sources?.length);
+  }
+  $: if (
+    browser &&
+    selectedSpaceId &&
+    !spaceDetails[selectedSpaceId] &&
+    spaceDetailLoadingId !== selectedSpaceId
+  ) {
+    void refreshSelectedSpaceDetail(selectedSpaceId);
   }
 
   const currentRouteSpaceId = () => (browser ? $page.url.searchParams.get('space') || '' : '');
@@ -657,11 +670,13 @@
     }
     selectedSpaceId = spaceId;
     search = '';
+    void refreshSelectedSpaceDetail(spaceId);
   };
 
   const selectSpace = (spaceId: string) => {
     selectedSpaceId = spaceId;
     navigateToSpace(spaceId);
+    void refreshSelectedSpaceDetail(spaceId);
     revealDetailIfCompact();
   };
 
@@ -713,9 +728,31 @@
     spaces = existing
       ? spaces.map((item) => (item.id === space.id ? space : item))
       : [space, ...spaces];
+    spaceDetails = { ...spaceDetails, [space.id]: space };
     selectedSpaceId = space.id;
     if (currentRouteSpaceId() !== space.id) {
       navigateToSpace(space.id);
+    }
+  };
+
+  const refreshSelectedSpaceDetail = async (spaceId = selectedSpaceId, force = false) => {
+    if (!spaceId) {
+      return;
+    }
+    spaceDetailError = '';
+    if (!force && spaceDetails[spaceId]) {
+      return;
+    }
+    spaceDetailLoadingId = spaceId;
+    try {
+      const space = await client.getKnowledgeSpace(spaceId);
+      spaceDetails = { ...spaceDetails, [spaceId]: space };
+    } catch (err) {
+      spaceDetailError = err instanceof Error ? err.message : 'Unable to load full Knowledge Space detail.';
+    } finally {
+      if (spaceDetailLoadingId === spaceId) {
+        spaceDetailLoadingId = '';
+      }
     }
   };
 
@@ -727,6 +764,10 @@
       const response = await client.listKnowledgeSpaces();
       spaces = [...knowledgeSpacesFromResponse(response)].sort(
         (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+      );
+      const spaceIds = new Set(spaces.map((space) => space.id));
+      spaceDetails = Object.fromEntries(
+        Object.entries(spaceDetails).filter(([spaceId]) => spaceIds.has(spaceId))
       );
       const routeSpaceId = currentRouteSpaceId();
       if (routeSpaceId && spaces.some((space) => space.id === routeSpaceId)) {
@@ -741,6 +782,9 @@
       }
       anchorId = currentRouteHash();
       lastRefresh = syncTimeLabel();
+      if (selectedSpaceId) {
+        await refreshSelectedSpaceDetail(selectedSpaceId, true);
+      }
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unable to load Knowledge Space data.';
     } finally {
@@ -1584,6 +1628,14 @@
         {/if}
         {#if notice}
           <p class="notice success mobile-notice">{notice}</p>
+        {/if}
+        {#if spaceDetailLoadingId === selectedSpace.id && !spaceDetails[selectedSpace.id]}
+          <p class="notice info mobile-notice" role="status">
+            Loading full Knowledge Space detail.
+          </p>
+        {/if}
+        {#if spaceDetailError}
+          <p class="notice error mobile-notice" role="alert">{spaceDetailError}</p>
         {/if}
 
         <header class="detail-header">
@@ -3418,6 +3470,11 @@
     border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border, #cbd5e1));
   }
 
+  .notice.info {
+    color: var(--primary, #2563eb);
+    border-color: color-mix(in srgb, var(--primary, #2563eb) 35%, var(--border, #cbd5e1));
+  }
+
   .text-action {
     display: inline-flex;
     align-items: center;
@@ -5135,6 +5192,10 @@
 
   :global([data-theme='dark']) .notice.success {
     color: var(--success, #4ade80);
+  }
+
+  :global([data-theme='dark']) .notice.info {
+    color: var(--primary, #60a5fa);
   }
 
   @media (max-width: 1080px) {

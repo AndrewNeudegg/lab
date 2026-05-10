@@ -83,6 +83,79 @@ func (s *Store) ReadDay(day time.Time) ([]Event, error) {
 	return events, nil
 }
 
+func (s *Store) ReadDayTail(day time.Time, limit int) ([]Event, error) {
+	if limit < 1 {
+		return []Event{}, nil
+	}
+	path := filepath.Join(s.dir, day.Format("2006-01-02")+".jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	lines, err := readTailLines(f, limit)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]Event, 0, len(lines))
+	for _, line := range lines {
+		var event Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func readTailLines(f *os.File, limit int) ([][]byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	offset := info.Size()
+	if offset == 0 {
+		return nil, nil
+	}
+	const chunkSize int64 = 64 * 1024
+	lines := make([][]byte, 0, limit)
+	var pending []byte
+	for offset > 0 && len(lines) < limit {
+		readSize := chunkSize
+		if offset < readSize {
+			readSize = offset
+		}
+		offset -= readSize
+		chunk := make([]byte, readSize)
+		n, err := f.ReadAt(chunk, offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		data := make([]byte, 0, n+len(pending))
+		data = append(data, chunk[:n]...)
+		data = append(data, pending...)
+		parts := bytes.Split(data, []byte{'\n'})
+		pending = append([]byte(nil), parts[0]...)
+		for index := len(parts) - 1; index >= 1 && len(lines) < limit; index-- {
+			line := bytes.TrimSpace(parts[index])
+			if len(line) == 0 {
+				continue
+			}
+			lines = append(lines, append([]byte(nil), line...))
+		}
+	}
+	if len(lines) < limit {
+		line := bytes.TrimSpace(pending)
+		if len(line) > 0 {
+			lines = append(lines, append([]byte(nil), line...))
+		}
+	}
+	for left, right := 0, len(lines)-1; left < right; left, right = left+1, right-1 {
+		lines[left], lines[right] = lines[right], lines[left]
+	}
+	return lines, nil
+}
+
 func (s *Store) DeleteMatching(ctx context.Context, match MatchFunc) (int, error) {
 	if match == nil {
 		return 0, nil

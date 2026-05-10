@@ -1605,6 +1605,30 @@ func (o *Orchestrator) ListTasks() ([]taskstore.Task, error) {
 	return tasks, nil
 }
 
+func (o *Orchestrator) ListTaskSummaries() ([]taskstore.Task, error) {
+	tasks, err := o.tasks.ListSummaries()
+	if err != nil {
+		return nil, err
+	}
+	if tasks == nil {
+		tasks = []taskstore.Task{}
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
+	return tasks, nil
+}
+
+func (o *Orchestrator) TaskAttentionCounts() (TaskAttentionCounts, error) {
+	tasks, err := o.tasks.ListSummaries()
+	if err != nil {
+		return TaskAttentionCounts{}, err
+	}
+	approvals, err := o.approvals.List()
+	if err != nil {
+		return TaskAttentionCounts{}, err
+	}
+	return TaskAttentionCountsFor(tasks, approvals), nil
+}
+
 func (o *Orchestrator) LoadTask(taskID string) (taskstore.Task, error) {
 	return o.tasks.Load(taskID)
 }
@@ -1728,6 +1752,10 @@ func (o *Orchestrator) ResolveApproval(ctx context.Context, approvalID string, g
 
 func (o *Orchestrator) ReadEvents(day time.Time) ([]eventlog.Event, error) {
 	return o.events.ReadDay(day)
+}
+
+func (o *Orchestrator) ReadEventTail(day time.Time, limit int) ([]eventlog.Event, error) {
+	return o.events.ReadDayTail(day, limit)
 }
 
 func (o *Orchestrator) ClearChat(ctx context.Context, req ClearChatRequest) (ClearChatResult, error) {

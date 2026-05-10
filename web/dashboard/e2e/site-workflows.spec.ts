@@ -738,6 +738,9 @@ const mockDashboardApis = async (page: Page) => {
       }
     });
   });
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 3, total: 3 } } });
+  });
   await page.route(/\/api\/tasks\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [queuedTask, restartTask, task] } });
   });
@@ -1340,6 +1343,9 @@ test.describe('knowledge empty state', () => {
 
     await page.route(/\/api\/knowledge\/spaces$/, async (route) => {
       await route.fulfill({ json: { spaces: null } });
+    });
+    await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+      await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
     });
     await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
       if (route.request().method() === 'POST') {

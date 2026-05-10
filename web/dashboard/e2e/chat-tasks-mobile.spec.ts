@@ -122,6 +122,9 @@ const mockTaskApi = async (
   const taskRecords = [...tasks, ...extraTasks];
 
   let taskListReads = 0;
+  await page.context().route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
       onCreateTask?.(JSON.parse(route.request().postData() || '{}'));
@@ -260,6 +263,9 @@ const mockAcceptTaskApi = async (page: Page) => {
     result: accepted ? 'accepted by human' : 'merged and awaiting verification'
   });
 
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [currentTask()] } });
   });
@@ -321,6 +327,9 @@ const mockNoChangeTaskApi = async (page: Page) => {
       : 'No change required: duplicate report.'
   });
 
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [currentTask()] } });
   });
@@ -683,6 +692,9 @@ test('tasks mobile returns to the queue when Accept empties the current filter',
   await page.route(/\/api\/tasks\/task_20260426_151500_accept1\/accept$/, async (route) => {
     accepted = true;
     await route.fulfill({ json: { reply: 'accepted empty attention task' } });
+  });
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
   });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [task()] } });
@@ -1226,6 +1238,9 @@ test('chat renders Mermaid diagrams with the brand palette in light and dark mod
 test('mobile navbar help button creates a task with captured context', async ({ page }) => {
   await mockScreenCapture(page);
   let requestBody: any;
+  await page.context().route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     requestBody = JSON.parse(route.request().postData() || '{}');
     await route.fulfill({ status: 201, json: { reply: 'created help task' } });

@@ -342,7 +342,10 @@ func (s *RunStore) Save(run Run) error {
 	if err != nil {
 		return err
 	}
-	return writeRunFileAtomic(filepath.Join(s.dir, run.ID+".json"), append(b, '\n'))
+	if err := writeRunFileAtomic(s.runPath(run.ID), append(b, '\n')); err != nil {
+		return err
+	}
+	return s.writeSummaryLocked(run)
 }
 
 func (s *RunStore) Load(id string) (Run, error) {
@@ -352,7 +355,7 @@ func (s *RunStore) Load(id string) (Run, error) {
 }
 
 func (s *RunStore) loadLocked(id string) (Run, error) {
-	b, err := os.ReadFile(filepath.Join(s.dir, id+".json"))
+	b, err := os.ReadFile(s.runPath(id))
 	if err != nil {
 		return Run{}, err
 	}
@@ -402,6 +405,31 @@ func (s *RunStore) List() ([]Run, error) {
 	return runs, nil
 }
 
+func (s *RunStore) ListSummaries() ([]Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Run{}, nil
+		}
+		return nil, err
+	}
+	runs := []Run{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		run, err := s.loadSummaryForRunLocked(entry.Name()[:len(entry.Name())-len(".json")])
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.After(runs[j].UpdatedAt) })
+	return runs, nil
+}
+
 func (s *RunStore) SetArchived(id string, archived bool, actor, reason string, now time.Time) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -438,10 +466,74 @@ func (s *RunStore) SetArchived(id string, archived bool, actor, reason string, n
 	if err != nil {
 		return Run{}, err
 	}
-	if err := writeRunFileAtomic(filepath.Join(s.dir, run.ID+".json"), append(b, '\n')); err != nil {
+	if err := writeRunFileAtomic(s.runPath(run.ID), append(b, '\n')); err != nil {
+		return Run{}, err
+	}
+	if err := s.writeSummaryLocked(run); err != nil {
 		return Run{}, err
 	}
 	return run, nil
+}
+
+func (s *RunStore) loadSummaryForRunLocked(id string) (Run, error) {
+	fullInfo, err := os.Stat(s.runPath(id))
+	if err != nil {
+		return Run{}, err
+	}
+	summaryInfo, err := os.Stat(s.summaryPath(id))
+	if err == nil && !summaryInfo.ModTime().Before(fullInfo.ModTime()) {
+		run, loadErr := s.loadSummaryLocked(id)
+		if loadErr == nil {
+			return SummarizeRunForList(run), nil
+		}
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Run{}, err
+	}
+	run, err := s.loadLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := s.writeSummaryLocked(run); err != nil {
+		return Run{}, err
+	}
+	return SummarizeRunForList(run), nil
+}
+
+func (s *RunStore) loadSummaryLocked(id string) (Run, error) {
+	b, err := os.ReadFile(s.summaryPath(id))
+	if err != nil {
+		return Run{}, err
+	}
+	var run Run
+	if err := json.Unmarshal(b, &run); err != nil {
+		return Run{}, err
+	}
+	return NormalizeRun(run), nil
+}
+
+func (s *RunStore) writeSummaryLocked(run Run) error {
+	if err := os.MkdirAll(s.summaryDir(), 0o755); err != nil {
+		return err
+	}
+	summary := SummarizeRunForList(run)
+	b, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeRunFileAtomic(s.summaryPath(run.ID), append(b, '\n'))
+}
+
+func (s *RunStore) runPath(id string) string {
+	return filepath.Join(s.dir, id+".json")
+}
+
+func (s *RunStore) summaryDir() string {
+	return filepath.Join(s.dir, "index")
+}
+
+func (s *RunStore) summaryPath(id string) string {
+	return filepath.Join(s.summaryDir(), id+".json")
 }
 
 func writeRunFileAtomic(path string, content []byte) error {

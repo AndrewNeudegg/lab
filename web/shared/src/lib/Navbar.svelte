@@ -7,7 +7,7 @@
   } from './attachments';
   import { createHomelabdClient } from './client';
   import ThemeToggle from './ThemeToggle.svelte';
-  import { taskAttentionCounts, type TaskAttentionCounts } from './tasks';
+  import type { TaskAttentionCounts } from './tasks';
   import type { HomelabdTaskAttachment } from './types';
 
   export let title = 'homelabd';
@@ -101,19 +101,8 @@
       return;
     }
     const client = createHomelabdClient({ baseUrl: taskApiBase || apiBase || '/api' });
-    const [tasksResult, approvalsResult] = await Promise.allSettled([
-      client.listTasks(),
-      client.listApprovals()
-    ]);
-    if (tasksResult.status !== 'fulfilled') {
-      return;
-    }
-    const tasks = Array.isArray(tasksResult.value.tasks) ? tasksResult.value.tasks : [];
-    const approvals =
-      approvalsResult.status === 'fulfilled' && Array.isArray(approvalsResult.value.approvals)
-        ? approvalsResult.value.approvals
-        : [];
-    fetchedTaskAttention = taskAttentionCounts(tasks, approvals);
+    const response = await client.getTaskAttention();
+    fetchedTaskAttention = response.attention;
   };
 
   const closeMobileMenu = () => {

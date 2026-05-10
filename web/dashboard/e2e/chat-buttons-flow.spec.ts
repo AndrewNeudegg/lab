@@ -29,6 +29,9 @@ const mockApis = async (page: Page) => {
   const yesGate = new Promise<void>((resolve) => {
     releaseYes = resolve;
   });
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [] } });
   });

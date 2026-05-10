@@ -54,7 +54,9 @@ import type {
   HomelabdResumeKnowledgeResearchRunResponse,
   HomelabdSettingsResponse,
   HomelabdTaskActionResponse,
+  HomelabdTaskAttentionResponse,
   HomelabdTaskDiffResponse,
+  HomelabdTask,
   HomelabdTaskReopenRequest,
   HomelabdTaskRetryRequest,
   HomelabdTaskRunsResponse,
@@ -362,6 +364,18 @@ export const createHomelabdClient = (
     },
     listTasks() {
       return apiFetch<HomelabdTasksResponse>('/tasks', {
+        baseUrl,
+        fetcher
+      });
+    },
+    getTaskAttention() {
+      return apiFetch<HomelabdTaskAttentionResponse>('/tasks/attention', {
+        baseUrl,
+        fetcher
+      });
+    },
+    getTask(taskId: string) {
+      return apiFetch<HomelabdTask>(`/tasks/${encodeURIComponent(taskId)}`, {
         baseUrl,
         fetcher
       });

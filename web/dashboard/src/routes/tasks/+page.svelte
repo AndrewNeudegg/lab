@@ -99,6 +99,8 @@
   let autoMergeEnabled = false;
   let autoMergeIssue = '';
   let autoMergeVersion = 0;
+  let taskDetailLoadingId = '';
+  let taskDetailIssue = '';
   let diffLoadingTaskId = '';
   let workerRunsIssue = '';
   let taskFilter: TaskFilter = 'attention';
@@ -132,6 +134,7 @@
 	  let workspaces: HomelabdRemoteWorkspace[] = [];
 	  let approvals: HomelabdApproval[] = [];
   let events: HomelabdEvent[] = [];
+  let taskDetails: Record<string, HomelabdTask> = {};
   let taskRuns: Record<string, HomelabdRunArtifact[]> = {};
   let taskDiffs: Record<string, HomelabdTaskDiffResponse> = {};
   const coalesceRefreshState = createCoalescedAsync<void>();
@@ -148,6 +151,7 @@
   let activeTaskItems: HomelabdTask[] = [];
   let visibleTaskItems: HomelabdTask[] = [];
   let mergeQueueItems: HomelabdTask[] = [];
+  let currentTaskSummary: HomelabdTask | undefined;
   let currentTask: HomelabdTask | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
   let currentTaskRuns: WorkerTraceRun[] = [];
@@ -472,7 +476,10 @@
   $: mergeQueueItems = tasks
     .filter((task) => (task.merge_queue_position || 0) > 0)
     .sort((left, right) => (left.merge_queue_position || 0) - (right.merge_queue_position || 0));
-  $: currentTask = taskQueueView.currentTask;
+  $: currentTaskSummary = taskQueueView.currentTask;
+  $: currentTask = currentTaskSummary
+    ? taskDetails[currentTaskSummary.id] || currentTaskSummary
+    : undefined;
   $: currentTaskEvents = taskQueueView.currentTaskEvents;
   $: currentTaskRuns = currentTask
     ? buildWorkerTraceRuns(currentTaskEvents, taskRuns[currentTask.id] || [])
@@ -768,6 +775,24 @@
     }
   };
 
+  const refreshTaskDetail = async (taskId: string) => {
+    if (!taskId) {
+      return;
+    }
+    taskDetailLoadingId = taskId;
+    taskDetailIssue = '';
+    try {
+      const result = await withRefreshTimeout('Task details', client.getTask(taskId));
+      taskDetails = { ...taskDetails, [taskId]: result };
+    } catch (err) {
+      taskDetailIssue = errorMessage(err, 'Unable to load full task details.');
+    } finally {
+      if (taskDetailLoadingId === taskId) {
+        taskDetailLoadingId = '';
+      }
+    }
+  };
+
   const refreshSelectedTaskDetails = async (
     taskId: string,
     options: RefreshSelectedTaskDetailsOptions = {}
@@ -776,8 +801,13 @@
       return;
     }
 
+    taskDetailIssue = '';
     const selected = options.task || tasks.find((task) => task.id === taskId);
     const detailTasks: Promise<void>[] = [];
+
+    if (selected?.summary_only || taskDetails[taskId]?.summary_only) {
+      detailTasks.push(refreshTaskDetail(taskId));
+    }
 
     if (options.force || loadedRunsTaskId !== taskId) {
       loadedRunsTaskId = taskId;
@@ -925,6 +955,10 @@
               (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
             );
             tasks = nextTasks;
+            const taskIds = new Set(nextTasks.map((task) => task.id));
+            taskDetails = Object.fromEntries(
+              Object.entries(taskDetails).filter(([taskId]) => taskIds.has(taskId))
+            );
             taskLoadError = '';
             syncFailureCount = 0;
             syncIssue = '';
@@ -1638,6 +1672,15 @@
               {/if}
             </div>
           </header>
+
+          {#if taskDetailIssue}
+            <section class="notice error" role="alert">
+              <div>
+                <strong>Task detail unavailable</strong>
+                <p>{taskDetailIssue}</p>
+              </div>
+            </section>
+          {/if}
 
           <section class={`decision-panel ${currentPrimaryAction.tone}`} aria-label="Task actions">
             <header class="decision-header">

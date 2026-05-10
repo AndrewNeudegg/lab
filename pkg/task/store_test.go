@@ -1,6 +1,8 @@
 package task
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,5 +90,79 @@ func TestStorePersistsAttachments(t *testing.T) {
 	}
 	if loaded.Attachments[0].Name != "browser-context.json" || loaded.Attachments[0].Text == "" {
 		t.Fatalf("attachment = %#v, want stored context attachment", loaded.Attachments[0])
+	}
+}
+
+func TestStoreListSummariesOmitsHeavyFields(t *testing.T) {
+	store := NewStore(t.TempDir())
+	task := Task{
+		ID:         "task_heavy",
+		Title:      "heavy",
+		Goal:       strings.Repeat("goal ", 400),
+		Result:     strings.Repeat("result ", 400),
+		RemoteDiff: strings.Repeat("diff", 5000),
+		Attachments: []Attachment{{
+			ID:   "att_1",
+			Name: "context.txt",
+			Text: strings.Repeat("attachment", 5000),
+		}},
+		DiffSnapshot: &TaskDiffSnapshot{
+			RawDiff: strings.Repeat("raw", 5000),
+			Files:   make([]TaskDiffSnapshotFile, 100),
+		},
+	}
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := store.ListSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(summaries))
+	}
+	summary := summaries[0]
+	if !summary.SummaryOnly {
+		t.Fatal("summary_only = false, want true")
+	}
+	if summary.RemoteDiff != "" || summary.DiffSnapshot == nil || summary.DiffSnapshot.RawDiff != "" {
+		t.Fatalf("summary kept heavy diff fields: %#v", summary)
+	}
+	if len(summary.DiffSnapshot.Files) != 80 {
+		t.Fatalf("summary diff files = %d, want 80", len(summary.DiffSnapshot.Files))
+	}
+	if len(summary.Attachments) != 1 || summary.Attachments[0].Text != "" {
+		t.Fatalf("summary attachment = %#v, want metadata without text", summary.Attachments)
+	}
+
+	loaded, err := store.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SummaryOnly || loaded.RemoteDiff == "" || loaded.DiffSnapshot.RawDiff == "" || loaded.Attachments[0].Text == "" {
+		t.Fatalf("full task lost detail: %#v", loaded)
+	}
+}
+
+func TestStoreListSummariesBackfillsMissingIndex(t *testing.T) {
+	store := NewStore(t.TempDir())
+	task := Task{ID: "task_legacy", Title: "legacy", RemoteDiff: strings.Repeat("diff", 1000)}
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.summaryPath(task.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := store.ListSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || !summaries[0].SummaryOnly || summaries[0].RemoteDiff != "" {
+		t.Fatalf("summaries = %#v, want regenerated lightweight summary", summaries)
+	}
+	if _, err := os.Stat(store.summaryPath(task.ID)); err != nil {
+		t.Fatalf("summary index was not regenerated: %v", err)
 	}
 }

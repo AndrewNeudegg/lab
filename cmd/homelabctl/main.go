@@ -963,7 +963,7 @@ func (c cli) knowledgeResearchRunResume(args []string) error {
 
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|show|runs|diff|run|review|review-ui|queue|accept|restart|reopen|cancel|retry|delete>")
+		return fmt.Errorf("usage: homelabctl task <new|list|attention|show|runs|diff|run|review|review-ui|queue|accept|restart|reopen|cancel|retry|delete>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -989,6 +989,11 @@ func (c cli) task(args []string) error {
 			return fmt.Errorf("usage: homelabctl task list")
 		}
 		return c.do(http.MethodGet, "/tasks", nil)
+	case "attention":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: homelabctl task attention")
+		}
+		return c.do(http.MethodGet, "/tasks/attention", nil)
 	case "show", "get":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: homelabctl task show <task_id>")
@@ -1764,6 +1769,7 @@ func usage(out io.Writer) {
 
   homelabctl [-addr http://127.0.0.1:18080] task new [--attach <path>] [--auto|--local|--project <project>|--agent <agent_id> --workdir <workdir_id>|--workdir-path <path> --backend <backend>] <goal>
   homelabctl [-addr http://127.0.0.1:18080] task list
+  homelabctl [-addr http://127.0.0.1:18080] task attention
   homelabctl [-addr http://127.0.0.1:18080] task show <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task runs <task_id>
   homelabctl [-addr http://127.0.0.1:18080] task diff <task_id>

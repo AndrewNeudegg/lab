@@ -172,6 +172,48 @@ describe('homelabd client', () => {
     });
   });
 
+  test('loads full task detail through the typed task endpoint', async () => {
+    const paths: string[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input) => {
+        paths.push(String(input));
+        return jsonResponse({
+          id: 'task_123',
+          title: 'Build grid',
+          goal: 'Build the replacement grid',
+          status: 'done',
+          assigned_to: 'agent',
+          priority: 0,
+          created_at: '2026-05-10T00:00:00Z',
+          updated_at: '2026-05-10T00:01:00Z',
+          result: 'Full result'
+        });
+      }
+    });
+
+    const response = await client.getTask('task_123');
+
+    expect(paths).toEqual(['http://homelabd/tasks/task_123']);
+    expect(response.result).toBe('Full result');
+  });
+
+  test('loads task attention counts through the lightweight endpoint', async () => {
+    const paths: string[] = [];
+    const client = createHomelabdClient({
+      baseUrl: 'http://homelabd',
+      fetcher: async (input) => {
+        paths.push(String(input));
+        return jsonResponse({ attention: { red: 1, amber: 2, total: 3 } });
+      }
+    });
+
+    const response = await client.getTaskAttention();
+
+    expect(paths).toEqual(['http://homelabd/tasks/attention']);
+    expect(response.attention).toEqual({ red: 1, amber: 2, total: 3 });
+  });
+
   test('lists remote agents from the control plane', async () => {
     const paths: string[] = [];
     const client = createHomelabdClient({

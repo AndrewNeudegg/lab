@@ -124,6 +124,7 @@ export interface HomelabdTask {
   remote_diff?: string;
   remote_diff_captured_at?: string;
   plan?: HomelabdTaskPlan;
+  summary_only?: boolean;
 }
 
 export interface HomelabdTaskDiffSnapshot {
@@ -201,6 +202,16 @@ export interface HomelabdUIUXBrief {
 
 export interface HomelabdTasksResponse {
   tasks: HomelabdTask[];
+}
+
+export interface HomelabdTaskAttentionCounts {
+  red: number;
+  amber: number;
+  total: number;
+}
+
+export interface HomelabdTaskAttentionResponse {
+  attention: HomelabdTaskAttentionCounts;
 }
 
 export interface HomelabdRuntimeSettings {
@@ -1694,6 +1705,8 @@ export interface HomelabdClient {
   clearChat(request: HomelabdClearChatRequest): Promise<HomelabdClearChatResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;
+  getTaskAttention(): Promise<HomelabdTaskAttentionResponse>;
+  getTask(taskId: string): Promise<HomelabdTask>;
   getSettings(): Promise<HomelabdSettingsResponse>;
   updateSettings(request: HomelabdUpdateSettingsRequest): Promise<HomelabdSettingsResponse>;
   createKnowledgeSpace(

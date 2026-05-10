@@ -63,8 +63,12 @@
   let latestGoalDecision: AssistantGoalSupervisorDecision | undefined;
   let latestGoalReports: AssistantGoalTaskReport[] = [];
   let selectedRunId = '';
+  let selectedRunSummary: AssistantRun | undefined;
   let selectedRun: AssistantRun | undefined;
   let runsLoading = true;
+  let runDetails: Record<string, AssistantRun> = {};
+  let runDetailLoadingId = '';
+  let runDetailError = '';
   let runStarting = false;
   let goalCreating = false;
   let goalChecking = false;
@@ -129,7 +133,8 @@
   $: activeRuns = assistantRunsForView(runs, 'active');
   $: archivedRuns = assistantRunsForView(runs, 'archived');
   $: visibleRuns = runView === 'archived' ? archivedRuns : activeRuns;
-  $: selectedRun = selectAssistantRun(runs, selectedRunId);
+  $: selectedRunSummary = selectAssistantRun(runs, selectedRunId);
+  $: selectedRun = selectedRunId ? runDetails[selectedRunId] || selectedRunSummary : undefined;
   $: selectedGoal = selectAssistantGoal(goals, selectedGoalId);
   $: selectedGoalPlan = selectedGoalTimeline?.goal.plan || selectedGoal?.plan;
   $: selectedGoalPlanPhases = selectedGoalPlan?.phases || [];
@@ -194,11 +199,18 @@
 	        client.listWorkspaces()
 	      ]);
 	      runs = runResponse.runs || [];
+	      const runIds = new Set(runs.map((run) => run.id));
+	      runDetails = Object.fromEntries(
+	        Object.entries(runDetails).filter(([runId]) => runIds.has(runId))
+	      );
 	      signals = signalResponse.signals || [];
 	      goals = goalResponse.goals || [];
 	      workspaces = workspaceResponse.workspaces || [];
       applySyncedRunSelection();
-      await refreshSelectedGoalAfterGoalList();
+      await Promise.allSettled([
+        refreshSelectedGoalAfterGoalList(),
+        selectedRunId ? refreshSelectedRunDetail(selectedRunId, true) : Promise.resolve()
+      ]);
       lastSynced = syncTimeLabel();
     } catch (err) {
       runsError = err instanceof Error ? err.message : 'Unable to load proactive Assistant runs.';
@@ -235,6 +247,27 @@
       selectedGoalTimeline = await client.getAssistantGoal(goalId);
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to load Goal details.';
+    }
+  };
+
+  const refreshSelectedRunDetail = async (runId = selectedRunId, force = false) => {
+    if (!runId) {
+      return;
+    }
+    runDetailError = '';
+    if (!force && runDetails[runId]) {
+      return;
+    }
+    runDetailLoadingId = runId;
+    try {
+      const run = await client.getAssistantRun(runId);
+      runDetails = { ...runDetails, [runId]: run };
+    } catch (err) {
+      runDetailError = err instanceof Error ? err.message : 'Unable to load Assistant run detail.';
+    } finally {
+      if (runDetailLoadingId === runId) {
+        runDetailLoadingId = '';
+      }
     }
   };
 
@@ -275,6 +308,7 @@
     selectedRunId = runId;
     selectedDetailKind = 'run';
     mobilePanel = 'detail';
+    void refreshSelectedRunDetail(runId);
     revealDetailIfCompact();
   };
 
@@ -350,6 +384,9 @@
     selectedDetailKind = 'run';
     const candidates = assistantRunsForView(runs, view);
     selectedRunId = candidates[0]?.id || '';
+    if (selectedRunId) {
+      void refreshSelectedRunDetail(selectedRunId);
+    }
     navigateToRunOverview(false, view);
   };
 
@@ -815,6 +852,7 @@
         autonomy: 'propose'
       });
       runs = [response.run, ...runs.filter((run) => run.id !== response.run.id)];
+      runDetails = { ...runDetails, [response.run.id]: response.run };
       selectRun(response.run.id, false, 'active');
       runNotice = response.reply || 'Assistant proactive check completed.';
     } catch (err) {
@@ -1042,6 +1080,7 @@
         snooze_seconds: feedback === 'snooze' ? snoozeSeconds : undefined
       });
       runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
+      runDetails = { ...runDetails, [response.run.id]: response.run };
       selectedRunId = response.run.id;
       mobilePanel = 'detail';
       navigateToRun(response.run.id, true, assistantRunView(response.run));
@@ -1068,6 +1107,7 @@
         reason: archived ? 'No longer required.' : undefined
       });
       runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
+      runDetails = { ...runDetails, [response.run.id]: response.run };
       const nextView = assistantRunView(response.run);
       selectedRunId = response.run.id;
       mobilePanel = 'detail';
@@ -1118,6 +1158,9 @@
       } else if (!selectedRunId) {
         selectedRunId = candidates[0]?.id || '';
       }
+      if (selectedRunId) {
+        void refreshSelectedRunDetail(selectedRunId);
+      }
       pendingOverviewRoute = false;
       pendingRouteRunId = '';
       lastAppliedRouteRunId = '';
@@ -1130,6 +1173,7 @@
       runView = pendingRun ? assistantRunView(pendingRun) : routeView;
       lastAppliedRouteRunId = runId;
       pendingRouteRunId = '';
+      void refreshSelectedRunDetail(runId);
       return;
     }
     if (runId === selectedRunId) {
@@ -1137,6 +1181,7 @@
       runView = selected ? assistantRunView(selected) : routeView;
       lastAppliedRouteRunId = runId;
       mobilePanel = 'detail';
+      void refreshSelectedRunDetail(runId);
       return;
     }
     if (runs.some((run) => run.id === runId)) {
@@ -2083,6 +2128,24 @@
                   <path d="M6 6l8 8M14 6l-8 8" />
                 </svg>
               </button>
+            </section>
+          {/if}
+
+          {#if runDetailLoadingId === selectedRun.id && !runDetails[selectedRun.id]}
+            <section class="notice info" role="status" aria-live="polite" aria-label="Assistant detail loading">
+              <div>
+                <strong>Loading full run detail</strong>
+                <p>Summary data is visible while the stored snapshot and receipts load.</p>
+              </div>
+            </section>
+          {/if}
+
+          {#if runDetailError}
+            <section class="notice error" role="alert" aria-label="Assistant detail error">
+              <div>
+                <strong>Assistant detail unavailable</strong>
+                <p>{runDetailError}</p>
+              </div>
             </section>
           {/if}
 
@@ -3407,6 +3470,12 @@
     background: #f0fdf4;
   }
 
+  .notice.info {
+    color: #1e3a8a;
+    border-color: #bfdbfe;
+    background: #eff6ff;
+  }
+
   .notice strong,
   .notice p {
     margin: 0;
@@ -3848,6 +3917,12 @@
     color: #fecaca !important;
     border-color: rgb(248 113 113 / 0.55) !important;
     background: #451a1a !important;
+  }
+
+  :global(html[data-theme='dark'] .notice.info) {
+    color: #bfdbfe !important;
+    border-color: rgb(96 165 250 / 0.55) !important;
+    background: #172554 !important;
   }
 
   @media (max-width: 760px) {

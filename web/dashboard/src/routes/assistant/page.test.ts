@@ -7,6 +7,8 @@ describe('assistant page composition', () => {
 	  test('keeps run selection URL-addressable like other record pages', () => {
     expect(pageSource).toContain('assistantRunURL');
     expect(pageSource).toContain('assistantRunsURL');
+    expect(pageSource).toContain('runDetails[selectedRunId] || selectedRunSummary');
+    expect(pageSource).toContain('const run = await client.getAssistantRun(runId)');
     expect(pageSource).toContain('const currentRunRouteId = () =>');
     expect(pageSource).toContain('const currentRunRouteView = (): AssistantRunView =>');
     expect(pageSource).toContain(

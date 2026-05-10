@@ -81,6 +81,7 @@ func (s *Server) register(mux *http.ServeMux) {
 	mux.HandleFunc("/tasks/", s.withCORS(s.handleTask))
 	mux.HandleFunc("/settings", s.withCORS(s.handleSettings))
 	mux.HandleFunc("/workspaces", s.withCORS(s.handleWorkspaces))
+	mux.HandleFunc("/tasks/attention", s.withCORS(s.handleTaskAttention))
 	mux.HandleFunc("/knowledge/spaces", s.withCORS(s.handleKnowledgeSpaces))
 	mux.HandleFunc("/knowledge/spaces/", s.withCORS(s.handleKnowledgeSpace))
 	mux.HandleFunc("/workflows", s.withCORS(s.handleWorkflows))
@@ -276,7 +277,15 @@ func (s *Server) handleAssistantRuns(rw http.ResponseWriter, req *http.Request) 
 	}
 	switch req.Method {
 	case http.MethodGet:
-		runs, err := s.Orchestrator.ListAssistantRuns()
+		var (
+			runs []assistant.Run
+			err  error
+		)
+		if fullDetailRequested(req.URL.Query().Get("detail")) {
+			runs, err = s.Orchestrator.ListAssistantRuns()
+		} else {
+			runs, err = s.Orchestrator.ListAssistantRunSummaries()
+		}
 		if err != nil {
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
@@ -723,7 +732,15 @@ func clearChatLogFile(path, conversationID string, all bool) (int, error) {
 func (s *Server) handleTasks(rw http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
-		tasks, err := s.Orchestrator.ListTasks()
+		var (
+			tasks []taskstore.Task
+			err   error
+		)
+		if fullDetailRequested(req.URL.Query().Get("detail")) {
+			tasks, err = s.Orchestrator.ListTasks()
+		} else {
+			tasks, err = s.Orchestrator.ListTaskSummaries()
+		}
 		if err != nil {
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
@@ -748,6 +765,23 @@ func (s *Server) handleTasks(rw http.ResponseWriter, req *http.Request) {
 	default:
 		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (s *Server) handleTaskAttention(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(rw, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Orchestrator == nil {
+		writeError(rw, http.StatusServiceUnavailable, "orchestrator is not configured")
+		return
+	}
+	counts, err := s.Orchestrator.TaskAttentionCounts()
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"attention": counts})
 }
 
 func (s *Server) handleTask(rw http.ResponseWriter, req *http.Request) {
@@ -1154,7 +1188,24 @@ func (s *Server) handleEvents(rw http.ResponseWriter, req *http.Request) {
 		}
 		day = parsed
 	}
-	events, err := s.Orchestrator.ReadEvents(day)
+	limit := 0
+	if value := req.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 {
+			writeError(rw, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		limit = parsed
+	}
+	var (
+		events []eventlog.Event
+		err    error
+	)
+	if limit > 0 {
+		events, err = s.Orchestrator.ReadEventTail(day, limit)
+	} else {
+		events, err = s.Orchestrator.ReadEvents(day)
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			writeJSON(rw, http.StatusOK, map[string]any{"events": []json.RawMessage{}})
@@ -1166,15 +1217,8 @@ func (s *Server) handleEvents(rw http.ResponseWriter, req *http.Request) {
 	if events == nil {
 		events = []eventlog.Event{}
 	}
-	if value := req.URL.Query().Get("limit"); value != "" {
-		limit, err := strconv.Atoi(value)
-		if err != nil || limit < 1 {
-			writeError(rw, http.StatusBadRequest, "limit must be a positive integer")
-			return
-		}
-		if len(events) > limit {
-			events = events[len(events)-limit:]
-		}
+	if !fullDetailRequested(req.URL.Query().Get("detail")) {
+		events = summarizeEventsForList(events)
 	}
 	writeJSON(rw, http.StatusOK, map[string]any{"events": events})
 }

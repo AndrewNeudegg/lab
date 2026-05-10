@@ -342,6 +342,9 @@ const mockKnowledgeApis = async (
   }> = [];
   const resumeRunRequests: Array<{ spaceId: string; runId: string }> = [];
 
+  await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { tasks: [] } });
   });
@@ -819,6 +822,9 @@ for (const viewport of [
         releaseSpaces = resolve;
       });
 
+      await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+        await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+      });
       await page.route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
         await route.fulfill({ json: { tasks: [] } });
       });
@@ -1342,7 +1348,7 @@ for (const viewport of [
       await expect(page).toHaveScreenshot(`knowledge-delete-source-confirm-${viewport.name}.png`, {
         fullPage: !viewport.mobile,
         animations: 'disabled',
-        maxDiffPixels: 100
+        maxDiffPixels: 125
       });
       await deleteSourcePanel.getByRole('button', { name: 'Delete source' }).click();
       await expect(

@@ -80,6 +80,7 @@ go run ./cmd/homelabctl task new --project remote1 "Build the remote1 feature"
 go run ./cmd/homelabctl task new --local "Improve homelabd routing"
 go run ./cmd/homelabctl task new --agent workstation --workdir repo "Update this checkout"
 go run ./cmd/homelabctl task list
+go run ./cmd/homelabctl task attention
 go run ./cmd/homelabctl task show task_123
 go run ./cmd/homelabctl task runs task_123
 go run ./cmd/homelabctl task diff task_123
@@ -96,6 +97,8 @@ go run ./cmd/homelabctl task delete task_123
 go run ./cmd/homelabctl settings
 go run ./cmd/homelabctl settings auto-merge on
 ```
+
+List commands are intentionally lightweight. `task list`, `assistant list`, `knowledge list`, and `events` use summary payloads so old results, diffs, snapshots, source content, and event bodies do not make routine checks slow. Task and Assistant stores keep summary sidecars for list commands, the dashboard navbar uses `GET /tasks/attention` for badge counts, and `events --limit` uses the tail of the day's JSONL log. Use the corresponding `show` command, `task diff`, or a diagnostic `detail=full` API query when a complete record is required.
 
 `task retry` preserves the previous task result as retry context and forces an immediate worker attempt. It is the normal recovery path for `timed_out` tasks after raising `external_agents.<backend>.timeout_seconds` or narrowing the instruction. The task supervisor also queues automatic recovery for `conflict_resolution` tasks and retryable blocked tasks. Worker starts are capped by `limits.max_concurrent_tasks`, so recovery waits instead of launching too many browser-UAT or build-heavy tasks at once. In both paths, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
 
@@ -367,7 +370,8 @@ go run ./cmd/homelabctl terminal close term_123
 - `GET /healthz`
 - `POST /message`, returning `reply`, `source`, optional `buttons`, and optional interaction `stats`
 - `POST /chat/clear`
-- `GET /tasks`
+- `GET /tasks` (`detail=full` returns complete list records for diagnostics)
+- `GET /tasks/attention`
 - `POST /tasks`, including optional remote `target`
 - `GET /tasks/{id}`
 - `GET /tasks/{id}/runs`
@@ -381,7 +385,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /tasks/{id}/cancel`
 - `POST /tasks/{id}/retry`
 - `POST /tasks/{id}/delete`
-- `GET /assistant/runs`
+- `GET /assistant/runs` (`detail=full` returns complete list records for diagnostics)
 - `POST /assistant/runs`
 - `GET /assistant/runs/{id}`
 - `PATCH /assistant/runs/{id}`
@@ -400,6 +404,18 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /assistant/goals/{id}/autopilot/stop`
 - `POST /assistant/goals/{id}/watches`
 - `POST /assistant/goals/{id}/notes`
+- `GET /knowledge/spaces` (`detail=full` returns complete list records for diagnostics)
+- `POST /knowledge/spaces`
+- `GET /knowledge/spaces/{id}`
+- `PATCH /knowledge/spaces/{id}`
+- `DELETE /knowledge/spaces/{id}`
+- `POST /knowledge/spaces/{id}/sources`
+- `DELETE /knowledge/spaces/{id}/sources/{source_id}`
+- `POST /knowledge/spaces/{id}/query`
+- `POST /knowledge/spaces/{id}/ask`
+- `POST /knowledge/spaces/{id}/research`
+- `POST /knowledge/spaces/{id}/research-runs`
+- `POST /knowledge/spaces/{id}/research-runs/{run_id}/resume`
 - `GET /workflows`
 - `POST /workflows`
 - `GET /workflows/{id}`
@@ -410,7 +426,7 @@ go run ./cmd/homelabctl terminal close term_123
 - `POST /approvals/{id}/approve`
 - `POST /approvals/{id}/deny`
 - `POST /approvals/{id}/edit`
-- `GET /events?date=YYYY-MM-DD&limit=N`
+- `GET /events?date=YYYY-MM-DD&limit=N` (`detail=full` returns complete payload bodies for diagnostics)
 - `POST /terminal/sessions`
 - `GET /terminal/sessions/{id}`
 - `GET /terminal/sessions/{id}/events`, including optional `after=N` resume support

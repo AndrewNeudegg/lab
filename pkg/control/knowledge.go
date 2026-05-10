@@ -20,6 +20,9 @@ func (s *Server) handleKnowledgeSpaces(rw http.ResponseWriter, req *http.Request
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if !fullDetailRequested(req.URL.Query().Get("detail")) {
+			spaces = summarizeKnowledgeSpacesForList(spaces)
+		}
 		writeJSON(rw, http.StatusOK, map[string]any{"spaces": spaces})
 	case http.MethodPost:
 		var in knowledgestore.CreateSpaceRequest

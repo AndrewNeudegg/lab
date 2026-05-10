@@ -114,6 +114,12 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantBody:   map[string]any{"direction": "up"},
 		},
 		{
+			name:       "task attention",
+			args:       []string{"task", "attention"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/tasks/attention",
+		},
+		{
 			name:       "task retry with backend",
 			args:       []string{"retry", "task_123", "codex", "inspect", "again"},
 			wantMethod: http.MethodPost,
@@ -911,6 +917,8 @@ func TestFullWorkflowIntegration(t *testing.T) {
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "ok"})
 		case "/tasks/task_1/runs":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"runs": []any{}})
+		case "/tasks/attention":
+			writeTestJSON(t, rw, http.StatusOK, map[string]any{"attention": map[string]any{"red": 0, "amber": 1, "total": 1}})
 		case "/agents":
 			writeTestJSON(t, rw, http.StatusOK, map[string]any{"agents": []map[string]any{{"id": "desk"}}})
 		case "/agents/desk":
@@ -938,6 +946,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 	commands := [][]string{
 		{"task", "new", "ship", "it"},
 		{"tasks"},
+		{"task", "attention"},
 		{"show", "task_1"},
 		{"runs", "task_1"},
 		{"diff", "task_1"},
@@ -965,6 +974,7 @@ func TestFullWorkflowIntegration(t *testing.T) {
 	want := []string{
 		"POST /tasks",
 		"GET /tasks",
+		"GET /tasks/attention",
 		"GET /tasks/task_1",
 		"GET /tasks/task_1/runs",
 		"GET /tasks/task_1/diff",

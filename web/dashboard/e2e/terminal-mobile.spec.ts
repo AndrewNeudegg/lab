@@ -185,6 +185,9 @@ const installTerminalMocks = async (page) => {
     });
   });
 
+  await page.context().route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { attention: { red: 0, amber: 0, total: 0 } } });
+  });
   await page.context().route(/\/api\/tasks(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,

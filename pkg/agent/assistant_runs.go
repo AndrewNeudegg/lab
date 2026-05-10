@@ -133,6 +133,17 @@ func (o *Orchestrator) ListAssistantRuns() ([]assistantstore.Run, error) {
 	return store.List()
 }
 
+func (o *Orchestrator) ListAssistantRunSummaries() ([]assistantstore.Run, error) {
+	store, err := o.assistantRunStore()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := o.maintainAssistantRuns(context.Background(), store, time.Now().UTC()); err != nil {
+		o.log().Warn("assistant lifecycle maintenance failed", "error", err)
+	}
+	return store.ListSummaries()
+}
+
 func (o *Orchestrator) ListAssistantSignalCandidates() ([]assistantstore.SignalCandidate, error) {
 	store, err := o.assistantSignalCandidateStore()
 	if err != nil {

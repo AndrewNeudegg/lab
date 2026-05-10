@@ -3,6 +3,7 @@ package assistant
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +79,100 @@ func TestRunStoreListIgnoresAtomicWriteTempFiles(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].ID != "arun_complete" {
 		t.Fatalf("runs = %#v, want only completed run", runs)
+	}
+}
+
+func TestRunStoreListSummariesOmitsHeavySnapshotFields(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "assistant_runs")
+	store := NewRunStore(dir)
+	now := time.Date(2026, 5, 10, 11, 0, 0, 0, time.UTC)
+	longText := strings.Repeat("detail ", 499) + "detail"
+	run := Run{
+		ID:       "arun_heavy",
+		Status:   RunStatusCompleted,
+		Decision: RunDecisionRecommend,
+		Trigger:  RunTrigger{Kind: "manual", Label: "Heavy run"},
+		Autonomy: RunAutonomyPropose,
+		Summary:  longText,
+		Snapshot: RunSnapshot{
+			GeneratedAt: now,
+			Signals: []RunSignal{{
+				ID:     "signal_1",
+				Title:  "Review noisy data",
+				Detail: longText,
+				Evidence: []RunSignalEvidence{{
+					Title:  "Long evidence",
+					Detail: longText,
+				}},
+			}},
+		},
+		RecommendedActions: []RunAction{{
+			Kind:      "task",
+			Title:     "Investigate",
+			Rationale: longText,
+			TaskGoal:  longText,
+		}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := store.ListSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(summaries))
+	}
+	summary := summaries[0]
+	if len(summary.Snapshot.Signals) != 0 {
+		t.Fatalf("summary signals = %#v, want omitted snapshot signals", summary.Snapshot.Signals)
+	}
+	if len(summary.RecommendedActions) != 1 || len(summary.RecommendedActions[0].Rationale) > runListTextLimit+3 {
+		t.Fatalf("summary action = %#v, want truncated action detail", summary.RecommendedActions)
+	}
+
+	loaded, err := store.Load(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Snapshot.Signals) != 1 || loaded.RecommendedActions[0].Rationale != longText {
+		t.Fatalf("full run lost detail: %#v", loaded)
+	}
+}
+
+func TestRunStoreListSummariesBackfillsMissingIndex(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "assistant_runs")
+	store := NewRunStore(dir)
+	now := time.Date(2026, 5, 10, 11, 0, 0, 0, time.UTC)
+	if err := store.Save(Run{
+		ID:        "arun_legacy",
+		Status:    RunStatusCompleted,
+		Decision:  RunDecisionNoop,
+		Trigger:   RunTrigger{Kind: "manual", Label: "Legacy run"},
+		Autonomy:  RunAutonomyObserve,
+		Summary:   "No action.",
+		Snapshot:  RunSnapshot{GeneratedAt: now, Signals: []RunSignal{{Title: "Heavy"}}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.summaryPath("arun_legacy")); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := store.ListSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || len(summaries[0].Snapshot.Signals) != 0 {
+		t.Fatalf("summaries = %#v, want regenerated lightweight summary", summaries)
+	}
+	if _, err := os.Stat(store.summaryPath("arun_legacy")); err != nil {
+		t.Fatalf("summary index was not regenerated: %v", err)
 	}
 }
 

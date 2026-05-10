@@ -34,6 +34,7 @@ func (s *Store) Save(t Task) error {
 	}
 	t = applyRunTimestamps(t, previous, hasPrevious, now)
 	t.UpdatedAt = now
+	t.SummaryOnly = false
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
@@ -41,7 +42,10 @@ func (s *Store) Save(t Task) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, t.ID+".json"), append(b, '\n'), 0o644)
+	if err := os.WriteFile(s.taskPath(t.ID), append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	return s.writeSummaryLocked(t)
 }
 
 func (s *Store) Load(id string) (Task, error) {
@@ -51,7 +55,7 @@ func (s *Store) Load(id string) (Task, error) {
 }
 
 func (s *Store) loadLocked(id string) (Task, error) {
-	b, err := os.ReadFile(filepath.Join(s.dir, id+".json"))
+	b, err := os.ReadFile(s.taskPath(id))
 	if err != nil {
 		return Task{}, err
 	}
@@ -130,7 +134,13 @@ func cloneTime(value *time.Time) *time.Time {
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.Remove(filepath.Join(s.dir, id+".json"))
+	if err := os.Remove(s.taskPath(id)); err != nil {
+		return err
+	}
+	if err := os.Remove(s.summaryPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) List() ([]Task, error) {
@@ -155,4 +165,91 @@ func (s *Store) List() ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 	return tasks, nil
+}
+
+func (s *Store) ListSummaries() ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var tasks []Task
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		id := entry.Name()[:len(entry.Name())-len(".json")]
+		t, err := s.loadSummaryForTaskLocked(id)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
+}
+
+func (s *Store) loadSummaryForTaskLocked(id string) (Task, error) {
+	fullInfo, err := os.Stat(s.taskPath(id))
+	if err != nil {
+		return Task{}, err
+	}
+	summaryInfo, err := os.Stat(s.summaryPath(id))
+	if err == nil && !summaryInfo.ModTime().Before(fullInfo.ModTime()) {
+		summary, loadErr := s.loadSummaryLocked(id)
+		if loadErr == nil {
+			summary.SummaryOnly = true
+			return summary, nil
+		}
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Task{}, err
+	}
+	full, err := s.loadLocked(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if err := s.writeSummaryLocked(full); err != nil {
+		return Task{}, err
+	}
+	return SummarizeForList(full), nil
+}
+
+func (s *Store) loadSummaryLocked(id string) (Task, error) {
+	b, err := os.ReadFile(s.summaryPath(id))
+	if err != nil {
+		return Task{}, err
+	}
+	var t Task
+	if err := json.Unmarshal(b, &t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+func (s *Store) writeSummaryLocked(t Task) error {
+	if err := os.MkdirAll(s.summaryDir(), 0o755); err != nil {
+		return err
+	}
+	summary := SummarizeForList(t)
+	b, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.summaryPath(t.ID), append(b, '\n'), 0o644)
+}
+
+func (s *Store) taskPath(id string) string {
+	return filepath.Join(s.dir, id+".json")
+}
+
+func (s *Store) summaryDir() string {
+	return filepath.Join(s.dir, "index")
+}
+
+func (s *Store) summaryPath(id string) string {
+	return filepath.Join(s.summaryDir(), id+".json")
 }

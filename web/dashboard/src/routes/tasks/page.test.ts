@@ -6,7 +6,8 @@ const pageSource = readFileSync(new URL('./+page.svelte', import.meta.url), 'utf
 describe('tasks page composition', () => {
   test('renders selected task state from cached view-model arrays', () => {
     expect(pageSource).toContain('let taskQueueView: TaskQueueView = createTaskQueueView');
-    expect(pageSource).toContain('$: currentTask = taskQueueView.currentTask');
+    expect(pageSource).toContain('$: currentTaskSummary = taskQueueView.currentTask');
+    expect(pageSource).toContain('taskDetails[currentTaskSummary.id] || currentTaskSummary');
     expect(pageSource).toContain('let visibleTaskItems: HomelabdTask[] = []');
     expect(pageSource).toContain('{#each visibleTaskItems as task}');
     expect(pageSource).toContain('let currentTaskEvents: HomelabdEvent[] = []');
@@ -83,7 +84,9 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('withRefreshTimeout as withTimeout');
 	    expect(pageSource).toContain("const taskRequest = withRefreshTimeout('Tasks', client.listTasks())");
 	    expect(pageSource).toContain("const workspaceRequest = withRefreshTimeout('Workspaces', client.listWorkspaces())");
-	    expect(pageSource).toContain("collectionFromResponse<HomelabdTask>('Tasks', 'tasks'");
+    expect(pageSource).toContain("collectionFromResponse<HomelabdTask>('Tasks', 'tasks'");
+	    expect(pageSource).toContain('selected?.summary_only || taskDetails[taskId]?.summary_only');
+	    expect(pageSource).toContain("const result = await withRefreshTimeout('Task details', client.getTask(taskId))");
 	    expect(pageSource).toContain("collectionFromResponse<HomelabdRemoteWorkspace>");
 	    expect(pageSource).toContain('let taskLoadError =');
     expect(pageSource).toContain('syncFailureCount += 1');

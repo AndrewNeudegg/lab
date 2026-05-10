@@ -1,6 +1,9 @@
 package task
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	StatusQueued               = "queued"
@@ -64,6 +67,7 @@ type Task struct {
 	RemoteDiff           string                `json:"remote_diff,omitempty"`
 	RemoteDiffCapturedAt *time.Time            `json:"remote_diff_captured_at,omitempty"`
 	Plan                 *TaskPlan             `json:"plan,omitempty"`
+	SummaryOnly          bool                  `json:"summary_only,omitempty"`
 }
 
 type TaskDiffSnapshot struct {
@@ -152,4 +156,81 @@ type UIUXBrief struct {
 	States          []string `json:"states"`
 	Accessibility   []string `json:"accessibility"`
 	Validation      []string `json:"validation"`
+}
+
+const (
+	taskListTextLimit       = 1200
+	taskListShortTextLimit  = 320
+	taskListCollectionLimit = 12
+)
+
+func SummarizeForList(value Task) Task {
+	value.SummaryOnly = true
+	value.Goal = truncateTaskListText(value.Goal, taskListTextLimit)
+	value.Result = truncateTaskListText(value.Result, taskListTextLimit)
+	value.RemoteDiff = ""
+	value.Attachments = summarizeTaskAttachmentsForList(value.Attachments)
+	if value.DiffSnapshot != nil {
+		snapshot := *value.DiffSnapshot
+		snapshot.RawDiff = ""
+		if len(snapshot.Files) > 80 {
+			snapshot.Files = snapshot.Files[:80]
+		}
+		value.DiffSnapshot = &snapshot
+	}
+	if value.Plan != nil {
+		plan := *value.Plan
+		plan.Summary = truncateTaskListText(plan.Summary, taskListTextLimit)
+		plan.Review = truncateTaskListText(plan.Review, taskListTextLimit)
+		plan.Risks = truncateTaskListStrings(plan.Risks, taskListCollectionLimit, taskListShortTextLimit)
+		if len(plan.Steps) > taskListCollectionLimit {
+			plan.Steps = plan.Steps[:taskListCollectionLimit]
+		}
+		for index := range plan.Steps {
+			plan.Steps[index].Detail = truncateTaskListText(plan.Steps[index].Detail, taskListShortTextLimit)
+		}
+		value.Plan = &plan
+	}
+	return value
+}
+
+func summarizeTaskAttachmentsForList(values []Attachment) []Attachment {
+	if len(values) == 0 {
+		return values
+	}
+	out := make([]Attachment, len(values))
+	for index, value := range values {
+		value.DataURL = ""
+		value.Text = ""
+		out[index] = value
+	}
+	return out
+}
+
+func truncateTaskListStrings(values []string, itemLimit, textLimit int) []string {
+	if len(values) == 0 {
+		return values
+	}
+	if itemLimit > 0 && len(values) > itemLimit {
+		values = values[:itemLimit]
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := truncateTaskListText(value, textLimit); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func truncateTaskListText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit < 1 || len(value) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "..."
 }

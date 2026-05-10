@@ -1026,6 +1026,18 @@ func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assis
 	if taskGoal == "" {
 		taskGoal = goalAutopilotTaskGoalForDecision(goal, decision, reports)
 	}
+	o.goalAutopilotMu.Lock()
+	defer o.goalAutopilotMu.Unlock()
+
+	freshGoal, err := store.LoadGoal(goal.ID)
+	if err != nil {
+		return false, "", err
+	}
+	freshGoal = assistantstore.NormalizeGoal(freshGoal)
+	if current, ok := o.currentGoalAutopilotTask(freshGoal); ok && !taskTerminal(current.Status) {
+		return false, fmt.Sprintf("Autopilot is waiting for task %s (%s).", taskShortID(current.ID), firstNonEmptyString(current.Status, "unknown")), nil
+	}
+	goal = freshGoal
 	created, err := o.createTaskRecordForGoalPhase(ctx, taskGoal, goal, decision.PhaseID)
 	if err != nil {
 		return false, "", err

@@ -33,24 +33,25 @@ import (
 )
 
 type Orchestrator struct {
-	cfg           config.Config
-	events        *eventlog.Store
-	tasks         *taskstore.Store
-	approvals     *approvalstore.Store
-	workflows     *workflowstore.Store
-	knowledge     knowledgestore.Repository
-	registry      *tool.Registry
-	policy        tool.Policy
-	provider      llm.Provider
-	model         string
-	memory        *memstore.Store
-	remoteAgents  *remoteagent.Store
-	logger        *slog.Logger
-	activeMu      sync.Mutex
-	active        map[string]activeTaskRun
-	knowledgeMu   sync.Mutex
-	knowledgeRuns map[string]struct{}
-	settingsMu    sync.Mutex
+	cfg             config.Config
+	events          *eventlog.Store
+	tasks           *taskstore.Store
+	approvals       *approvalstore.Store
+	workflows       *workflowstore.Store
+	knowledge       knowledgestore.Repository
+	registry        *tool.Registry
+	policy          tool.Policy
+	provider        llm.Provider
+	model           string
+	memory          *memstore.Store
+	remoteAgents    *remoteagent.Store
+	logger          *slog.Logger
+	activeMu        sync.Mutex
+	active          map[string]activeTaskRun
+	knowledgeMu     sync.Mutex
+	knowledgeRuns   map[string]struct{}
+	settingsMu      sync.Mutex
+	goalAutopilotMu sync.Mutex
 }
 
 func (o *Orchestrator) WithRemoteAgents(store *remoteagent.Store) *Orchestrator {

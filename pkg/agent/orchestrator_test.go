@@ -6950,6 +6950,65 @@ func TestGoalAutopilotStartCreatesTypedTask(t *testing.T) {
 	waitForTaskInactive(t, orch, task.ID)
 }
 
+func TestGoalAutopilotCreateTaskRechecksLatestCurrentTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build duplicate guard",
+		Objective:     "Build without duplicate Autopilot tasks.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleGoal := timeline.Goal
+	freshGoal := assistantstore.NormalizeGoal(timeline.Goal)
+	freshGoal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
+	freshGoal.Autopilot.CurrentTaskID = "task_current"
+	freshGoal.LinkedTasks = append(freshGoal.LinkedTasks, "task_current")
+	if err := store.SaveGoal(freshGoal); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:        "task_current",
+		GoalID:    freshGoal.ID,
+		Title:     "current task",
+		Goal:      "current task",
+		Status:    taskstore.StatusQueued,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, reply, err := orch.createGoalAutopilotTask(ctx, store, staleGoal, assistantstore.GoalSupervisorDecision{
+		ID:       "gdec_stale",
+		Decision: assistantstore.GoalSupervisorDecisionCreateTask,
+		TaskGoal: "stale supervisor decision",
+		PhaseID:  "phase_03_parity",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || !strings.Contains(reply, "Autopilot is waiting for task") {
+		t.Fatalf("changed = %v reply = %q, want waiting on latest current task", changed, reply)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "task_current" {
+		t.Fatalf("tasks = %#v, want no duplicate task created", tasks)
+	}
+}
+
 func TestGoalAutopilotStartCreatesRemoteTaskWithoutLocalWorker(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),

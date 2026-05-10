@@ -936,7 +936,7 @@ func (o *Orchestrator) reconcileGoalAutopilotTask(ctx context.Context, store *as
 			return false, fmt.Sprintf("Autopilot is waiting for task supervisor recovery on task %s.", taskShortID(t.ID)), nil
 		}
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Linked task "+taskShortID(t.ID)+" is "+t.Status+".")
-	case taskstore.StatusFailed, taskstore.StatusCancelled:
+	case taskstore.StatusTimedOut, taskstore.StatusFailed, taskstore.StatusCancelled:
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Linked task "+taskShortID(t.ID)+" is "+t.Status+".")
 	default:
 		return false, fmt.Sprintf("Autopilot is waiting for task %s (%s).", taskShortID(t.ID), firstNonEmptyString(t.Status, "unknown")), nil

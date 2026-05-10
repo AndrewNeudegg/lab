@@ -100,10 +100,10 @@ func TestRunnerRejectsMissingWorkspaceBeforeExecuting(t *testing.T) {
 	}
 }
 
-func TestRunnerDefaultsUnsetTimeoutToFiveHours(t *testing.T) {
+func TestRunnerDefaultsUnsetTimeoutToOneHour(t *testing.T) {
 	got := timeoutForConfig(config.ExternalAgentConfig{})
-	if got != 5*time.Hour {
-		t.Fatalf("timeout = %s, want 5h", got)
+	if got != time.Hour {
+		t.Fatalf("timeout = %s, want 1h", got)
 	}
 }
 
@@ -194,9 +194,9 @@ func TestRunnerStreamsOutputChunks(t *testing.T) {
 	}
 }
 
-func TestTimeoutForConfigDefaultsToFiveHoursAndAllowsOverrides(t *testing.T) {
-	if got := timeoutForConfig(config.ExternalAgentConfig{}); got != 5*time.Hour {
-		t.Fatalf("default timeout = %s, want 5h", got)
+func TestTimeoutForConfigDefaultsToOneHourAndAllowsOverrides(t *testing.T) {
+	if got := timeoutForConfig(config.ExternalAgentConfig{}); got != time.Hour {
+		t.Fatalf("default timeout = %s, want 1h", got)
 	}
 	if got := timeoutForConfig(config.ExternalAgentConfig{TimeoutSeconds: 7}); got != 7*time.Second {
 		t.Fatalf("explicit timeout = %s, want 7s", got)

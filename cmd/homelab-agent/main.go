@@ -23,6 +23,7 @@ import (
 	controlserver "github.com/andrewneudegg/lab/pkg/control"
 	agentrunner "github.com/andrewneudegg/lab/pkg/externalagent"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
+	taskstore "github.com/andrewneudegg/lab/pkg/task"
 )
 
 const version = "dev"
@@ -289,7 +290,10 @@ func executeAssignment(ctx context.Context, client agentControl, runner assignme
 	errorText := ""
 	if runErr != nil {
 		status = "failed"
-		errorText = runErr.Error()
+		errorText = firstNonEmpty(result.Error, runErr.Error())
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			status = taskstore.StatusTimedOut
+		}
 		if body == "" {
 			body = errorText
 		}

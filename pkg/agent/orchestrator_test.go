@@ -2348,6 +2348,61 @@ func TestAutoTaskRequiresProjectWhenMultipleRemoteWorkspacesAreRegistered(t *tes
 	}
 }
 
+func TestRemoteTaskCanCompleteWithTimedOutStatus(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:   "repo",
+			Path: "/home/me/project",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "long remote build", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := tasks[0]
+	if _, err := orch.ClaimRemoteTask(context.Background(), agent, "codex"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", task.ID, "", taskstore.StatusTimedOut); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != taskstore.StatusTimedOut {
+		t.Fatalf("status = %q, want timed_out", completed.Status)
+	}
+	if !strings.Contains(completed.Result, "timed out") {
+		t.Fatalf("result = %q, want timeout explanation", completed.Result)
+	}
+	events, err := orch.events.ReadDay(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasEventType(events, "task.timed_out") {
+		t.Fatalf("events = %#v, want task.timed_out", events)
+	}
+}
+
 func TestRemoteTaskRetryAndReopenKeepSameRemoteTarget(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))

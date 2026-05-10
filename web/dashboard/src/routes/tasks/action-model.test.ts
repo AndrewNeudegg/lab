@@ -60,6 +60,9 @@ describe('task action model', () => {
     expect(primaryTaskAction(task('blocked'), []).type === 'task' && primaryTaskAction(task('blocked'), []).operation).toBe(
       'retry'
     );
+    const timedOutAction = primaryTaskAction(task('timed_out'), []);
+    expect(timedOutAction.type === 'task' && timedOutAction.operation).toBe('retry');
+    expect(timedOutAction.type === 'task' && timedOutAction.label).toContain('timed-out');
     const conflictAction = primaryTaskAction(task('conflict_resolution'), []);
     expect(conflictAction.type === 'task' && conflictAction.detail).toContain('Automatic conflict recovery');
   });

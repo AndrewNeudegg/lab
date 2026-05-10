@@ -58,14 +58,17 @@ GEMINI_CMD=gemini
       "env": {
         "CODEX_UNSAFE_ALLOW_NO_SANDBOX": "1"
       },
-      "timeout_seconds": 18000
+      "timeout_seconds": 3600
     }
   }
 }
 ```
 
-The default external-agent timeout is `18000` seconds, or five hours. Set
-`timeout_seconds` per backend to shorten or extend a specific CLI worker.
+The default external-agent timeout is `3600` seconds, or 1 hour. Set
+`timeout_seconds` per backend to shorten or extend a specific CLI worker. When
+a worker hits that deadline, the task moves to `timed_out` rather than
+`blocked`, making deadline failures easy to distinguish from review or product
+blockers.
 
 On NixOS, keep `repo.root` and `repo.workspace_root` in a normal writable path such as `/home/lab/lab` and `/home/lab/lab/workspaces`, not `/nix/store`. The `homelabd` process that creates local task worktrees must be able to write the repository's Git common directory (`.git`, including `refs` and `worktrees`) and the workspace root. If an outer service sandbox uses bubblewrap or systemd bind mounts, do not mount `.git` read-only for the host-side `homelabd` process; create the task worktree before entering any stricter worker sandbox.
 

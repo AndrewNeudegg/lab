@@ -17,6 +17,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/config"
 	agentrunner "github.com/andrewneudegg/lab/pkg/externalagent"
 	"github.com/andrewneudegg/lab/pkg/remoteagent"
+	taskstore "github.com/andrewneudegg/lab/pkg/task"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -255,6 +256,25 @@ func TestExecuteAssignmentReportsRunnerFailure(t *testing.T) {
 	}
 	if client.status != "failed" || !strings.Contains(client.result, "runner failed") || client.errorText != "runner failed" {
 		t.Fatalf("failure completion = %#v", client)
+	}
+}
+
+func TestExecuteAssignmentReportsRunnerTimeout(t *testing.T) {
+	runner := &fakeAssignmentRunner{
+		result: agentrunner.RunResult{Output: "partial work\n", Error: "external agent timed out"},
+		err:    context.DeadlineExceeded,
+	}
+	client := &fakeAgentControl{}
+
+	if err := executeAssignment(context.Background(), client, runner, "desk", "codex", &remoteagent.Assignment{
+		TaskID:      "task_1",
+		Workdir:     "/srv/desk/repo",
+		Instruction: "fix it",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if client.status != taskstore.StatusTimedOut || client.errorText != "external agent timed out" || !strings.Contains(client.result, "partial work") {
+		t.Fatalf("timeout completion = %#v, want timed_out with partial result", client)
 	}
 }
 

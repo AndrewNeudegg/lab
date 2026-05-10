@@ -153,6 +153,7 @@ export const primaryTaskAction = (
         tone: 'primary'
       };
     case 'blocked':
+    case 'timed_out':
     case 'failed':
     case 'conflict_resolution':
       if ((task.auto_recovery_attempts || 0) >= 3) {
@@ -168,10 +169,17 @@ export const primaryTaskAction = (
       return {
         type: 'task',
         operation: 'retry',
-        label: task.status === 'conflict_resolution' ? 'Retry now' : 'Retry with worker',
+        label:
+          task.status === 'conflict_resolution'
+            ? 'Retry now'
+            : task.status === 'timed_out'
+              ? 'Retry timed-out task'
+              : 'Retry with worker',
         detail:
           task.status === 'conflict_resolution'
             ? 'Automatic conflict recovery is handled by the task supervisor; this starts an immediate retry.'
+            : task.status === 'timed_out'
+              ? 'The previous worker hit its execution deadline. Retry after checking the partial output and timeout settings.'
             : 'Starts a direct retry from the current workspace state.',
         tone: 'warning'
       };

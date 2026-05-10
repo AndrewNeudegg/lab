@@ -1023,6 +1023,8 @@ func assistantTaskStatusSignalScore(status string) (int, string) {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case taskstore.StatusFailed:
 		return 94, "critical"
+	case taskstore.StatusTimedOut:
+		return 92, "critical"
 	case taskstore.StatusBlocked, taskstore.StatusConflictResolution:
 		return 90, "warning"
 	case taskstore.StatusAwaitingApproval, taskstore.StatusAwaitingRestart:
@@ -1041,6 +1043,8 @@ func assistantTaskSignalTitle(status, title string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case taskstore.StatusFailed:
 		return "Review failed task: " + title
+	case taskstore.StatusTimedOut:
+		return "Retry timed-out task: " + title
 	case taskstore.StatusBlocked:
 		return "Unblock task: " + title
 	case taskstore.StatusConflictResolution:
@@ -1076,7 +1080,7 @@ func assistantSupervisorItemDesiredStopped(item assistantstore.RunObjectRef) boo
 
 func assistantEventSignalScore(eventType string) int {
 	switch eventType {
-	case "task.review.failed", "task.restart.failed", "task.auto_recovery.exhausted", "approval.failed":
+	case "task.review.failed", "task.restart.failed", "task.auto_recovery.exhausted", "approval.failed", "task.timed_out":
 		return 86
 	case "task.blocked", "task.conflict_resolution", "approval.requested":
 		return 78

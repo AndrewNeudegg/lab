@@ -1840,7 +1840,12 @@ func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, 
 			t.RemoteDiffCapturedAt = &capturedAt
 		}
 	}
-	if status == "failed" || status == "blocked" {
+	if status == taskstore.StatusTimedOut {
+		t.Status = taskstore.StatusTimedOut
+		if t.Result == "" {
+			t.Result = "remote agent timed out"
+		}
+	} else if status == "failed" || status == "blocked" {
 		t.Status = taskstore.StatusBlocked
 		if t.Result == "" {
 			t.Result = "remote agent reported failure"
@@ -1870,6 +1875,14 @@ func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, 
 		"agent_id": agentID,
 		"status":   t.Status,
 	})})
+	if t.Status == taskstore.StatusTimedOut {
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.timed_out", Actor: agentID, TaskID: taskID, Payload: eventlog.Payload(map[string]any{
+			"agent_id": agentID,
+			"workdir":  t.Target.Workdir,
+			"backend":  t.Target.Backend,
+			"reason":   t.Result,
+		})})
+	}
 	return fmt.Sprintf("Recorded remote result for %s.", taskShortID(taskID)), nil
 }
 
@@ -2823,7 +2836,7 @@ func help() string {
 		"                             revise a pending large-feature design brief before approval",
 		"  reopen <task_id> [reason]  mark task not done and continue work",
 		"  retry <task_id> [agent] [instruction]",
-		"                             rerun blocked or conflict work with preserved failure context",
+		"                             rerun timed-out, blocked, or conflict work with preserved failure context",
 		"  refresh <task_id>          reset task worktree branch to current main",
 		"  run <task_id>              let CoderAgent work in the task worktree",
 		"  ux <task_id> [instruction] let UXAgent audit, research, improve, and test UI/UX",
@@ -5696,6 +5709,8 @@ func nextActionForTask(t taskstore.Task) string {
 		return fmt.Sprintf("review %s", shortID)
 	case taskstore.StatusConflictResolution:
 		return fmt.Sprintf("show %s", shortID)
+	case taskstore.StatusTimedOut:
+		return fmt.Sprintf("start %s", shortID)
 	case taskstore.StatusBlocked:
 		if len(t.BlockedBy) > 0 {
 			return fmt.Sprintf("show %s", shortID)
@@ -5749,6 +5764,8 @@ func taskStateDescription(status string) string {
 		return "worker finished; review gate has not passed yet"
 	case taskstore.StatusConflictResolution:
 		return "task branch conflicts with current main; the task supervisor will queue automatic conflict recovery"
+	case taskstore.StatusTimedOut:
+		return "worker reached the configured execution deadline; retry with tighter instructions or a longer timeout"
 	case taskstore.StatusBlocked:
 		return "review or execution stopped; retryable merge and check failures are automatically requeued with bounded attempts"
 	case taskstore.StatusAwaitingApproval:
@@ -5775,11 +5792,13 @@ func taskStateTransitions(status string) string {
 	case taskstore.StatusQueued:
 		return "queued -> running"
 	case taskstore.StatusRunning:
-		return "running -> ready_for_review or blocked"
+		return "running -> ready_for_review, timed_out, or blocked"
 	case taskstore.StatusReadyForReview:
 		return "ready_for_review -> awaiting_approval, conflict_resolution, no_change_required, or blocked"
 	case taskstore.StatusConflictResolution:
 		return "conflict_resolution -> running, ready_for_review, cancelled, or deleted"
+	case taskstore.StatusTimedOut:
+		return "timed_out -> running, cancelled, or deleted"
 	case taskstore.StatusBlocked:
 		return "blocked -> running, cancelled, or deleted"
 	case taskstore.StatusAwaitingApproval:
@@ -7149,15 +7168,25 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 	output := strings.TrimSpace(out.Output)
 	t.Result = output
 	if err != nil {
-		t.Status = taskstore.StatusBlocked
+		timedOut := externalDelegateTimedOut(err, out)
+		if timedOut {
+			t.Status = taskstore.StatusTimedOut
+		} else {
+			t.Status = taskstore.StatusBlocked
+		}
 		if out.Error != "" {
 			t.Result = out.Error
 		} else {
 			t.Result = err.Error()
 		}
 		_ = o.tasks.Save(t)
-		_ = o.writeExternalRunArtifact(runID, taskID, backend, workspace, "failed", out, err.Error())
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.failed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "error": err.Error(), "result": out})})
+		artifactStatus := "failed"
+		if timedOut {
+			artifactStatus = taskstore.StatusTimedOut
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.timed_out", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "reason": t.Result})})
+		}
+		_ = o.writeExternalRunArtifact(runID, taskID, backend, workspace, artifactStatus, out, err.Error())
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "agent.delegate.failed", Actor: backend, TaskID: taskID, Payload: eventlog.Payload(map[string]any{"id": runID, "backend": backend, "error": err.Error(), "status": t.Status, "result": out})})
 		return
 	}
 	t.Status = taskstore.StatusBlocked
@@ -7178,6 +7207,21 @@ func (o *Orchestrator) runDelegation(ctx context.Context, runID, taskID, backend
 		return
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.completed", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(payload)})
+}
+
+func externalDelegateTimedOut(err error, out externalDelegateResult) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	text := strings.ToLower(strings.Join([]string{out.Error, errString(err)}, " "))
+	return strings.Contains(text, "timed out") || strings.Contains(text, "deadline exceeded")
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func shouldIgnoreStaleDelegationResult(t taskstore.Task) bool {
@@ -8214,7 +8258,7 @@ func reviewNotReadyReply(t taskstore.Task) string {
 		return fmt.Sprintf("ReviewerAgent: task %s has already merged and is awaiting verification. No checks run and no state changed.\nNext: `accept %s` or `reopen %s <reason>`.", shortID, shortID, shortID)
 	case taskstore.StatusNoChangeRequired:
 		return fmt.Sprintf("ReviewerAgent: task %s already has a no-change conclusion. No checks run and no state changed.\nNext: `accept %s` to close without a merge, or `reopen %s <reason>` if the conclusion is wrong.", shortID, shortID, shortID)
-	case taskstore.StatusBlocked, taskstore.StatusFailed, taskstore.StatusConflictResolution:
+	case taskstore.StatusBlocked, taskstore.StatusTimedOut, taskstore.StatusFailed, taskstore.StatusConflictResolution:
 		return fmt.Sprintf("ReviewerAgent: task %s is %s, not ready for review. No checks run and no state changed.\nNext: `retry %s codex <instruction>`, `diff %s`, or `delete %s`.", shortID, t.Status, shortID, shortID, shortID)
 	case taskstore.StatusDone, taskstore.StatusCancelled:
 		return fmt.Sprintf("ReviewerAgent: task %s is %s. No checks run and no state changed.", shortID, t.Status)
@@ -8274,6 +8318,9 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 	shortID := taskShortID(t.ID)
 	if t.Status == taskstore.StatusAwaitingVerification {
 		return fmt.Sprintf("Remote task %s is already awaiting verification.\nVerify the result on %s in %s, then use `accept %s` or `reopen %s <reason>`.", shortID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
+	}
+	if t.Status == taskstore.StatusTimedOut {
+		return fmt.Sprintf("Remote task %s timed out on %s in %s. No review ran.\nNext: raise the backend timeout or narrow the instruction, then `retry %s codex <instruction>` or `reopen %s <reason>`.", shortID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
 	}
 	if t.Status != taskstore.StatusReadyForReview {
 		return fmt.Sprintf("Remote task %s is %s. Wait for the agent to finish before review.", shortID, t.Status), nil

@@ -51,6 +51,8 @@ describe('task queue attention logic', () => {
   test('classifies task statuses by operator action needed', () => {
     expect(taskNeedsAttention(task('blocked', 'blocked'))).toBe(true);
     expect(taskNeedsCriticalAttention(task('blocked', 'blocked'))).toBe(true);
+    expect(taskNeedsAttention(task('timeout', 'timed_out'))).toBe(true);
+    expect(taskNeedsCriticalAttention(task('timeout', 'timed_out'))).toBe(true);
     expect(taskNeedsAttention(task('conflict', 'conflict_resolution'))).toBe(true);
     expect(taskNeedsAttention(task('review', 'ready_for_review'))).toBe(true);
     expect(taskNeedsDecisionAttention(task('review', 'ready_for_review'))).toBe(true);
@@ -204,11 +206,14 @@ describe('task queue attention logic', () => {
     expect(taskStateDescription('running')).toContain('worker is active');
     expect(taskStateDescription('blocked')).toContain('requeued automatically');
     expect(taskStateTransitions('blocked')).toContain('automatic recovery');
+    expect(taskStateDescription('timed_out')).toContain('execution deadline');
+    expect(taskStateTransitions('timed_out')).toContain('running');
   });
 
   test('labels queued review gates without implying operator action', () => {
     expect(taskStatusLabel('ready_for_review')).toBe('queued for review');
     expect(taskStatusLabel('awaiting_approval')).toBe('awaiting approval');
     expect(taskStatusLabel('no_change_required')).toBe('no change required');
+    expect(taskStatusLabel('timed_out')).toBe('timed out');
   });
 });

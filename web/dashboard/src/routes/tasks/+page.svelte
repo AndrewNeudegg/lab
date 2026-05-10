@@ -586,7 +586,7 @@
     if (run.active || run.status === 'running') {
       return 'blue';
     }
-    if (run.status === 'failed') {
+    if (run.status === 'failed' || run.status === 'timed_out') {
       return 'red';
     }
     if (run.status === 'ignored') {
@@ -638,7 +638,12 @@
   };
 
   const taskTone = (task: HomelabdTask) => {
-    if (task.status === 'blocked' || task.status === 'failed' || task.status === 'conflict_resolution') {
+    if (
+      task.status === 'blocked' ||
+      task.status === 'timed_out' ||
+      task.status === 'failed' ||
+      task.status === 'conflict_resolution'
+    ) {
       return 'red';
     }
     if (
@@ -686,6 +691,8 @@
         return 'Review the worker reason. Accept if the task should close without a patch, or reopen with instructions if the conclusion is wrong.';
       case 'conflict_resolution':
         return 'Conflict recovery may retry automatically. Use Retry now only to intervene immediately.';
+      case 'timed_out':
+        return 'The worker reached its configured deadline. Inspect the partial output, then retry with tighter instructions or a longer timeout.';
       case 'blocked':
       case 'failed':
         return 'Read the result and worker trace, then retry with context or reopen if the task needs a different direction.';
@@ -1642,7 +1649,7 @@
               {/if}
             </header>
 
-            {#if currentTask.status === 'blocked' || currentTask.status === 'failed' || currentTask.status === 'conflict_resolution' || currentSecondaryOperations.includes('retry')}
+            {#if currentTask.status === 'blocked' || currentTask.status === 'timed_out' || currentTask.status === 'failed' || currentTask.status === 'conflict_resolution' || currentSecondaryOperations.includes('retry')}
               <div class="action-form" aria-label="Retry settings">
                 <label>
                   <span>Retry backend</span>

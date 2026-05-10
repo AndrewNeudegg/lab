@@ -873,6 +873,42 @@ test('tasks status pills describe queued review without implying action', async 
   await expect(actions).not.toContainText('Ready for review');
 });
 
+test('timed-out tasks show deadline-specific recovery guidance', async ({ page }) => {
+  const now = new Date('2026-04-26T15:07:00Z').toISOString();
+  const taskID = 'task_20260426_150700_timeout';
+  await mockTaskApi(page, undefined, [
+    {
+      id: taskID,
+      title: 'Continue long remote build',
+      goal: 'Finish a long-running remote build after the worker deadline expires.',
+      status: 'timed_out',
+      assigned_to: 'remote1',
+      priority: 5,
+      created_at: now,
+      updated_at: now,
+      started_at: '2026-04-26T14:07:00Z',
+      stopped_at: now,
+      result: 'remote agent timed out'
+    }
+  ]);
+
+  await page.goto(`/tasks?task=${taskID}`);
+  await expect(page.getByRole('heading', { name: 'Continue long remote build' })).toBeVisible({
+    timeout: taskLoadTimeoutMs
+  });
+  await expect(page.locator('.record-header .status')).toHaveText('timed out');
+  const actions = page.getByRole('region', { name: 'Task actions', exact: true });
+  await expect(actions).toContainText('Retry timed-out task');
+  await expect(actions).toContainText('execution deadline');
+  await expect(page.getByLabel('Retry settings')).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 820 });
+  await expect(actions).toContainText('Retry timed-out task');
+  await expect
+    .poll(() => page.evaluate(() => document.body.scrollWidth <= window.innerWidth + 2))
+    .toBe(true);
+});
+
 test('remote tasks show captured working-tree diff in the task panel', async ({ page }) => {
   const now = new Date('2026-05-08T06:20:00Z').toISOString();
   const remoteTaskId = 'task_20260508_062000_remote1';

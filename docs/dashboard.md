@@ -39,7 +39,7 @@ Use the shared responsive navbar on every dashboard page.
 - Always include text labels. The hamburger glyph is a space-saving cue, not the only signifier.
 - Keep top-level destinations flat: `Assistant`, `Chat`, `Tasks`, `Knowledge`, `Workflows`, `Docs`, `Terminal`, `Supervisor`, and `Health`.
 - Show active page state with `aria-current="page"` and visible styling.
-- Show compact Tasks attention badges only when action is needed. Red counts failed, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
+- Show compact Tasks attention badges only when action is needed. Red counts failed, timed-out, blocked, or conflict-resolution items; orange counts review, approval, restart, verification, or standalone approval items. Keep the badges small, cap large numbers as `99+`, and expose the same count in the link label so the signal is not colour-only.
 - Keep the navbar pinned to the viewport top on pages with internal scroll regions, including `/chat`, so mobile and desktop operators can reach navigation without first scrolling the conversation.
 
 ## URL References
@@ -253,7 +253,7 @@ If a component does not answer one of those questions, it should not be in the p
 
 - Queued: the task exists and is waiting in its execution queue. Local tasks have isolated worktrees and wait for the local task supervisor; remote tasks wait for the selected `homelab-agent`.
 - Running: an in-memory local worker or a remote agent is active.
-- Red: failed, blocked, or conflict resolution. Recovery is needed; retryable local failures are requeued automatically, while exhausted, dependency-blocked, or terminal failures need intervention.
+- Red: failed, timed out, blocked, or conflict resolution. Recovery is needed; retryable local failures are requeued automatically, timed-out work usually needs a longer timeout or narrower retry instruction, and exhausted, dependency-blocked, or terminal failures need intervention.
 - Amber: queued for review, awaiting approval, awaiting restart, awaiting verification, or no change required. The backend `ready_for_review` state is labelled `queued for review` in dashboard status pills so system-owned review gates do not sound like operator work. `no_change_required` means the worker deliberately made no patch and gave a reason; the decision panel offers accept to close without a merge, or reopen when the conclusion is wrong. Some amber states are system-owned gates and some need a human decision; the decision panel text must say which is true.
 - Blue: queued or running. Work is active.
 - Green: done. No action required unless the result is wrong.
@@ -294,7 +294,7 @@ The Tasks page separates work by execution queue:
 
 Remote task creation is deliberately explicit. The "New task target" panel shows the selected agent, machine, and full directory path, and the create button remains disabled until the context confirmation checkbox is checked. Treat that checkbox as the final guard against running an agent in the wrong checkout. The API rejects unknown workdir ids or paths for registered agents, so a stale UI selection should fail instead of silently falling back.
 
-The `Attention` tab shows tasks worth inspecting: operator decisions, failed work, review gates, approval gates, verification, restart gates, or conflict resolution. Some items are system-owned and do not need a button press. Legacy task graph parent records or child phases blocked only by an earlier graph phase are hidden from this tab, but remain visible in `All` and search for auditability.
+The `Attention` tab shows tasks worth inspecting: operator decisions, failed work, timed-out workers, review gates, approval gates, verification, restart gates, or conflict resolution. Some items are system-owned and do not need a button press. Legacy task graph parent records or child phases blocked only by an earlier graph phase are hidden from this tab, but remain visible in `All` and search for auditability.
 
 Remote task detail pages repeat the execution context in an amber "Remote execution context" block. Verify that machine and path before asking for follow-up work.
 

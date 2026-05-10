@@ -1505,6 +1505,8 @@ func assistantEventTriggerLabel(event eventlog.Event) (string, bool) {
 	switch event.Type {
 	case "task.blocked":
 		return assistantEventLabel("Task blocked", event), true
+	case "task.timed_out":
+		return assistantEventLabel("Task timed out", event), true
 	case "task.conflict_resolution":
 		return assistantEventLabel("Task needs conflict resolution", event), true
 	case "task.review.failed":
@@ -1864,7 +1866,7 @@ func (o *Orchestrator) assistantRunSnapshot(ctx context.Context, now time.Time, 
 
 func assistantTaskNeedsAttention(status string) bool {
 	switch status {
-	case "blocked", "failed", "conflict_resolution", "ready_for_review", "awaiting_approval", "awaiting_restart", "awaiting_verification", "no_change_required":
+	case "blocked", "timed_out", "failed", "conflict_resolution", "ready_for_review", "awaiting_approval", "awaiting_restart", "awaiting_verification", "no_change_required":
 		return true
 	default:
 		return false

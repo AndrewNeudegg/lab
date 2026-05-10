@@ -94,8 +94,8 @@ func TestWithDefaultsPreservesDisabledKnowledgeOCR(t *testing.T) {
 	}
 }
 
-func TestDefaultExternalAgentsUseFiveHourTimeout(t *testing.T) {
-	const want = 5 * 60 * 60
+func TestDefaultExternalAgentsUseOneHourTimeout(t *testing.T) {
+	const want = 60 * 60
 	if DefaultExternalAgentTimeoutSeconds != want {
 		t.Fatalf("default external agent timeout = %d, want %d", DefaultExternalAgentTimeoutSeconds, want)
 	}
@@ -209,8 +209,8 @@ func TestDefaultSupervisorPreparesDashboardDependencies(t *testing.T) {
 	}
 }
 
-func TestDefaultExternalAgentTimeoutsAreFiveHours(t *testing.T) {
-	const want = 5 * 60 * 60
+func TestDefaultExternalAgentTimeoutsAreOneHour(t *testing.T) {
+	const want = 60 * 60
 	if DefaultExternalAgentTimeoutSeconds != want {
 		t.Fatalf("default external agent timeout = %d, want %d", DefaultExternalAgentTimeoutSeconds, want)
 	}

@@ -44,7 +44,7 @@ Every status indicator must pair colour with text.
 
 - Green: healthy, complete, accepted, or connected.
 - Amber: pending review, approval, restart, warning, reconnecting, or queued.
-- Red: failed, blocked, conflict, or critical.
+- Red: failed, timed out, blocked, conflict, or critical.
 - Blue: active work or selected state.
 - Use pulsing only for system-owned active refresh or active work.
 - Keep errors in plain language with a recovery path.

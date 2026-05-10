@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const DefaultExternalAgentTimeoutSeconds = 5 * 60 * 60
+const DefaultExternalAgentTimeoutSeconds = 60 * 60
 
 type Config struct {
 	AgentName       string                         `json:"agent_name"`

@@ -84,7 +84,7 @@ go run ./cmd/homelab-agent \
   -terminal-url http://workstation:18083
 ```
 
-The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory, sends stdout/stderr back as the task result, and captures the remote git working-tree patch after completion. The captured patch includes uncommitted tracked changes and untracked files, excluding ignored runtime state such as `.agent-*`. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 18,000 seconds, or 5 hours. The default Codex backend disables Codex's own sandbox because local tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
+The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory, sends stdout/stderr back as the task result, and captures the remote git working-tree patch after completion. The captured patch includes uncommitted tracked changes and untracked files, excluding ignored runtime state such as `.agent-*`. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 3,600 seconds, or 1 hour. If the worker reaches that deadline, the remote task is recorded as `timed_out` rather than `blocked` so the operator can retry with clearer instructions or a longer timeout. The default Codex backend disables Codex's own sandbox because local tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
 
 Remote agents do not need to run in this repository. Each advertised `workdir` can be a different checkout, a different project, or a non-git directory. `homelabd` stores the path as execution context only; it does not assume that remote path has the same HEAD, branch, or repository root as the control-plane checkout.
 
@@ -187,7 +187,7 @@ Keep `auto_start` false on the control-plane machine unless it should also act a
 - `GET /agents/{id}` returns one registered agent.
 - `POST /agents/{id}/heartbeat` registers or refreshes an agent. `POST /agents` also accepts a heartbeat body with `id`.
 - `POST /agents/{id}/claim` claims the next queued task targeted to that agent.
-- `POST /agents/{id}/tasks/{task_id}/complete` records completion.
+- `POST /agents/{id}/tasks/{task_id}/complete` records completion. Remote agents should report `completed`, `no_change_required`, `failed`, `blocked`, or `timed_out`.
 - `POST /tasks` accepts an optional `target` object with `mode: "auto"`, `"local"`, or `"remote"`, plus `project_id`, `agent_id`, `workdir_id`, advertised `workdir`, `repo_url`, `branch`, labels, and `backend`.
 - `POST /tasks/{task_id}/assign` retargets a non-terminal task to a remote agent and advertised workdir.
 

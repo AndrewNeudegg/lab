@@ -2,6 +2,7 @@ import type { HomelabdApproval, HomelabdTask } from './types';
 
 const attentionStatuses = new Set([
   'blocked',
+  'timed_out',
   'conflict_resolution',
   'failed',
   'ready_for_review',
@@ -13,7 +14,7 @@ const attentionStatuses = new Set([
 
 const activeStatuses = new Set(['queued', 'running']);
 const terminalStatuses = new Set(['done', 'cancelled']);
-const criticalAttentionStatuses = new Set(['blocked', 'conflict_resolution', 'failed']);
+const criticalAttentionStatuses = new Set(['blocked', 'timed_out', 'conflict_resolution', 'failed']);
 const decisionAttentionStatuses = new Set([
   'ready_for_review',
   'awaiting_approval',
@@ -55,6 +56,8 @@ export const taskStateDescription = (status = '') => {
       return 'Worker finished. Review is queued by the merge queue.';
     case 'blocked':
       return 'Review or execution stopped. Retryable failures are requeued automatically with bounded attempts.';
+    case 'timed_out':
+      return 'Worker reached the configured execution deadline. Inspect partial output, then retry with tighter instructions or a longer timeout.';
     case 'conflict_resolution':
       return 'Task branch conflicts with current main. The task supervisor will queue automatic recovery.';
     case 'awaiting_approval':
@@ -92,11 +95,13 @@ export const taskStateTransitions = (status = '') => {
     case 'queued':
       return 'queued → running';
     case 'running':
-      return 'running → ready for review or blocked';
+      return 'running → ready for review, timed out, or blocked';
     case 'ready_for_review':
       return 'ready for review → awaiting approval, conflict resolution, no change required, or blocked';
     case 'blocked':
       return 'blocked → running through automatic recovery, cancelled, or deleted';
+    case 'timed_out':
+      return 'timed out → running, cancelled, or deleted';
     case 'conflict_resolution':
       return 'conflict resolution → running through automatic recovery, ready for review, cancelled, or deleted';
     case 'awaiting_approval':

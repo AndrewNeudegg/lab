@@ -2132,6 +2132,7 @@ func TestRemoteAgentHTTPTaskLifecycle(t *testing.T) {
 
 	requestJSON(t, mux, http.MethodPost, "/agents/nuc/tasks/"+task.ID+"/complete", `{"status":"completed","result":"bad"}`, "secret", http.StatusConflict)
 	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", `{"status":"completed","result":"changed remote files; validation passed","diff":"diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -0,0 +1 @@\n+remote\n"}`, "secret", http.StatusOK)
+	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", `{"status":"completed","result":"duplicate replay"}`, "secret", http.StatusOK)
 
 	ready, err := tasks.Load(task.ID)
 	if err != nil {

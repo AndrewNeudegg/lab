@@ -291,6 +291,107 @@ func TestExecuteAssignmentReportsRunnerTimeout(t *testing.T) {
 	}
 }
 
+func TestExecuteAssignmentDurablyKeepsPendingCompletionWhenCallbackFails(t *testing.T) {
+	runner := &fakeAssignmentRunner{result: agentrunner.RunResult{Output: "done\n"}}
+	client := &fakeAgentControl{err: fmt.Errorf("control plane offline")}
+	store := pendingCompletionStore{dir: filepath.Join(t.TempDir(), "pending")}
+	state := newRemoteAgentRuntimeState()
+	var heartbeats atomic.Int32
+	assignment := &remoteagent.Assignment{
+		TaskID:      "task_1",
+		Workdir:     "/srv/desk/repo",
+		Backend:     "codex",
+		Instruction: "fix it",
+	}
+
+	err := executeAssignmentDurably(context.Background(), client, runner, store, state, func() {
+		heartbeats.Add(1)
+	}, "desk", "fallback", assignment)
+	if err == nil || !strings.Contains(err.Error(), "control plane offline") {
+		t.Fatalf("executeAssignmentDurably error = %v, want callback failure", err)
+	}
+	if state.currentTask() != "task_1" {
+		t.Fatalf("current task = %q, want task_1 while completion is pending", state.currentTask())
+	}
+	pending, err := store.list()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].TaskID != "task_1" || pending[0].Status != "completed" || pending[0].Result != "done" {
+		t.Fatalf("pending completions = %#v, want saved completion", pending)
+	}
+	if client.completeCalls != 1 {
+		t.Fatalf("complete calls = %d, want initial callback attempt", client.completeCalls)
+	}
+
+	client.err = nil
+	hadPending, err := flushPendingCompletions(context.Background(), client, store, state, func() {
+		heartbeats.Add(1)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hadPending {
+		t.Fatal("flushPendingCompletions hadPending = false, want true")
+	}
+	if state.currentTask() != "" {
+		t.Fatalf("current task = %q, want cleared after replay", state.currentTask())
+	}
+	pending, err = store.list()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending completions after replay = %#v, want empty", pending)
+	}
+	if client.completeCalls != 2 || client.status != "completed" || client.result != "done" {
+		t.Fatalf("completion after replay = %#v, want accepted completed result", client)
+	}
+	if heartbeats.Load() == 0 {
+		t.Fatal("heartbeats = 0, want state changes to be advertised")
+	}
+}
+
+func TestPendingCompletionStoreOrdersSavedCompletions(t *testing.T) {
+	store := pendingCompletionStore{dir: filepath.Join(t.TempDir(), "pending")}
+	newer := remoteCompletionPayload{
+		AgentID:   "desk",
+		TaskID:    "task_newer",
+		Status:    "completed",
+		CreatedAt: time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC),
+	}
+	older := remoteCompletionPayload{
+		AgentID:   "desk",
+		TaskID:    "task_older",
+		Status:    "completed",
+		CreatedAt: time.Date(2026, 5, 11, 11, 0, 0, 0, time.UTC),
+	}
+	if err := store.save(newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.save(older); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.list()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].TaskID != "task_older" || got[1].TaskID != "task_newer" {
+		t.Fatalf("pending order = %#v, want oldest first", got)
+	}
+	if err := store.delete("task_older"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.list()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].TaskID != "task_newer" {
+		t.Fatalf("pending after delete = %#v, want only newer", got)
+	}
+}
+
 type fakeAssignmentRunner struct {
 	request agentrunner.RunRequest
 	result  agentrunner.RunResult
@@ -307,18 +408,21 @@ func (r *fakeAssignmentRunner) Run(ctx context.Context, req agentrunner.RunReque
 }
 
 type fakeAgentControl struct {
-	agentID     string
-	taskID      string
-	status      string
-	result      string
-	errorText   string
-	diff        string
-	diffSource  string
-	diffBaseRef string
-	diffHeadRef string
+	agentID       string
+	taskID        string
+	status        string
+	result        string
+	errorText     string
+	diff          string
+	diffSource    string
+	diffBaseRef   string
+	diffHeadRef   string
+	completeCalls int
+	err           error
 }
 
 func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, status, result, errorText string, diff gitDiffSnapshot) error {
+	c.completeCalls++
 	c.agentID = agentID
 	c.taskID = taskID
 	c.status = status
@@ -328,7 +432,7 @@ func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, status
 	c.diffSource = diff.Source
 	c.diffBaseRef = diff.BaseRef
 	c.diffHeadRef = diff.HeadRef
-	return nil
+	return c.err
 }
 
 func jsonResponse(status int, body string) *http.Response {

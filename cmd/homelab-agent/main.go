@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -175,6 +176,7 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 	}
 	runner := agentrunner.NewRunner(cfg.ExternalAgents)
 	state := newRemoteAgentRuntimeState()
+	completions := newPendingCompletionStore(cfg.DataDir, agentCfg.ID)
 	capabilities, metadata := remoteAgentMetadata(agentCfg.Backend, terminalBaseURL)
 	sendHeartbeat := func() {
 		err := client.heartbeat(ctx, remoteagent.Heartbeat{
@@ -206,6 +208,12 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 		case <-ctx.Done():
 			return nil
 		case <-pollTicker.C:
+			if hadPending, err := flushPendingCompletions(ctx, client, completions, state, sendHeartbeat); err != nil {
+				slog.Warn("remote pending completion failed", "error", err)
+				continue
+			} else if hadPending {
+				continue
+			}
 			if state.currentTask() != "" {
 				continue
 			}
@@ -220,11 +228,9 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 			state.setCurrentTask(assignment.TaskID)
 			sendHeartbeat()
 			slog.Info("remote assignment claimed", "task_id", assignment.TaskID, "workdir", assignment.Workdir, "backend", assignment.Backend)
-			if err := executeAssignment(ctx, client, runner, agentCfg.ID, agentCfg.Backend, assignment); err != nil {
+			if err := executeAssignmentDurably(ctx, client, runner, completions, state, sendHeartbeat, agentCfg.ID, agentCfg.Backend, assignment); err != nil {
 				slog.Warn("remote completion failed", "task_id", assignment.TaskID, "error", err)
 			}
-			state.setCurrentTask("")
-			sendHeartbeat()
 		}
 	}
 }
@@ -276,8 +282,42 @@ type assignmentRunner interface {
 }
 
 func executeAssignment(ctx context.Context, client agentControl, runner assignmentRunner, agentID, fallbackBackend string, assignment *remoteagent.Assignment) error {
-	if assignment == nil {
+	completion, ok := prepareAssignmentCompletion(ctx, runner, agentID, fallbackBackend, assignment)
+	if !ok {
 		return nil
+	}
+	return sendRemoteCompletion(ctx, client, completion)
+}
+
+func executeAssignmentDurably(ctx context.Context, client agentControl, runner assignmentRunner, completions pendingCompletionStore, state *remoteAgentRuntimeState, sendHeartbeat func(), agentID, fallbackBackend string, assignment *remoteagent.Assignment) error {
+	completion, ok := prepareAssignmentCompletion(ctx, runner, agentID, fallbackBackend, assignment)
+	if !ok {
+		return nil
+	}
+	if err := completions.save(completion); err != nil {
+		if sendErr := sendRemoteCompletion(ctx, client, completion); sendErr != nil {
+			return fmt.Errorf("persist remote completion: %v; direct completion: %w", err, sendErr)
+		}
+		state.setCurrentTask("")
+		sendHeartbeat()
+		return nil
+	}
+	if err := sendRemoteCompletion(ctx, client, completion); err != nil {
+		state.setCurrentTask(completion.TaskID)
+		sendHeartbeat()
+		return err
+	}
+	if err := completions.delete(completion.TaskID); err != nil {
+		return err
+	}
+	state.setCurrentTask("")
+	sendHeartbeat()
+	return nil
+}
+
+func prepareAssignmentCompletion(ctx context.Context, runner assignmentRunner, agentID, fallbackBackend string, assignment *remoteagent.Assignment) (remoteCompletionPayload, bool) {
+	if assignment == nil {
+		return remoteCompletionPayload{}, false
 	}
 	baseline, baselineErr := captureGitTreeSnapshot(ctx, assignment.Workdir)
 	result, runErr := runner.Run(ctx, agentrunner.RunRequest{
@@ -308,7 +348,42 @@ func executeAssignment(ctx context.Context, client agentControl, runner assignme
 	if diffErr != nil {
 		body = appendResultNote(body, "Remote diff capture failed: "+diffErr.Error())
 	}
-	return client.complete(ctx, agentID, assignment.TaskID, status, body, errorText, diff)
+	return remoteCompletionPayload{
+		AgentID:   agentID,
+		TaskID:    assignment.TaskID,
+		Status:    status,
+		Result:    body,
+		ErrorText: errorText,
+		Diff:      diff,
+		CreatedAt: time.Now().UTC(),
+	}, true
+}
+
+func sendRemoteCompletion(ctx context.Context, client agentControl, completion remoteCompletionPayload) error {
+	return client.complete(ctx, completion.AgentID, completion.TaskID, completion.Status, completion.Result, completion.ErrorText, completion.Diff)
+}
+
+func flushPendingCompletions(ctx context.Context, client agentControl, completions pendingCompletionStore, state *remoteAgentRuntimeState, sendHeartbeat func()) (bool, error) {
+	pending, err := completions.list()
+	if err != nil {
+		return false, err
+	}
+	if len(pending) == 0 {
+		return false, nil
+	}
+	for _, completion := range pending {
+		state.setCurrentTask(completion.TaskID)
+		sendHeartbeat()
+		if err := sendRemoteCompletion(ctx, client, completion); err != nil {
+			return true, err
+		}
+		if err := completions.delete(completion.TaskID); err != nil {
+			return true, err
+		}
+	}
+	state.setCurrentTask("")
+	sendHeartbeat()
+	return true, nil
 }
 
 type gitTreeSnapshot struct {
@@ -316,11 +391,151 @@ type gitTreeSnapshot struct {
 }
 
 type gitDiffSnapshot struct {
-	RawDiff string
-	Source  string
-	BaseRef string
-	HeadRef string
-	Warning string
+	RawDiff string `json:"raw_diff"`
+	Source  string `json:"source"`
+	BaseRef string `json:"base_ref"`
+	HeadRef string `json:"head_ref"`
+	Warning string `json:"warning"`
+}
+
+type remoteCompletionPayload struct {
+	AgentID   string          `json:"agent_id"`
+	TaskID    string          `json:"task_id"`
+	Status    string          `json:"status"`
+	Result    string          `json:"result,omitempty"`
+	ErrorText string          `json:"error,omitempty"`
+	Diff      gitDiffSnapshot `json:"diff"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type pendingCompletionStore struct {
+	dir string
+}
+
+func newPendingCompletionStore(dataDir, agentID string) pendingCompletionStore {
+	base := strings.TrimSpace(dataDir)
+	if base == "" {
+		base = "data"
+	}
+	return pendingCompletionStore{
+		dir: filepath.Join(base, "remote-agent", "pending-completions", safeCompletionFileName(agentID)),
+	}
+}
+
+func (s pendingCompletionStore) save(completion remoteCompletionPayload) error {
+	if strings.TrimSpace(completion.TaskID) == "" {
+		return fmt.Errorf("completion task id is required")
+	}
+	if completion.CreatedAt.IsZero() {
+		completion.CreatedAt = time.Now().UTC()
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(completion, "", "  ")
+	if err != nil {
+		return err
+	}
+	filename := safeCompletionFileName(completion.TaskID) + ".json"
+	tmp, err := os.CreateTemp(s.dir, filename+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(append(body, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, s.path(completion.TaskID)); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func (s pendingCompletionStore) list() ([]remoteCompletionPayload, error) {
+	entries, err := os.ReadDir(s.dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var completions []remoteCompletionPayload
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(s.dir, entry.Name())
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var completion remoteCompletionPayload
+		if err := json.Unmarshal(body, &completion); err != nil {
+			return nil, fmt.Errorf("read pending completion %s: %w", path, err)
+		}
+		completions = append(completions, completion)
+	}
+	sort.Slice(completions, func(i, j int) bool {
+		left := completions[i].CreatedAt
+		right := completions[j].CreatedAt
+		if left.Equal(right) {
+			return completions[i].TaskID < completions[j].TaskID
+		}
+		if left.IsZero() {
+			return false
+		}
+		if right.IsZero() {
+			return true
+		}
+		return left.Before(right)
+	})
+	return completions, nil
+}
+
+func (s pendingCompletionStore) delete(taskID string) error {
+	err := os.Remove(s.path(taskID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (s pendingCompletionStore) path(taskID string) string {
+	return filepath.Join(s.dir, safeCompletionFileName(taskID)+".json")
+}
+
+func safeCompletionFileName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "_"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 func captureGitTreeSnapshot(ctx context.Context, workdir string) (gitTreeSnapshot, error) {

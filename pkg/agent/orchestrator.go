@@ -1868,7 +1868,10 @@ func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agent
 		return "", fmt.Errorf("task %s is not assigned to remote agent %s", taskID, agentID)
 	}
 	if t.Status != taskstore.StatusRunning {
-		return "", fmt.Errorf("task %s is %s, not running", taskID, t.Status)
+		if o.remoteAgents != nil {
+			_ = o.remoteAgents.ClearCurrentTask(agentID, taskID)
+		}
+		return fmt.Sprintf("remote task %s completion already recorded with status %s", taskID, t.Status), nil
 	}
 	status = strings.ToLower(strings.TrimSpace(status))
 	t.AssignedTo = "OrchestratorAgent"

@@ -172,10 +172,15 @@ describe('tasks page composition', () => {
 
   test('renders Goal blocker traces from task detail without hiding the task lifecycle state', () => {
     expect(pageSource).toContain('currentGoalBlockerTrace');
+    expect(pageSource).toContain('currentGoalBlockerFlow');
+    expect(pageSource).toContain('performGoalBlockerAction');
     expect(pageSource).toContain('goal_blocker_trace');
     expect(pageSource).toContain('aria-label="Goal blocker trace"');
+    expect(pageSource).toContain('aria-label="Required blocker decision"');
     expect(pageSource).toContain('This task is blocking Goal Autopilot');
     expect(pageSource).toContain('Open blocking task');
+    expect(pageSource).toContain('Resume Autopilot');
+    expect(pageSource).toContain('Check Goal now');
     expect(pageSource).toContain(
       'Review is queued automatically. You can wait for the merge queue or run Review now from manual controls.'
     );

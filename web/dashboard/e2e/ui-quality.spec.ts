@@ -49,6 +49,7 @@ const blockerTask = {
   goal_id: 'goal_ui_quality',
   execution_mode: 'autopilot',
   goal_kind: 'build',
+  status: 'done',
   title: 'Validate Goal blocker copy',
   goal: 'Make blocked Autopilot tasks explain what is blocking progress.',
   result: 'Goal blocker trace rendered for operator review.',
@@ -68,6 +69,20 @@ const blockerTask = {
     blockers: ['Browser validation is required before the Goal can resume.'],
     follow_ups: ['Run the task-page browser UAT and attach the result.'],
     created_at: now
+  }
+};
+
+const waitingTaskID = 'task_20260428_120700_wait1111';
+const waitingGoalTask = {
+  ...blockerTask,
+  id: waitingTaskID,
+  status: 'blocked',
+  title: 'Build UI blocked by validation',
+  result: 'Waiting for the validation task before Autopilot can continue.',
+  goal_blocker_trace: {
+    ...blockerTask.goal_blocker_trace,
+    blocking_task_id: blockerTaskID,
+    blocking_task_url: `/tasks?task=${blockerTaskID}`
   }
 };
 
@@ -106,18 +121,32 @@ const mockTaskApis = async (page: Page, taskItems = [task]) => {
     await route.fulfill({ json: { settings: { auto_merge_enabled: false } } });
   });
   await page.route(/\/api\/approvals$/, async (route) => {
+    const approvalTask = taskItems.find((item) => item.status === 'awaiting_approval');
     await route.fulfill({
       json: {
-        approvals: [
-          {
-            id: 'approval_uiux',
-            task_id: taskItems[0].id,
-            tool: 'git.merge_approved',
-            status: 'pending',
-            reason: 'merge reviewed task branch into repo root',
-            created_at: now
-          }
-        ]
+        approvals: approvalTask
+          ? [
+              {
+                id: 'approval_uiux',
+                task_id: approvalTask.id,
+                tool: 'git.merge_approved',
+                status: 'pending',
+                reason: 'merge reviewed task branch into repo root',
+                created_at: now
+              }
+            ]
+          : []
+      }
+    });
+  });
+  await page.route(/\/api\/assistant\/goals\/[^/]+\/check$/, async (route) => {
+    await route.fulfill({ json: { reply: 'Goal check queued.', run: { id: 'arun_ui_quality' } } });
+  });
+  await page.route(/\/api\/assistant\/goals\/[^/]+\/autopilot\/resume$/, async (route) => {
+    await route.fulfill({
+      json: {
+        reply: 'Autopilot resumed for goal_ui_quality.',
+        timeline: { goal: { id: 'goal_ui_quality' }, events: [] }
       }
     });
   });
@@ -198,12 +227,16 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Validate Goal blocker copy' })).toBeVisible();
       const blockerTrace = page.getByLabel('Goal blocker trace');
       await expect(blockerTrace).toContainText('This task is blocking Goal Autopilot');
+      await expect(blockerTrace).toContainText('Decision needed');
+      await expect(blockerTrace).toContainText('Decide whether to resume the Goal');
       await expect(blockerTrace).toContainText('Task block111 needs validation evidence');
       await expect(blockerTrace).toContainText('Complete the missing validation');
       await expect(blockerTrace.getByRole('link', { name: 'Open Goal' })).toHaveAttribute(
         'href',
         '/assistant?goal=goal_ui_quality'
       );
+      await expect(blockerTrace.getByRole('button', { name: 'Resume Autopilot' })).toBeVisible();
+      await expect(blockerTrace.getByRole('button', { name: 'Check Goal now' })).toBeVisible();
 
       await expectNoAxeViolations(page);
       await blockerTrace.scrollIntoViewIfNeeded();
@@ -211,6 +244,26 @@ for (const viewport of [
         fullPage: true,
         animations: 'disabled'
       });
+    });
+
+    test('Goal blocker navigation lands on a clear blocker decision', async ({ page }) => {
+      await mockTaskApis(page, [waitingGoalTask, blockerTask]);
+      await page.goto(`/tasks?task=${waitingTaskID}`);
+      let blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(page.getByRole('heading', { name: 'Build UI blocked by validation' })).toBeVisible();
+      await expect(blockerTrace).toContainText('Open the blocking task');
+      await expect(blockerTrace.getByRole('button', { name: 'Resume Autopilot' })).toHaveCount(0);
+
+      await blockerTrace.getByRole('link', { name: 'Open blocking task' }).click();
+      await expect(page).toHaveURL(new RegExp(`task=${blockerTaskID}`));
+      blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(page.getByRole('heading', { name: 'Validate Goal blocker copy' })).toBeVisible();
+      await expect(blockerTrace).toContainText('Decide whether to resume the Goal');
+
+      await blockerTrace.getByRole('button', { name: 'Resume Autopilot' }).click();
+      await expect(
+        page.getByLabel('Selected task record').getByText('Goal resume requested')
+      ).toBeVisible();
     });
   });
 }

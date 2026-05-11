@@ -1,0 +1,120 @@
+import type { HomelabdTask } from '@homelab/shared';
+
+export type GoalBlockerFlowRole = 'waiting_on_blocking_task' | 'blocking_task' | 'goal_blocked';
+
+export interface GoalBlockerFlow {
+  role: GoalBlockerFlowRole;
+  title: string;
+  decisionLabel: string;
+  decisionDetail: string;
+  showBlockingTaskLink: boolean;
+  showResumeGoalAction: boolean;
+  showCheckGoalAction: boolean;
+}
+
+const shortID = (id: string) =>
+  id.length > 16 ? `${id.slice(0, 10)}...${id.slice(-4)}` : id;
+
+const goalIdForTask = (task: HomelabdTask) => task.goal_blocker_trace?.goal_id || task.goal_id || '';
+
+const isTerminalAcceptedBlocker = (status: string) => status === 'done' || status === 'cancelled';
+
+const isReviewableBlocker = (status: string) =>
+  status === 'awaiting_verification' ||
+  status === 'awaiting_approval' ||
+  status === 'ready_for_review' ||
+  status === 'no_change_required';
+
+const isRepairableBlocker = (status: string) =>
+  status === 'blocked' ||
+  status === 'timed_out' ||
+  status === 'failed' ||
+  status === 'conflict_resolution';
+
+export const taskIsGoalBlocker = (task: HomelabdTask | undefined) =>
+  Boolean(task?.id && task.goal_blocker_trace?.blocking_task_id === task.id);
+
+export const goalBlockerFlow = (task: HomelabdTask | undefined): GoalBlockerFlow | undefined => {
+  if (!task?.goal_blocker_trace) {
+    return undefined;
+  }
+
+  const trace = task.goal_blocker_trace;
+  const goalID = goalIdForTask(task);
+
+  if (!taskIsGoalBlocker(task)) {
+    if (trace.blocking_task_id) {
+      return {
+        role: 'waiting_on_blocking_task',
+        title: `Goal is blocked by task ${shortID(trace.blocking_task_id)}`,
+        decisionLabel: 'Open the blocking task',
+        decisionDetail:
+          'This task belongs to the blocked Goal, but the decision is on the linked blocking task.',
+        showBlockingTaskLink: true,
+        showResumeGoalAction: false,
+        showCheckGoalAction: false
+      };
+    }
+
+    return {
+      role: 'goal_blocked',
+      title: 'Goal Autopilot is blocked',
+      decisionLabel: 'Inspect the Goal blocker',
+      decisionDetail:
+        'The Goal is blocked without a single blocking task. Open the Goal to answer the blocker or change Autopilot.',
+      showBlockingTaskLink: false,
+      showResumeGoalAction: false,
+      showCheckGoalAction: Boolean(goalID)
+    };
+  }
+
+  if (isTerminalAcceptedBlocker(task.status)) {
+    return {
+      role: 'blocking_task',
+      title: 'This task is blocking Goal Autopilot',
+      decisionLabel: 'Decide whether to resume the Goal',
+      decisionDetail:
+        'This task is already closed, but its report left a Goal-level blocker. Resume Autopilot if the blocker is acceptable, or reopen this task with what is missing.',
+      showBlockingTaskLink: false,
+      showResumeGoalAction: Boolean(goalID),
+      showCheckGoalAction: Boolean(goalID)
+    };
+  }
+
+  if (isReviewableBlocker(task.status)) {
+    return {
+      role: 'blocking_task',
+      title: 'This task is blocking Goal Autopilot',
+      decisionLabel: 'Verify or reject this result',
+      decisionDetail:
+        'Review the task output. Accept it if it resolves the blocker, or reopen it with the missing evidence or product decision.',
+      showBlockingTaskLink: false,
+      showResumeGoalAction: false,
+      showCheckGoalAction: Boolean(goalID)
+    };
+  }
+
+  if (isRepairableBlocker(task.status)) {
+    return {
+      role: 'blocking_task',
+      title: 'This task is blocking Goal Autopilot',
+      decisionLabel: 'Repair the blocker',
+      decisionDetail:
+        'Use Retry or Reopen with the specific evidence, dependency, or operator decision needed before the Goal can continue.',
+      showBlockingTaskLink: false,
+      showResumeGoalAction: false,
+      showCheckGoalAction: Boolean(goalID)
+    };
+  }
+
+  return {
+    role: 'blocking_task',
+    title: 'This task is blocking Goal Autopilot',
+    decisionLabel: 'Watch this task complete',
+    decisionDetail:
+      'Autopilot is waiting for this task to finish. When it reaches review or a blocked state, the task actions above become the decision point.',
+    showBlockingTaskLink: false,
+    showResumeGoalAction: false,
+    showCheckGoalAction: Boolean(goalID)
+  };
+};

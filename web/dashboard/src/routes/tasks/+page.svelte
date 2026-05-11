@@ -48,6 +48,11 @@
   } from './view-model';
   import { createCoalescedAsync } from './refresh-state';
   import {
+    goalBlockerFlow,
+    taskIsGoalBlocker,
+    type GoalBlockerFlow
+  } from './blocker-flow';
+  import {
     approvalNoticeTitle,
     pendingApprovalForTask,
     primaryTaskAction,
@@ -154,6 +159,7 @@
   let currentTaskSummary: HomelabdTask | undefined;
   let currentTask: HomelabdTask | undefined;
   let currentGoalBlockerTrace: HomelabdTask['goal_blocker_trace'] | undefined;
+  let currentGoalBlockerFlow: GoalBlockerFlow | undefined;
   let currentTaskEvents: HomelabdEvent[] = [];
   let currentTaskRuns: WorkerTraceRun[] = [];
   let currentTaskDiff: HomelabdTaskDiffResponse | undefined;
@@ -171,6 +177,7 @@
   let currentPrimaryAction: PrimaryTaskAction = primaryTaskAction(undefined, []);
   let currentSecondaryOperations: TaskOperation[] = [];
   let currentPendingApproval: HomelabdApproval | undefined;
+  let goalBlockerActionLoading = '';
   let syncIndicator = taskSyncIndicatorState({
     refreshing,
     lastRefresh,
@@ -482,6 +489,7 @@
     ? taskDetails[currentTaskSummary.id] || currentTaskSummary
     : undefined;
   $: currentGoalBlockerTrace = taskGoalBlockerTrace(currentTask);
+  $: currentGoalBlockerFlow = goalBlockerFlow(currentTask);
   $: currentTaskEvents = taskQueueView.currentTaskEvents;
   $: currentTaskRuns = currentTask
     ? buildWorkerTraceRuns(currentTaskEvents, taskRuns[currentTask.id] || [])
@@ -743,13 +751,14 @@
 
   const taskGoalBlockerTrace = (task: HomelabdTask | undefined) => task?.goal_blocker_trace;
 
-  const taskIsGoalBlocker = (task: HomelabdTask | undefined) =>
-    Boolean(task?.id && task.goal_blocker_trace?.blocking_task_id === task.id);
-
   const taskGoalBlockerTitle = (task: HomelabdTask | undefined) => {
     const trace = taskGoalBlockerTrace(task);
     if (!trace) {
       return 'Goal is not blocked';
+    }
+    const flow = goalBlockerFlow(task);
+    if (flow) {
+      return flow.title;
     }
     if (taskIsGoalBlocker(task)) {
       return 'This task is blocking Goal Autopilot';
@@ -760,17 +769,22 @@
     return 'Goal Autopilot is blocked';
   };
 
-  const taskGoalBlockerMeta = (task: HomelabdTask | undefined) => {
+  const taskGoalBlockerMetaItems = (task: HomelabdTask | undefined) => {
     const trace = taskGoalBlockerTrace(task);
     return [
-      trace?.phase_title ? `Phase: ${trace.phase_title}` : '',
-      trace?.source_type ? blockerStatusLabel(trace.source_type) : '',
-      trace?.review_decision ? `Review: ${blockerStatusLabel(trace.review_decision)}` : '',
-      trace?.created_at ? compactTime(trace.created_at) : ''
-    ]
-      .filter(Boolean)
-      .join(' / ');
+      trace?.phase_title ? { label: 'Phase', value: trace.phase_title } : undefined,
+      trace?.source_type ? { label: 'Source', value: blockerStatusLabel(trace.source_type) } : undefined,
+      trace?.review_decision
+        ? { label: 'Review', value: blockerStatusLabel(trace.review_decision) }
+        : undefined,
+      trace?.created_at ? { label: 'Seen', value: compactTime(trace.created_at) } : undefined
+    ].filter((item): item is { label: string; value: string } => Boolean(item));
   };
+
+  const taskGoalBlockerMeta = (task: HomelabdTask | undefined) =>
+    taskGoalBlockerMetaItems(task)
+      .map((item) => `${item.label}: ${item.value}`)
+      .join(' / ');
 
   const taskGoalBlockerEvidence = (task: HomelabdTask | undefined) => {
     const trace = taskGoalBlockerTrace(task);
@@ -1336,6 +1350,46 @@
     }
   };
 
+  const currentGoalBlockerGoalId = () =>
+    currentGoalBlockerTrace?.goal_id || currentTask?.goal_id || '';
+
+  const performGoalBlockerAction = async (operation: 'resume' | 'check') => {
+    const goalId = currentGoalBlockerGoalId();
+    const taskId = currentTask?.id || '';
+    if (!goalId || goalBlockerActionLoading) {
+      return;
+    }
+
+    goalBlockerActionLoading = operation;
+    clearNotice();
+    try {
+      const response =
+        operation === 'resume'
+          ? await client.updateAssistantGoalAutopilot(goalId, 'resume')
+          : await client.checkAssistantGoal(goalId);
+      setNotice(
+        'success',
+        operation === 'resume' ? 'Goal resume requested' : 'Goal check started',
+        response.reply || 'Goal updated.'
+      );
+      await refreshState();
+      if (taskId) {
+        await refreshSelectedTaskDetails(taskId, {
+          force: true,
+          task: tasks.find((task) => task.id === taskId)
+        });
+      }
+    } catch (err) {
+      setNotice(
+        'error',
+        operation === 'resume' ? 'Resume Goal failed' : 'Goal check failed',
+        errorMessage(err, 'Unable to update the Goal.')
+      );
+    } finally {
+      goalBlockerActionLoading = '';
+    }
+  };
+
   const performPrimaryAction = () => {
     if (currentPrimaryAction.type === 'task') {
       void performTaskOperation(currentPrimaryAction.operation);
@@ -1880,16 +1934,30 @@
 
               {#if currentGoalBlockerTrace}
                 <section class="state-machine goal-blocker-state" aria-label="Goal blocker trace">
-                  <div>
+                  <div class="goal-blocker-heading">
                     <span>Goal blocker</span>
                     <strong>{taskGoalBlockerTitle(currentTask)}</strong>
                   </div>
-                  {#if taskGoalBlockerMeta(currentTask)}
-                    <small>{taskGoalBlockerMeta(currentTask)}</small>
+                  {#if taskGoalBlockerMetaItems(currentTask).length}
+                    <dl class="goal-blocker-meta" aria-label="Goal blocker metadata">
+                      {#each taskGoalBlockerMetaItems(currentTask) as item}
+                        <div>
+                          <dt>{item.label}</dt>
+                          <dd>{item.value}</dd>
+                        </div>
+                      {/each}
+                    </dl>
                   {/if}
                   <p>{currentGoalBlockerTrace.reason}</p>
                   {#if currentGoalBlockerTrace.operator_action}
-                    <small>{currentGoalBlockerTrace.operator_action}</small>
+                    <p class="goal-blocker-action-copy">{currentGoalBlockerTrace.operator_action}</p>
+                  {/if}
+                  {#if currentGoalBlockerFlow}
+                    <div class="goal-blocker-decision" aria-label="Required blocker decision">
+                      <span>Decision needed</span>
+                      <strong>{currentGoalBlockerFlow.decisionLabel}</strong>
+                      <p>{currentGoalBlockerFlow.decisionDetail}</p>
+                    </div>
                   {/if}
                   {#if taskGoalBlockerEvidence(currentTask).length}
                     <ul class="goal-blocker-list" aria-label="Goal blocker evidence">
@@ -1902,8 +1970,27 @@
                     {#if currentGoalBlockerTrace.source_url}
                       <a href={currentGoalBlockerTrace.source_url}>Open Goal</a>
                     {/if}
-                    {#if currentGoalBlockerTrace.blocking_task_url && !taskIsGoalBlocker(currentTask)}
+                    {#if currentGoalBlockerTrace.blocking_task_url && currentGoalBlockerFlow?.showBlockingTaskLink}
                       <a href={currentGoalBlockerTrace.blocking_task_url}>Open blocking task</a>
+                    {/if}
+                    {#if currentGoalBlockerFlow?.showResumeGoalAction}
+                      <button
+                        type="button"
+                        class="goal-primary-action"
+                        disabled={goalBlockerActionLoading !== ''}
+                        on:click={() => void performGoalBlockerAction('resume')}
+                      >
+                        {goalBlockerActionLoading === 'resume' ? 'Resuming' : 'Resume Autopilot'}
+                      </button>
+                    {/if}
+                    {#if currentGoalBlockerFlow?.showCheckGoalAction}
+                      <button
+                        type="button"
+                        disabled={goalBlockerActionLoading !== ''}
+                        on:click={() => void performGoalBlockerAction('check')}
+                      >
+                        {goalBlockerActionLoading === 'check' ? 'Checking' : 'Check Goal now'}
+                      </button>
                     {/if}
                   </div>
                 </section>
@@ -3190,14 +3277,37 @@
   :global(html[data-theme='dark'] .goal-blocker-state small),
   :global(html[data-theme='dark'] .goal-blocker-state strong),
   :global(html[data-theme='dark'] .goal-blocker-state p),
+  :global(html[data-theme='dark'] .goal-blocker-decision),
+  :global(html[data-theme='dark'] .goal-blocker-meta),
   :global(html[data-theme='dark'] .goal-blocker-list) {
     color: #fed7aa;
   }
 
-  :global(html[data-theme='dark'] .goal-blocker-actions a) {
+  :global(html[data-theme='dark'] .goal-blocker-decision) {
+    border-color: rgb(251 191 36 / 0.45);
+    background: rgb(154 52 18 / 0.3);
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-meta div) {
+    border-color: rgb(251 191 36 / 0.35);
+    background: rgb(154 52 18 / 0.22);
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-meta dt),
+  :global(html[data-theme='dark'] .goal-blocker-meta dd) {
+    color: #fed7aa;
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-actions :is(a, button)) {
     color: #fed7aa;
     border-color: rgb(251 191 36 / 0.55);
     background: rgb(154 52 18 / 0.45);
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-actions .goal-primary-action) {
+    color: #111827;
+    border-color: #fbbf24;
+    background: #fbbf24;
   }
 
   :global(html[data-theme='dark'] .toast-notice) {
@@ -3673,7 +3783,7 @@
     padding: 0.85rem;
   }
 
-  .state-machine div {
+  .state-machine > div:not(.goal-blocker-decision) {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -3713,6 +3823,74 @@
     color: #7c2d12;
   }
 
+  .goal-blocker-heading strong {
+    text-align: right;
+  }
+
+  .goal-blocker-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+    gap: 0.45rem;
+    margin: 0;
+  }
+
+  .goal-blocker-meta div {
+    min-width: 0;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid #fed7aa;
+    border-radius: 0.55rem;
+    background: rgb(255 237 213 / 0.62);
+  }
+
+  .goal-blocker-meta dt,
+  .goal-blocker-meta dd {
+    margin: 0;
+  }
+
+  .goal-blocker-meta dt {
+    color: #9a3412;
+    font-size: 0.66rem;
+    font-weight: 900;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .goal-blocker-meta dd {
+    margin-top: 0.15rem;
+    overflow-wrap: anywhere;
+    color: #7c2d12;
+    font-size: 0.8rem;
+    font-weight: 760;
+    line-height: 1.25;
+  }
+
+  .goal-blocker-action-copy {
+    font-weight: 760;
+  }
+
+  .goal-blocker-decision {
+    display: grid;
+    grid-template-columns: minmax(4.5rem, auto) minmax(8rem, 12rem) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem 0.75rem;
+    padding: 0.65rem;
+    border: 1px solid #fdba74;
+    border-radius: 0.65rem;
+    background: #ffedd5;
+  }
+
+  .goal-blocker-decision span {
+    font-size: 0.68rem;
+  }
+
+  .goal-blocker-decision strong {
+    font-size: 0.88rem;
+  }
+
+  .goal-blocker-decision p {
+    overflow-wrap: anywhere;
+  }
+
   .goal-blocker-list {
     display: grid;
     gap: 0.35rem;
@@ -3729,9 +3907,10 @@
     gap: 0.45rem;
   }
 
-  .goal-blocker-actions a {
+  .goal-blocker-actions :is(a, button) {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     min-height: 2rem;
     padding: 0 0.65rem;
     border: 1px solid #fb923c;
@@ -3741,6 +3920,16 @@
     font-size: 0.78rem;
     font-weight: 850;
     text-decoration: none;
+  }
+
+  .goal-blocker-actions button {
+    cursor: pointer;
+  }
+
+  .goal-blocker-actions .goal-primary-action {
+    border-color: #9a3412;
+    color: #ffffff;
+    background: #9a3412;
   }
 
   .workspace-path,
@@ -4615,6 +4804,36 @@
     .primary-action {
       width: 100%;
       min-height: 2.9rem;
+    }
+
+    .goal-blocker-actions {
+      flex-direction: column;
+    }
+
+    .state-machine > div:not(.goal-blocker-decision) {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .goal-blocker-heading strong {
+      text-align: left;
+    }
+
+    .goal-blocker-meta {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .goal-blocker-decision {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+    }
+
+    .goal-blocker-actions :is(a, button) {
+      width: 100%;
+      min-height: 2.7rem;
+      white-space: normal;
+      text-align: center;
     }
 
     .record-summary {

@@ -7348,6 +7348,53 @@ func TestGoalAutopilotBlocksUnverifiedRemoteReview(t *testing.T) {
 	}
 }
 
+func TestReviewRemoteTaskCanRecheckReviewerBlockedTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	task := taskstore.Task{
+		ID:         "task_remote_recheck",
+		Title:      "remote recheck",
+		Goal:       "review remote diff",
+		Status:     taskstore.StatusBlocked,
+		AssignedTo: "OrchestratorAgent",
+		Target:     remote1ExecutionTarget(),
+		Result:     "remote agent finished; ready for review.\nReviewerAgent could not verify remote Goal progress: old parser missed validation.",
+		DiffSnapshot: &taskstore.TaskDiffSnapshot{
+			Source:    "remote_recovered_live_worktree_snapshot",
+			BaseLabel: "remote recovery baseline",
+			HeadLabel: "remote1",
+			RawDiff: `diff --git a/src/open-grid.js b/src/open-grid.js
+--- a/src/open-grid.js
++++ b/src/open-grid.js
+@@ -0,0 +1 @@
++export const ready = true;
+`,
+			CapturedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := orch.ReviewTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "Remote result reviewed") {
+		t.Fatalf("reply = %q, want re-review success", reply)
+	}
+	reviewed, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.Status != taskstore.StatusAwaitingVerification {
+		t.Fatalf("status = %q, want awaiting verification", reviewed.Status)
+	}
+}
+
 func TestGoalAutopilotCreatesPlanAndPhaseTaskContext(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),
@@ -7548,6 +7595,53 @@ GOAL_REPORT: {"summary":"Built the grid foundation","advanced_goal":true,"phase_
 	}
 	if !report.AdvancedGoal || report.ReviewDecision != goalTaskReviewVerifiedProgress {
 		t.Fatalf("report = %#v, want verified progress", report)
+	}
+}
+
+func TestGoalTaskReportParsesInlineRecoveredGoalReport(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:        "goal_grid_inline_report",
+		Title:     "Build replacement data grid",
+		Objective: "Build a replacement for AG Grid.",
+		Kind:      assistantstore.GoalKindBuild,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusActive,
+			CurrentPhaseID: "phase_03_parity",
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:        "phase_03_parity",
+				Title:     "Expand feature parity",
+				Objective: "Add the next data grid feature parity slice.",
+				Status:    assistantstore.GoalPlanPhaseStatusInProgress,
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	task := taskstore.Task{
+		ID:          "task_inline_report",
+		GoalID:      goal.ID,
+		GoalPhaseID: "phase_03_parity",
+		Title:       "Build context menu typeahead",
+		Goal:        "Build context menu typeahead for the replacement data grid.",
+		Status:      taskstore.StatusBlocked,
+		Target:      remote1ExecutionTarget(),
+		Result:      `Recovered completion. GOAL_REPORT: {"summary":"Closed context menu typeahead","advanced_goal":true,"phase_complete":false,"goal_complete":false,"changed_files":["src/open-grid.js","tests/grid-core.test.js"],"validation":["bun test tests/grid-core.test.js"],"follow_ups":[],"blockers":[],"questions":[]} ReviewerAgent could not verify remote Goal progress: old parser missed validation.`,
+		RemoteDiff:  "diff --git a/src/open-grid.js b/src/open-grid.js\nnew file mode 100644\n",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	report := orch.goalTaskReportFromTask(ctx, goal, task)
+	if report.ReviewDecision != goalTaskReviewVerifiedProgress || len(report.Validation) == 0 {
+		t.Fatalf("report = %#v, want inline GOAL_REPORT validation to verify progress", report)
 	}
 }
 

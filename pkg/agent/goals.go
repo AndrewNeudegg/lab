@@ -2260,10 +2260,11 @@ func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
 	found := false
 	for _, line := range strings.Split(result, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(strings.ToUpper(trimmed), "GOAL_REPORT:") {
+		index := strings.Index(strings.ToUpper(trimmed), "GOAL_REPORT:")
+		if index < 0 {
 			continue
 		}
-		raw := strings.TrimSpace(trimmed[len("GOAL_REPORT:"):])
+		raw := goalReportJSONPayload(strings.TrimSpace(trimmed[index+len("GOAL_REPORT:"):]))
 		var report structuredGoalReport
 		if err := json.Unmarshal([]byte(raw), &report); err == nil {
 			report.Summary = strings.TrimSpace(report.Summary)
@@ -2277,6 +2278,44 @@ func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
 		}
 	}
 	return latest, found
+}
+
+func goalReportJSONPayload(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "{") {
+		return raw
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for index, r := range raw {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return raw[:index+1]
+			}
+		}
+	}
+	return raw
 }
 
 func normalizeGoalReportStrings(values []string, limit int) []string {

@@ -8474,6 +8474,9 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 	if t.Status == taskstore.StatusTimedOut {
 		return fmt.Sprintf("Remote task %s timed out on %s in %s. No review ran.\nNext: raise the backend timeout or narrow the instruction, then `retry %s codex <instruction>` or `reopen %s <reason>`.", shortID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
 	}
+	if t.Status == taskstore.StatusBlocked && strings.Contains(t.Result, "ReviewerAgent could not verify remote Goal progress:") {
+		t.Status = taskstore.StatusReadyForReview
+	}
 	if t.Status != taskstore.StatusReadyForReview {
 		return fmt.Sprintf("Remote task %s is %s. Wait for the agent to finish before review.", shortID, t.Status), nil
 	}

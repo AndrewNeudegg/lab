@@ -963,7 +963,7 @@ func (c cli) knowledgeResearchRunResume(args []string) error {
 
 func (c cli) task(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl task <new|list|attention|show|runs|diff|run|review|review-ui|queue|accept|restart|reopen|cancel|retry|delete>")
+		return fmt.Errorf("usage: homelabctl task <new|list|attention|show|runs|diff|run|review|review-ui|queue|accept|restart|reopen|cancel|retry|recover-remote|delete>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -1050,9 +1050,36 @@ func (c cli) task(args []string) error {
 		}
 		backend, instruction := retryArgs(args[2:])
 		return c.do(http.MethodPost, path("tasks", args[1], "retry"), map[string]any{"backend": backend, "instruction": instruction})
+	case "recover-remote":
+		return c.taskRecoverRemote(args[1:])
 	default:
 		return fmt.Errorf("unknown task command %q", args[0])
 	}
+}
+
+func (c cli) taskRecoverRemote(args []string) error {
+	fs := flag.NewFlagSet("task recover-remote", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	status := fs.String("status", "completed", "completion status")
+	baseRef := fs.String("base-ref", "", "git tree or commit to diff from")
+	result := fs.String("result", "", "completion result text")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
+		return fmt.Errorf("usage: homelabctl task recover-remote [--status completed] [--base-ref <git-ref>] [--result <text>] <task_id> [result]")
+	}
+	resultText := strings.TrimSpace(*result)
+	if resultText == "" {
+		resultText = strings.Join(rest[1:], " ")
+	}
+	body := map[string]any{
+		"status":   *status,
+		"base_ref": *baseRef,
+		"result":   resultText,
+	}
+	return c.do(http.MethodPost, path("tasks", rest[0], "recover-remote"), body)
 }
 
 func parseTaskNewArgs(args []string) (map[string]any, []map[string]any, []string, error) {

@@ -93,6 +93,7 @@ go run ./cmd/homelabctl task restart task_123
 go run ./cmd/homelabctl task reopen task_123 "needs rework"
 go run ./cmd/homelabctl task cancel task_123
 go run ./cmd/homelabctl task retry task_123 codex "retry from the current workspace state"
+go run ./cmd/homelabctl task recover-remote --base-ref <previous-tree> task_123 "Recovered completion after coordinator restart"
 go run ./cmd/homelabctl task delete task_123
 go run ./cmd/homelabctl settings
 go run ./cmd/homelabctl settings auto-merge on
@@ -101,6 +102,8 @@ go run ./cmd/homelabctl settings auto-merge on
 List commands are intentionally lightweight. `task list`, `assistant list`, `knowledge list`, and `events` use summary payloads so old results, diffs, snapshots, source content, and event bodies do not make routine checks slow. Task and Assistant stores keep summary sidecars for list commands, the dashboard navbar uses `GET /tasks/attention` for badge counts, and `events --limit` uses the tail of the day's JSONL log. Use the corresponding `show` command, `task diff`, or a diagnostic `detail=full` API query when a complete record is required.
 
 `task retry` preserves the previous task result as retry context and forces an immediate worker attempt. It is the normal recovery path for `timed_out` tasks after raising `external_agents.<backend>.timeout_seconds` or narrowing the instruction. The task supervisor also queues automatic recovery for `conflict_resolution` tasks and retryable blocked tasks. Worker starts are capped by `limits.max_concurrent_tasks`, so recovery waits instead of launching too many browser-UAT or build-heavy tasks at once. In both paths, `homelabd` prepares the isolated task worktree before starting the worker: a clean worktree is merged with current `main`, and any resulting conflicts are left for the worker to resolve.
+
+`task recover-remote` is a narrow operator recovery path for legacy remote tasks whose worker finished but whose completion callback was lost before durable remote completion replay was available. It records a snapshot from the accessible remote worktree and moves the running remote task through the normal remote completion path. Use `--base-ref` when you know the previous task snapshot tree or commit; otherwise the command falls back to the live remote working tree and marks the diff with a warning. Prefer waiting for the remote agent's pending-completion replay for new tasks.
 
 `task review` normally runs after a local worker has moved the task to `ready_for_review`; the task supervisor starts that review automatically. It can also recheck a blocked task whose result starts with `ReviewerAgent checks failed:` after a test-infrastructure fix. It owns the task while checks run; concurrent run, retry, or delegation attempts are rejected, and a stale review result is ignored if the task state changes before checks finish. If the worker made no edits and its result starts with `No change required:`, review moves the task to `no_change_required`; use `task accept` to close it or `task reopen <reason>` to reject that conclusion and queue new work.
 

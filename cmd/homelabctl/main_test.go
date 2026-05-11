@@ -794,6 +794,26 @@ func TestTaskDiffCommandPrintsRemoteRawPatch(t *testing.T) {
 	}
 }
 
+func TestTaskRecoverRemoteCommandPostsRecoveryRequest(t *testing.T) {
+	var observed observedRequest
+	stdout, stderr, code := runAgainstServer(t, []string{"task", "recover-remote", "--base-ref", "tree_123", "--result", "recovered", "task_123"}, "", func(rw http.ResponseWriter, req *http.Request) {
+		observed = observeRequest(t, req)
+		writeTestJSON(t, rw, http.StatusOK, map[string]any{"reply": "recovered"})
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
+	}
+	if observed.Method != http.MethodPost || observed.Path != "/tasks/task_123/recover-remote" {
+		t.Fatalf("request = %s %s, want POST /tasks/task_123/recover-remote", observed.Method, observed.Path)
+	}
+	if observed.Body["base_ref"] != "tree_123" || observed.Body["result"] != "recovered" || observed.Body["status"] != "completed" {
+		t.Fatalf("body = %#v, want recovery payload", observed.Body)
+	}
+	if !strings.Contains(stdout, `"reply": "recovered"`) {
+		t.Fatalf("stdout = %q, want recovery reply JSON", stdout)
+	}
+}
+
 func TestInteractiveShellSendsLinesToMessageEndpoint(t *testing.T) {
 	var messages []string
 	stdout, stderr, code := runAgainstServer(t, []string{"shell"}, "status\n\napprove app_1\nexit\n", func(rw http.ResponseWriter, req *http.Request) {

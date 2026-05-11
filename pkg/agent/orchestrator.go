@@ -1859,6 +1859,51 @@ func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, 
 	return o.CompleteRemoteTaskWithSnapshot(ctx, agentID, taskID, result, status, snapshot)
 }
 
+func (o *Orchestrator) RecoverRemoteTaskCompletion(ctx context.Context, taskID, result, status, baseRef string) (string, error) {
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return "", err
+	}
+	if !remoteTask(t) || t.Target == nil {
+		return "", fmt.Errorf("task %s is not a remote task", taskID)
+	}
+	agentID := strings.TrimSpace(t.Target.AgentID)
+	if agentID == "" {
+		return "", fmt.Errorf("task %s has no remote agent id", taskID)
+	}
+	workdir := firstNonEmptyString(t.Target.Workdir, t.Workspace)
+	if !workspaceHasGit(workdir) {
+		return "", fmt.Errorf("remote workdir %q is not an accessible git checkout", workdir)
+	}
+	if strings.TrimSpace(status) == "" {
+		status = "completed"
+	}
+	baseRef = strings.TrimSpace(baseRef)
+	raw := ""
+	source := "remote_recovered_live_worktree_snapshot"
+	baseLabel := "remote recovery baseline"
+	warning := "Recovered from the current remote checkout because the original remote-agent completion was not recorded. Validate this snapshot against the remote repository history."
+	if baseRef != "" {
+		out, err := exec.CommandContext(ctx, "git", "-C", workdir, "diff", "--binary", baseRef, "--", ".").CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("git diff recovered remote task: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		raw = string(out)
+		warning = "Recovered from the current remote checkout against the supplied baseline because the original remote-agent completion was not recorded. Validate this snapshot against the remote repository history."
+	} else {
+		raw, err = workingTreeDiff(ctx, workdir)
+		if err != nil {
+			return "", err
+		}
+		baseLabel = "remote live worktree"
+	}
+	if strings.TrimSpace(result) == "" {
+		result = "remote task completion recovered from accessible remote worktree snapshot"
+	}
+	snapshot := buildTaskDiffSnapshot(raw, source, baseRef, baseLabel, "", agentID, workdir, warning, time.Now().UTC())
+	return o.CompleteRemoteTaskWithSnapshot(ctx, agentID, taskID, result, status, snapshot)
+}
+
 func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agentID, taskID, result, status string, snapshot taskstore.TaskDiffSnapshot) (string, error) {
 	t, err := o.tasks.Load(taskID)
 	if err != nil {

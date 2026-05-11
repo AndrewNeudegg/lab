@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1763,6 +1764,73 @@ func TestTaskDiffEndpointReturnsRemoteWorkingTreeDiff(t *testing.T) {
 	}
 }
 
+func TestTaskRecoverRemoteRecordsRecoveredSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "remote")
+	gitHTTPTestRun(t, "", "init", "--initial-branch=main", repo)
+	gitHTTPTestRun(t, repo, "config", "user.email", "test@example.com")
+	gitHTTPTestRun(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitHTTPTestRun(t, repo, "add", "README.md")
+	gitHTTPTestRun(t, repo, "commit", "-m", "base")
+	baseTree := gitHTTPTestOutput(t, repo, "rev-parse", "HEAD^{tree}")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\nrecovered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.DataDir = filepath.Join(dir, "data")
+	cfg.Repo.Root = filepath.Join(dir, "control")
+	cfg.Repo.WorkspaceRoot = filepath.Join(dir, "workspaces")
+	tasks := taskstore.NewStore(filepath.Join(cfg.DataDir, "tasks"))
+	orch := agent.NewOrchestrator(
+		cfg,
+		eventlog.NewStore(filepath.Join(cfg.DataDir, "events")),
+		tasks,
+		approvalstore.NewStore(filepath.Join(cfg.DataDir, "approvals")),
+		tool.NewRegistry(),
+		tool.NewPolicy(nil),
+		nil,
+		"",
+	)
+	taskID := "task_20260511_remote_recover"
+	now := time.Now().UTC()
+	if err := tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "remote grid",
+		Goal:       "build remote grid",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "desk",
+		Target:     &taskstore.ExecutionTarget{Mode: "remote", AgentID: "desk", Machine: "desk.local", Workdir: repo},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		StartedAt:  &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := Server{Orchestrator: orch}
+	mux := http.NewServeMux()
+	server.register(mux)
+	requestJSON(t, mux, http.MethodPost, "/tasks/"+taskID+"/recover-remote", fmt.Sprintf(`{"base_ref":%q,"result":"recovered completion"}`, baseTree), "", http.StatusOK)
+
+	recovered, err := tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != taskstore.StatusReadyForReview || !strings.Contains(recovered.Result, "recovered completion") {
+		t.Fatalf("recovered task status/result = %s/%q, want ready_for_review recovered result", recovered.Status, recovered.Result)
+	}
+	if recovered.DiffSnapshot == nil || recovered.DiffSnapshot.Source != "remote_recovered_live_worktree_snapshot" || recovered.DiffSnapshot.BaseRef != baseTree {
+		t.Fatalf("snapshot = %#v, want recovered snapshot with base tree", recovered.DiffSnapshot)
+	}
+	if !strings.Contains(recovered.RemoteDiff, "+recovered") {
+		t.Fatalf("remote diff = %q, want recovered line", recovered.RemoteDiff)
+	}
+}
+
 func TestTaskDiffEndpointPrefersStoredSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	repo := filepath.Join(dir, "remote")
@@ -2529,4 +2597,17 @@ func gitHTTPTestRun(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
+}
+
+func gitHTTPTestOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out))
 }

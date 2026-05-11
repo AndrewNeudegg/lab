@@ -285,6 +285,10 @@ const assistantGoal = {
   next_check_at: now
 };
 
+const retainedGridTaskLinks = Array.from({ length: 64 }, (_, index) =>
+  `task_goal_grid_link_${String(index + 1).padStart(2, '0')}`
+);
+
 const assistantAutopilotGoal = {
   id: 'goal_site_grid',
   title: 'Grid rebuild',
@@ -300,7 +304,7 @@ const assistantAutopilotGoal = {
   autopilot: {
     status: 'blocked',
     budget_tasks: -1,
-    tasks_started: 2,
+    tasks_started: 161,
     current_task_id: 'task_goal_grid_core',
     current_phase_id: 'phase_02_core',
     last_decision_id: 'gdec_goal_grid_next'
@@ -330,7 +334,7 @@ const assistantAutopilotGoal = {
     created_at: now,
     updated_at: now
   },
-  linked_tasks: ['task_goal_grid_foundation', 'task_goal_grid_core'],
+  linked_tasks: retainedGridTaskLinks,
   progress_summary: 'Foundation complete; core rendering is blocked on package validation.',
   created_by: 'operator',
   created_at: now,
@@ -1201,6 +1205,14 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     await expect(selectedGoalRecord).toContainText('Supervisor plan for Grid rebuild');
     await expect(selectedGoalRecord.getByLabel('Goal blocker trace')).toContainText('Blocked by task');
     await expect(selectedGoalRecord.getByRole('link', { name: 'Open blocking task' })).toHaveAttribute(
+      'href',
+      '/tasks?task=task_goal_grid_core'
+    );
+    await expect(selectedGoalRecord).toContainText('Tasks started');
+    await expect(selectedGoalRecord).toContainText('161');
+    const linkedTasks = selectedGoalRecord.getByLabel('Goal linked tasks');
+    await expect(linkedTasks).toContainText('64 retained links');
+    await expect(linkedTasks.getByRole('link').first()).toHaveAttribute(
       'href',
       '/tasks?task=task_goal_grid_core'
     );

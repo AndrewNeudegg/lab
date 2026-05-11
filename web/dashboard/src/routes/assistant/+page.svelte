@@ -26,10 +26,13 @@
     assistantGoalAutopilotStatusLabel,
     assistantGoalAutopilotTone,
     assistantGoalExecutionLabel,
+    assistantGoalLinkedTaskSummary,
     assistantGoalKindLabel,
     assistantGoalKindShortLabel,
     assistantGoalStatusLabel,
     assistantGoalStatusTone,
+    assistantGoalTaskMetric,
+    assistantGoalVisibleTaskIds,
     assistantRouteLabel,
     assistantRunActionCount,
     assistantRunActionStatusLabel,
@@ -2062,8 +2065,8 @@
               <dd>{formatAssistantTime(selectedGoal.next_check_at) || 'due'}</dd>
             </div>
             <div>
-              <dt>Tasks</dt>
-              <dd>{selectedGoal.linked_tasks?.length || 0}</dd>
+              <dt>{assistantGoalTaskMetric(selectedGoal).label}</dt>
+              <dd>{assistantGoalTaskMetric(selectedGoal).value}</dd>
             </div>
             <div>
               <dt>Watches</dt>
@@ -2268,17 +2271,17 @@
             </section>
           </div>
 
-          {#if selectedGoal.linked_tasks?.length}
+          {#if assistantGoalVisibleTaskIds(selectedGoal).length}
             <section class="detail-section" aria-label="Goal linked tasks">
               <header class="section-heading">
                 <div>
                   <p>Execution</p>
                   <h3>Linked tasks</h3>
                 </div>
-                <span>{plural(selectedGoal.linked_tasks.length, 'task')}</span>
+                <span>{assistantGoalLinkedTaskSummary(selectedGoal)}</span>
               </header>
               <div class="task-link-list">
-                {#each selectedGoal.linked_tasks.slice(0, 8) as taskId}
+                {#each assistantGoalVisibleTaskIds(selectedGoal) as taskId}
                   <a href={`/tasks?task=${taskId}`}>
                     <strong>{shortAssistantId(taskId)}</strong>
                     <span>{selectedGoal.execution_mode === 'autopilot' ? 'Autopilot task' : 'Guided task'}</span>

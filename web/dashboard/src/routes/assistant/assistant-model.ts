@@ -300,6 +300,60 @@ export const assistantGoalAutopilotTone = (status = '') => {
   }
 };
 
+const nonNegativeInteger = (value: number | undefined) => {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(value || 0));
+};
+
+const goalLinkedTaskCount = (goal: AssistantGoal | undefined) => goal?.linked_tasks?.length || 0;
+
+export const assistantGoalTaskMetric = (goal: AssistantGoal | undefined) => {
+  const linkedTasks = goalLinkedTaskCount(goal);
+  if (goal?.execution_mode === 'autopilot' || goal?.autopilot) {
+    const started = goal?.autopilot?.tasks_started;
+    return {
+      label: 'Tasks started',
+      value: String(started === undefined ? linkedTasks : nonNegativeInteger(started))
+    };
+  }
+  return {
+    label: 'Linked tasks',
+    value: String(linkedTasks)
+  };
+};
+
+export const assistantGoalLinkedTaskSummary = (goal: AssistantGoal | undefined) => {
+  const linkedTasks = goalLinkedTaskCount(goal);
+  const startedTasks = nonNegativeInteger(goal?.autopilot?.tasks_started);
+  if (startedTasks > linkedTasks) {
+    return `${linkedTasks} retained ${linkedTasks === 1 ? 'link' : 'links'}`;
+  }
+  return `${linkedTasks} linked ${linkedTasks === 1 ? 'task' : 'tasks'}`;
+};
+
+export const assistantGoalVisibleTaskIds = (goal: AssistantGoal | undefined, limit = 8) => {
+  if (!goal || limit <= 0) {
+    return [];
+  }
+  const candidates = [goal.autopilot?.current_task_id || '', ...(goal.linked_tasks || []).slice().reverse()];
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const value of candidates) {
+    const taskId = value.trim();
+    if (!taskId || seen.has(taskId)) {
+      continue;
+    }
+    seen.add(taskId);
+    ids.push(taskId);
+    if (ids.length >= limit) {
+      break;
+    }
+  }
+  return ids;
+};
+
 export const activeAssistantGoals = (goals: AssistantGoal[]) =>
   goals.filter((goal) => goal.status === 'active' || goal.status === 'blocked');
 

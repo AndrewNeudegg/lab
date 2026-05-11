@@ -877,7 +877,7 @@ func NormalizeGoal(goal Goal) Goal {
 	goal.Cadence = strings.TrimSpace(goal.Cadence)
 	goal.SuccessCriteria = normalizeRunStringList(goal.SuccessCriteria, 16)
 	goal.Constraints = normalizeRunStringList(goal.Constraints, 16)
-	goal.LinkedTasks = normalizeRunStringList(goal.LinkedTasks, 64)
+	goal.LinkedTasks = normalizeRunRecentStringList(goal.LinkedTasks, 64)
 	goal.LinkedWorkflows = normalizeRunStringList(goal.LinkedWorkflows, 64)
 	goal.ProgressSummary = strings.TrimSpace(goal.ProgressSummary)
 	goal.OpenQuestions = normalizeRunStringList(goal.OpenQuestions, 16)
@@ -1174,6 +1174,29 @@ func NormalizeGoalAssessment(assessment GoalAssessment) GoalAssessment {
 		}
 	}
 	return assessment
+}
+
+func normalizeRunRecentStringList(values []string, limit int) []string {
+	if len(values) == 0 || limit <= 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, assistantMinInt(len(values), limit))
+	for i := len(values) - 1; i >= 0; i-- {
+		value := strings.TrimSpace(values[i])
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+		if len(out) >= limit {
+			break
+		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
 }
 
 func GoalToSnapshotRef(goal Goal, now time.Time) GoalSnapshotRef {

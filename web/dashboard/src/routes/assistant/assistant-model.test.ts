@@ -16,8 +16,11 @@ import {
   assistantGoalExecutionLabel,
   assistantGoalKindLabel,
   assistantGoalKindShortLabel,
+  assistantGoalLinkedTaskSummary,
   assistantGoalStatusLabel,
   assistantGoalStatusTone,
+  assistantGoalTaskMetric,
+  assistantGoalVisibleTaskIds,
   assistantRunActionCount,
   assistantRunActionStatusLabel,
   assistantRunActionStatusTone,
@@ -194,5 +197,45 @@ describe('assistant model', () => {
     ]);
     expect(selectAssistantGoal(goals, 'goal_future')?.id).toBe('goal_future');
     expect(selectAssistantGoal(goals, 'missing')).toBeUndefined();
+  });
+
+  test('separates Goal task totals from retained task links', () => {
+    const retainedLinks = Array.from({ length: 64 }, (_, index) => `task_${String(index + 1).padStart(2, '0')}`);
+    const autopilotGoal: AssistantGoal = {
+      ...goal('goal_autopilot'),
+      execution_mode: 'autopilot',
+      linked_tasks: retainedLinks,
+      autopilot: {
+        status: 'running',
+        budget_tasks: 500,
+        tasks_started: 161,
+        current_task_id: 'task_current'
+      }
+    };
+    const guidedGoal: AssistantGoal = {
+      ...goal('goal_guided'),
+      execution_mode: 'guided',
+      linked_tasks: ['task_first', 'task_second']
+    };
+
+    expect(assistantGoalTaskMetric(autopilotGoal)).toEqual({
+      label: 'Tasks started',
+      value: '161'
+    });
+    expect(assistantGoalLinkedTaskSummary(autopilotGoal)).toBe('64 retained links');
+    expect(assistantGoalVisibleTaskIds(autopilotGoal, 3)).toEqual([
+      'task_current',
+      'task_64',
+      'task_63'
+    ]);
+    expect(assistantGoalVisibleTaskIds({ ...autopilotGoal, autopilot: { current_task_id: 'task_64' } }, 2)).toEqual([
+      'task_64',
+      'task_63'
+    ]);
+    expect(assistantGoalTaskMetric(guidedGoal)).toEqual({
+      label: 'Linked tasks',
+      value: '2'
+    });
+    expect(assistantGoalLinkedTaskSummary(guidedGoal)).toBe('2 linked tasks');
   });
 });

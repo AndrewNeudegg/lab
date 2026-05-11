@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -123,6 +124,40 @@ func TestNormalizeGoalAutopilotDefaults(t *testing.T) {
 	guided = NormalizeGoal(guided)
 	if guided.Autopilot != nil {
 		t.Fatalf("guided autopilot = %#v, want nil", guided.Autopilot)
+	}
+}
+
+func TestNormalizeGoalKeepsRecentLinkedTasks(t *testing.T) {
+	linkedTasks := make([]string, 0, 65)
+	for i := 1; i <= 64; i++ {
+		linkedTasks = append(linkedTasks, fmt.Sprintf("task_%02d", i))
+	}
+	linkedTasks = append(linkedTasks, "task_65")
+
+	goal := NormalizeGoal(Goal{
+		ID:          "goal_build",
+		Title:       "Build feature",
+		LinkedTasks: linkedTasks,
+		CreatedAt:   time.Date(2026, 5, 7, 8, 0, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 5, 7, 8, 0, 0, 0, time.UTC),
+	})
+
+	if len(goal.LinkedTasks) != 64 {
+		t.Fatalf("linked tasks count = %d, want 64", len(goal.LinkedTasks))
+	}
+	if goal.LinkedTasks[0] != "task_02" || goal.LinkedTasks[63] != "task_65" {
+		t.Fatalf("linked tasks bounds = %s..%s, want task_02..task_65", goal.LinkedTasks[0], goal.LinkedTasks[63])
+	}
+
+	goal = NormalizeGoal(Goal{
+		ID:          "goal_build",
+		Title:       "Build feature",
+		LinkedTasks: []string{" task_a ", "task_b", "task_a", "task_c"},
+		CreatedAt:   time.Date(2026, 5, 7, 8, 0, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 5, 7, 8, 0, 0, 0, time.UTC),
+	})
+	if got := goal.LinkedTasks; len(got) != 3 || got[0] != "task_b" || got[1] != "task_a" || got[2] != "task_c" {
+		t.Fatalf("deduped recent linked tasks = %#v, want task_b/task_a/task_c", got)
 	}
 }
 

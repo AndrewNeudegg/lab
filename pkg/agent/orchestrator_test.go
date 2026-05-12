@@ -2479,6 +2479,50 @@ func TestRemoteTaskRetryAndReopenKeepSameRemoteTarget(t *testing.T) {
 	if reopened.Status != taskstore.StatusQueued || reopened.AssignedTo != "remote:desk" || reopened.Target == nil || reopened.Target.ProjectID != "remote1" {
 		t.Fatalf("reopened = %#v, want same remote project target", reopened)
 	}
+	reopenAssignment, err := orch.ClaimRemoteTask(context.Background(), agent, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopenAssignment == nil || !strings.Contains(reopenAssignment.Instruction, "Reopen instruction from operator:\ncross-repo API changed") {
+		t.Fatalf("reopen assignment = %#v, want operator reopen instruction", reopenAssignment)
+	}
+}
+
+func TestGoalBlockerTraceForTaskHidesStaleBlockingTaskTraceAfterRerun(t *testing.T) {
+	createdAt := time.Date(2026, 5, 12, 3, 43, 4, 0, time.UTC)
+	trace := &assistantstore.GoalBlockerTrace{
+		Status:         assistantstore.GoalBlockerTraceStatusBlocked,
+		SourceType:     assistantstore.GoalBlockerSourceTaskReport,
+		SourceID:       "greport_task_1",
+		GoalID:         "goal_1",
+		BlockingTaskID: "task_1",
+		Reason:         "Task asked an old operator question.",
+		CreatedAt:      &createdAt,
+	}
+
+	rerun := taskstore.Task{
+		ID:        "task_1",
+		Status:    taskstore.StatusReadyForReview,
+		UpdatedAt: createdAt.Add(time.Hour),
+	}
+	if got := goalBlockerTraceForTask(rerun, trace); got != nil {
+		t.Fatalf("trace = %#v, want nil after blocking task reran past trace", got)
+	}
+
+	blocked := rerun
+	blocked.Status = taskstore.StatusBlocked
+	if got := goalBlockerTraceForTask(blocked, trace); got == nil {
+		t.Fatal("trace = nil, want blocked task trace to remain visible")
+	}
+
+	related := taskstore.Task{
+		ID:        "task_2",
+		Status:    taskstore.StatusReadyForReview,
+		UpdatedAt: createdAt.Add(time.Hour),
+	}
+	if got := goalBlockerTraceForTask(related, trace); got == nil {
+		t.Fatal("trace = nil, want related Goal tasks to keep pointing at the blocking task")
+	}
 }
 
 func TestAcceptingGraphPhaseReleasesNextChild(t *testing.T) {

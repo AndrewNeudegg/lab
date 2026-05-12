@@ -129,7 +129,33 @@ func (o *Orchestrator) GoalBlockerTraceForTask(task taskstore.Task) (*assistants
 	if err != nil {
 		return nil, err
 	}
-	return goal.BlockerTrace, nil
+	return goalBlockerTraceForTask(task, goal.BlockerTrace), nil
+}
+
+func goalBlockerTraceForTask(task taskstore.Task, trace *assistantstore.GoalBlockerTrace) *assistantstore.GoalBlockerTrace {
+	trace = assistantstore.NormalizeGoalBlockerTrace(trace)
+	if trace == nil {
+		return nil
+	}
+	if trace.BlockingTaskID != task.ID {
+		return trace
+	}
+	if trace.CreatedAt == nil || task.UpdatedAt.IsZero() || !task.UpdatedAt.After(trace.CreatedAt.UTC()) {
+		return trace
+	}
+	if goalBlockingTaskStatusStillCurrent(task.Status) {
+		return trace
+	}
+	return nil
+}
+
+func goalBlockingTaskStatusStillCurrent(status string) bool {
+	switch status {
+	case taskstore.StatusBlocked, taskstore.StatusTimedOut, taskstore.StatusFailed, taskstore.StatusConflictResolution:
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) ensureGoalPlan(store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.Goal, error) {

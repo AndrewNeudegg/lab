@@ -221,7 +221,7 @@ Remote tasks do not. For a remote task:
 3. The remote agent reports output, validation, and an immutable task-scoped diff snapshot back to `homelabd`.
 4. `review <task>` runs a remote-result review and then moves the task to `awaiting_verification` only when there is independent evidence to inspect. For Goal-linked tasks, the reviewer compares the captured diff, changed files, validation evidence, and selected Goal phase before counting the work as progress. If the remote worker reports `No change required: <reason>` and no diff is available, `homelabd` records `no_change_required` instead so the operator can accept the no-change conclusion or reopen the task with corrected instructions. If there is no diff, missing validation, or a diff that does not align with the Goal, review blocks the task for rerun or reopening.
 5. Human verification happens against the named remote machine/directory.
-6. `accept <task>` closes it, or `reopen <task> <reason>` queues more remote work.
+6. `accept <task>` closes it, or `reopen <task> <reason>` queues more remote work. Reopen reasons are operator instructions: the next remote assignment includes the latest `Reopen instruction from operator` block before the worker starts, matching `task retry` behaviour.
 
 No local merge approval is created for remote tasks because the control plane cannot prove that the remote checkout corresponds to its own repo.
 

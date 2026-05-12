@@ -1810,7 +1810,7 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			_ = o.tasks.Save(t)
 			return nil, fmt.Errorf("remote task %s target is invalid: %w", t.ID, err)
 		}
-		retryInstruction := latestRemoteRetryInstruction(t.Result)
+		operatorInstruction := latestRemoteAssignmentInstruction(t.Result)
 		if backend == "" {
 			backend = firstNonEmptyString(target.Backend, "codex")
 		}
@@ -1832,8 +1832,8 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			"backend":  backend,
 		})})
 		instruction := defaultRemoteAgentInstruction(t, agent)
-		if retryInstruction != "" {
-			instruction = appendRemoteRetryInstruction(instruction, retryInstruction)
+		if operatorInstruction.Text != "" {
+			instruction = appendRemoteOperatorInstruction(instruction, operatorInstruction.Heading, operatorInstruction.Text)
 		}
 		return &remoteagent.Assignment{
 			TaskID:      t.ID,
@@ -6023,25 +6023,60 @@ func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) st
 	}, "\n")
 }
 
-const remoteRetryQueuedPrefix = "remote retry queued:"
+const (
+	remoteRetryQueuedPrefix     = "remote retry queued:"
+	remoteReopenedByHumanPrefix = "reopened by human:"
+	remoteReopenedByHumanLine   = "reopened by human"
+)
 
-func latestRemoteRetryInstruction(result string) string {
+type remoteAssignmentInstruction struct {
+	Heading string
+	Text    string
+}
+
+func latestRemoteAssignmentInstruction(result string) remoteAssignmentInstruction {
 	lines := strings.Split(strings.ReplaceAll(result, "\r\n", "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if instruction, ok := strings.CutPrefix(line, remoteRetryQueuedPrefix); ok {
-			return strings.TrimSpace(instruction)
+			instruction = strings.TrimSpace(instruction)
+			if instruction != "" {
+				return remoteAssignmentInstruction{
+					Heading: "Retry instruction from operator",
+					Text:    instruction,
+				}
+			}
+		}
+		if instruction, ok := strings.CutPrefix(line, remoteReopenedByHumanPrefix); ok {
+			instruction = strings.TrimSpace(instruction)
+			if instruction == "" {
+				instruction = "continue the reopened task"
+			}
+			return remoteAssignmentInstruction{
+				Heading: "Reopen instruction from operator",
+				Text:    instruction,
+			}
+		}
+		if line == remoteReopenedByHumanLine {
+			return remoteAssignmentInstruction{
+				Heading: "Reopen instruction from operator",
+				Text:    "continue the reopened task",
+			}
 		}
 	}
-	return ""
+	return remoteAssignmentInstruction{}
 }
 
-func appendRemoteRetryInstruction(instruction, retryInstruction string) string {
-	retryInstruction = strings.TrimSpace(retryInstruction)
-	if retryInstruction == "" {
+func appendRemoteOperatorInstruction(instruction, heading, operatorInstruction string) string {
+	heading = strings.TrimSpace(heading)
+	if heading == "" {
+		heading = "Operator instruction"
+	}
+	operatorInstruction = strings.TrimSpace(operatorInstruction)
+	if operatorInstruction == "" {
 		return strings.TrimSpace(instruction)
 	}
-	return strings.TrimSpace(instruction) + "\n\nRetry instruction from operator:\n" + retryInstruction
+	return strings.TrimSpace(instruction) + "\n\n" + heading + ":\n" + operatorInstruction
 }
 
 func (o *Orchestrator) showTask(taskID string) (string, error) {

@@ -66,6 +66,9 @@ const blockerTask = {
     operator_action: 'Complete the missing validation or accept that it is not required, then resume Autopilot.',
     source_url: '/assistant?goal=goal_ui_quality',
     blocking_task_url: `/tasks?task=${blockerTaskID}`,
+    questions: [
+      'Should the supervisor accept the current evidence or require an independent comparison?'
+    ],
     blockers: ['Browser validation is required before the Goal can resume.'],
     follow_ups: ['Run the task-page browser UAT and attach the result.'],
     created_at: now
@@ -150,6 +153,14 @@ const mockTaskApis = async (page: Page, taskItems = [task]) => {
       }
     });
   });
+  await page.route(/\/api\/tasks\/[^/]+\/reopen$/, async (route) => {
+    const body = route.request().postDataJSON() as { reason?: string };
+    await route.fulfill({
+      json: {
+        reply: `Reopened with answer: ${body.reason || 'missing reason'}`
+      }
+    });
+  });
   await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
@@ -231,11 +242,13 @@ for (const viewport of [
       await expect(blockerTrace).toContainText('Decide whether to resume the Goal');
       await expect(blockerTrace).toContainText('Task block111 needs validation evidence');
       await expect(blockerTrace).toContainText('Complete the missing validation');
+      await expect(blockerTrace.getByRole('button', { name: /Accept current evidence/ })).toBeVisible();
+      await expect(blockerTrace.getByRole('button', { name: /Not acceptable: require more work/ })).toBeVisible();
+      await expect(blockerTrace.getByRole('button', { name: /Answer another way/ })).toBeVisible();
       await expect(blockerTrace.getByRole('link', { name: 'Open Goal' })).toHaveAttribute(
         'href',
         '/assistant?goal=goal_ui_quality'
       );
-      await expect(blockerTrace.getByRole('button', { name: 'Resume Autopilot' })).toBeVisible();
       await expect(blockerTrace.getByRole('button', { name: 'Check Goal now' })).toBeVisible();
 
       await expectNoAxeViolations(page);
@@ -260,10 +273,34 @@ for (const viewport of [
       await expect(page.getByRole('heading', { name: 'Validate Goal blocker copy' })).toBeVisible();
       await expect(blockerTrace).toContainText('Decide whether to resume the Goal');
 
-      await blockerTrace.getByRole('button', { name: 'Resume Autopilot' }).click();
+      await blockerTrace.getByRole('button', { name: /Accept current evidence/ }).click();
+      await expect(blockerTrace.getByLabel('Goal blocker answer')).toContainText('Accept current evidence');
+      await blockerTrace.getByRole('button', { name: 'Accept and resume' }).click();
       await expect(
         page.getByLabel('Selected task record').getByText('Goal resume requested')
       ).toBeVisible();
+    });
+
+    test('Goal blocker answer can reject the current evidence with a typed instruction', async ({
+      page
+    }) => {
+      await mockTaskApis(page, [blockerTask]);
+      await page.goto(`/tasks?task=${blockerTaskID}`);
+      const blockerTrace = page.getByLabel('Goal blocker trace');
+      await blockerTrace.getByRole('button', { name: /Not acceptable: require more work/ }).click();
+      const answer = blockerTrace.getByLabel('Goal blocker answer');
+      await expect(answer).toContainText('Not acceptable: require more work');
+      await expect(answer.getByLabel('Instruction for the next run')).toHaveValue(/Not acceptable\./);
+      await answer.getByRole('button', { name: 'Reopen with this answer' }).click();
+      await expect(
+        page.getByLabel('Selected task record').getByText('Task reopened with answer')
+      ).toBeVisible();
+
+      await blockerTrace.getByRole('button', { name: /Answer another way/ }).click();
+      await blockerTrace
+        .getByLabel('Instruction for the next run')
+        .fill('Compare against the licensed AG Grid reference fixture before closing Phase 04.');
+      await expect(blockerTrace.getByRole('button', { name: 'Reopen with custom answer' })).toBeEnabled();
     });
   });
 }

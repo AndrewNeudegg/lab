@@ -50,6 +50,8 @@
   import {
     goalBlockerFlow,
     taskIsGoalBlocker,
+    type GoalBlockerDecisionChoice,
+    type GoalBlockerDecisionChoiceID,
     type GoalBlockerFlow
   } from './blocker-flow';
   import {
@@ -178,6 +180,10 @@
   let currentSecondaryOperations: TaskOperation[] = [];
   let currentPendingApproval: HomelabdApproval | undefined;
   let goalBlockerActionLoading = '';
+  let goalBlockerDecisionTaskId = '';
+  let goalBlockerDecisionChoiceId: GoalBlockerDecisionChoiceID | '' = '';
+  let goalBlockerReopenInstruction = '';
+  let currentGoalBlockerDecisionChoice: GoalBlockerDecisionChoice | undefined;
   let syncIndicator = taskSyncIndicatorState({
     refreshing,
     lastRefresh,
@@ -490,6 +496,22 @@
     : undefined;
   $: currentGoalBlockerTrace = taskGoalBlockerTrace(currentTask);
   $: currentGoalBlockerFlow = goalBlockerFlow(currentTask);
+  $: if ((currentTask?.id || '') !== goalBlockerDecisionTaskId) {
+    goalBlockerDecisionTaskId = currentTask?.id || '';
+    goalBlockerDecisionChoiceId = '';
+    goalBlockerReopenInstruction = '';
+  }
+  $: currentGoalBlockerDecisionChoice = currentGoalBlockerFlow?.decisionChoices.find(
+    (choice) => choice.id === goalBlockerDecisionChoiceId
+  );
+  $: if (
+    goalBlockerDecisionChoiceId &&
+    currentGoalBlockerFlow &&
+    !currentGoalBlockerFlow.decisionChoices.some((choice) => choice.id === goalBlockerDecisionChoiceId)
+  ) {
+    goalBlockerDecisionChoiceId = '';
+    goalBlockerReopenInstruction = '';
+  }
   $: currentTaskEvents = taskQueueView.currentTaskEvents;
   $: currentTaskRuns = currentTask
     ? buildWorkerTraceRuns(currentTaskEvents, taskRuns[currentTask.id] || [])
@@ -1390,6 +1412,48 @@
     }
   };
 
+  const selectGoalBlockerDecisionChoice = (choice: GoalBlockerDecisionChoice) => {
+    goalBlockerDecisionChoiceId = choice.id;
+    goalBlockerReopenInstruction = choice.kind === 'reopen' ? choice.defaultInstruction || '' : '';
+  };
+
+  const performGoalBlockerDecisionChoice = async () => {
+    const choice = currentGoalBlockerDecisionChoice;
+    const taskId = currentTask?.id || '';
+    if (!choice || !taskId || goalBlockerActionLoading) {
+      return;
+    }
+
+    if (choice.kind === 'resume') {
+      await performGoalBlockerAction('resume');
+      return;
+    }
+
+    const reason = goalBlockerReopenInstruction.trim();
+    if (!reason) {
+      setNotice('error', 'Answer required', 'Type the decision or missing requirement before reopening the task.');
+      return;
+    }
+
+    goalBlockerActionLoading = 'reopen';
+    clearNotice();
+    try {
+      const response = await client.reopenTask(taskId, { reason });
+      setNotice('success', 'Task reopened with answer', response.reply || 'The blocker answer was sent.');
+      goalBlockerDecisionChoiceId = '';
+      goalBlockerReopenInstruction = '';
+      await refreshState();
+      await refreshSelectedTaskDetails(taskId, {
+        force: true,
+        task: tasks.find((task) => task.id === taskId)
+      });
+    } catch (err) {
+      setNotice('error', 'Reopen failed', errorMessage(err, 'Unable to send the blocker answer.'));
+    } finally {
+      goalBlockerActionLoading = '';
+    }
+  };
+
   const performPrimaryAction = () => {
     if (currentPrimaryAction.type === 'task') {
       void performTaskOperation(currentPrimaryAction.operation);
@@ -1837,7 +1901,7 @@
               </div>
             {/if}
 
-            {#if currentTask.status === 'awaiting_verification' || currentSecondaryOperations.includes('reopen')}
+            {#if currentTask.status === 'awaiting_verification' || currentSecondaryOperations.includes('reopen') || (currentPrimaryAction.type === 'task' && currentPrimaryAction.operation === 'reopen')}
               <div class="action-form" aria-label="Reopen reason">
                 <label>
                   <span>Reopen reason</span>
@@ -1958,6 +2022,58 @@
                       <strong>{currentGoalBlockerFlow.decisionLabel}</strong>
                       <p>{currentGoalBlockerFlow.decisionDetail}</p>
                     </div>
+                    {#if currentGoalBlockerFlow.decisionChoices.length}
+                      <div class="goal-blocker-choice-panel" aria-label="Goal blocker decision choices">
+                        <div class="goal-blocker-choice-grid">
+                          {#each currentGoalBlockerFlow.decisionChoices as choice}
+                            <button
+                              type="button"
+                              class:selected={goalBlockerDecisionChoiceId === choice.id}
+                              aria-pressed={goalBlockerDecisionChoiceId === choice.id}
+                              disabled={goalBlockerActionLoading !== ''}
+                              on:click={() => selectGoalBlockerDecisionChoice(choice)}
+                            >
+                              <span>{choice.title}</span>
+                              <small>{choice.detail}</small>
+                            </button>
+                          {/each}
+                        </div>
+                        {#if currentGoalBlockerDecisionChoice}
+                          <div class="goal-blocker-answer" aria-label="Goal blocker answer">
+                            <div>
+                              <span>Selected answer</span>
+                              <strong>{currentGoalBlockerDecisionChoice.title}</strong>
+                              <p>{currentGoalBlockerDecisionChoice.detail}</p>
+                            </div>
+                            {#if currentGoalBlockerDecisionChoice.kind !== 'resume'}
+                              <label>
+                                <span>Instruction for the next run</span>
+                                <textarea
+                                  rows="4"
+                                  bind:value={goalBlockerReopenInstruction}
+                                  placeholder="Describe what is missing before this Goal can continue"
+                                  disabled={goalBlockerActionLoading !== ''}
+                                ></textarea>
+                              </label>
+                            {/if}
+                            <button
+                              type="button"
+                              class:goal-primary-action={currentGoalBlockerDecisionChoice.kind === 'resume'}
+                              disabled={goalBlockerActionLoading !== '' ||
+                                (currentGoalBlockerDecisionChoice.kind !== 'resume' &&
+                                  !goalBlockerReopenInstruction.trim())}
+                              on:click={() => void performGoalBlockerDecisionChoice()}
+                            >
+                              {goalBlockerActionLoading === 'resume' && currentGoalBlockerDecisionChoice.kind === 'resume'
+                                ? 'Resuming'
+                                : goalBlockerActionLoading === 'reopen' && currentGoalBlockerDecisionChoice.kind !== 'resume'
+                                  ? 'Reopening'
+                                  : currentGoalBlockerDecisionChoice.actionLabel}
+                            </button>
+                          </div>
+                        {/if}
+                      </div>
+                    {/if}
                   {/if}
                   {#if taskGoalBlockerEvidence(currentTask).length}
                     <ul class="goal-blocker-list" aria-label="Goal blocker evidence">
@@ -1973,7 +2089,7 @@
                     {#if currentGoalBlockerTrace.blocking_task_url && currentGoalBlockerFlow?.showBlockingTaskLink}
                       <a href={currentGoalBlockerTrace.blocking_task_url}>Open blocking task</a>
                     {/if}
-                    {#if currentGoalBlockerFlow?.showResumeGoalAction}
+                    {#if currentGoalBlockerFlow?.showResumeGoalAction && !currentGoalBlockerFlow.decisionChoices.length}
                       <button
                         type="button"
                         class="goal-primary-action"
@@ -3288,6 +3404,38 @@
     background: rgb(154 52 18 / 0.3);
   }
 
+  :global(html[data-theme='dark'] .goal-blocker-choice-grid button),
+  :global(html[data-theme='dark'] .goal-blocker-answer) {
+    color: #fed7aa;
+    border-color: rgb(251 191 36 / 0.45);
+    background: rgb(154 52 18 / 0.22);
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-choice-grid button:hover),
+  :global(html[data-theme='dark'] .goal-blocker-choice-grid button:focus-visible),
+  :global(html[data-theme='dark'] .goal-blocker-choice-grid button.selected) {
+    border-color: #fbbf24;
+    background: rgb(154 52 18 / 0.42);
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-choice-grid span),
+  :global(html[data-theme='dark'] .goal-blocker-choice-grid small),
+  :global(html[data-theme='dark'] .goal-blocker-answer label span) {
+    color: #fed7aa;
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-answer button) {
+    color: #fed7aa;
+    border-color: rgb(251 191 36 / 0.55);
+    background: rgb(154 52 18 / 0.45);
+  }
+
+  :global(html[data-theme='dark'] .goal-blocker-answer .goal-primary-action) {
+    color: #111827;
+    border-color: #fbbf24;
+    background: #fbbf24;
+  }
+
   :global(html[data-theme='dark'] .goal-blocker-meta div) {
     border-color: rgb(251 191 36 / 0.35);
     background: rgb(154 52 18 / 0.22);
@@ -3889,6 +4037,100 @@
 
   .goal-blocker-decision p {
     overflow-wrap: anywhere;
+  }
+
+  .goal-blocker-choice-panel {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .goal-blocker-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+
+  .goal-blocker-choice-grid button {
+    display: grid;
+    gap: 0.3rem;
+    min-height: 5.3rem;
+    padding: 0.7rem;
+    border: 1px solid #fb923c;
+    border-radius: 0.7rem;
+    color: #7c2d12;
+    background: #fff7ed;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .goal-blocker-choice-grid button:hover,
+  .goal-blocker-choice-grid button:focus-visible,
+  .goal-blocker-choice-grid button.selected {
+    border-color: #9a3412;
+    background: #ffedd5;
+  }
+
+  .goal-blocker-choice-grid button.selected {
+    box-shadow: 0 0 0 2px rgb(154 52 18 / 0.18);
+  }
+
+  .goal-blocker-choice-grid span {
+    color: #7c2d12;
+    font-size: 0.82rem;
+    font-weight: 850;
+    letter-spacing: 0;
+    line-height: 1.2;
+    text-transform: none;
+  }
+
+  .goal-blocker-choice-grid small {
+    color: #9a3412;
+    font-size: 0.74rem;
+    font-weight: 650;
+    letter-spacing: 0;
+    line-height: 1.3;
+    text-transform: none;
+  }
+
+  .goal-blocker-answer {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.75rem;
+    border: 1px solid #fdba74;
+    border-radius: 0.7rem;
+    background: #fff7ed;
+  }
+
+  .goal-blocker-answer > div {
+    display: grid;
+    gap: 0.2rem;
+  }
+
+  .goal-blocker-answer label {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .goal-blocker-answer textarea {
+    min-height: 7rem;
+    resize: vertical;
+  }
+
+  .goal-blocker-answer button {
+    justify-self: start;
+    min-height: 2.4rem;
+    padding: 0 0.8rem;
+    border: 1px solid #fb923c;
+    border-radius: 0.65rem;
+    color: #7c2d12;
+    background: #ffedd5;
+    font-weight: 850;
+  }
+
+  .goal-blocker-answer .goal-primary-action {
+    border-color: #9a3412;
+    color: #ffffff;
+    background: #9a3412;
   }
 
   .goal-blocker-list {
@@ -4827,6 +5069,19 @@
     .goal-blocker-decision {
       grid-template-columns: minmax(0, 1fr);
       align-items: start;
+    }
+
+    .goal-blocker-choice-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .goal-blocker-choice-grid button {
+      min-height: 4.6rem;
+    }
+
+    .goal-blocker-answer button {
+      width: 100%;
+      min-height: 2.7rem;
     }
 
     .goal-blocker-actions :is(a, button) {

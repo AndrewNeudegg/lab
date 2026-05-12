@@ -59,7 +59,14 @@ export const pendingApprovalForTask = (
 ) =>
   task
     ? approvals.find((approval) => approval.status === 'pending' && approval.task_id === task.id)
-    : undefined;
+      : undefined;
+
+const taskIsClosedGoalBlocker = (task: HomelabdTask) =>
+  Boolean(
+    task.id &&
+      task.goal_blocker_trace?.blocking_task_id === task.id &&
+      (task.status === 'done' || task.status === 'cancelled')
+  );
 
 export const primaryTaskAction = (
   task: HomelabdTask | undefined,
@@ -185,6 +192,14 @@ export const primaryTaskAction = (
       };
     case 'done':
     case 'cancelled':
+      if (taskIsClosedGoalBlocker(task)) {
+        return {
+          type: 'none',
+          label: 'Answer Goal blocker',
+          detail: 'Use the explicit blocker choices in the state panel to resume the Goal or reopen with instructions.',
+          tone: 'warning'
+        };
+      }
       return {
         type: 'task',
         operation: 'reopen',
@@ -234,7 +249,7 @@ export const secondaryTaskOperations = (
   if (!taskIsActive(task) && !taskIsTerminal(task) && task.status !== 'no_change_required') {
     operations.add('retry');
   }
-  if (taskIsTerminal(task)) {
+  if (taskIsTerminal(task) && !taskIsClosedGoalBlocker(task)) {
     operations.add('reopen');
   }
   if (!taskIsActive(task)) {

@@ -109,4 +109,23 @@ describe('task action model', () => {
     expect(secondaryTaskOperations(task('no_change_required'), [])).toEqual(['reopen', 'delete']);
     expect(secondaryTaskOperations(task('done'), [])).toContain('delete');
   });
+
+  test('routes closed Goal blockers to the explicit blocker answer flow', () => {
+    const blocker = {
+      ...task('done'),
+      id: 'task_blocker',
+      goal_blocker_trace: {
+        status: 'blocked',
+        goal_id: 'goal_grid',
+        blocking_task_id: 'task_blocker',
+        reason: 'The Goal needs an operator answer.'
+      }
+    };
+    const action = primaryTaskAction(blocker, []);
+
+    expect(action.type).toBe('none');
+    expect(action.label).toBe('Answer Goal blocker');
+    expect(secondaryTaskOperations(blocker, [])).toEqual(['delete']);
+    expect(taskHasDirectDecision(blocker, [])).toBe(false);
+  });
 });

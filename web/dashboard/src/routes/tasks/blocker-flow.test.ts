@@ -23,6 +23,7 @@ const trace = {
   phase_title: 'Ship virtual scrolling',
   blocking_task_id: 'task_blocker',
   reason: 'The task needs validation evidence before Autopilot can continue.',
+  questions: ['Should the supervisor accept the current evidence or require comparison work?'],
   source_url: '/assistant?goal=goal_grid',
   blocking_task_url: '/tasks?task=task_blocker'
 };
@@ -49,9 +50,16 @@ describe('Goal blocker task flow', () => {
     expect(flow?.role).toBe('blocking_task');
     expect(flow?.decisionLabel).toBe('Decide whether to resume the Goal');
     expect(flow?.decisionDetail).toContain('already closed');
-    expect(flow?.decisionDetail).toContain('reopen this task');
+    expect(flow?.decisionDetail).toContain('reopen the task');
     expect(flow?.showBlockingTaskLink).toBe(false);
-    expect(flow?.showResumeGoalAction).toBe(true);
+    expect(flow?.showResumeGoalAction).toBe(false);
+    expect(flow?.decisionChoices.map((choice) => choice.title)).toEqual([
+      'Accept current evidence',
+      'Not acceptable: require more work',
+      'Answer another way'
+    ]);
+    expect(flow?.decisionChoices[1].defaultInstruction).toContain('Not acceptable.');
+    expect(flow?.decisionChoices[1].defaultInstruction).toContain('comparison work');
   });
 
   test('keeps a blocked blocker focused on retry or reopen repair', () => {

@@ -130,13 +130,22 @@ func NormalizeGoalBlockerTrace(trace *GoalBlockerTrace) *GoalBlockerTrace {
 }
 
 func goalIsBlockedForTrace(goal Goal) bool {
+	if goal.Status == GoalStatusCompleted || goal.Status == GoalStatusArchived {
+		return false
+	}
+	if goal.Autopilot != nil && goal.Autopilot.Status == GoalAutopilotStatusCompleted {
+		return false
+	}
+	if goal.Plan != nil && NormalizeGoalPlan(*goal.Plan).Status == GoalPlanStatusCompleted {
+		return false
+	}
 	if len(goal.OpenQuestions) > 0 || goal.Status == GoalStatusBlocked {
 		return true
 	}
 	if goal.Autopilot != nil && goal.Autopilot.Status == GoalAutopilotStatusBlocked {
 		return true
 	}
-	return goal.Plan != nil && goal.Plan.Status == GoalPlanStatusBlocked
+	return goalPlanBlockedForTrace(goal)
 }
 
 func normalizeGoalDecisionsForTrace(decisions []GoalSupervisorDecision) []GoalSupervisorDecision {
@@ -158,13 +167,12 @@ func normalizeGoalReportsForTrace(reports []GoalTaskReport) []GoalTaskReport {
 }
 
 func latestBlockingGoalDecision(decisions []GoalSupervisorDecision) GoalSupervisorDecision {
-	for _, decision := range decisions {
-		if decision.Decision == GoalSupervisorDecisionPauseBlocked || decision.Decision == GoalSupervisorDecisionAskQuestion {
-			return decision
-		}
+	if len(decisions) == 0 {
+		return GoalSupervisorDecision{}
 	}
-	if len(decisions) > 0 {
-		return decisions[0]
+	latest := decisions[0]
+	if latest.Decision == GoalSupervisorDecisionPauseBlocked || latest.Decision == GoalSupervisorDecisionAskQuestion {
+		return latest
 	}
 	return GoalSupervisorDecision{}
 }
@@ -176,6 +184,9 @@ func blockingGoalReportForTrace(goal Goal, decision GoalSupervisorDecision, repo
 				return report
 			}
 		}
+	}
+	if !goalPlanBlockedForTrace(goal) {
+		return GoalTaskReport{}
 	}
 	currentPhaseID := ""
 	if goal.Plan != nil {
@@ -195,6 +206,13 @@ func blockingGoalReportForTrace(goal Goal, decision GoalSupervisorDecision, repo
 		}
 	}
 	return GoalTaskReport{}
+}
+
+func goalPlanBlockedForTrace(goal Goal) bool {
+	if goal.Plan == nil {
+		return false
+	}
+	return NormalizeGoalPlan(*goal.Plan).Status == GoalPlanStatusBlocked
 }
 
 func goalReportBlocksAutopilot(report GoalTaskReport) bool {

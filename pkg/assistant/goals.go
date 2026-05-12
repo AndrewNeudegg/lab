@@ -881,6 +881,9 @@ func NormalizeGoal(goal Goal) Goal {
 	goal.LinkedWorkflows = normalizeRunStringList(goal.LinkedWorkflows, 64)
 	goal.ProgressSummary = strings.TrimSpace(goal.ProgressSummary)
 	goal.OpenQuestions = normalizeRunStringList(goal.OpenQuestions, 16)
+	if goalClearsOpenQuestions(goal) {
+		goal.OpenQuestions = nil
+	}
 	goal.CreatedBy = strings.TrimSpace(goal.CreatedBy)
 	goal.CreatedAt = goal.CreatedAt.UTC()
 	goal.UpdatedAt = goal.UpdatedAt.UTC()
@@ -917,6 +920,16 @@ func NormalizeGoal(goal Goal) Goal {
 		}
 	}
 	return goal
+}
+
+func goalClearsOpenQuestions(goal Goal) bool {
+	if goal.Status == GoalStatusCompleted || goal.Status == GoalStatusArchived {
+		return true
+	}
+	if goal.Autopilot != nil && goal.Autopilot.Status == GoalAutopilotStatusCompleted {
+		return true
+	}
+	return goal.Plan != nil && NormalizeGoalPlan(*goal.Plan).Status == GoalPlanStatusCompleted
 }
 
 func NormalizeGoalAutopilot(autopilot *GoalAutopilot) GoalAutopilot {

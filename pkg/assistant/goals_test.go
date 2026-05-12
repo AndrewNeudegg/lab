@@ -127,6 +127,39 @@ func TestNormalizeGoalAutopilotDefaults(t *testing.T) {
 	}
 }
 
+func TestNormalizeGoalClearsQuestionsThatAreNoLongerOpen(t *testing.T) {
+	now := time.Date(2026, 5, 12, 19, 55, 0, 0, time.UTC)
+	goal := NormalizeGoal(Goal{
+		ID:            "goal_done",
+		Title:         "Done",
+		Status:        GoalStatusCompleted,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		OpenQuestions: []string{"old question"},
+		Autopilot:     &GoalAutopilot{Status: GoalAutopilotStatusCompleted},
+		Plan:          &GoalPlan{Status: GoalPlanStatusCompleted, CreatedAt: now, UpdatedAt: now},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	})
+	if len(goal.OpenQuestions) != 0 {
+		t.Fatalf("open questions = %#v, want none for completed Goal", goal.OpenQuestions)
+	}
+
+	blocked := NormalizeGoal(Goal{
+		ID:            "goal_blocked",
+		Title:         "Blocked",
+		Status:        GoalStatusBlocked,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		OpenQuestions: []string{"current question"},
+		Autopilot:     &GoalAutopilot{Status: GoalAutopilotStatusBlocked},
+		Plan:          &GoalPlan{Status: GoalPlanStatusBlocked, CreatedAt: now, UpdatedAt: now},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	})
+	if len(blocked.OpenQuestions) != 1 {
+		t.Fatalf("open questions = %#v, want current blocker question retained", blocked.OpenQuestions)
+	}
+}
+
 func TestNormalizeGoalKeepsRecentLinkedTasks(t *testing.T) {
 	linkedTasks := make([]string, 0, 65)
 	for i := 1; i <= 64; i++ {

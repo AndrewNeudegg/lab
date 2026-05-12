@@ -113,3 +113,101 @@ func TestDeriveGoalBlockerTraceReturnsNilForUnblockedGoal(t *testing.T) {
 		t.Fatalf("trace = %#v, want nil for unblocked Goal", trace)
 	}
 }
+
+func TestDeriveGoalBlockerTraceReturnsNilWhenCompletedGoalHasStaleQuestionsAndReports(t *testing.T) {
+	now := time.Date(2026, 5, 12, 19, 48, 0, 0, time.UTC)
+	goal := Goal{
+		ID:            "goal_1",
+		Status:        GoalStatusCompleted,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		OpenQuestions: []string{"Should older evidence be accepted?"},
+		Autopilot:     &GoalAutopilot{Status: GoalAutopilotStatusCompleted},
+		Plan: &GoalPlan{
+			Status: GoalPlanStatusCompleted,
+			Phases: []GoalPlanPhase{
+				{ID: "phase_03", Status: GoalPlanPhaseStatusCompleted},
+				{ID: "phase_04", Status: GoalPlanPhaseStatusCompleted},
+			},
+		},
+		UpdatedAt: now,
+	}
+	reports := []GoalTaskReport{
+		{
+			ID:             "greport_complete",
+			GoalID:         "goal_1",
+			TaskID:         "task_complete",
+			PhaseID:        "phase_04",
+			Summary:        "Goal is complete.",
+			GoalComplete:   true,
+			ReviewDecision: "verified_progress",
+			CreatedAt:      now,
+		},
+		{
+			ID:             "greport_old_blocker",
+			GoalID:         "goal_1",
+			TaskID:         "task_old",
+			PhaseID:        "phase_03",
+			Blockers:       []string{"npm was missing for an old dry-run."},
+			ReviewDecision: "blocked_with_progress",
+			CreatedAt:      now.Add(-48 * time.Hour),
+		},
+	}
+
+	trace := DeriveGoalBlockerTrace(goal, []GoalSupervisorDecision{
+		{
+			ID:        "gdec_complete",
+			GoalID:    "goal_1",
+			Decision:  GoalSupervisorDecisionMarkComplete,
+			CreatedAt: now,
+		},
+		{
+			ID:        "gdec_old_blocker",
+			GoalID:    "goal_1",
+			Decision:  GoalSupervisorDecisionPauseBlocked,
+			CreatedAt: now.Add(-48 * time.Hour),
+		},
+	}, reports)
+
+	if trace != nil {
+		t.Fatalf("trace = %#v, want nil because completed Goal supersedes stale blockers", trace)
+	}
+}
+
+func TestDeriveGoalBlockerTraceIgnoresHistoricalReportWhenPlanIsNotBlocked(t *testing.T) {
+	now := time.Date(2026, 5, 12, 19, 48, 0, 0, time.UTC)
+	goal := Goal{
+		ID:            "goal_1",
+		Status:        GoalStatusActive,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		Autopilot:     &GoalAutopilot{Status: GoalAutopilotStatusRunning},
+		Plan: &GoalPlan{
+			Status:         GoalPlanStatusActive,
+			CurrentPhaseID: "phase_04",
+			Phases: []GoalPlanPhase{
+				{ID: "phase_03", Status: GoalPlanPhaseStatusCompleted},
+				{ID: "phase_04", Status: GoalPlanPhaseStatusInProgress},
+			},
+		},
+		UpdatedAt: now,
+	}
+	reports := []GoalTaskReport{{
+		ID:             "greport_old_blocker",
+		GoalID:         "goal_1",
+		TaskID:         "task_old",
+		PhaseID:        "phase_03",
+		Blockers:       []string{"old blocker"},
+		ReviewDecision: "blocked_with_progress",
+		CreatedAt:      now.Add(-24 * time.Hour),
+	}}
+
+	trace := DeriveGoalBlockerTrace(goal, []GoalSupervisorDecision{{
+		ID:        "gdec_create_next",
+		GoalID:    "goal_1",
+		Decision:  GoalSupervisorDecisionCreateTask,
+		CreatedAt: now,
+	}}, reports)
+
+	if trace != nil {
+		t.Fatalf("trace = %#v, want nil because old report is not the current blocker", trace)
+	}
+}

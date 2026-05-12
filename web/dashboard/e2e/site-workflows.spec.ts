@@ -320,7 +320,21 @@ const assistantAutopilotGoal = {
         objective: 'Inspect the target repo and create the first usable foundation.',
         status: 'completed',
         task_ids: ['task_goal_grid_foundation'],
-        evidence: ['Foundation complete']
+        evidence: ['Foundation complete'],
+        milestones: [
+          {
+            id: 'phase_01_foundation_milestone_01_scope',
+            phase_id: 'phase_01_foundation',
+            title: 'Scope the slice',
+            objective: 'Feature matrix and repo baseline are documented.',
+            status: 'accepted',
+            task_ids: ['task_goal_grid_foundation'],
+            challenge_task_ids: ['task_goal_grid_foundation_challenge'],
+            claims: [{ claim: 'Foundation matrix exists', evidence: ['docs/feature-matrix.md'] }],
+            evidence: ['Foundation complete', 'Challenge passed'],
+            latest_challenge_id: 'gchallenge_foundation'
+          }
+        ]
       },
       {
         id: 'phase_02_core',
@@ -328,7 +342,59 @@ const assistantAutopilotGoal = {
         objective: 'Implement rendering, editing, and validation needed for end-to-end use.',
         status: 'blocked',
         depends_on: ['phase_01_foundation'],
-        task_ids: ['task_goal_grid_core']
+        task_ids: ['task_goal_grid_core'],
+        milestones: [
+          {
+            id: 'phase_02_core_milestone_01_build',
+            phase_id: 'phase_02_core',
+            title: 'Deliver editable rows',
+            objective: 'Rows render, edit, and validate with keyboard-accessible controls.',
+            status: 'blocked',
+            task_ids: ['task_goal_grid_core'],
+            claims: [{ claim: 'Editable row path exists', evidence: ['src/grid-core.ts', 'bun test'] }],
+            evidence: ['Core rendering made progress, but package validation is blocked.'],
+            gap_ids: ['ggap_keyboard']
+          }
+        ]
+      }
+    ],
+    gaps: [
+      {
+        id: 'ggap_keyboard',
+        phase_id: 'phase_02_core',
+        milestone_id: 'phase_02_core_milestone_01_build',
+        area: 'Keyboard validation',
+        claim: 'Keyboard support is not proven.',
+        severity: 'high',
+        evidence: 'npm pack --dry-run cannot run because npm is unavailable.',
+        suggested_task: 'Run package validation in a Nix shell with npm available.',
+        status: 'open',
+        source: 'challenge',
+        source_task_id: 'task_goal_grid_core_challenge'
+      }
+    ],
+    challenges: [
+      {
+        id: 'gchallenge_foundation',
+        task_id: 'task_goal_grid_foundation_challenge',
+        milestone_id: 'phase_01_foundation_milestone_01_scope',
+        verdict: 'passed',
+        summary: 'Foundation evidence is credible.',
+        evidence: ['Feature matrix found', 'Tests passed'],
+        claims_challenged: ['Foundation matrix exists'],
+        goal_complete: false,
+        created_at: now
+      },
+      {
+        id: 'gchallenge_core',
+        task_id: 'task_goal_grid_core_challenge',
+        milestone_id: 'phase_02_core_milestone_01_build',
+        verdict: 'failed',
+        summary: 'Keyboard/package validation is not proven.',
+        evidence: ['npm unavailable'],
+        claims_challenged: ['Editable row path exists'],
+        goal_complete: false,
+        created_at: now
       }
     ],
     created_at: now,
@@ -382,6 +448,8 @@ const assistantGoalTaskReport = {
   goal_id: assistantAutopilotGoal.id,
   task_id: 'task_goal_grid_foundation',
   phase_id: 'phase_01_foundation',
+  milestone_id: 'phase_01_foundation_milestone_01_scope',
+  task_type: 'build',
   title: 'Foundation task',
   status: 'done',
   summary: 'Foundation complete',
@@ -393,6 +461,7 @@ const assistantGoalTaskReport = {
   follow_ups: ['Build core rendering'],
   blockers: [],
   questions: [],
+  claims: [{ claim: 'Foundation matrix exists', evidence: ['docs/feature-matrix.md'] }],
   diff_files: 1,
   additions: 80,
   deletions: 0,
@@ -404,6 +473,8 @@ const assistantGoalBlockingTaskReport = {
   goal_id: assistantAutopilotGoal.id,
   task_id: 'task_goal_grid_core',
   phase_id: 'phase_02_core',
+  milestone_id: 'phase_02_core_milestone_01_build',
+  task_type: 'build',
   title: 'Core rendering task',
   status: 'done',
   summary: 'Core rendering made progress, but package validation is blocked.',
@@ -415,6 +486,8 @@ const assistantGoalBlockingTaskReport = {
   follow_ups: ['Run npm pack --dry-run in an environment with npm installed.'],
   blockers: ['npm pack --dry-run cannot run because npm is unavailable.'],
   questions: [],
+  claims: [{ claim: 'Editable row path exists', evidence: ['src/grid-core.ts', 'bun test'] }],
+  gap_ids: ['ggap_keyboard'],
   review_decision: 'blocked_with_progress',
   review_summary: 'Progress landed, but validation is incomplete.',
   diff_files: 1,
@@ -1217,6 +1290,11 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
       '/tasks?task=task_goal_grid_core'
     );
     await expect(selectedGoalRecord).toContainText('Build the core capability');
+    await expect(selectedGoalRecord).toContainText('Deliver editable rows');
+    await expect(selectedGoalRecord).toContainText('Challenge gaps');
+    await expect(selectedGoalRecord).toContainText('Keyboard validation');
+    await expect(selectedGoalRecord).toContainText('Challenges');
+    await expect(selectedGoalRecord).toContainText('Keyboard/package validation is not proven.');
     await expect(selectedGoalRecord).toContainText('Decision trail');
     await expect(selectedGoalRecord).toContainText('Foundation complete');
     await expect(selectedGoalRecord).toContainText('Build core rendering');

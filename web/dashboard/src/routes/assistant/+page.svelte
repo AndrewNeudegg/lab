@@ -10,6 +10,9 @@
     Navbar,
     type AssistantGoal,
     type AssistantGoalBlockerTrace,
+    type AssistantGoalChallenge,
+    type AssistantGoalGap,
+    type AssistantGoalMilestone,
     type AssistantGoalPlanPhase,
     type AssistantGoalSupervisorDecision,
     type AssistantGoalTaskReport,
@@ -64,6 +67,8 @@
   let selectedGoalTimeline: AssistantGoalTimeline | undefined;
   let selectedGoalPlan: AssistantGoal['plan'];
   let selectedGoalPlanPhases: AssistantGoalPlanPhase[] = [];
+  let selectedGoalPlanGaps: AssistantGoalGap[] = [];
+  let selectedGoalPlanChallenges: AssistantGoalChallenge[] = [];
   let selectedGoalBlockerTrace: AssistantGoalBlockerTrace | undefined;
   let selectedRunGoalBlockerTrace: AssistantGoalBlockerTrace | undefined;
   let latestGoalDecision: AssistantGoalSupervisorDecision | undefined;
@@ -146,6 +151,8 @@
   $: selectedGoal = selectAssistantGoal(goals, selectedGoalId);
   $: selectedGoalPlan = selectedGoalTimeline?.goal.plan || selectedGoal?.plan;
   $: selectedGoalPlanPhases = selectedGoalPlan?.phases || [];
+  $: selectedGoalPlanGaps = selectedGoalPlan?.gaps || [];
+  $: selectedGoalPlanChallenges = selectedGoalPlan?.challenges || [];
   $: selectedGoalBlockerTrace =
     selectedGoalTimeline?.blocker_trace || selectedGoalTimeline?.goal.blocker_trace || selectedGoal?.blocker_trace;
   $: selectedRunGoalBlockerTrace = goalBlockerTraceForRun(selectedRun);
@@ -821,18 +828,40 @@
   const goalPlanStatusTone = (status: string | undefined) => {
     switch (status) {
       case 'completed':
+      case 'accepted':
+      case 'passed':
+      case 'fixed':
+      case 'disproven':
+      case 'accepted_risk':
         return 'green';
       case 'blocked':
+      case 'failed':
+      case 'critical':
+      case 'high':
         return 'red';
       case 'in_progress':
       case 'active':
+      case 'claimed':
+      case 'challenged':
         return 'blue';
       case 'pending':
+      case 'open':
+      case 'needs_user':
+      case 'medium':
         return 'amber';
       default:
         return 'gray';
     }
   };
+
+  const goalMilestoneTone = (milestone: AssistantGoalMilestone) => goalPlanStatusTone(milestone.status);
+
+  const goalGapTone = (gap: AssistantGoalGap) =>
+    gap.status === 'open' || gap.status === 'in_progress'
+      ? goalPlanStatusTone(gap.severity || gap.status)
+      : goalPlanStatusTone(gap.status);
+
+  const goalChallengeTone = (challenge: AssistantGoalChallenge) => goalPlanStatusTone(challenge.verdict);
 
   const goalDecisionTone = (decision: string | undefined) => {
     switch (decision) {
@@ -867,7 +896,36 @@
   const goalPhaseMeta = (phase: AssistantGoalPlanPhase) =>
     [
       phase.task_ids?.length ? plural(phase.task_ids.length, 'task') : 'no tasks yet',
+      phase.milestones?.length ? plural(phase.milestones.length, 'milestone') : '',
       phase.depends_on?.length ? `after ${phase.depends_on.join(', ')}` : ''
+    ]
+      .filter(Boolean)
+      .join(' / ');
+
+  const goalMilestoneMeta = (milestone: AssistantGoalMilestone) =>
+    [
+      milestone.task_ids?.length ? plural(milestone.task_ids.length, 'task') : 'no build task',
+      milestone.challenge_task_ids?.length ? plural(milestone.challenge_task_ids.length, 'challenge') : 'not challenged',
+      milestone.claims?.length ? plural(milestone.claims.length, 'claim') : '',
+      milestone.gap_ids?.length ? plural(milestone.gap_ids.length, 'gap') : ''
+    ]
+      .filter(Boolean)
+      .join(' / ');
+
+  const goalGapMeta = (gap: AssistantGoalGap) =>
+    [
+      gap.severity ? labelFromSlug(gap.severity) : '',
+      gap.status ? labelFromSlug(gap.status) : '',
+      gap.task_ids?.length ? plural(gap.task_ids.length, 'task') : ''
+    ]
+      .filter(Boolean)
+      .join(' / ');
+
+  const goalChallengeMeta = (challenge: AssistantGoalChallenge) =>
+    [
+      challenge.milestone_id ? `milestone ${challenge.milestone_id}` : '',
+      challenge.task_id ? shortAssistantId(challenge.task_id) : '',
+      challenge.created_at ? formatAssistantTime(challenge.created_at) : ''
     ]
       .filter(Boolean)
       .join(' / ');
@@ -877,6 +935,8 @@
       ? [
           formatAssistantTime(decision.created_at),
           decision.phase_id ? `phase ${decision.phase_id}` : '',
+          decision.milestone_id ? `milestone ${decision.milestone_id}` : '',
+          decision.task_type ? labelFromSlug(decision.task_type) : '',
           decision.task_id ? shortAssistantId(decision.task_id) : ''
         ]
           .filter(Boolean)
@@ -886,6 +946,8 @@
   const goalTaskReportMeta = (report: AssistantGoalTaskReport) =>
     [
       report.phase_id ? `phase ${report.phase_id}` : '',
+      report.milestone_id ? `milestone ${report.milestone_id}` : '',
+      report.task_type ? labelFromSlug(report.task_type) : '',
       report.diff_files ? plural(report.diff_files, 'file') : '',
       report.additions || report.deletions ? `+${report.additions || 0} / -${report.deletions || 0}` : '',
       formatAssistantTime(report.created_at)
@@ -2095,12 +2157,17 @@
           {#if selectedGoal.execution_mode === 'autopilot'}
             <div class="goal-detail-grid">
               <section class="detail-section" aria-label="Goal supervisor plan">
-                <header class="section-heading">
-                  <div>
-                    <p>Supervisor</p>
-                    <h3>Plan</h3>
-                  </div>
-                  <span>{selectedGoalPlanPhases.length ? plural(selectedGoalPlanPhases.length, 'phase') : 'No plan'}</span>
+                  <header class="section-heading">
+                    <div>
+                      <p>Supervisor</p>
+                      <h3>Plan</h3>
+                    </div>
+                  <span>
+                    {selectedGoalPlanPhases.length ? plural(selectedGoalPlanPhases.length, 'phase') : 'No plan'}
+                    {#if selectedGoalPlanGaps.length}
+                      / {plural(selectedGoalPlanGaps.length, 'gap')}
+                    {/if}
+                  </span>
                 </header>
                 {#if selectedGoalPlan}
                   <div class="goal-plan-summary">
@@ -2129,11 +2196,105 @@
                           {#if phase.evidence?.length}
                             <small>Evidence: {phase.evidence.slice(0, 2).join(' / ')}</small>
                           {/if}
+                          {#if phase.milestones?.length}
+                            <ol class="goal-milestone-list" aria-label={`Milestones for ${phase.title}`}>
+                              {#each phase.milestones as milestone}
+                                <li class:current={milestone.id === latestGoalDecision?.milestone_id}>
+                                  <span class={`dot ${goalMilestoneTone(milestone)}`} aria-hidden="true"></span>
+                                  <div>
+                                    <div class="milestone-title">
+                                      <strong>{milestone.title}</strong>
+                                      <span class={`status ${goalMilestoneTone(milestone)}`}>
+                                        {labelFromSlug(milestone.status)}
+                                      </span>
+                                    </div>
+                                    <small>{goalMilestoneMeta(milestone)}</small>
+                                    {#if milestone.objective}
+                                      <p>{milestone.objective}</p>
+                                    {/if}
+                                    {#if milestone.claims?.length}
+                                      <small>Latest claim: {milestone.claims[milestone.claims.length - 1].claim}</small>
+                                    {/if}
+                                    {#if milestone.evidence?.length}
+                                      <small>Evidence: {milestone.evidence.slice(-2).join(' / ')}</small>
+                                    {/if}
+                                  </div>
+                                </li>
+                              {/each}
+                            </ol>
+                          {/if}
                         </li>
                       {/each}
                     </ol>
                   {:else}
                     <p>No phases have been recorded for this Goal yet.</p>
+                  {/if}
+                  {#if selectedGoalPlanGaps.length || selectedGoalPlanChallenges.length}
+                    <div class="goal-feedback-grid" aria-label="Goal feedback loop">
+                      <section>
+                        <header>
+                          <strong>Challenge gaps</strong>
+                          <span>{selectedGoalPlanGaps.length ? plural(selectedGoalPlanGaps.length, 'gap') : 'None'}</span>
+                        </header>
+                        {#if selectedGoalPlanGaps.length}
+                          <ul class="goal-feedback-list">
+                            {#each selectedGoalPlanGaps.slice(0, 5) as gap}
+                              <li>
+                                <span class={`dot ${goalGapTone(gap)}`} aria-hidden="true"></span>
+                                <div>
+                                  <div class="milestone-title">
+                                    <strong>{gap.area || gap.claim || 'Challenge gap'}</strong>
+                                    <span class={`status ${goalGapTone(gap)}`}>{labelFromSlug(gap.status || 'open')}</span>
+                                  </div>
+                                  <small>{goalGapMeta(gap)}</small>
+                                  {#if gap.evidence}
+                                    <p>{gap.evidence}</p>
+                                  {/if}
+                                  {#if gap.suggested_task}
+                                    <small>Next: {gap.suggested_task}</small>
+                                  {/if}
+                                </div>
+                              </li>
+                            {/each}
+                          </ul>
+                        {:else}
+                          <p>No challenge gaps are open.</p>
+                        {/if}
+                      </section>
+
+                      <section>
+                        <header>
+                          <strong>Challenges</strong>
+                          <span>{selectedGoalPlanChallenges.length ? plural(selectedGoalPlanChallenges.length, 'challenge') : 'None'}</span>
+                        </header>
+                        {#if selectedGoalPlanChallenges.length}
+                          <ul class="goal-feedback-list">
+                            {#each selectedGoalPlanChallenges.slice(-5).reverse() as challenge}
+                              <li>
+                                <span class={`dot ${goalChallengeTone(challenge)}`} aria-hidden="true"></span>
+                                <div>
+                                  <div class="milestone-title">
+                                    <strong>{challenge.summary || 'Challenge recorded'}</strong>
+                                    <span class={`status ${goalChallengeTone(challenge)}`}>
+                                      {labelFromSlug(challenge.verdict || 'failed')}
+                                    </span>
+                                  </div>
+                                  <small>{goalChallengeMeta(challenge)}</small>
+                                  {#if challenge.evidence?.length}
+                                    <p>{challenge.evidence.slice(0, 2).join(' / ')}</p>
+                                  {/if}
+                                  {#if challenge.task_id}
+                                    <a href={`/tasks?task=${challenge.task_id}`}>Open challenge task</a>
+                                  {/if}
+                                </div>
+                              </li>
+                            {/each}
+                          </ul>
+                        {:else}
+                          <p>No challenge has been recorded yet.</p>
+                        {/if}
+                      </section>
+                    </div>
                   {/if}
                 {:else}
                   <p>No supervisor plan has been recorded. Starting or resuming Autopilot will create one before the next task.</p>
@@ -2201,6 +2362,15 @@
                           {/if}
                           {#if report.follow_ups?.length}
                             <p>Next: {report.follow_ups.slice(0, 2).join(' / ')}</p>
+                          {/if}
+                          {#if report.claims?.length}
+                            <p>Claim: {report.claims.slice(-1)[0].claim}</p>
+                          {/if}
+                          {#if report.challenge}
+                            <p>Challenge: {labelFromSlug(report.challenge.verdict || 'failed')} / {report.challenge.summary || 'No summary recorded.'}</p>
+                          {/if}
+                          {#if report.gap_ids?.length}
+                            <small>Gaps: {report.gap_ids.slice(0, 4).join(', ')}</small>
                           {/if}
                           {#if report.blockers?.length || report.questions?.length}
                             <p>{[...(report.blockers || []), ...(report.questions || [])].slice(0, 2).join(' / ')}</p>
@@ -3425,6 +3595,8 @@
 
   .goal-plan-summary,
   .goal-plan-list li,
+  .goal-milestone-list li,
+  .goal-feedback-list li,
   .supervisor-card,
   .goal-report-card > div,
   .report-title {
@@ -3443,6 +3615,8 @@
   }
 
   .goal-plan-list,
+  .goal-milestone-list,
+  .goal-feedback-list,
   .compact-list {
     display: grid;
     gap: 0.5rem;
@@ -3465,6 +3639,8 @@
   }
 
   .goal-plan-list li > div,
+  .goal-milestone-list li,
+  .goal-feedback-list li,
   .supervisor-card header,
   .report-title {
     display: flex;
@@ -3479,7 +3655,73 @@
     margin-right: auto;
   }
 
+  .goal-milestone-list {
+    padding-left: 0.25rem;
+    list-style: none;
+    border-left: 2px solid var(--border-soft, #dbe3ef);
+  }
+
+  .goal-milestone-list li {
+    padding: 0.25rem 0 0.25rem 0.55rem;
+  }
+
+  .goal-milestone-list li.current {
+    border-left: 3px solid var(--accent, #2563eb);
+    padding-left: 0.45rem;
+  }
+
+  .milestone-title,
+  .goal-feedback-grid header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .milestone-title strong,
+  .goal-feedback-grid header strong {
+    min-width: 0;
+  }
+
+  .goal-feedback-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border-soft, #dbe3ef);
+  }
+
+  .goal-feedback-grid > section {
+    display: grid;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .goal-feedback-grid header span {
+    color: var(--assistant-muted, #475569);
+    font-size: 0.75rem;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+
+  .goal-feedback-list {
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .goal-feedback-list li {
+    padding: 0.35rem 0;
+    border-top: 1px solid var(--border-soft, #dbe3ef);
+  }
+
+  .goal-feedback-list li:first-child {
+    border-top: 0;
+  }
+
   .goal-plan-list strong,
+  .goal-milestone-list strong,
+  .goal-feedback-list strong,
   .supervisor-card strong,
   .report-title strong {
     color: var(--text-strong, #0f172a);
@@ -3488,6 +3730,8 @@
 
   .goal-plan-list small,
   .goal-plan-list li > small,
+  .goal-milestone-list small,
+  .goal-feedback-list small,
   .supervisor-card small,
   .goal-report-card small {
     color: var(--assistant-muted, #475569);
@@ -4201,6 +4445,12 @@
     background: var(--surface-muted) !important;
   }
 
+  :global(html[data-theme='dark'] .goal-milestone-list),
+  :global(html[data-theme='dark'] .goal-feedback-grid),
+  :global(html[data-theme='dark'] .goal-feedback-list li) {
+    border-color: var(--border-soft) !important;
+  }
+
   :global(html[data-theme='dark'] .run-row:hover),
   :global(html[data-theme='dark'] .run-row.selected),
   :global(html[data-theme='dark'] .run-spaces button:hover),
@@ -4323,11 +4573,17 @@
 
     .record-summary,
     .goal-detail-grid,
+    .goal-feedback-grid,
     .form-grid,
     .signal-grid,
     .snapshot-grid,
     .system-grid {
       grid-template-columns: 1fr;
+    }
+
+    .milestone-title,
+    .goal-feedback-grid header {
+      flex-wrap: wrap;
     }
 
     .primary-action,

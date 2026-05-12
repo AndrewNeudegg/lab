@@ -49,6 +49,32 @@ const (
 	GoalPlanPhaseStatusCompleted  = "completed"
 	GoalPlanPhaseStatusSkipped    = "skipped"
 
+	GoalMilestoneStatusPending    = "pending"
+	GoalMilestoneStatusInProgress = "in_progress"
+	GoalMilestoneStatusClaimed    = "claimed"
+	GoalMilestoneStatusChallenged = "challenged"
+	GoalMilestoneStatusAccepted   = "accepted"
+	GoalMilestoneStatusBlocked    = "blocked"
+
+	GoalTaskTypeBuild     = "build"
+	GoalTaskTypeChallenge = "challenge"
+	GoalTaskTypeGapFix    = "gap_fix"
+
+	GoalChallengeVerdictPassed    = "passed"
+	GoalChallengeVerdictFailed    = "failed"
+	GoalChallengeVerdictNeedsUser = "needs_user"
+
+	GoalGapStatusOpen         = "open"
+	GoalGapStatusInProgress   = "in_progress"
+	GoalGapStatusFixed        = "fixed"
+	GoalGapStatusAcceptedRisk = "accepted_risk"
+	GoalGapStatusDisproven    = "disproven"
+
+	GoalGapSeverityCritical = "critical"
+	GoalGapSeverityHigh     = "high"
+	GoalGapSeverityMedium   = "medium"
+	GoalGapSeverityLow      = "low"
+
 	GoalSupervisorDecisionCreateTask   = "create_task"
 	GoalSupervisorDecisionAskQuestion  = "ask_question"
 	GoalSupervisorDecisionMarkComplete = "mark_complete"
@@ -174,61 +200,129 @@ type GoalPlan struct {
 	Summary        string          `json:"summary,omitempty"`
 	CurrentPhaseID string          `json:"current_phase_id,omitempty"`
 	Phases         []GoalPlanPhase `json:"phases,omitempty"`
+	Gaps           []GoalGap       `json:"gaps,omitempty"`
+	Challenges     []GoalChallenge `json:"challenges,omitempty"`
 	CreatedAt      time.Time       `json:"created_at,omitempty"`
 	UpdatedAt      time.Time       `json:"updated_at,omitempty"`
 }
 
 type GoalPlanPhase struct {
-	ID                 string   `json:"id"`
-	Title              string   `json:"title"`
-	Objective          string   `json:"objective,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
-	DependsOn          []string `json:"depends_on,omitempty"`
-	TaskIDs            []string `json:"task_ids,omitempty"`
-	Evidence           []string `json:"evidence,omitempty"`
+	ID                 string          `json:"id"`
+	Title              string          `json:"title"`
+	Objective          string          `json:"objective,omitempty"`
+	Status             string          `json:"status,omitempty"`
+	AcceptanceCriteria []string        `json:"acceptance_criteria,omitempty"`
+	DependsOn          []string        `json:"depends_on,omitempty"`
+	TaskIDs            []string        `json:"task_ids,omitempty"`
+	Evidence           []string        `json:"evidence,omitempty"`
+	Milestones         []GoalMilestone `json:"milestones,omitempty"`
+}
+
+type GoalMilestone struct {
+	ID                   string      `json:"id"`
+	PhaseID              string      `json:"phase_id,omitempty"`
+	Title                string      `json:"title"`
+	Objective            string      `json:"objective,omitempty"`
+	Status               string      `json:"status,omitempty"`
+	AcceptanceCriteria   []string    `json:"acceptance_criteria,omitempty"`
+	EvidenceRequirements []string    `json:"evidence_requirements,omitempty"`
+	ChallengePolicy      string      `json:"challenge_policy,omitempty"`
+	TaskIDs              []string    `json:"task_ids,omitempty"`
+	ChallengeTaskIDs     []string    `json:"challenge_task_ids,omitempty"`
+	Claims               []GoalClaim `json:"claims,omitempty"`
+	Evidence             []string    `json:"evidence,omitempty"`
+	GapIDs               []string    `json:"gap_ids,omitempty"`
+	LatestChallengeID    string      `json:"latest_challenge_id,omitempty"`
+}
+
+type GoalClaim struct {
+	ID           string    `json:"id,omitempty"`
+	MilestoneID  string    `json:"milestone_id,omitempty"`
+	Claim        string    `json:"claim"`
+	Evidence     []string  `json:"evidence,omitempty"`
+	SourceTaskID string    `json:"source_task_id,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
+}
+
+type GoalGap struct {
+	ID            string    `json:"id,omitempty"`
+	PhaseID       string    `json:"phase_id,omitempty"`
+	MilestoneID   string    `json:"milestone_id,omitempty"`
+	Area          string    `json:"area,omitempty"`
+	Claim         string    `json:"claim,omitempty"`
+	Severity      string    `json:"severity,omitempty"`
+	Evidence      string    `json:"evidence,omitempty"`
+	SuggestedTask string    `json:"suggested_task,omitempty"`
+	Status        string    `json:"status,omitempty"`
+	Source        string    `json:"source,omitempty"`
+	SourceTaskID  string    `json:"source_task_id,omitempty"`
+	TaskIDs       []string  `json:"task_ids,omitempty"`
+	CreatedAt     time.Time `json:"created_at,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+}
+
+type GoalChallenge struct {
+	ID               string    `json:"id,omitempty"`
+	TaskID           string    `json:"task_id,omitempty"`
+	MilestoneID      string    `json:"milestone_id,omitempty"`
+	Verdict          string    `json:"verdict,omitempty"`
+	Summary          string    `json:"summary,omitempty"`
+	Evidence         []string  `json:"evidence,omitempty"`
+	ClaimsChallenged []string  `json:"claims_challenged,omitempty"`
+	Gaps             []GoalGap `json:"gaps,omitempty"`
+	GoalComplete     bool      `json:"goal_complete,omitempty"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
 }
 
 type GoalSupervisorDecision struct {
-	ID         string    `json:"id"`
-	GoalID     string    `json:"goal_id"`
-	Decision   string    `json:"decision"`
-	Summary    string    `json:"summary,omitempty"`
-	Rationale  string    `json:"rationale,omitempty"`
-	PhaseID    string    `json:"phase_id,omitempty"`
-	TaskID     string    `json:"task_id,omitempty"`
-	TaskGoal   string    `json:"task_goal,omitempty"`
-	Questions  []string  `json:"questions,omitempty"`
-	StopReason string    `json:"stop_reason,omitempty"`
-	Evidence   []string  `json:"evidence,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	GoalID      string    `json:"goal_id"`
+	Decision    string    `json:"decision"`
+	Summary     string    `json:"summary,omitempty"`
+	Rationale   string    `json:"rationale,omitempty"`
+	PhaseID     string    `json:"phase_id,omitempty"`
+	MilestoneID string    `json:"milestone_id,omitempty"`
+	GapID       string    `json:"gap_id,omitempty"`
+	TaskType    string    `json:"task_type,omitempty"`
+	TaskID      string    `json:"task_id,omitempty"`
+	TaskGoal    string    `json:"task_goal,omitempty"`
+	Questions   []string  `json:"questions,omitempty"`
+	StopReason  string    `json:"stop_reason,omitempty"`
+	Evidence    []string  `json:"evidence,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type GoalTaskReport struct {
-	ID             string    `json:"id"`
-	GoalID         string    `json:"goal_id"`
-	TaskID         string    `json:"task_id"`
-	PhaseID        string    `json:"phase_id,omitempty"`
-	Title          string    `json:"title,omitempty"`
-	Status         string    `json:"status,omitempty"`
-	Summary        string    `json:"summary,omitempty"`
-	AdvancedGoal   bool      `json:"advanced_goal,omitempty"`
-	PhaseComplete  bool      `json:"phase_complete,omitempty"`
-	GoalComplete   bool      `json:"goal_complete,omitempty"`
-	NoChange       bool      `json:"no_change,omitempty"`
-	ChangedFiles   []string  `json:"changed_files,omitempty"`
-	Validation     []string  `json:"validation,omitempty"`
-	FollowUps      []string  `json:"follow_ups,omitempty"`
-	Blockers       []string  `json:"blockers,omitempty"`
-	Questions      []string  `json:"questions,omitempty"`
-	ReviewDecision string    `json:"review_decision,omitempty"`
-	ReviewSummary  string    `json:"review_summary,omitempty"`
-	ReviewEvidence []string  `json:"review_evidence,omitempty"`
-	DiffFiles      int       `json:"diff_files,omitempty"`
-	Additions      int       `json:"additions,omitempty"`
-	Deletions      int       `json:"deletions,omitempty"`
-	ResultExcerpt  string    `json:"result_excerpt,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string         `json:"id"`
+	GoalID         string         `json:"goal_id"`
+	TaskID         string         `json:"task_id"`
+	PhaseID        string         `json:"phase_id,omitempty"`
+	MilestoneID    string         `json:"milestone_id,omitempty"`
+	TaskType       string         `json:"task_type,omitempty"`
+	Title          string         `json:"title,omitempty"`
+	Status         string         `json:"status,omitempty"`
+	Summary        string         `json:"summary,omitempty"`
+	AdvancedGoal   bool           `json:"advanced_goal,omitempty"`
+	PhaseComplete  bool           `json:"phase_complete,omitempty"`
+	GoalComplete   bool           `json:"goal_complete,omitempty"`
+	NoChange       bool           `json:"no_change,omitempty"`
+	ChangedFiles   []string       `json:"changed_files,omitempty"`
+	Validation     []string       `json:"validation,omitempty"`
+	FollowUps      []string       `json:"follow_ups,omitempty"`
+	Blockers       []string       `json:"blockers,omitempty"`
+	Questions      []string       `json:"questions,omitempty"`
+	Claims         []GoalClaim    `json:"claims,omitempty"`
+	Challenge      *GoalChallenge `json:"challenge,omitempty"`
+	GapIDs         []string       `json:"gap_ids,omitempty"`
+	ReviewDecision string         `json:"review_decision,omitempty"`
+	ReviewSummary  string         `json:"review_summary,omitempty"`
+	ReviewEvidence []string       `json:"review_evidence,omitempty"`
+	DiffFiles      int            `json:"diff_files,omitempty"`
+	Additions      int            `json:"additions,omitempty"`
+	Deletions      int            `json:"deletions,omitempty"`
+	ResultExcerpt  string         `json:"result_excerpt,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 type GoalAutopilotRequest struct {
@@ -1015,6 +1109,28 @@ func NormalizeGoalPlan(plan GoalPlan) GoalPlan {
 	if len(plan.Phases) == 0 {
 		plan.CurrentPhaseID = ""
 	}
+	gaps := make([]GoalGap, 0, len(plan.Gaps))
+	seenGaps := map[string]bool{}
+	for index, gap := range plan.Gaps {
+		gap = NormalizeGoalGap(gap, index)
+		if gap.ID == "" || seenGaps[gap.ID] {
+			continue
+		}
+		seenGaps[gap.ID] = true
+		gaps = append(gaps, gap)
+	}
+	plan.Gaps = gaps
+	challenges := make([]GoalChallenge, 0, len(plan.Challenges))
+	seenChallenges := map[string]bool{}
+	for index, challenge := range plan.Challenges {
+		challenge = NormalizeGoalChallenge(challenge, index)
+		if challenge.ID == "" || seenChallenges[challenge.ID] {
+			continue
+		}
+		seenChallenges[challenge.ID] = true
+		challenges = append(challenges, challenge)
+	}
+	plan.Challenges = challenges
 	return plan
 }
 
@@ -1033,7 +1149,124 @@ func NormalizeGoalPlanPhase(phase GoalPlanPhase, index int) GoalPlanPhase {
 	phase.DependsOn = normalizeRunStringList(phase.DependsOn, 12)
 	phase.TaskIDs = normalizeRunStringList(phase.TaskIDs, 24)
 	phase.Evidence = normalizeRunStringList(phase.Evidence, 24)
+	milestones := make([]GoalMilestone, 0, len(phase.Milestones))
+	seen := map[string]bool{}
+	for milestoneIndex, milestone := range phase.Milestones {
+		milestone.PhaseID = firstNonEmptyString(milestone.PhaseID, phase.ID)
+		milestone = NormalizeGoalMilestone(milestone, milestoneIndex)
+		if milestone.ID == "" || seen[milestone.ID] {
+			continue
+		}
+		seen[milestone.ID] = true
+		milestones = append(milestones, milestone)
+	}
+	phase.Milestones = milestones
 	return phase
+}
+
+func NormalizeGoalMilestone(milestone GoalMilestone, index int) GoalMilestone {
+	milestone.ID = strings.TrimSpace(milestone.ID)
+	if milestone.ID == "" {
+		milestone.ID = "milestone_" + strconv.Itoa(index+1)
+	}
+	milestone.PhaseID = strings.TrimSpace(milestone.PhaseID)
+	milestone.Title = strings.TrimSpace(milestone.Title)
+	if milestone.Title == "" {
+		milestone.Title = "Milestone " + strconv.Itoa(index+1)
+	}
+	milestone.Objective = strings.TrimSpace(milestone.Objective)
+	milestone.Status = normalizeGoalMilestoneStatus(milestone.Status)
+	milestone.AcceptanceCriteria = normalizeRunStringList(milestone.AcceptanceCriteria, 12)
+	milestone.EvidenceRequirements = normalizeRunStringList(milestone.EvidenceRequirements, 12)
+	milestone.ChallengePolicy = strings.TrimSpace(milestone.ChallengePolicy)
+	if milestone.ChallengePolicy == "" {
+		milestone.ChallengePolicy = "challenge after each claimed milestone"
+	}
+	milestone.TaskIDs = normalizeRunStringList(milestone.TaskIDs, 24)
+	milestone.ChallengeTaskIDs = normalizeRunStringList(milestone.ChallengeTaskIDs, 24)
+	claims := make([]GoalClaim, 0, len(milestone.Claims))
+	seenClaims := map[string]bool{}
+	for claimIndex, claim := range milestone.Claims {
+		claim.MilestoneID = firstNonEmptyString(claim.MilestoneID, milestone.ID)
+		claim = NormalizeGoalClaim(claim, claimIndex)
+		if claim.Claim == "" || seenClaims[claim.ID] {
+			continue
+		}
+		seenClaims[claim.ID] = true
+		claims = append(claims, claim)
+	}
+	milestone.Claims = claims
+	milestone.Evidence = normalizeRunStringList(milestone.Evidence, 32)
+	milestone.GapIDs = normalizeRunStringList(milestone.GapIDs, 24)
+	milestone.LatestChallengeID = strings.TrimSpace(milestone.LatestChallengeID)
+	return milestone
+}
+
+func NormalizeGoalClaim(claim GoalClaim, index int) GoalClaim {
+	claim.ID = strings.TrimSpace(claim.ID)
+	if claim.ID == "" {
+		claim.ID = "claim_" + strconv.Itoa(index+1)
+	}
+	claim.MilestoneID = strings.TrimSpace(claim.MilestoneID)
+	claim.Claim = strings.TrimSpace(claim.Claim)
+	claim.Evidence = normalizeRunStringList(claim.Evidence, 12)
+	claim.SourceTaskID = strings.TrimSpace(claim.SourceTaskID)
+	claim.Status = strings.TrimSpace(claim.Status)
+	if claim.Status == "" {
+		claim.Status = "claimed"
+	}
+	if !claim.CreatedAt.IsZero() {
+		claim.CreatedAt = claim.CreatedAt.UTC()
+	}
+	return claim
+}
+
+func NormalizeGoalGap(gap GoalGap, index int) GoalGap {
+	gap.ID = strings.TrimSpace(gap.ID)
+	if gap.ID == "" {
+		gap.ID = "gap_" + strconv.Itoa(index+1)
+	}
+	gap.PhaseID = strings.TrimSpace(gap.PhaseID)
+	gap.MilestoneID = strings.TrimSpace(gap.MilestoneID)
+	gap.Area = strings.TrimSpace(gap.Area)
+	gap.Claim = strings.TrimSpace(gap.Claim)
+	gap.Severity = normalizeGoalGapSeverity(gap.Severity)
+	gap.Evidence = strings.TrimSpace(gap.Evidence)
+	gap.SuggestedTask = strings.TrimSpace(gap.SuggestedTask)
+	gap.Status = normalizeGoalGapStatus(gap.Status)
+	gap.Source = strings.TrimSpace(gap.Source)
+	gap.SourceTaskID = strings.TrimSpace(gap.SourceTaskID)
+	gap.TaskIDs = normalizeRunStringList(gap.TaskIDs, 24)
+	if !gap.CreatedAt.IsZero() {
+		gap.CreatedAt = gap.CreatedAt.UTC()
+	}
+	if !gap.UpdatedAt.IsZero() {
+		gap.UpdatedAt = gap.UpdatedAt.UTC()
+	}
+	return gap
+}
+
+func NormalizeGoalChallenge(challenge GoalChallenge, index int) GoalChallenge {
+	challenge.ID = strings.TrimSpace(challenge.ID)
+	if challenge.ID == "" {
+		challenge.ID = "challenge_" + strconv.Itoa(index+1)
+	}
+	challenge.TaskID = strings.TrimSpace(challenge.TaskID)
+	challenge.MilestoneID = strings.TrimSpace(challenge.MilestoneID)
+	challenge.Verdict = normalizeGoalChallengeVerdict(challenge.Verdict)
+	challenge.Summary = strings.TrimSpace(challenge.Summary)
+	challenge.Evidence = normalizeRunStringList(challenge.Evidence, 24)
+	challenge.ClaimsChallenged = normalizeRunStringList(challenge.ClaimsChallenged, 24)
+	gaps := make([]GoalGap, 0, len(challenge.Gaps))
+	for gapIndex, gap := range challenge.Gaps {
+		gap.MilestoneID = firstNonEmptyString(gap.MilestoneID, challenge.MilestoneID)
+		gaps = append(gaps, NormalizeGoalGap(gap, gapIndex))
+	}
+	challenge.Gaps = gaps
+	if !challenge.CreatedAt.IsZero() {
+		challenge.CreatedAt = challenge.CreatedAt.UTC()
+	}
+	return challenge
 }
 
 func NormalizeGoalSupervisorDecision(decision GoalSupervisorDecision) GoalSupervisorDecision {
@@ -1043,6 +1276,9 @@ func NormalizeGoalSupervisorDecision(decision GoalSupervisorDecision) GoalSuperv
 	decision.Summary = strings.TrimSpace(decision.Summary)
 	decision.Rationale = strings.TrimSpace(decision.Rationale)
 	decision.PhaseID = strings.TrimSpace(decision.PhaseID)
+	decision.MilestoneID = strings.TrimSpace(decision.MilestoneID)
+	decision.GapID = strings.TrimSpace(decision.GapID)
+	decision.TaskType = normalizeGoalTaskType(decision.TaskType)
 	decision.TaskID = strings.TrimSpace(decision.TaskID)
 	decision.TaskGoal = strings.TrimSpace(decision.TaskGoal)
 	decision.Questions = normalizeRunStringList(decision.Questions, 12)
@@ -1057,6 +1293,8 @@ func NormalizeGoalTaskReport(report GoalTaskReport) GoalTaskReport {
 	report.GoalID = strings.TrimSpace(report.GoalID)
 	report.TaskID = strings.TrimSpace(report.TaskID)
 	report.PhaseID = strings.TrimSpace(report.PhaseID)
+	report.MilestoneID = strings.TrimSpace(report.MilestoneID)
+	report.TaskType = normalizeGoalTaskType(report.TaskType)
 	report.Title = strings.TrimSpace(report.Title)
 	report.Status = strings.TrimSpace(report.Status)
 	report.Summary = strings.TrimSpace(report.Summary)
@@ -1065,6 +1303,23 @@ func NormalizeGoalTaskReport(report GoalTaskReport) GoalTaskReport {
 	report.FollowUps = normalizeRunStringList(report.FollowUps, 24)
 	report.Blockers = normalizeRunStringList(report.Blockers, 24)
 	report.Questions = normalizeRunStringList(report.Questions, 12)
+	claims := make([]GoalClaim, 0, len(report.Claims))
+	for index, claim := range report.Claims {
+		claim.MilestoneID = firstNonEmptyString(claim.MilestoneID, report.MilestoneID)
+		claim.SourceTaskID = firstNonEmptyString(claim.SourceTaskID, report.TaskID)
+		claim = NormalizeGoalClaim(claim, index)
+		if claim.Claim != "" {
+			claims = append(claims, claim)
+		}
+	}
+	report.Claims = claims
+	if report.Challenge != nil {
+		challenge := NormalizeGoalChallenge(*report.Challenge, 0)
+		challenge.TaskID = firstNonEmptyString(challenge.TaskID, report.TaskID)
+		challenge.MilestoneID = firstNonEmptyString(challenge.MilestoneID, report.MilestoneID)
+		report.Challenge = &challenge
+	}
+	report.GapIDs = normalizeRunStringList(report.GapIDs, 24)
 	report.ReviewDecision = strings.TrimSpace(report.ReviewDecision)
 	report.ReviewSummary = strings.TrimSpace(report.ReviewSummary)
 	report.ReviewEvidence = normalizeRunStringList(report.ReviewEvidence, 24)
@@ -1361,6 +1616,73 @@ func normalizeGoalPlanPhaseStatus(value string) string {
 		return GoalPlanPhaseStatusSkipped
 	default:
 		return GoalPlanPhaseStatusPending
+	}
+}
+
+func normalizeGoalMilestoneStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalMilestoneStatusInProgress, "running":
+		return GoalMilestoneStatusInProgress
+	case GoalMilestoneStatusClaimed:
+		return GoalMilestoneStatusClaimed
+	case GoalMilestoneStatusChallenged:
+		return GoalMilestoneStatusChallenged
+	case GoalMilestoneStatusAccepted, "done", "completed":
+		return GoalMilestoneStatusAccepted
+	case GoalMilestoneStatusBlocked:
+		return GoalMilestoneStatusBlocked
+	default:
+		return GoalMilestoneStatusPending
+	}
+}
+
+func normalizeGoalTaskType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalTaskTypeChallenge:
+		return GoalTaskTypeChallenge
+	case GoalTaskTypeGapFix, "gap", "gap-fix":
+		return GoalTaskTypeGapFix
+	default:
+		return GoalTaskTypeBuild
+	}
+}
+
+func normalizeGoalChallengeVerdict(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalChallengeVerdictPassed, "pass":
+		return GoalChallengeVerdictPassed
+	case GoalChallengeVerdictNeedsUser, "needs-user", "question", "blocked":
+		return GoalChallengeVerdictNeedsUser
+	default:
+		return GoalChallengeVerdictFailed
+	}
+}
+
+func normalizeGoalGapStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalGapStatusInProgress, "running":
+		return GoalGapStatusInProgress
+	case GoalGapStatusFixed, "done", "resolved":
+		return GoalGapStatusFixed
+	case GoalGapStatusAcceptedRisk, "accepted-risk", "accepted":
+		return GoalGapStatusAcceptedRisk
+	case GoalGapStatusDisproven:
+		return GoalGapStatusDisproven
+	default:
+		return GoalGapStatusOpen
+	}
+}
+
+func normalizeGoalGapSeverity(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GoalGapSeverityCritical:
+		return GoalGapSeverityCritical
+	case GoalGapSeverityHigh:
+		return GoalGapSeverityHigh
+	case GoalGapSeverityLow:
+		return GoalGapSeverityLow
+	default:
+		return GoalGapSeverityMedium
 	}
 }
 

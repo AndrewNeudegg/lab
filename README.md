@@ -30,6 +30,10 @@ A **Goal** is the durable object that drives this loop.
 - **Signal**: A factual event that says a Goal may need attention now.
 - **Note**: Durable context, progress, assumptions, and decisions for a Goal.
 - **Reflection**: A small post-task or post-run assessment that updates the Goal and may create follow-up work.
+- **Milestone**: A small actionable slice inside a Goal phase. The supervisor selects one milestone at a time.
+- **Claim**: A worker statement that a milestone advanced, backed by changed files, validation, screenshots, logs, docs, or inspection evidence.
+- **Challenge**: A read-only adversarial task that runs after each claimed milestone and tries to disprove the claim before the supervisor accepts it.
+- **Gap**: A concrete weakness found by challenge. Open gaps create gap-fix work before Autopilot broadens the Goal.
 
 Use the split deliberately:
 
@@ -106,17 +110,22 @@ Lifecycle:
 flowchart TD
   Start[Start Autopilot] --> Assess[Assess Goal and repo state]
   Assess --> Plan[Create or update durable phase plan]
-  Plan --> Decide[Supervisor selects phase, asks, waits, or stops]
-  Decide -->|create task| Task[Create next bounded task with phase context]
+  Plan --> Decide[Supervisor selects milestone, gap, asks, waits, or stops]
+  Decide -->|create build task| Task[Create next bounded task with phase and milestone context]
+  Decide -->|create gap task| GapFix[Repair known challenge gap]
   Decide -->|question| Block[Block and notify]
   Decide -->|complete| Complete[Complete Goal]
   Task --> Run[Run worker]
+  GapFix --> Run
   Run --> Review[Run review and tests]
   Review --> Merge{Safe to merge?}
   Merge -->|yes| Restart[Restart affected components]
   Restart --> Verify[Verify behaviour]
-  Verify --> Reflect[Save structured Goal task report]
-  Reflect --> Continue{Done, blocked, or budget left?}
+  Verify --> Reflect[Save structured claims and evidence]
+  Reflect --> Challenge[Create read-only challenge task]
+  Challenge --> Gap{Challenge verdict}
+  Gap -->|failed with gaps| Decide
+  Gap -->|passed| Continue{Done, blocked, or budget left?}
   Continue -->|budget left| Assess
   Continue -->|done| Complete[Complete Goal]
   Continue -->|blocked| Block[Block and notify]
@@ -177,10 +186,13 @@ Each Autopilot Goal also has a durable supervisor plan:
 - `plan.status`: `active`, `blocked`, or `completed`.
 - `plan.current_phase_id`: the phase the supervisor currently expects to advance.
 - `plan.phases[]`: ordered phase IDs, titles, objectives, status, dependencies, linked task IDs, acceptance criteria, and evidence.
+- `plan.phases[].milestones[]`: small slices inside each phase with status, acceptance criteria, evidence requirements, task IDs, challenge task IDs, claims, evidence, gap IDs, and latest challenge ID.
+- `plan.gaps[]`: open, in-progress, fixed, accepted-risk, or disproven weaknesses found by challenge, with severity, evidence, and a suggested repair task.
+- `plan.challenges[]`: read-only challenge results with verdict, evidence, challenged claims, gaps, and optional final completion signal.
 - `decisions[]`: recent supervisor decisions such as `create_task`, `ask_question`, `pause_blocked`, `mark_complete`, `wait`, or `revise_plan`.
 - `task_reports[]`: structured reports extracted from accepted Goal-linked tasks.
 
-The supervisor owns the next-step decision. Workers should not independently decide the long-term roadmap. After every accepted linked task, the supervisor reads the latest structured report, marks phases complete or blocked, chooses the next dependency-ready phase, and includes prior report context in the next task prompt. It stops instead of creating another task when open questions exist, the plan is blocked, recent reports show repeated no-progress work, the Goal is complete, or the Autopilot policy/budget disallows further work. A budget of `-1` means unlimited tasks, but unlimited does not override blockers, questions, policy, review gates, or stop commands.
+The supervisor owns the next-step decision. Workers should not independently decide the long-term roadmap. After every accepted linked task, the supervisor reads the latest structured report, records claims and evidence on the selected milestone, and creates a read-only challenge before accepting that milestone. Failed challenges become gap records; open gaps take priority over new feature work and create `gap_fix` tasks. A build or gap-fix task can claim completion, but only a passing challenge can accept the milestone or complete the Goal. The supervisor stops instead of creating another task when open questions exist, the plan is blocked without an actionable gap, recent reports show repeated no-progress work, the Goal is complete, or the Autopilot policy/budget disallows further work. A budget of `-1` means unlimited tasks, but unlimited does not override blockers, questions, policy, review gates, challenge gaps, or stop commands.
 
 Initial Autopilot MVP should be conservative:
 
@@ -190,6 +202,7 @@ Initial Autopilot MVP should be conservative:
 - require all review checks to pass before merge
 - stop after one failed task/review/restart
 - stop when the Goal produces an open question
+- challenge every claimed milestone and route failed challenge findings into gap-fix tasks
 - cap task count and runtime unless the operator sets the task limit to `-1`
 - notify through the Goal timeline and Assistant run receipts
 
@@ -348,10 +361,14 @@ Required task metadata:
 
 - `goal_id`
 - `goal_phase_id`
+- `milestone_id`
+- `task_type` (`build`, `gap_fix`, or `challenge`)
 - Goal title and objective
 - Goal details relevant to the task
 - selected Goal plan phase
+- selected milestone and any selected gap
 - recent structured Goal task reports
+- recent claims, challenges, and gaps
 - success criteria
 - constraints and approval rules
 - current progress summary
@@ -370,11 +387,19 @@ Workers should be able to report:
 - `follow_ups`
 - `blockers`
 - `questions`
+- `claims`
+- `gap_ids` for gap-fix work
 
 The accepted report format is a single final-result line:
 
 ```text
-GOAL_REPORT: {"summary":"Core grid rendering works","advanced_goal":true,"phase_complete":true,"goal_complete":false,"changed_files":["src/grid.ts"],"validation":["bun test"],"follow_ups":["Add keyboard navigation"],"blockers":[],"questions":[]}
+GOAL_REPORT: {"task_type":"build","phase_id":"phase_02_core","milestone_id":"phase_02_core_milestone_02_build","summary":"Core grid rendering works","advanced_goal":true,"phase_complete":false,"goal_complete":false,"changed_files":["src/grid.ts"],"validation":["bun test"],"claims":[{"claim":"Rows render from supplied data","evidence":["src/grid.ts","bun test"]}],"follow_ups":["Add keyboard navigation"],"blockers":[],"questions":[]}
+```
+
+Challenge tasks are read-only and report with `GOAL_CHALLENGE:`:
+
+```text
+GOAL_CHALLENGE: {"milestone_id":"phase_02_core_milestone_02_build","verdict":"failed","summary":"Keyboard support is not evidenced.","evidence":["No keyboard test found"],"claims_challenged":["Rows render from supplied data"],"gaps":[{"area":"keyboard","claim":"No keyboard interaction evidence","severity":"high","evidence":"No keyboard test found","suggested_task":"Add keyboard navigation and tests"}],"goal_complete":false}
 ```
 
 The task agent often discovers what the assistant should keep watching. That information must not be buried in a final summary only.

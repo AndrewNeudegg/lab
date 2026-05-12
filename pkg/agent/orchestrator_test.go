@@ -7505,7 +7505,7 @@ func TestGoalAutopilotCreatesPlanAndPhaseTaskContext(t *testing.T) {
 	}
 }
 
-func TestGoalAutopilotUsesTaskReportBeforeNextPhase(t *testing.T) {
+func TestGoalAutopilotChallengesMilestoneBeforeNextPhase(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),
 		release:  make(chan struct{}),
@@ -7561,21 +7561,25 @@ GOAL_REPORT: {"summary":"Foundation complete","advanced_goal":true,"phase_comple
 	if len(loaded.TaskReports) != 1 || loaded.TaskReports[0].Summary != "Foundation complete" || !loaded.TaskReports[0].PhaseComplete {
 		t.Fatalf("task reports = %#v, want structured completion report", loaded.TaskReports)
 	}
-	if loaded.Goal.Plan == nil || len(loaded.Goal.Plan.Phases) < 2 || loaded.Goal.Plan.Phases[0].Status != assistantstore.GoalPlanPhaseStatusCompleted {
-		t.Fatalf("plan = %#v, want first phase completed", loaded.Goal.Plan)
+	if loaded.Goal.Plan == nil || len(loaded.Goal.Plan.Phases) < 2 || loaded.Goal.Plan.Phases[0].Status != assistantstore.GoalPlanPhaseStatusInProgress {
+		t.Fatalf("plan = %#v, want first phase still in progress pending challenge", loaded.Goal.Plan)
+	}
+	firstMilestone := loaded.Goal.Plan.Phases[0].Milestones[0]
+	if firstMilestone.Status != assistantstore.GoalMilestoneStatusChallenged {
+		t.Fatalf("first milestone = %#v, want challenged after task report", firstMilestone)
 	}
 	nextTask, err := orch.tasks.Load(loaded.Goal.Autopilot.CurrentTaskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nextTask.GoalPhaseID == "" || nextTask.GoalPhaseID == firstPhaseID {
-		t.Fatalf("next task phase = %q, want next dependency-ready phase after %q", nextTask.GoalPhaseID, firstPhaseID)
+	if nextTask.GoalPhaseID != firstPhaseID {
+		t.Fatalf("next task phase = %q, want challenge in same phase %q", nextTask.GoalPhaseID, firstPhaseID)
 	}
 	for _, want := range []string{
 		"Recent structured Goal task reports",
 		"Foundation complete",
-		"Build core rendering",
-		"Do not repeat previous task work",
+		"Challenge mode",
+		"GOAL_CHALLENGE:",
 	} {
 		if !strings.Contains(nextTask.Goal, want) {
 			t.Fatalf("next task goal missing %q:\n%s", want, nextTask.Goal)
@@ -7770,7 +7774,7 @@ GOAL_REPORT: {"summary":"Blocked on editing semantics","advanced_goal":true,"pha
 	}
 }
 
-func TestGoalAutopilotCompletesFromGoalReport(t *testing.T) {
+func TestGoalAutopilotRequiresChallengeForGoalCompletionReport(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),
 		release:  make(chan struct{}),
@@ -7813,20 +7817,209 @@ GOAL_REPORT: {"summary":"Grid goal is complete","advanced_goal":true,"phase_comp
 		t.Fatal(err)
 	}
 	if changed != 1 {
-		t.Fatalf("changed = %d, want Autopilot completion", changed)
+		t.Fatalf("changed = %d, want Autopilot to accept report and create challenge", changed)
 	}
 	loaded, err := orch.LoadGoal(timeline.Goal.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Goal.Status != assistantstore.GoalStatusCompleted || loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusCompleted {
-		t.Fatalf("goal = %#v, want completed Goal and Autopilot", loaded.Goal)
+	if loaded.Goal.Status == assistantstore.GoalStatusCompleted || loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status == assistantstore.GoalAutopilotStatusCompleted {
+		t.Fatalf("goal = %#v, build report must not complete Goal before challenge", loaded.Goal)
 	}
-	if loaded.Goal.Plan == nil || loaded.Goal.Plan.Status != assistantstore.GoalPlanStatusCompleted {
-		t.Fatalf("plan = %#v, want completed plan", loaded.Goal.Plan)
+	if loaded.Goal.Autopilot.CurrentTaskID == "" || loaded.Goal.Autopilot.CurrentTaskID == taskID {
+		t.Fatalf("current task = %q, want a challenge task after completion claim", loaded.Goal.Autopilot.CurrentTaskID)
 	}
-	if loaded.Goal.Autopilot.CurrentTaskID != "" {
-		t.Fatalf("current task = %q, want cleared when Goal completes", loaded.Goal.Autopilot.CurrentTaskID)
+	if len(loaded.TaskReports) != 1 || loaded.TaskReports[0].GoalComplete {
+		t.Fatalf("task reports = %#v, want non-challenge completion claim demoted", loaded.TaskReports)
+	}
+	challengeTask, err := orch.tasks.Load(loaded.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(challengeTask.Goal, "GOAL_CHALLENGE:") {
+		t.Fatalf("challenge task goal missing GOAL_CHALLENGE contract:\n%s", challengeTask.Goal)
+	}
+}
+
+func TestGoalAutopilotCompletesAfterPassingFinalChallenge(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build small grid",
+		Objective:     "Build a small usable grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	goal := timeline.Goal
+	goal.Plan = &assistantstore.GoalPlan{
+		Status:         assistantstore.GoalPlanStatusActive,
+		CurrentPhaseID: "phase_01_done",
+		Phases: []assistantstore.GoalPlanPhase{{
+			ID:        "phase_01_done",
+			Title:     "Ship usable grid",
+			Objective: "Ship the usable grid slice.",
+			Status:    assistantstore.GoalPlanPhaseStatusPending,
+			Milestones: []assistantstore.GoalMilestone{{
+				ID:        "phase_01_done_milestone_01",
+				PhaseID:   "phase_01_done",
+				Title:     "Complete usable grid",
+				Objective: "Finish the usable grid and evidence.",
+				Status:    assistantstore.GoalMilestoneStatusPending,
+			}},
+		}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildTaskID := started.Goal.Autopilot.CurrentTaskID
+	buildTask, err := orch.tasks.Load(buildTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildTask.Status = taskstore.StatusAwaitingVerification
+	buildTask.Result = `Grid complete.
+GOAL_REPORT: {"task_type":"build","phase_id":"phase_01_done","milestone_id":"phase_01_done_milestone_01","summary":"Grid goal is complete","advanced_goal":true,"phase_complete":true,"goal_complete":true,"changed_files":["src/grid.ts"],"validation":["go test ./..."],"claims":[{"claim":"The usable grid slice is implemented","evidence":["src/grid.ts","go test ./..."]}],"follow_ups":[],"blockers":[],"questions":[]}`
+	buildTask.RemoteDiff = "diff --git a/src/grid.ts b/src/grid.ts\nnew file mode 100644\n"
+	if err := orch.tasks.Save(buildTask); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("changed = %d, want challenge task creation", changed)
+	}
+	loaded, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeTaskID := loaded.Goal.Autopilot.CurrentTaskID
+	challengeTask, err := orch.tasks.Load(challengeTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeTask.Status = taskstore.StatusAwaitingVerification
+	challengeTask.Result = `Challenge passed.
+GOAL_CHALLENGE: {"milestone_id":"phase_01_done_milestone_01","verdict":"passed","summary":"Evidence is credible and no gaps remain.","evidence":["reviewed src/grid.ts","go test ./... passed"],"claims_challenged":["The usable grid slice is implemented"],"gaps":[],"goal_complete":true}`
+	if err := orch.tasks.Save(challengeTask); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("changed = %d, want challenge acceptance", changed)
+	}
+	completed, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Goal.Status != assistantstore.GoalStatusCompleted || completed.Goal.Autopilot == nil || completed.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusCompleted {
+		t.Fatalf("goal = %#v, want completed after passing final challenge", completed.Goal)
+	}
+	if completed.Goal.Plan == nil || completed.Goal.Plan.Status != assistantstore.GoalPlanStatusCompleted || completed.Goal.Plan.Phases[0].Milestones[0].Status != assistantstore.GoalMilestoneStatusAccepted {
+		t.Fatalf("plan = %#v, want accepted milestone and completed plan", completed.Goal.Plan)
+	}
+}
+
+func TestGoalAutopilotCreatesGapFixAfterFailedChallenge(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build small grid",
+		Objective:     "Build a small usable grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 5},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildTask, err := orch.tasks.Load(started.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	milestoneID := started.Goal.Plan.Phases[0].Milestones[0].ID
+	buildTask.Status = taskstore.StatusAwaitingVerification
+	buildTask.Result = fmt.Sprintf(`Foundation complete.
+GOAL_REPORT: {"task_type":"build","phase_id":"%s","milestone_id":"%s","summary":"Foundation complete","advanced_goal":true,"phase_complete":true,"goal_complete":false,"changed_files":["src/grid.ts"],"validation":["go test ./..."],"claims":[{"claim":"Foundation exists","evidence":["src/grid.ts"]}],"follow_ups":[],"blockers":[],"questions":[]}`, started.Goal.Plan.Phases[0].ID, milestoneID)
+	buildTask.RemoteDiff = "diff --git a/src/grid.ts b/src/grid.ts\nnew file mode 100644\n"
+	if err := orch.tasks.Save(buildTask); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeTask, err := orch.tasks.Load(loaded.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeTask.Status = taskstore.StatusAwaitingVerification
+	challengeTask.Result = fmt.Sprintf(`Challenge failed.
+GOAL_CHALLENGE: {"milestone_id":"%s","verdict":"failed","summary":"Foundation is too shallow.","evidence":["No keyboard path exists"],"claims_challenged":["Foundation exists"],"gaps":[{"area":"keyboard","claim":"Foundation lacks keyboard interaction evidence","severity":"high","evidence":"No keyboard path exists","suggested_task":"Add keyboard interaction support and tests"}],"goal_complete":false}`, milestoneID)
+	if err := orch.tasks.Save(challengeTask); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("changed = %d, want gap-fix task creation", changed)
+	}
+	gapped, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gapped.Goal.Plan == nil || len(gapped.Goal.Plan.Gaps) != 1 {
+		t.Fatalf("plan = %#v, want one challenge gap", gapped.Goal.Plan)
+	}
+	if gapped.Goal.Plan.Gaps[0].Status != assistantstore.GoalGapStatusInProgress {
+		t.Fatalf("gap = %#v, want in-progress gap-fix", gapped.Goal.Plan.Gaps[0])
+	}
+	gapTask, err := orch.tasks.Load(gapped.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Selected challenge gap", "gap_fix", "Add keyboard interaction support and tests"} {
+		if !strings.Contains(gapTask.Goal, want) {
+			t.Fatalf("gap task goal missing %q:\n%s", want, gapTask.Goal)
+		}
 	}
 }
 

@@ -160,15 +160,30 @@ func goalBlockingTaskStatusStillCurrent(status string) bool {
 
 func (o *Orchestrator) ensureGoalPlan(store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.Goal, error) {
 	goal = assistantstore.NormalizeGoal(goal)
-	if goal.Plan != nil {
-		return goal, nil
-	}
 	now := time.Now().UTC()
-	plan := buildGoalPlan(goal, now)
-	goal.Plan = &plan
-	goal.UpdatedAt = now
-	if err := store.SaveGoal(goal); err != nil {
-		return assistantstore.Goal{}, err
+	changed := false
+	if goal.Plan == nil {
+		plan := buildGoalPlan(goal, now)
+		goal.Plan = &plan
+		changed = true
+	} else {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		if ensureGoalPlanMilestones(&plan, goal, now) {
+			changed = true
+		}
+		if plan.CurrentPhaseID == "" {
+			if phase, ok := selectGoalPlanPhase(&plan); ok {
+				plan.CurrentPhaseID = phase.ID
+				changed = true
+			}
+		}
+		goal.Plan = &plan
+	}
+	if changed {
+		goal.UpdatedAt = now
+		if err := store.SaveGoal(goal); err != nil {
+			return assistantstore.Goal{}, err
+		}
 	}
 	return goal, nil
 }
@@ -487,6 +502,16 @@ func unblockGoalPlan(goal *assistantstore.Goal, now time.Time) {
 			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusInProgress
 		} else {
 			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusPending
+		}
+		for milestoneIndex := range plan.Phases[index].Milestones {
+			if plan.Phases[index].Milestones[milestoneIndex].Status != assistantstore.GoalMilestoneStatusBlocked {
+				continue
+			}
+			if len(plan.Phases[index].Milestones[milestoneIndex].TaskIDs) > 0 {
+				plan.Phases[index].Milestones[milestoneIndex].Status = assistantstore.GoalMilestoneStatusInProgress
+			} else {
+				plan.Phases[index].Milestones[milestoneIndex].Status = assistantstore.GoalMilestoneStatusPending
+			}
 		}
 	}
 	if next, ok := selectGoalPlanPhase(&plan); ok {
@@ -1093,7 +1118,7 @@ func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assis
 	if !stringSliceContains(goal.LinkedTasks, created.Task.ID) {
 		goal.LinkedTasks = append(goal.LinkedTasks, created.Task.ID)
 	}
-	markGoalPlanTaskCreated(&goal, decision.PhaseID, created.Task.ID, now)
+	markGoalPlanTaskCreated(&goal, decision, created.Task.ID, now)
 	if err := store.SaveGoal(goal); err != nil {
 		return false, "", err
 	}
@@ -1105,7 +1130,7 @@ func (o *Orchestrator) createGoalAutopilotTask(ctx context.Context, store *assis
 		GoalID:    goal.ID,
 		Kind:      "autopilot",
 		Title:     "Autopilot task created",
-		Body:      fmt.Sprintf("Created %s task %s for this %s Goal phase `%s` (%s task limit).", goal.ExecutionMode, taskShortID(created.Task.ID), goal.Kind, firstNonEmptyString(decision.PhaseID, "unplanned"), goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)),
+		Body:      fmt.Sprintf("Created %s %s task %s for this %s Goal phase `%s` milestone `%s` (%s task limit).", goal.ExecutionMode, firstNonEmptyString(decision.TaskType, assistantstore.GoalTaskTypeBuild), taskShortID(created.Task.ID), goal.Kind, firstNonEmptyString(decision.PhaseID, "unplanned"), firstNonEmptyString(decision.MilestoneID, "unplanned"), goalAutopilotProgressLabel(goal.Autopilot.TasksStarted, goal.Autopilot.BudgetTasks)),
 		TaskID:    created.Task.ID,
 		CreatedBy: "assistant",
 		CreatedAt: now,
@@ -1144,11 +1169,14 @@ func (o *Orchestrator) startGoalAutopilotTaskIfPossible(ctx context.Context, t t
 	return "Worker started with " + backend + "."
 }
 
-func markGoalPlanTaskCreated(goal *assistantstore.Goal, phaseID, taskID string, now time.Time) {
+func markGoalPlanTaskCreated(goal *assistantstore.Goal, decision assistantstore.GoalSupervisorDecision, taskID string, now time.Time) {
 	if goal == nil || goal.Plan == nil {
 		return
 	}
-	phaseID = strings.TrimSpace(phaseID)
+	phaseID := strings.TrimSpace(decision.PhaseID)
+	milestoneID := strings.TrimSpace(decision.MilestoneID)
+	gapID := strings.TrimSpace(decision.GapID)
+	taskType := strings.TrimSpace(decision.TaskType)
 	taskID = strings.TrimSpace(taskID)
 	if phaseID == "" || taskID == "" {
 		return
@@ -1166,6 +1194,36 @@ func markGoalPlanTaskCreated(goal *assistantstore.Goal, phaseID, taskID string, 
 		if !stringSliceContains(plan.Phases[index].TaskIDs, taskID) {
 			plan.Phases[index].TaskIDs = append(plan.Phases[index].TaskIDs, taskID)
 		}
+		for milestoneIndex := range plan.Phases[index].Milestones {
+			if plan.Phases[index].Milestones[milestoneIndex].ID != milestoneID {
+				continue
+			}
+			if taskType == assistantstore.GoalTaskTypeChallenge {
+				if !stringSliceContains(plan.Phases[index].Milestones[milestoneIndex].ChallengeTaskIDs, taskID) {
+					plan.Phases[index].Milestones[milestoneIndex].ChallengeTaskIDs = append(plan.Phases[index].Milestones[milestoneIndex].ChallengeTaskIDs, taskID)
+				}
+				if plan.Phases[index].Milestones[milestoneIndex].Status == assistantstore.GoalMilestoneStatusClaimed {
+					plan.Phases[index].Milestones[milestoneIndex].Status = assistantstore.GoalMilestoneStatusChallenged
+				}
+			} else {
+				if !stringSliceContains(plan.Phases[index].Milestones[milestoneIndex].TaskIDs, taskID) {
+					plan.Phases[index].Milestones[milestoneIndex].TaskIDs = append(plan.Phases[index].Milestones[milestoneIndex].TaskIDs, taskID)
+				}
+				if plan.Phases[index].Milestones[milestoneIndex].Status == assistantstore.GoalMilestoneStatusPending {
+					plan.Phases[index].Milestones[milestoneIndex].Status = assistantstore.GoalMilestoneStatusInProgress
+				}
+			}
+			break
+		}
+		break
+	}
+	for gapIndex := range plan.Gaps {
+		if plan.Gaps[gapIndex].ID != gapID {
+			continue
+		}
+		plan.Gaps[gapIndex].Status = assistantstore.GoalGapStatusInProgress
+		plan.Gaps[gapIndex].TaskIDs = appendUniqueStrings(plan.Gaps[gapIndex].TaskIDs, taskID)
+		plan.Gaps[gapIndex].UpdatedAt = now
 		break
 	}
 	goal.Plan = &plan
@@ -1267,6 +1325,16 @@ func goalAutopilotAllows(goal assistantstore.Goal, action string) bool {
 func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.GoalSupervisorDecision, error) {
 	goal = assistantstore.NormalizeGoal(goal)
 	now := time.Now().UTC()
+	if goal.Plan != nil {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		if ensureGoalPlanMilestones(&plan, goal, now) {
+			goal.Plan = &plan
+			goal.UpdatedAt = now
+			if err := store.SaveGoal(goal); err != nil {
+				return assistantstore.GoalSupervisorDecision{}, err
+			}
+		}
+	}
 	reports, err := store.ListTaskReports(goal.ID)
 	if err != nil {
 		return assistantstore.GoalSupervisorDecision{}, err
@@ -1283,6 +1351,44 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
 		return decision, nil
 	}
+	if gap, ok := selectOpenGoalGap(goal.Plan); ok {
+		if gap.PhaseID == "" && gap.MilestoneID != "" {
+			if phase, ok := goalPlanPhaseForMilestone(goal.Plan, gap.MilestoneID); ok {
+				gap.PhaseID = phase.ID
+			}
+		}
+		decision := assistantstore.GoalSupervisorDecision{
+			ID:          id.New("gdec"),
+			GoalID:      goal.ID,
+			Decision:    assistantstore.GoalSupervisorDecisionCreateTask,
+			Summary:     "Create a gap-fix task for `" + gap.ID + "`.",
+			Rationale:   "Open challenge gaps take priority over new feature work so Autopilot repairs known weaknesses before broadening the implementation.",
+			PhaseID:     gap.PhaseID,
+			MilestoneID: gap.MilestoneID,
+			GapID:       gap.ID,
+			TaskType:    assistantstore.GoalTaskTypeGapFix,
+			Evidence:    goalSupervisorEvidence(goal, reports),
+			CreatedAt:   now,
+		}
+		decision.TaskGoal = goalAutopilotTaskGoalForDecision(goal, decision, reports)
+		return assistantstore.NormalizeGoalSupervisorDecision(decision), nil
+	}
+	if phase, milestone, ok := selectMilestoneNeedingChallenge(goal.Plan); ok {
+		decision := assistantstore.GoalSupervisorDecision{
+			ID:          id.New("gdec"),
+			GoalID:      goal.ID,
+			Decision:    assistantstore.GoalSupervisorDecisionCreateTask,
+			Summary:     "Challenge milestone `" + milestone.ID + "` before accepting it.",
+			Rationale:   "Every claimed milestone must survive read-only scrutiny before the supervisor can move to the next milestone.",
+			PhaseID:     phase.ID,
+			MilestoneID: milestone.ID,
+			TaskType:    assistantstore.GoalTaskTypeChallenge,
+			Evidence:    goalSupervisorEvidence(goal, reports),
+			CreatedAt:   now,
+		}
+		decision.TaskGoal = goalAutopilotTaskGoalForDecision(goal, decision, reports)
+		return assistantstore.NormalizeGoalSupervisorDecision(decision), nil
+	}
 	if goal.Plan != nil && assistantstore.NormalizeGoalPlan(*goal.Plan).Status == assistantstore.GoalPlanStatusBlocked {
 		decision := assistantstore.GoalSupervisorDecision{
 			Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
@@ -1294,12 +1400,12 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
 		return decision, nil
 	}
-	if recentGoalReportCompletes(reports) || goalPlanComplete(goal.Plan) {
+	if goalPlanComplete(goal.Plan) && allGoalGapsClosed(goal.Plan) {
 		decision := assistantstore.GoalSupervisorDecision{
 			Decision:   assistantstore.GoalSupervisorDecisionMarkComplete,
 			Summary:    "Goal plan is complete.",
-			Rationale:  "The latest structured task report or all plan phases indicate the Goal has reached its done condition.",
-			StopReason: "Goal success criteria are satisfied or no remaining plan phase needs work.",
+			Rationale:  "All plan milestones have been accepted after challenge and no open challenge gaps remain.",
+			StopReason: "Goal success criteria are satisfied after milestone challenge.",
 			Evidence:   goalSupervisorEvidence(goal, reports),
 		}
 		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
@@ -1316,29 +1422,31 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
 		return decision, nil
 	}
-	phase, ok := selectGoalPlanPhase(goal.Plan)
+	phase, milestone, ok := selectGoalPlanMilestone(goal.Plan)
 	if !ok {
 		decision := assistantstore.GoalSupervisorDecision{
-			Decision:   assistantstore.GoalSupervisorDecisionMarkComplete,
-			Summary:    "No remaining Goal plan phase needs work.",
-			Rationale:  "Every known plan phase is completed, skipped, or unavailable.",
-			StopReason: "No remaining plan phase.",
+			Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
+			Summary:    "No dependency-ready Goal milestone needs build work.",
+			Rationale:  "The plan is not complete, but the supervisor could not find a pending milestone, claimed milestone, or open gap to advance.",
+			StopReason: "No actionable Goal milestone is ready.",
 			Evidence:   goalSupervisorEvidence(goal, reports),
 		}
 		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
 		return decision, nil
 	}
-	taskGoal := goalAutopilotTaskGoalForDecision(goal, assistantstore.GoalSupervisorDecision{PhaseID: phase.ID}, reports)
+	taskGoal := goalAutopilotTaskGoalForDecision(goal, assistantstore.GoalSupervisorDecision{PhaseID: phase.ID, MilestoneID: milestone.ID, TaskType: assistantstore.GoalTaskTypeBuild}, reports)
 	decision := assistantstore.GoalSupervisorDecision{
-		ID:        id.New("gdec"),
-		GoalID:    goal.ID,
-		Decision:  assistantstore.GoalSupervisorDecisionCreateTask,
-		Summary:   "Create the next task for plan phase `" + phase.ID + "`.",
-		Rationale: "The selected phase is the next incomplete, dependency-ready phase in the Goal plan.",
-		PhaseID:   phase.ID,
-		TaskGoal:  taskGoal,
-		Evidence:  goalSupervisorEvidence(goal, reports),
-		CreatedAt: now,
+		ID:          id.New("gdec"),
+		GoalID:      goal.ID,
+		Decision:    assistantstore.GoalSupervisorDecisionCreateTask,
+		Summary:     "Create the next task for milestone `" + milestone.ID + "`.",
+		Rationale:   "The selected milestone is the next incomplete, dependency-ready slice in the Goal plan.",
+		PhaseID:     phase.ID,
+		MilestoneID: milestone.ID,
+		TaskType:    assistantstore.GoalTaskTypeBuild,
+		TaskGoal:    taskGoal,
+		Evidence:    goalSupervisorEvidence(goal, reports),
+		CreatedAt:   now,
 	}
 	return assistantstore.NormalizeGoalSupervisorDecision(decision), nil
 }
@@ -1353,6 +1461,9 @@ func (o *Orchestrator) completeGoalAutopilot(ctx context.Context, store *assista
 		for index := range plan.Phases {
 			if plan.Phases[index].Status != assistantstore.GoalPlanPhaseStatusSkipped {
 				plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusCompleted
+			}
+			for milestoneIndex := range plan.Phases[index].Milestones {
+				plan.Phases[index].Milestones[milestoneIndex].Status = assistantstore.GoalMilestoneStatusAccepted
 			}
 		}
 		plan.UpdatedAt = now
@@ -1389,9 +1500,11 @@ func (o *Orchestrator) completeGoalAutopilot(ctx context.Context, store *assista
 func goalSupervisorEvidence(goal assistantstore.Goal, reports []assistantstore.GoalTaskReport) []string {
 	var evidence []string
 	if goal.Plan != nil {
-		phase, ok := selectGoalPlanPhase(goal.Plan)
-		if ok {
-			evidence = append(evidence, "next phase: "+phase.ID+" - "+phase.Title)
+		if gap, ok := selectOpenGoalGap(goal.Plan); ok {
+			evidence = append(evidence, "open gap: "+gap.ID+" - "+firstNonEmptyString(gap.Area, gap.Claim))
+		}
+		if phase, milestone, ok := selectGoalPlanMilestone(goal.Plan); ok {
+			evidence = append(evidence, "next milestone: "+phase.ID+"/"+milestone.ID+" - "+milestone.Title)
 		}
 	}
 	for _, report := range reports {
@@ -1407,7 +1520,15 @@ func recentGoalReportCompletes(reports []assistantstore.GoalTaskReport) bool {
 	if len(reports) == 0 {
 		return false
 	}
-	return reports[0].GoalComplete
+	return goalTaskReportCompletesGoal(reports[0])
+}
+
+func goalTaskReportCompletesGoal(report assistantstore.GoalTaskReport) bool {
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	if !report.GoalComplete || report.TaskType != assistantstore.GoalTaskTypeChallenge || report.Challenge == nil {
+		return false
+	}
+	return report.Challenge.Verdict == assistantstore.GoalChallengeVerdictPassed
 }
 
 func recentGoalReportsShowNoProgress(reports []assistantstore.GoalTaskReport) (bool, string) {
@@ -1454,7 +1575,44 @@ func goalPlanComplete(plan *assistantstore.GoalPlan) bool {
 		return true
 	}
 	for _, phase := range planValue.Phases {
-		if phase.Status != assistantstore.GoalPlanPhaseStatusCompleted && phase.Status != assistantstore.GoalPlanPhaseStatusSkipped {
+		if phase.Status == assistantstore.GoalPlanPhaseStatusSkipped {
+			continue
+		}
+		if len(phase.Milestones) > 0 {
+			if !goalPhaseMilestonesAccepted(phase) {
+				return false
+			}
+			continue
+		}
+		if phase.Status != assistantstore.GoalPlanPhaseStatusCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+func allGoalGapsClosed(plan *assistantstore.GoalPlan) bool {
+	if plan == nil {
+		return true
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	for _, gap := range planValue.Gaps {
+		switch gap.Status {
+		case assistantstore.GoalGapStatusFixed, assistantstore.GoalGapStatusAcceptedRisk, assistantstore.GoalGapStatusDisproven:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func goalPhaseMilestonesAccepted(phase assistantstore.GoalPlanPhase) bool {
+	if len(phase.Milestones) == 0 {
+		return phase.Status == assistantstore.GoalPlanPhaseStatusCompleted || phase.Status == assistantstore.GoalPlanPhaseStatusSkipped
+	}
+	for _, milestone := range phase.Milestones {
+		if milestone.Status != assistantstore.GoalMilestoneStatusAccepted {
 			return false
 		}
 	}
@@ -1488,6 +1646,79 @@ func selectGoalPlanPhase(plan *assistantstore.GoalPlan) (assistantstore.GoalPlan
 		}
 	}
 	return assistantstore.GoalPlanPhase{}, false
+}
+
+func selectGoalPlanMilestone(plan *assistantstore.GoalPlan) (assistantstore.GoalPlanPhase, assistantstore.GoalMilestone, bool) {
+	if plan == nil {
+		return assistantstore.GoalPlanPhase{}, assistantstore.GoalMilestone{}, false
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	completed := map[string]bool{}
+	for _, phase := range planValue.Phases {
+		if phase.Status == assistantstore.GoalPlanPhaseStatusSkipped || goalPhaseMilestonesAccepted(phase) {
+			completed[phase.ID] = true
+		}
+	}
+	for _, phase := range planValue.Phases {
+		if phase.Status == assistantstore.GoalPlanPhaseStatusSkipped || goalPhaseMilestonesAccepted(phase) || phase.Status == assistantstore.GoalPlanPhaseStatusBlocked {
+			continue
+		}
+		ready := true
+		for _, dep := range phase.DependsOn {
+			if !completed[dep] {
+				ready = false
+				break
+			}
+		}
+		if !ready {
+			continue
+		}
+		if len(phase.Milestones) == 0 {
+			return phase, assistantstore.GoalMilestone{ID: phase.ID + "_milestone", PhaseID: phase.ID, Title: phase.Title, Objective: phase.Objective}, true
+		}
+		for _, milestone := range phase.Milestones {
+			switch milestone.Status {
+			case assistantstore.GoalMilestoneStatusAccepted, assistantstore.GoalMilestoneStatusClaimed, assistantstore.GoalMilestoneStatusChallenged, assistantstore.GoalMilestoneStatusBlocked:
+				continue
+			default:
+				return phase, milestone, true
+			}
+		}
+	}
+	return assistantstore.GoalPlanPhase{}, assistantstore.GoalMilestone{}, false
+}
+
+func selectMilestoneNeedingChallenge(plan *assistantstore.GoalPlan) (assistantstore.GoalPlanPhase, assistantstore.GoalMilestone, bool) {
+	if plan == nil {
+		return assistantstore.GoalPlanPhase{}, assistantstore.GoalMilestone{}, false
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	for _, phase := range planValue.Phases {
+		if phase.Status == assistantstore.GoalPlanPhaseStatusSkipped || phase.Status == assistantstore.GoalPlanPhaseStatusBlocked {
+			continue
+		}
+		for _, milestone := range phase.Milestones {
+			if milestone.Status == assistantstore.GoalMilestoneStatusClaimed {
+				return phase, milestone, true
+			}
+		}
+	}
+	return assistantstore.GoalPlanPhase{}, assistantstore.GoalMilestone{}, false
+}
+
+func selectOpenGoalGap(plan *assistantstore.GoalPlan) (assistantstore.GoalGap, bool) {
+	if plan == nil {
+		return assistantstore.GoalGap{}, false
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	for _, severity := range []string{assistantstore.GoalGapSeverityCritical, assistantstore.GoalGapSeverityHigh, assistantstore.GoalGapSeverityMedium, assistantstore.GoalGapSeverityLow} {
+		for _, gap := range planValue.Gaps {
+			if gap.Status == assistantstore.GoalGapStatusOpen && gap.Severity == severity {
+				return gap, true
+			}
+		}
+	}
+	return assistantstore.GoalGap{}, false
 }
 
 func goalAutopilotBudgetAllowsMore(autopilot assistantstore.GoalAutopilot) bool {
@@ -1524,7 +1755,7 @@ func buildGoalPlan(goal assistantstore.Goal, now time.Time) assistantstore.GoalP
 	if len(phases) > 0 {
 		current = phases[0].ID
 	}
-	return assistantstore.NormalizeGoalPlan(assistantstore.GoalPlan{
+	plan := assistantstore.NormalizeGoalPlan(assistantstore.GoalPlan{
 		Status:         assistantstore.GoalPlanStatusActive,
 		Summary:        "Supervisor plan for " + goal.Title,
 		CurrentPhaseID: current,
@@ -1532,6 +1763,112 @@ func buildGoalPlan(goal assistantstore.Goal, now time.Time) assistantstore.GoalP
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	})
+	ensureGoalPlanMilestones(&plan, goal, now)
+	return assistantstore.NormalizeGoalPlan(plan)
+}
+
+func ensureGoalPlanMilestones(plan *assistantstore.GoalPlan, goal assistantstore.Goal, now time.Time) bool {
+	if plan == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	changed := false
+	for phaseIndex := range plan.Phases {
+		phase := &plan.Phases[phaseIndex]
+		if len(phase.Milestones) == 0 {
+			phase.Milestones = defaultGoalMilestones(goal, *phase)
+			changed = true
+		}
+		for milestoneIndex := range phase.Milestones {
+			milestone := &phase.Milestones[milestoneIndex]
+			if strings.TrimSpace(milestone.PhaseID) == "" {
+				milestone.PhaseID = phase.ID
+				changed = true
+			}
+			if phase.Status == assistantstore.GoalPlanPhaseStatusCompleted && milestone.Status != assistantstore.GoalMilestoneStatusAccepted {
+				milestone.Status = assistantstore.GoalMilestoneStatusAccepted
+				changed = true
+			}
+			if phase.Status == assistantstore.GoalPlanPhaseStatusBlocked && milestone.Status == assistantstore.GoalMilestoneStatusPending && milestoneIndex == 0 {
+				milestone.Status = assistantstore.GoalMilestoneStatusBlocked
+				changed = true
+			}
+			if phase.Status == assistantstore.GoalPlanPhaseStatusInProgress && milestone.Status == assistantstore.GoalMilestoneStatusPending && !phaseHasActiveMilestone(*phase) && milestoneIndex == 0 {
+				milestone.Status = assistantstore.GoalMilestoneStatusInProgress
+				changed = true
+			}
+		}
+	}
+	if changed {
+		plan.UpdatedAt = now
+	}
+	return changed
+}
+
+func phaseHasActiveMilestone(phase assistantstore.GoalPlanPhase) bool {
+	for _, milestone := range phase.Milestones {
+		switch milestone.Status {
+		case assistantstore.GoalMilestoneStatusInProgress, assistantstore.GoalMilestoneStatusClaimed, assistantstore.GoalMilestoneStatusChallenged, assistantstore.GoalMilestoneStatusBlocked:
+			return true
+		}
+	}
+	return false
+}
+
+func defaultGoalMilestones(goal assistantstore.Goal, phase assistantstore.GoalPlanPhase) []assistantstore.GoalMilestone {
+	phaseID := strings.TrimSpace(phase.ID)
+	if phaseID == "" {
+		phaseID = "phase"
+	}
+	status := assistantstore.GoalMilestoneStatusPending
+	if phase.Status == assistantstore.GoalPlanPhaseStatusInProgress {
+		status = assistantstore.GoalMilestoneStatusInProgress
+	}
+	if phase.Status == assistantstore.GoalPlanPhaseStatusBlocked {
+		status = assistantstore.GoalMilestoneStatusBlocked
+	}
+	if phase.Status == assistantstore.GoalPlanPhaseStatusCompleted || phase.Status == assistantstore.GoalPlanPhaseStatusSkipped {
+		status = assistantstore.GoalMilestoneStatusAccepted
+	}
+	milestones := []assistantstore.GoalMilestone{
+		goalMilestone(phaseID, "01_scope", "Scope the slice", "Identify the exact repo evidence, feature matrix entry, acceptance criteria, and risks for this phase before broad implementation.", status),
+		goalMilestone(phaseID, "02_build", "Deliver a usable slice", "Implement the smallest cohesive capability that an operator could inspect or use, with code and documentation kept in sync.", assistantstore.GoalMilestoneStatusPending),
+		goalMilestone(phaseID, "03_prove", "Prove the slice", "Run the relevant checks, browser or operational UAT, and update durable evidence so the supervisor can judge what changed.", assistantstore.GoalMilestoneStatusPending),
+	}
+	if goal.Kind == assistantstore.GoalKindRoutine || goal.Kind == assistantstore.GoalKindWatch {
+		milestones[0].Title = "Inspect current state"
+		milestones[1].Title = "Run one useful cycle"
+		milestones[2].Title = "Harden the loop"
+	}
+	if phase.Status == assistantstore.GoalPlanPhaseStatusCompleted || phase.Status == assistantstore.GoalPlanPhaseStatusSkipped {
+		for index := range milestones {
+			milestones[index].Status = assistantstore.GoalMilestoneStatusAccepted
+		}
+	}
+	return milestones
+}
+
+func goalMilestone(phaseID, suffix, title, objective, status string) assistantstore.GoalMilestone {
+	return assistantstore.GoalMilestone{
+		ID:        phaseID + "_milestone_" + suffix,
+		PhaseID:   phaseID,
+		Title:     title,
+		Objective: objective,
+		Status:    status,
+		AcceptanceCriteria: []string{
+			"The task result makes a concrete claim about this milestone, not only generic activity.",
+			"Changed files, tests, docs, screenshots, logs, or inspection evidence can be checked independently.",
+			"Any uncertainty is captured as a specific gap, blocker, or operator question.",
+		},
+		EvidenceRequirements: []string{
+			"Relevant changed files or explicit no-change rationale.",
+			"Validation command, browser UAT, manual inspection, or operational check output.",
+			"Updated durable planning artefact when the Goal is a build or parity objective.",
+		},
+		ChallengePolicy: "Run a read-only challenge immediately after this milestone is claimed.",
+	}
 }
 
 func goalPlanPhases(goal assistantstore.Goal) []assistantstore.GoalPlanPhase {
@@ -1617,7 +1954,13 @@ func goalAutopilotTaskGoal(goal assistantstore.Goal) string {
 
 func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assistantstore.GoalSupervisorDecision, reports []assistantstore.GoalTaskReport) string {
 	goal = assistantstore.NormalizeGoal(goal)
+	decision = assistantstore.NormalizeGoalSupervisorDecision(decision)
 	phase, hasPhase := goalPlanPhaseByID(goal.Plan, decision.PhaseID)
+	milestone, hasMilestone := goalPlanMilestoneByID(goal.Plan, decision.MilestoneID)
+	gap, hasGap := goalPlanGapByID(goal.Plan, decision.GapID)
+	if decision.TaskType == assistantstore.GoalTaskTypeChallenge {
+		return goalAutopilotChallengeTaskGoal(goal, decision, phase, milestone, hasPhase, hasMilestone, reports)
+	}
 	kindInstruction := "Pick the next bounded implementation slice that measurably advances the objective."
 	switch goal.Kind {
 	case assistantstore.GoalKindRoutine:
@@ -1640,6 +1983,24 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 			}
 		}
 	}
+	if hasMilestone {
+		fmt.Fprintf(&b, "\n\nSelected Goal milestone:\n- Milestone ID: %s\n- Title: %s\n- Objective: %s\n- Status: %s", milestone.ID, milestone.Title, milestone.Objective, milestone.Status)
+		if len(milestone.AcceptanceCriteria) > 0 {
+			b.WriteString("\n- Milestone acceptance:")
+			for _, criterion := range milestone.AcceptanceCriteria {
+				fmt.Fprintf(&b, "\n  - %s", criterion)
+			}
+		}
+		if len(milestone.EvidenceRequirements) > 0 {
+			b.WriteString("\n- Evidence required:")
+			for _, requirement := range milestone.EvidenceRequirements {
+				fmt.Fprintf(&b, "\n  - %s", requirement)
+			}
+		}
+	}
+	if hasGap {
+		fmt.Fprintf(&b, "\n\nSelected challenge gap:\n- Gap ID: %s\n- Area: %s\n- Severity: %s\n- Claim under challenge: %s\n- Evidence: %s\n- Suggested task: %s", gap.ID, gap.Area, gap.Severity, gap.Claim, gap.Evidence, gap.SuggestedTask)
+	}
 	if goal.Details != "" {
 		fmt.Fprintf(&b, "\n\nDetails:\n%s", goal.Details)
 	}
@@ -1650,12 +2011,21 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 		b.WriteString("\n\nGoal plan:")
 		for _, phase := range goal.Plan.Phases {
 			fmt.Fprintf(&b, "\n- %s [%s]: %s", phase.ID, phase.Status, phase.Title)
+			for _, milestone := range phase.Milestones {
+				fmt.Fprintf(&b, "\n  - %s [%s]: %s", milestone.ID, milestone.Status, milestone.Title)
+			}
+		}
+		if len(goal.Plan.Gaps) > 0 {
+			b.WriteString("\n\nOpen and recent challenge gaps:")
+			for _, gap := range goal.Plan.Gaps[:assistantMinInt(len(goal.Plan.Gaps), 12)] {
+				fmt.Fprintf(&b, "\n- %s [%s/%s] %s: %s", gap.ID, gap.Status, gap.Severity, firstNonEmptyString(gap.Area, "gap"), firstNonEmptyString(gap.SuggestedTask, gap.Claim))
+			}
 		}
 	}
 	if len(reports) > 0 {
 		b.WriteString("\n\nRecent structured Goal task reports:")
 		for _, report := range reports[:assistantMinInt(len(reports), 4)] {
-			fmt.Fprintf(&b, "\n- Task %s phase %s: %s", taskShortID(report.TaskID), firstNonEmptyString(report.PhaseID, "unknown"), firstNonEmptyString(report.Summary, report.Status))
+			fmt.Fprintf(&b, "\n- Task %s %s phase %s milestone %s: %s", taskShortID(report.TaskID), firstNonEmptyString(report.TaskType, "build"), firstNonEmptyString(report.PhaseID, "unknown"), firstNonEmptyString(report.MilestoneID, "unknown"), firstNonEmptyString(report.Summary, report.Status))
 			if len(report.ChangedFiles) > 0 {
 				fmt.Fprintf(&b, " Changed files: %s.", strings.Join(report.ChangedFiles[:assistantMinInt(len(report.ChangedFiles), 8)], ", "))
 			}
@@ -1669,6 +2039,9 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 	}
 	b.WriteString("\n\nAutopilot work mode:")
 	fmt.Fprintf(&b, "\n- %s", kindInstruction)
+	if decision.TaskType == assistantstore.GoalTaskTypeGapFix {
+		b.WriteString("\n- This is a gap-fix task. Fix or disprove the selected challenge gap before taking unrelated feature work.")
+	}
 	b.WriteString("\n- Work the selected slice to completion in this task, including implementation, docs, focused tests, and required browser UAT for changed UI.")
 	b.WriteString("\n- Do not split the work into a daily drip. If the Goal needs one large feature, build the largest coherent safe slice this task can complete.")
 	if goal.Kind == assistantstore.GoalKindBuild {
@@ -1680,8 +2053,11 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 	b.WriteString("\n- Do not repeat previous task work. Use the recent structured Goal reports and selected phase to choose a concrete next step.")
 	b.WriteString("\n\nGoal supervisor report contract:")
 	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_REPORT:`.")
-	b.WriteString("\nThe object must include: summary, advanced_goal, phase_complete, goal_complete, changed_files, validation, follow_ups, blockers, questions.")
+	b.WriteString("\nThe object must include: task_type, phase_id, milestone_id, summary, advanced_goal, phase_complete, goal_complete, changed_files, validation, follow_ups, blockers, questions, claims.")
+	b.WriteString("\nUse task_type `build` for normal milestone work and `gap_fix` when this task is repairing a selected challenge gap. Include gap_ids for gap-fix work.")
+	b.WriteString("\nClaims must be an array of objects with claim and evidence fields. Make claims specific enough for a later challenge task to disprove.")
 	b.WriteString("\nThe reviewer will independently compare the diff, validation, and changed files against the Goal; do not claim progress unless the task materially advances the selected phase.")
+	b.WriteString("\nA build or gap-fix task may claim a milestone or phase complete, but the supervisor will not accept it as done until a separate challenge task passes.")
 	b.WriteString("\nUse questions for product or operator decisions that should block further Autopilot tasks.")
 	if len(goal.SuccessCriteria) > 0 {
 		b.WriteString("\n\nGoal success criteria:")
@@ -1698,6 +2074,80 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 	return b.String()
 }
 
+func goalAutopilotChallengeTaskGoal(goal assistantstore.Goal, decision assistantstore.GoalSupervisorDecision, phase assistantstore.GoalPlanPhase, milestone assistantstore.GoalMilestone, hasPhase, hasMilestone bool, reports []assistantstore.GoalTaskReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Autopilot challenge task for %s Goal `%s`: %s\n\nObjective: %s", goal.Kind, goal.ID, goal.Title, goal.Objective)
+	if hasPhase {
+		fmt.Fprintf(&b, "\n\nPhase under review:\n- Phase ID: %s\n- Title: %s\n- Objective: %s\n- Status: %s", phase.ID, phase.Title, phase.Objective, phase.Status)
+	}
+	if hasMilestone {
+		fmt.Fprintf(&b, "\n\nMilestone under challenge:\n- Milestone ID: %s\n- Title: %s\n- Objective: %s\n- Status: %s", milestone.ID, milestone.Title, milestone.Objective, milestone.Status)
+		if len(milestone.AcceptanceCriteria) > 0 {
+			b.WriteString("\n- Acceptance criteria:")
+			for _, criterion := range milestone.AcceptanceCriteria {
+				fmt.Fprintf(&b, "\n  - %s", criterion)
+			}
+		}
+		if len(milestone.Claims) > 0 {
+			b.WriteString("\n- Claims to verify:")
+			for _, claim := range milestone.Claims {
+				fmt.Fprintf(&b, "\n  - %s", claim.Claim)
+				if len(claim.Evidence) > 0 {
+					fmt.Fprintf(&b, " Evidence: %s.", strings.Join(claim.Evidence[:assistantMinInt(len(claim.Evidence), 4)], "; "))
+				}
+			}
+		}
+		if len(milestone.Evidence) > 0 {
+			b.WriteString("\n- Prior milestone evidence:")
+			for _, evidence := range milestone.Evidence[:assistantMinInt(len(milestone.Evidence), 8)] {
+				fmt.Fprintf(&b, "\n  - %s", evidence)
+			}
+		}
+	}
+	if goal.Details != "" {
+		fmt.Fprintf(&b, "\n\nDetails:\n%s", goal.Details)
+	}
+	if len(goal.SuccessCriteria) > 0 {
+		b.WriteString("\n\nGoal success criteria:")
+		for _, criterion := range goal.SuccessCriteria {
+			fmt.Fprintf(&b, "\n- %s", criterion)
+		}
+	}
+	if len(goal.Constraints) > 0 {
+		b.WriteString("\n\nGoal constraints:")
+		for _, constraint := range goal.Constraints {
+			fmt.Fprintf(&b, "\n- %s", constraint)
+		}
+	}
+	if len(reports) > 0 {
+		b.WriteString("\n\nRecent structured Goal task reports:")
+		for _, report := range reports[:assistantMinInt(len(reports), 6)] {
+			fmt.Fprintf(&b, "\n- Task %s %s phase %s milestone %s: %s", taskShortID(report.TaskID), firstNonEmptyString(report.TaskType, "build"), firstNonEmptyString(report.PhaseID, "unknown"), firstNonEmptyString(report.MilestoneID, "unknown"), firstNonEmptyString(report.Summary, report.Status))
+			if len(report.Claims) > 0 {
+				claimTexts := make([]string, 0, assistantMinInt(len(report.Claims), 3))
+				for _, claim := range report.Claims[:assistantMinInt(len(report.Claims), 3)] {
+					claimTexts = append(claimTexts, claim.Claim)
+				}
+				fmt.Fprintf(&b, " Claims: %s.", strings.Join(claimTexts, "; "))
+			}
+			if len(report.Validation) > 0 {
+				fmt.Fprintf(&b, " Validation: %s.", strings.Join(report.Validation[:assistantMinInt(len(report.Validation), 3)], "; "))
+			}
+		}
+	}
+	b.WriteString("\n\nChallenge mode:")
+	b.WriteString("\n- Do not implement new features in this task. Inspect the repo, docs, tests, examples, browser behaviour, and durable planning artefacts.")
+	b.WriteString("\n- Try to disprove the milestone claims. Look for missing behaviour, shallow tests, self-certified matrices, broken examples, accessibility gaps, packaging gaps, performance gaps, and mismatches with the Goal.")
+	b.WriteString("\n- Run lightweight validation or browser checks where practical, but keep the task read-only unless a tiny diagnostic artefact is unavoidable.")
+	b.WriteString("\n- Passing means the milestone evidence is credible enough for Autopilot to move on. Failing is useful progress: record concrete gaps with suggested repair tasks.")
+	b.WriteString("\n\nGoal challenge report contract:")
+	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_CHALLENGE:`.")
+	b.WriteString("\nThe object must include: milestone_id, verdict, summary, evidence, claims_challenged, gaps, goal_complete.")
+	b.WriteString("\nUse verdict `passed`, `failed`, or `needs_user`. Gaps must be an array of objects with area, claim, severity, evidence, and suggested_task.")
+	b.WriteString("\nSet goal_complete true only if this is the final milestone, all success criteria are credibly satisfied, and no open critical/high gaps remain.")
+	return b.String()
+}
+
 func goalPlanPhaseByID(plan *assistantstore.GoalPlan, phaseID string) (assistantstore.GoalPlanPhase, bool) {
 	phaseID = strings.TrimSpace(phaseID)
 	if plan == nil || phaseID == "" {
@@ -1709,6 +2159,117 @@ func goalPlanPhaseByID(plan *assistantstore.GoalPlan, phaseID string) (assistant
 		}
 	}
 	return assistantstore.GoalPlanPhase{}, false
+}
+
+func goalPlanMilestoneByID(plan *assistantstore.GoalPlan, milestoneID string) (assistantstore.GoalMilestone, bool) {
+	milestoneID = strings.TrimSpace(milestoneID)
+	if plan == nil || milestoneID == "" {
+		return assistantstore.GoalMilestone{}, false
+	}
+	for _, phase := range plan.Phases {
+		for _, milestone := range phase.Milestones {
+			if milestone.ID == milestoneID {
+				return milestone, true
+			}
+		}
+	}
+	return assistantstore.GoalMilestone{}, false
+}
+
+func goalPlanPhaseForMilestone(plan *assistantstore.GoalPlan, milestoneID string) (assistantstore.GoalPlanPhase, bool) {
+	milestoneID = strings.TrimSpace(milestoneID)
+	if plan == nil || milestoneID == "" {
+		return assistantstore.GoalPlanPhase{}, false
+	}
+	for _, phase := range plan.Phases {
+		for _, milestone := range phase.Milestones {
+			if milestone.ID == milestoneID {
+				return phase, true
+			}
+		}
+	}
+	return assistantstore.GoalPlanPhase{}, false
+}
+
+func goalPhaseMilestoneIndex(phase assistantstore.GoalPlanPhase, milestoneID string) int {
+	milestoneID = strings.TrimSpace(milestoneID)
+	if milestoneID == "" && len(phase.Milestones) == 1 {
+		return 0
+	}
+	for index, milestone := range phase.Milestones {
+		if milestone.ID == milestoneID {
+			return index
+		}
+	}
+	return -1
+}
+
+func appendGoalClaim(claims []assistantstore.GoalClaim, claim assistantstore.GoalClaim) []assistantstore.GoalClaim {
+	claim = assistantstore.NormalizeGoalClaim(claim, len(claims))
+	if claim.Claim == "" {
+		return claims
+	}
+	key := strings.ToLower(strings.TrimSpace(claim.MilestoneID + "\x00" + claim.Claim))
+	for index, existing := range claims {
+		existingKey := strings.ToLower(strings.TrimSpace(existing.MilestoneID + "\x00" + existing.Claim))
+		if existing.ID == claim.ID || existingKey == key {
+			claims[index] = claim
+			return claims
+		}
+	}
+	return append(claims, claim)
+}
+
+func appendGoalChallenge(challenges []assistantstore.GoalChallenge, challenge assistantstore.GoalChallenge) []assistantstore.GoalChallenge {
+	challenge = assistantstore.NormalizeGoalChallenge(challenge, len(challenges))
+	for index, existing := range challenges {
+		if existing.ID == challenge.ID || (challenge.TaskID != "" && existing.TaskID == challenge.TaskID) {
+			challenges[index] = challenge
+			return challenges
+		}
+	}
+	return append(challenges, challenge)
+}
+
+func appendGoalGap(gaps []assistantstore.GoalGap, gap assistantstore.GoalGap) []assistantstore.GoalGap {
+	gap = assistantstore.NormalizeGoalGap(gap, len(gaps))
+	key := goalGapKey(gap)
+	for index, existing := range gaps {
+		if existing.ID == gap.ID || goalGapKey(existing) == key {
+			if existing.ID != "" {
+				gap.ID = existing.ID
+			}
+			if gap.CreatedAt.IsZero() {
+				gap.CreatedAt = existing.CreatedAt
+			}
+			gaps[index] = gap
+			return gaps
+		}
+	}
+	return append(gaps, gap)
+}
+
+func goalGapKey(gap assistantstore.GoalGap) string {
+	return strings.ToLower(strings.Join([]string{
+		strings.TrimSpace(gap.PhaseID),
+		strings.TrimSpace(gap.MilestoneID),
+		strings.TrimSpace(gap.Area),
+		strings.TrimSpace(gap.Claim),
+		strings.TrimSpace(gap.SuggestedTask),
+	}, "\x00"))
+}
+
+func goalPlanGapByID(plan *assistantstore.GoalPlan, gapID string) (assistantstore.GoalGap, bool) {
+	gapID = strings.TrimSpace(gapID)
+	if plan == nil || gapID == "" {
+		return assistantstore.GoalGap{}, false
+	}
+	for _, gap := range plan.Gaps {
+		if gap.ID == gapID {
+			return gap, true
+		}
+	}
+	return assistantstore.GoalGap{}, false
 }
 
 func (o *Orchestrator) handleGoalCommand(ctx context.Context, fields []string, message string) (string, error) {
@@ -1878,6 +2439,20 @@ func (o *Orchestrator) formatGoalReply(goalID string) (string, error) {
 	if len(goal.LinkedTasks) > 0 {
 		fmt.Fprintf(&b, "\nLinked tasks: %s", strings.Join(goal.LinkedTasks, ", "))
 	}
+	if goal.Plan != nil {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		milestones, accepted, gaps, openGaps := goalPlanFeedbackCounts(plan)
+		fmt.Fprintf(&b, "\nPlan: %s, %s", labelFromSlugForReply(plan.Status), pluralForReply(len(plan.Phases), "phase", "phases"))
+		if milestones > 0 {
+			fmt.Fprintf(&b, ", %d/%d milestones accepted", accepted, milestones)
+		}
+		if gaps > 0 {
+			fmt.Fprintf(&b, ", %d/%d gaps open", openGaps, gaps)
+		}
+		if plan.CurrentPhaseID != "" {
+			fmt.Fprintf(&b, "\nCurrent phase: %s", plan.CurrentPhaseID)
+		}
+	}
 	if len(timeline.Watches) > 0 {
 		fmt.Fprintf(&b, "\nWatches: %d", len(timeline.Watches))
 	}
@@ -1885,6 +2460,41 @@ func (o *Orchestrator) formatGoalReply(goalID string) (string, error) {
 		fmt.Fprintf(&b, "\nLatest assessment: %s", firstNonEmptyString(timeline.Assessments[0].Summary, timeline.Assessments[0].Decision))
 	}
 	return b.String(), nil
+}
+
+func goalPlanFeedbackCounts(plan assistantstore.GoalPlan) (milestones, accepted, gaps, openGaps int) {
+	for _, phase := range plan.Phases {
+		for _, milestone := range phase.Milestones {
+			milestones++
+			if milestone.Status == assistantstore.GoalMilestoneStatusAccepted {
+				accepted++
+			}
+		}
+	}
+	gaps = len(plan.Gaps)
+	for _, gap := range plan.Gaps {
+		switch gap.Status {
+		case assistantstore.GoalGapStatusFixed, assistantstore.GoalGapStatusAcceptedRisk, assistantstore.GoalGapStatusDisproven:
+		default:
+			openGaps++
+		}
+	}
+	return milestones, accepted, gaps, openGaps
+}
+
+func labelFromSlugForReply(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "_", " "))
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func pluralForReply(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("%d %s", count, singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
 }
 
 func goalCreationIntent(message string) (assistantstore.GoalCreateRequest, bool) {
@@ -2130,11 +2740,11 @@ func (o *Orchestrator) reflectGoalTaskCompletion(ctx context.Context, t taskstor
 	applyGoalTaskReportToPlan(&goal, report, now)
 	goal.ProgressSummary = truncateAssistantRunText("Latest linked task completed: "+friendlyTaskTitle(t)+". "+firstNonEmptyString(report.Summary, "Task completed."), 600)
 	goal.LastActionAt = &now
-	if report.GoalComplete {
+	if goalTaskReportCompletesGoal(report) && goalPlanComplete(goal.Plan) && allGoalGapsClosed(goal.Plan) {
 		goal.Status = assistantstore.GoalStatusCompleted
 		if goal.Autopilot != nil {
 			goal.Autopilot.Status = assistantstore.GoalAutopilotStatusCompleted
-			goal.Autopilot.StopReasons = appendGoalStopReason(goal.Autopilot.StopReasons, "Linked task reported the Goal complete.")
+			goal.Autopilot.StopReasons = appendGoalStopReason(goal.Autopilot.StopReasons, "Challenge accepted the Goal as complete.")
 			goal.Autopilot.CurrentTaskID = ""
 			goal.Autopilot.CurrentPhaseID = ""
 			goal.Autopilot.LastStepAt = &now
@@ -2198,6 +2808,7 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		GoalID:        strings.TrimSpace(t.GoalID),
 		TaskID:        strings.TrimSpace(t.ID),
 		PhaseID:       strings.TrimSpace(t.GoalPhaseID),
+		TaskType:      assistantstore.GoalTaskTypeBuild,
 		Title:         friendlyTaskTitle(t),
 		Status:        strings.TrimSpace(t.Status),
 		Summary:       goalTaskResultSummary(t.Result),
@@ -2206,6 +2817,9 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		CreatedAt:     now,
 	}
 	if structured, ok := parseStructuredGoalReport(t.Result); ok {
+		report.TaskType = firstNonEmptyString(structured.TaskType, report.TaskType)
+		report.PhaseID = firstNonEmptyString(structured.PhaseID, report.PhaseID)
+		report.MilestoneID = firstNonEmptyString(structured.MilestoneID, report.MilestoneID)
 		report.Summary = firstNonEmptyString(structured.Summary, report.Summary)
 		report.AdvancedGoal = structured.AdvancedGoal
 		report.PhaseComplete = structured.PhaseComplete
@@ -2216,6 +2830,27 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		report.FollowUps = structured.FollowUps
 		report.Blockers = structured.Blockers
 		report.Questions = structured.Questions
+		report.Claims = structured.Claims
+		report.GapIDs = structured.GapIDs
+		if structured.Challenge != nil {
+			challenge := *structured.Challenge
+			report.Challenge = &challenge
+			report.TaskType = assistantstore.GoalTaskTypeChallenge
+		}
+	}
+	if challenge, ok := parseStructuredGoalChallenge(t.Result); ok {
+		report.TaskType = assistantstore.GoalTaskTypeChallenge
+		report.MilestoneID = firstNonEmptyString(challenge.MilestoneID, report.MilestoneID)
+		report.Summary = firstNonEmptyString(challenge.Summary, report.Summary)
+		report.AdvancedGoal = true
+		report.GoalComplete = challenge.GoalComplete
+		report.Challenge = &challenge
+		report.Validation = appendUniqueStrings(report.Validation, challenge.Evidence...)
+	}
+	if report.MilestoneID == "" {
+		if milestone, ok := inferReportMilestone(goal, report.PhaseID); ok {
+			report.MilestoneID = milestone.ID
+		}
 	}
 	if diff, err := o.TaskDiff(ctx, t.ID); err == nil {
 		report.DiffFiles = diff.Summary.Files
@@ -2246,6 +2881,14 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		report.PhaseComplete = false
 		report.GoalComplete = false
 	}
+	if report.TaskType == assistantstore.GoalTaskTypeChallenge && report.Challenge != nil && report.Challenge.Verdict == assistantstore.GoalChallengeVerdictNeedsUser {
+		report.Questions = appendUniqueStrings(report.Questions, firstNonEmptyString(report.Challenge.Summary, "Challenge needs operator input before this milestone can be accepted."))
+		report.GoalComplete = false
+	}
+	if report.GoalComplete && report.TaskType != assistantstore.GoalTaskTypeChallenge {
+		report.GoalComplete = false
+		report.FollowUps = appendUniqueStrings(report.FollowUps, "Worker claimed Goal completion; supervisor will require a read-only challenge before accepting it.")
+	}
 	review := reviewGoalTaskProgress(goal, report)
 	report.ReviewDecision = review.Decision
 	report.ReviewSummary = review.Summary
@@ -2269,16 +2912,32 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 }
 
 type structuredGoalReport struct {
-	Summary       string   `json:"summary"`
-	AdvancedGoal  bool     `json:"advanced_goal"`
-	PhaseComplete bool     `json:"phase_complete"`
-	GoalComplete  bool     `json:"goal_complete"`
-	NoChange      bool     `json:"no_change"`
-	ChangedFiles  []string `json:"changed_files"`
-	Validation    []string `json:"validation"`
-	FollowUps     []string `json:"follow_ups"`
-	Blockers      []string `json:"blockers"`
-	Questions     []string `json:"questions"`
+	TaskType      string                        `json:"task_type"`
+	PhaseID       string                        `json:"phase_id"`
+	MilestoneID   string                        `json:"milestone_id"`
+	Summary       string                        `json:"summary"`
+	AdvancedGoal  bool                          `json:"advanced_goal"`
+	PhaseComplete bool                          `json:"phase_complete"`
+	GoalComplete  bool                          `json:"goal_complete"`
+	NoChange      bool                          `json:"no_change"`
+	ChangedFiles  []string                      `json:"changed_files"`
+	Validation    []string                      `json:"validation"`
+	FollowUps     []string                      `json:"follow_ups"`
+	Blockers      []string                      `json:"blockers"`
+	Questions     []string                      `json:"questions"`
+	Claims        []assistantstore.GoalClaim    `json:"claims"`
+	Challenge     *assistantstore.GoalChallenge `json:"challenge"`
+	GapIDs        []string                      `json:"gap_ids"`
+}
+
+type structuredGoalChallenge struct {
+	MilestoneID      string                   `json:"milestone_id"`
+	Verdict          string                   `json:"verdict"`
+	Summary          string                   `json:"summary"`
+	Evidence         []string                 `json:"evidence"`
+	ClaimsChallenged []string                 `json:"claims_challenged"`
+	Gaps             []assistantstore.GoalGap `json:"gaps"`
+	GoalComplete     bool                     `json:"goal_complete"`
 }
 
 func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
@@ -2293,13 +2952,59 @@ func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
 		raw := goalReportJSONPayload(strings.TrimSpace(trimmed[index+len("GOAL_REPORT:"):]))
 		var report structuredGoalReport
 		if err := json.Unmarshal([]byte(raw), &report); err == nil {
+			report.TaskType = strings.TrimSpace(report.TaskType)
+			report.PhaseID = strings.TrimSpace(report.PhaseID)
+			report.MilestoneID = strings.TrimSpace(report.MilestoneID)
 			report.Summary = strings.TrimSpace(report.Summary)
 			report.ChangedFiles = normalizeGoalReportStrings(report.ChangedFiles, 64)
 			report.Validation = normalizeGoalReportStrings(report.Validation, 24)
 			report.FollowUps = normalizeGoalReportStrings(report.FollowUps, 24)
 			report.Blockers = normalizeGoalReportStrings(report.Blockers, 24)
 			report.Questions = normalizeGoalReportStrings(report.Questions, 12)
+			report.GapIDs = normalizeGoalReportStrings(report.GapIDs, 24)
+			claims := make([]assistantstore.GoalClaim, 0, len(report.Claims))
+			for index, claim := range report.Claims {
+				claim = assistantstore.NormalizeGoalClaim(claim, index)
+				if claim.Claim != "" {
+					claims = append(claims, claim)
+				}
+			}
+			report.Claims = claims
+			if report.Challenge != nil {
+				challenge := assistantstore.NormalizeGoalChallenge(*report.Challenge, 0)
+				report.Challenge = &challenge
+			}
 			latest = report
+			found = true
+		}
+	}
+	return latest, found
+}
+
+func parseStructuredGoalChallenge(result string) (assistantstore.GoalChallenge, bool) {
+	var latest assistantstore.GoalChallenge
+	found := false
+	for _, line := range strings.Split(result, "\n") {
+		trimmed := strings.TrimSpace(line)
+		index := strings.Index(strings.ToUpper(trimmed), "GOAL_CHALLENGE:")
+		if index < 0 {
+			continue
+		}
+		raw := goalReportJSONPayload(strings.TrimSpace(trimmed[index+len("GOAL_CHALLENGE:"):]))
+		var structured structuredGoalChallenge
+		if err := json.Unmarshal([]byte(raw), &structured); err == nil {
+			challenge := assistantstore.GoalChallenge{
+				MilestoneID:      strings.TrimSpace(structured.MilestoneID),
+				Verdict:          structured.Verdict,
+				Summary:          strings.TrimSpace(structured.Summary),
+				Evidence:         normalizeGoalReportStrings(structured.Evidence, 24),
+				ClaimsChallenged: normalizeGoalReportStrings(structured.ClaimsChallenged, 24),
+				Gaps:             structured.Gaps,
+				GoalComplete:     structured.GoalComplete,
+				CreatedAt:        time.Now().UTC(),
+			}
+			challenge = assistantstore.NormalizeGoalChallenge(challenge, 0)
+			latest = challenge
 			found = true
 		}
 	}
@@ -2369,7 +3074,8 @@ func goalTaskResultSummary(result string) string {
 	}
 	for _, line := range strings.Split(result, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(strings.ToUpper(line), "GOAL_REPORT:") {
+		upper := strings.ToUpper(line)
+		if line == "" || strings.HasPrefix(upper, "GOAL_REPORT:") || strings.HasPrefix(upper, "GOAL_CHALLENGE:") {
 			continue
 		}
 		return truncateAssistantRunText(line, 240)
@@ -2377,11 +3083,49 @@ func goalTaskResultSummary(result string) string {
 	return truncateAssistantRunText(result, 240)
 }
 
+func inferReportMilestone(goal assistantstore.Goal, phaseID string) (assistantstore.GoalMilestone, bool) {
+	phase, ok := goalPlanPhaseByID(goal.Plan, phaseID)
+	if !ok {
+		return assistantstore.GoalMilestone{}, false
+	}
+	for _, milestone := range phase.Milestones {
+		switch milestone.Status {
+		case assistantstore.GoalMilestoneStatusInProgress, assistantstore.GoalMilestoneStatusPending, assistantstore.GoalMilestoneStatusClaimed, assistantstore.GoalMilestoneStatusChallenged:
+			return milestone, true
+		}
+	}
+	return assistantstore.GoalMilestone{}, false
+}
+
 func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.GoalTaskReport, now time.Time) {
-	if goal == nil || goal.Plan == nil || strings.TrimSpace(report.PhaseID) == "" {
+	if goal == nil || goal.Plan == nil {
+		return
+	}
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	if strings.TrimSpace(report.PhaseID) == "" && strings.TrimSpace(report.MilestoneID) != "" {
+		if phase, ok := goalPlanPhaseForMilestone(goal.Plan, report.MilestoneID); ok {
+			report.PhaseID = phase.ID
+		}
+	}
+	if strings.TrimSpace(report.PhaseID) == "" {
 		return
 	}
 	plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+	ensureGoalPlanMilestones(&plan, *goal, now)
+	if report.TaskType == assistantstore.GoalTaskTypeChallenge && report.Challenge != nil {
+		applyGoalChallengeReportToPlan(&plan, report, now)
+		updateGoalPlanProgress(&plan, now)
+		goal.Plan = &plan
+		if goal.Autopilot != nil {
+			if phase, milestone, ok := selectGoalPlanMilestone(&plan); ok {
+				goal.Autopilot.CurrentPhaseID = phase.ID
+				_ = milestone
+			} else {
+				goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
+			}
+		}
+		return
+	}
 	for index := range plan.Phases {
 		if plan.Phases[index].ID != report.PhaseID {
 			continue
@@ -2389,9 +3133,45 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 		if !stringSliceContains(plan.Phases[index].TaskIDs, report.TaskID) {
 			plan.Phases[index].TaskIDs = append(plan.Phases[index].TaskIDs, report.TaskID)
 		}
-		if report.PhaseComplete || report.GoalComplete {
-			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusCompleted
-		} else if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+		milestoneIndex := goalPhaseMilestoneIndex(plan.Phases[index], report.MilestoneID)
+		if milestoneIndex >= 0 {
+			milestone := &plan.Phases[index].Milestones[milestoneIndex]
+			if !stringSliceContains(milestone.TaskIDs, report.TaskID) {
+				milestone.TaskIDs = append(milestone.TaskIDs, report.TaskID)
+			}
+			for claimIndex, claim := range report.Claims {
+				claim.MilestoneID = firstNonEmptyString(claim.MilestoneID, milestone.ID)
+				claim.SourceTaskID = firstNonEmptyString(claim.SourceTaskID, report.TaskID)
+				if claim.CreatedAt.IsZero() {
+					claim.CreatedAt = now
+				}
+				claim = assistantstore.NormalizeGoalClaim(claim, len(milestone.Claims)+claimIndex)
+				if claim.Claim != "" {
+					milestone.Claims = appendGoalClaim(milestone.Claims, claim)
+				}
+			}
+			if len(report.Claims) == 0 && (report.PhaseComplete || report.GoalComplete) && strings.TrimSpace(report.Summary) != "" {
+				milestone.Claims = appendGoalClaim(milestone.Claims, assistantstore.NormalizeGoalClaim(assistantstore.GoalClaim{
+					ID:           id.New("gclaim"),
+					MilestoneID:  milestone.ID,
+					Claim:        report.Summary,
+					Evidence:     append([]string(nil), report.Validation...),
+					SourceTaskID: report.TaskID,
+					Status:       "claimed",
+					CreatedAt:    now,
+				}, len(milestone.Claims)))
+			}
+			milestone.Evidence = appendUniqueStrings(milestone.Evidence, report.Summary)
+			milestone.Evidence = appendUniqueStrings(milestone.Evidence, report.Validation...)
+			if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+				milestone.Status = assistantstore.GoalMilestoneStatusBlocked
+			} else if report.AdvancedGoal || report.PhaseComplete || report.GoalComplete || len(report.Claims) > 0 {
+				milestone.Status = assistantstore.GoalMilestoneStatusClaimed
+			} else if milestone.Status == assistantstore.GoalMilestoneStatusPending {
+				milestone.Status = assistantstore.GoalMilestoneStatusInProgress
+			}
+		}
+		if len(report.Blockers) > 0 || len(report.Questions) > 0 {
 			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusBlocked
 		} else {
 			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusInProgress
@@ -2401,15 +3181,33 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 		}
 		break
 	}
-	if report.GoalComplete {
-		plan.Status = assistantstore.GoalPlanStatusCompleted
-	} else if len(report.Blockers) > 0 || len(report.Questions) > 0 {
-		plan.Status = assistantstore.GoalPlanStatusBlocked
+	if report.TaskType == assistantstore.GoalTaskTypeGapFix {
+		for _, gapID := range report.GapIDs {
+			for index := range plan.Gaps {
+				if plan.Gaps[index].ID != gapID {
+					continue
+				}
+				plan.Gaps[index].TaskIDs = appendUniqueStrings(plan.Gaps[index].TaskIDs, report.TaskID)
+				plan.Gaps[index].UpdatedAt = now
+				if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+					plan.Gaps[index].Status = assistantstore.GoalGapStatusOpen
+				} else if report.NoChange {
+					plan.Gaps[index].Status = assistantstore.GoalGapStatusDisproven
+				} else if report.AdvancedGoal {
+					plan.Gaps[index].Status = assistantstore.GoalGapStatusFixed
+				}
+				break
+			}
+		}
 	}
-	if next, ok := selectGoalPlanPhase(&plan); ok {
-		plan.CurrentPhaseID = next.ID
-	} else if plan.Status != assistantstore.GoalPlanStatusBlocked {
-		plan.Status = assistantstore.GoalPlanStatusCompleted
+	if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+		plan.Status = assistantstore.GoalPlanStatusBlocked
+	} else {
+		updateGoalPlanProgress(&plan, now)
+	}
+	if phase, _, ok := selectGoalPlanMilestone(&plan); ok {
+		plan.CurrentPhaseID = phase.ID
+	} else if plan.Status == assistantstore.GoalPlanStatusCompleted {
 		plan.CurrentPhaseID = ""
 	}
 	plan.UpdatedAt = now
@@ -2417,6 +3215,111 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 	if goal.Autopilot != nil {
 		goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
 	}
+}
+
+func applyGoalChallengeReportToPlan(plan *assistantstore.GoalPlan, report assistantstore.GoalTaskReport, now time.Time) {
+	if plan == nil || report.Challenge == nil {
+		return
+	}
+	challenge := assistantstore.NormalizeGoalChallenge(*report.Challenge, len(plan.Challenges))
+	if challenge.ID == "" || strings.HasPrefix(challenge.ID, "challenge_") {
+		challenge.ID = id.New("gchallenge")
+	}
+	challenge.TaskID = firstNonEmptyString(challenge.TaskID, report.TaskID)
+	challenge.MilestoneID = firstNonEmptyString(challenge.MilestoneID, report.MilestoneID)
+	if challenge.CreatedAt.IsZero() {
+		challenge.CreatedAt = now
+	}
+	plan.Challenges = appendGoalChallenge(plan.Challenges, challenge)
+	for phaseIndex := range plan.Phases {
+		for milestoneIndex := range plan.Phases[phaseIndex].Milestones {
+			milestone := &plan.Phases[phaseIndex].Milestones[milestoneIndex]
+			if milestone.ID != challenge.MilestoneID {
+				continue
+			}
+			if !stringSliceContains(milestone.ChallengeTaskIDs, report.TaskID) {
+				milestone.ChallengeTaskIDs = append(milestone.ChallengeTaskIDs, report.TaskID)
+			}
+			milestone.LatestChallengeID = challenge.ID
+			milestone.Evidence = appendUniqueStrings(milestone.Evidence, challenge.Summary)
+			milestone.Evidence = appendUniqueStrings(milestone.Evidence, challenge.Evidence...)
+			switch challenge.Verdict {
+			case assistantstore.GoalChallengeVerdictPassed:
+				milestone.Status = assistantstore.GoalMilestoneStatusAccepted
+			case assistantstore.GoalChallengeVerdictNeedsUser:
+				milestone.Status = assistantstore.GoalMilestoneStatusBlocked
+			default:
+				milestone.Status = assistantstore.GoalMilestoneStatusChallenged
+			}
+			for _, gap := range challenge.Gaps {
+				gap.PhaseID = firstNonEmptyString(gap.PhaseID, plan.Phases[phaseIndex].ID)
+				gap.MilestoneID = firstNonEmptyString(gap.MilestoneID, milestone.ID)
+				gap.Source = firstNonEmptyString(gap.Source, "challenge")
+				gap.SourceTaskID = firstNonEmptyString(gap.SourceTaskID, report.TaskID)
+				gap.Status = assistantstore.GoalGapStatusOpen
+				if gap.CreatedAt.IsZero() {
+					gap.CreatedAt = now
+				}
+				gap.UpdatedAt = now
+				gap = assistantstore.NormalizeGoalGap(gap, len(plan.Gaps))
+				if gap.ID == "" || strings.HasPrefix(gap.ID, "gap_") {
+					gap.ID = id.New("ggap")
+				}
+				plan.Gaps = appendGoalGap(plan.Gaps, gap)
+				milestone.GapIDs = appendUniqueStrings(milestone.GapIDs, gap.ID)
+			}
+			return
+		}
+	}
+}
+
+func updateGoalPlanProgress(plan *assistantstore.GoalPlan, now time.Time) {
+	if plan == nil {
+		return
+	}
+	allDone := len(plan.Phases) > 0
+	anyBlocked := false
+	for phaseIndex := range plan.Phases {
+		phase := &plan.Phases[phaseIndex]
+		if phase.Status == assistantstore.GoalPlanPhaseStatusSkipped {
+			continue
+		}
+		if goalPhaseMilestonesAccepted(*phase) {
+			phase.Status = assistantstore.GoalPlanPhaseStatusCompleted
+			continue
+		}
+		allDone = false
+		phaseHasWork := len(phase.TaskIDs) > 0 || len(phase.Evidence) > 0
+		phaseBlocked := false
+		for _, milestone := range phase.Milestones {
+			if milestone.Status == assistantstore.GoalMilestoneStatusBlocked {
+				phaseBlocked = true
+			}
+			if len(milestone.TaskIDs) > 0 || len(milestone.Claims) > 0 || len(milestone.Evidence) > 0 || milestone.Status != assistantstore.GoalMilestoneStatusPending {
+				phaseHasWork = true
+			}
+		}
+		if phaseBlocked {
+			phase.Status = assistantstore.GoalPlanPhaseStatusBlocked
+			anyBlocked = true
+		} else if phaseHasWork {
+			phase.Status = assistantstore.GoalPlanPhaseStatusInProgress
+		} else {
+			phase.Status = assistantstore.GoalPlanPhaseStatusPending
+		}
+	}
+	if allDone && allGoalGapsClosed(plan) {
+		plan.Status = assistantstore.GoalPlanStatusCompleted
+		plan.CurrentPhaseID = ""
+	} else if anyBlocked {
+		plan.Status = assistantstore.GoalPlanStatusBlocked
+	} else {
+		plan.Status = assistantstore.GoalPlanStatusActive
+	}
+	if phase, _, ok := selectGoalPlanMilestone(plan); ok {
+		plan.CurrentPhaseID = phase.ID
+	}
+	plan.UpdatedAt = now
 }
 
 const (
@@ -2437,6 +3340,50 @@ type goalTaskProgressReview struct {
 func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.GoalTaskReport) goalTaskProgressReview {
 	goal = assistantstore.NormalizeGoal(goal)
 	report = assistantstore.NormalizeGoalTaskReport(report)
+	if report.TaskType == assistantstore.GoalTaskTypeChallenge {
+		if report.Challenge == nil {
+			return goalTaskProgressReview{
+				Decision: goalTaskReviewInsufficientEvidence,
+				Summary:  "Challenge task did not include a GOAL_CHALLENGE report, so the supervisor cannot accept or reject the milestone.",
+				Evidence: nonEmptyStringSlice(firstNonEmptyString(report.Summary, "No GOAL_CHALLENGE report was found.")),
+			}
+		}
+		challenge := assistantstore.NormalizeGoalChallenge(*report.Challenge, 0)
+		evidence := append([]string{}, challenge.Evidence...)
+		if challenge.Summary != "" {
+			evidence = append(evidence, "Challenge summary: "+challenge.Summary)
+		}
+		if len(challenge.Gaps) > 0 {
+			evidence = append(evidence, fmt.Sprintf("Challenge gaps: %d.", len(challenge.Gaps)))
+		}
+		switch challenge.Verdict {
+		case assistantstore.GoalChallengeVerdictPassed:
+			return goalTaskProgressReview{
+				Decision: goalTaskReviewVerifiedProgress,
+				Summary:  "Read-only challenge passed, so the milestone can be accepted.",
+				Evidence: evidence,
+			}
+		case assistantstore.GoalChallengeVerdictNeedsUser:
+			return goalTaskProgressReview{
+				Decision: goalTaskReviewBlockedWithProgress,
+				Summary:  "Read-only challenge found a question that needs operator input before the milestone can be accepted.",
+				Evidence: evidence,
+			}
+		default:
+			if len(challenge.Gaps) == 0 {
+				return goalTaskProgressReview{
+					Decision: goalTaskReviewNeedsValidation,
+					Summary:  "Read-only challenge failed but did not provide concrete gaps for Autopilot to repair.",
+					Evidence: evidence,
+				}
+			}
+			return goalTaskProgressReview{
+				Decision: goalTaskReviewVerifiedProgress,
+				Summary:  "Read-only challenge found concrete gaps; the supervisor will create gap-fix work before moving on.",
+				Evidence: evidence,
+			}
+		}
+	}
 	hasDiff := report.DiffFiles > 0 || len(report.ChangedFiles) > 0
 	hasValidation := len(report.Validation) > 0
 	if !hasDiff {

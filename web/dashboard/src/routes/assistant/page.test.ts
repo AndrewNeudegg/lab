@@ -58,4 +58,14 @@ describe('assistant page composition', () => {
 	    expect(pageSource).toContain('Newer Goal blocker exists');
 	    expect(pageSource).toContain('newer blocker');
 	  });
+
+	  test('shows Autopilot milestone challenge and gap state', () => {
+	    expect(pageSource).toContain('type AssistantGoalMilestone');
+	    expect(pageSource).toContain('selectedGoalPlanGaps');
+	    expect(pageSource).toContain('selectedGoalPlanChallenges');
+	    expect(pageSource).toContain('goalMilestoneMeta');
+	    expect(pageSource).toContain('Challenge gaps');
+	    expect(pageSource).toContain('Challenge:');
+	    expect(pageSource).toContain('Open challenge task');
+	  });
 	});

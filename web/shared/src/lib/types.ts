@@ -943,6 +943,8 @@ export interface AssistantGoalPlan {
   summary?: string;
   current_phase_id?: string;
   phases?: AssistantGoalPlanPhase[];
+  gaps?: AssistantGoalGap[];
+  challenges?: AssistantGoalChallenge[];
   created_at?: string;
   updated_at?: string;
 }
@@ -956,6 +958,64 @@ export interface AssistantGoalPlanPhase {
   depends_on?: string[];
   task_ids?: string[];
   evidence?: string[];
+  milestones?: AssistantGoalMilestone[];
+}
+
+export interface AssistantGoalMilestone {
+  id: string;
+  phase_id?: string;
+  title: string;
+  objective?: string;
+  status: string;
+  acceptance_criteria?: string[];
+  evidence_requirements?: string[];
+  challenge_policy?: string;
+  task_ids?: string[];
+  challenge_task_ids?: string[];
+  claims?: AssistantGoalClaim[];
+  evidence?: string[];
+  gap_ids?: string[];
+  latest_challenge_id?: string;
+}
+
+export interface AssistantGoalClaim {
+  id?: string;
+  milestone_id?: string;
+  claim: string;
+  evidence?: string[];
+  source_task_id?: string;
+  status?: string;
+  created_at?: string;
+}
+
+export interface AssistantGoalGap {
+  id?: string;
+  phase_id?: string;
+  milestone_id?: string;
+  area?: string;
+  claim?: string;
+  severity?: string;
+  evidence?: string;
+  suggested_task?: string;
+  status?: string;
+  source?: string;
+  source_task_id?: string;
+  task_ids?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AssistantGoalChallenge {
+  id?: string;
+  task_id?: string;
+  milestone_id?: string;
+  verdict?: string;
+  summary?: string;
+  evidence?: string[];
+  claims_challenged?: string[];
+  gaps?: AssistantGoalGap[];
+  goal_complete?: boolean;
+  created_at?: string;
 }
 
 export interface AssistantGoalSupervisorDecision {
@@ -965,6 +1025,9 @@ export interface AssistantGoalSupervisorDecision {
   summary?: string;
   rationale?: string;
   phase_id?: string;
+  milestone_id?: string;
+  gap_id?: string;
+  task_type?: string;
   task_id?: string;
   task_goal?: string;
   questions?: string[];
@@ -978,6 +1041,8 @@ export interface AssistantGoalTaskReport {
   goal_id: string;
   task_id: string;
   phase_id?: string;
+  milestone_id?: string;
+  task_type?: string;
   title?: string;
   status?: string;
   summary?: string;
@@ -990,6 +1055,9 @@ export interface AssistantGoalTaskReport {
   follow_ups?: string[];
   blockers?: string[];
   questions?: string[];
+  claims?: AssistantGoalClaim[];
+  challenge?: AssistantGoalChallenge;
+  gap_ids?: string[];
   diff_files?: number;
   additions?: number;
   deletions?: number;

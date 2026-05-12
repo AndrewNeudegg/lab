@@ -1026,6 +1026,9 @@ func (o *Orchestrator) reconcileGoalAutopilotTask(ctx context.Context, store *as
 		if o.taskActive(t.ID) {
 			return false, fmt.Sprintf("Autopilot is waiting for automatic recovery on task %s.", taskShortID(t.ID)), nil
 		}
+		if taskBlockedByRemoteGoalReview(t) {
+			return o.recheckBlockedRemoteGoalTask(ctx, store, goal, t)
+		}
 		if ok, _ := automaticTaskRecoveryCandidate(t, time.Now().UTC()); ok {
 			return false, fmt.Sprintf("Autopilot is waiting for task supervisor recovery on task %s.", taskShortID(t.ID)), nil
 		}
@@ -1035,6 +1038,74 @@ func (o *Orchestrator) reconcileGoalAutopilotTask(ctx context.Context, store *as
 	default:
 		return false, fmt.Sprintf("Autopilot is waiting for task %s (%s).", taskShortID(t.ID), firstNonEmptyString(t.Status, "unknown")), nil
 	}
+}
+
+func (o *Orchestrator) recheckBlockedRemoteGoalTask(ctx context.Context, store *assistantstore.GoalStore, goal assistantstore.Goal, t taskstore.Task) (bool, string, error) {
+	shortID := taskShortID(t.ID)
+	if !goalAutopilotAllows(goal, "review_task") {
+		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Autopilot policy does not allow reviewing blocked remote Goal tasks.")
+	}
+	reply, err := o.reviewRemoteTask(ctx, t)
+	if err != nil {
+		return false, "", err
+	}
+	refreshed, err := o.tasks.Load(t.ID)
+	if err != nil {
+		return false, "", err
+	}
+	if refreshed.Status == taskstore.StatusBlocked {
+		reason := fmt.Sprintf("Linked remote task %s is still blocked after automatic validation review.", shortID)
+		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, reason)
+	}
+	if refreshed.Status == taskstore.StatusAwaitingVerification || refreshed.Status == taskstore.StatusNoChangeRequired {
+		if !goalAutopilotAllows(goal, "accept_task") {
+			return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Autopilot policy does not allow accepting recovered remote Goal tasks.")
+		}
+		acceptReply, err := o.acceptTaskWithActor(ctx, refreshed.ID, "Assistant Autopilot")
+		if err != nil {
+			return false, "", err
+		}
+		if err := o.clearGoalAutopilotCurrentTask(store, goal.ID, refreshed.ID, "Autopilot accepted linked task "+shortID+" after automatic remote Goal re-review and will check the next step."); err != nil {
+			return false, "", err
+		}
+		return true, fmt.Sprintf("Autopilot rechecked blocked remote Goal task %s.\n%s\n%s\nAutopilot accepted the recovered task and will select the next Goal step on the next supervisor pass.", shortID, reply, acceptReply), nil
+	}
+	if refreshed.Status == taskstore.StatusDone {
+		if err := o.clearGoalAutopilotCurrentTask(store, goal.ID, refreshed.ID, "Autopilot found linked task "+shortID+" already accepted after automatic remote Goal re-review and will check the next step."); err != nil {
+			return false, "", err
+		}
+		return true, fmt.Sprintf("Autopilot rechecked blocked remote Goal task %s.\n%s\nAutopilot found the task already accepted and will select the next Goal step on the next supervisor pass.", shortID, reply), nil
+	}
+	return true, fmt.Sprintf("Autopilot rechecked blocked remote Goal task %s.\n%s", shortID, reply), nil
+}
+
+func (o *Orchestrator) clearGoalAutopilotCurrentTask(store *assistantstore.GoalStore, goalID, taskID, noteBody string) error {
+	goal, err := store.LoadGoal(goalID)
+	if err != nil {
+		return err
+	}
+	goal = assistantstore.NormalizeGoal(goal)
+	if goal.Autopilot == nil || strings.TrimSpace(goal.Autopilot.CurrentTaskID) != strings.TrimSpace(taskID) {
+		return nil
+	}
+	now := time.Now().UTC()
+	goal.Autopilot.CurrentTaskID = ""
+	goal.Autopilot.LastStepAt = &now
+	goal.UpdatedAt = now
+	if err := store.SaveGoal(goal); err != nil {
+		return err
+	}
+	_ = store.SaveNote(assistantstore.GoalNote{
+		ID:        id.New("gnote"),
+		GoalID:    goal.ID,
+		Kind:      "autopilot",
+		Title:     "Autopilot task accepted",
+		Body:      strings.TrimSpace(noteBody),
+		TaskID:    strings.TrimSpace(taskID),
+		CreatedBy: "assistant",
+		CreatedAt: now,
+	})
+	return nil
 }
 
 func (o *Orchestrator) processGoalAutopilotMergeApproval(ctx context.Context, t taskstore.Task, reason string) (bool, string, error) {
@@ -2825,13 +2896,13 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		report.PhaseComplete = structured.PhaseComplete
 		report.GoalComplete = structured.GoalComplete
 		report.NoChange = structured.NoChange
-		report.ChangedFiles = structured.ChangedFiles
-		report.Validation = structured.Validation
-		report.FollowUps = structured.FollowUps
-		report.Blockers = structured.Blockers
-		report.Questions = structured.Questions
-		report.Claims = structured.Claims
-		report.GapIDs = structured.GapIDs
+		report.ChangedFiles = []string(structured.ChangedFiles)
+		report.Validation = []string(structured.Validation)
+		report.FollowUps = []string(structured.FollowUps)
+		report.Blockers = []string(structured.Blockers)
+		report.Questions = []string(structured.Questions)
+		report.Claims = structured.normalizedClaims()
+		report.GapIDs = []string(structured.GapIDs)
 		if structured.Challenge != nil {
 			challenge := *structured.Challenge
 			report.Challenge = &challenge
@@ -2920,14 +2991,33 @@ type structuredGoalReport struct {
 	PhaseComplete bool                          `json:"phase_complete"`
 	GoalComplete  bool                          `json:"goal_complete"`
 	NoChange      bool                          `json:"no_change"`
-	ChangedFiles  []string                      `json:"changed_files"`
-	Validation    []string                      `json:"validation"`
-	FollowUps     []string                      `json:"follow_ups"`
-	Blockers      []string                      `json:"blockers"`
-	Questions     []string                      `json:"questions"`
-	Claims        []assistantstore.GoalClaim    `json:"claims"`
+	ChangedFiles  goalReportStrings             `json:"changed_files"`
+	Validation    goalReportStrings             `json:"validation"`
+	FollowUps     goalReportStrings             `json:"follow_ups"`
+	Blockers      goalReportStrings             `json:"blockers"`
+	Questions     goalReportStrings             `json:"questions"`
+	Claims        []structuredGoalClaim         `json:"claims"`
 	Challenge     *assistantstore.GoalChallenge `json:"challenge"`
-	GapIDs        []string                      `json:"gap_ids"`
+	GapIDs        goalReportStrings             `json:"gap_ids"`
+}
+
+func (report structuredGoalReport) normalizedClaims() []assistantstore.GoalClaim {
+	claims := make([]assistantstore.GoalClaim, 0, len(report.Claims))
+	for index, claim := range report.Claims {
+		goalClaim := assistantstore.NormalizeGoalClaim(assistantstore.GoalClaim{
+			ID:           claim.ID,
+			MilestoneID:  claim.MilestoneID,
+			Claim:        claim.Claim,
+			Evidence:     normalizeGoalReportStrings([]string(claim.Evidence), 24),
+			SourceTaskID: claim.SourceTaskID,
+			Status:       claim.Status,
+			CreatedAt:    claim.CreatedAt,
+		}, index)
+		if goalClaim.Claim != "" {
+			claims = append(claims, goalClaim)
+		}
+	}
+	return claims
 }
 
 type structuredGoalChallenge struct {
@@ -2938,6 +3028,48 @@ type structuredGoalChallenge struct {
 	ClaimsChallenged []string                 `json:"claims_challenged"`
 	Gaps             []assistantstore.GoalGap `json:"gaps"`
 	GoalComplete     bool                     `json:"goal_complete"`
+}
+
+type structuredGoalClaim struct {
+	ID           string            `json:"id,omitempty"`
+	MilestoneID  string            `json:"milestone_id,omitempty"`
+	Claim        string            `json:"claim"`
+	Evidence     goalReportStrings `json:"evidence,omitempty"`
+	SourceTaskID string            `json:"source_task_id,omitempty"`
+	Status       string            `json:"status,omitempty"`
+	CreatedAt    time.Time         `json:"created_at,omitempty"`
+}
+
+type goalReportStrings []string
+
+func (values *goalReportStrings) UnmarshalJSON(data []byte) error {
+	var stringsValue []string
+	if err := json.Unmarshal(data, &stringsValue); err == nil {
+		*values = stringsValue
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		if strings.TrimSpace(single) == "" {
+			*values = nil
+			return nil
+		}
+		*values = []string{single}
+		return nil
+	}
+	var mixed []any
+	if err := json.Unmarshal(data, &mixed); err == nil {
+		out := make([]string, 0, len(mixed))
+		for _, item := range mixed {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		*values = out
+		return nil
+	}
+	*values = nil
+	return nil
 }
 
 func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
@@ -2956,20 +3088,39 @@ func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
 			report.PhaseID = strings.TrimSpace(report.PhaseID)
 			report.MilestoneID = strings.TrimSpace(report.MilestoneID)
 			report.Summary = strings.TrimSpace(report.Summary)
-			report.ChangedFiles = normalizeGoalReportStrings(report.ChangedFiles, 64)
-			report.Validation = normalizeGoalReportStrings(report.Validation, 24)
-			report.FollowUps = normalizeGoalReportStrings(report.FollowUps, 24)
-			report.Blockers = normalizeGoalReportStrings(report.Blockers, 24)
-			report.Questions = normalizeGoalReportStrings(report.Questions, 12)
-			report.GapIDs = normalizeGoalReportStrings(report.GapIDs, 24)
+			report.ChangedFiles = goalReportStrings(normalizeGoalReportStrings([]string(report.ChangedFiles), 64))
+			report.Validation = goalReportStrings(normalizeGoalReportStrings([]string(report.Validation), 24))
+			report.FollowUps = goalReportStrings(normalizeGoalReportStrings([]string(report.FollowUps), 24))
+			report.Blockers = goalReportStrings(normalizeGoalReportStrings([]string(report.Blockers), 24))
+			report.Questions = goalReportStrings(normalizeGoalReportStrings([]string(report.Questions), 12))
+			report.GapIDs = goalReportStrings(normalizeGoalReportStrings([]string(report.GapIDs), 24))
 			claims := make([]assistantstore.GoalClaim, 0, len(report.Claims))
 			for index, claim := range report.Claims {
-				claim = assistantstore.NormalizeGoalClaim(claim, index)
-				if claim.Claim != "" {
-					claims = append(claims, claim)
+				goalClaim := assistantstore.NormalizeGoalClaim(assistantstore.GoalClaim{
+					ID:           claim.ID,
+					MilestoneID:  claim.MilestoneID,
+					Claim:        claim.Claim,
+					Evidence:     normalizeGoalReportStrings([]string(claim.Evidence), 24),
+					SourceTaskID: claim.SourceTaskID,
+					Status:       claim.Status,
+					CreatedAt:    claim.CreatedAt,
+				}, index)
+				if goalClaim.Claim != "" {
+					claims = append(claims, goalClaim)
 				}
 			}
-			report.Claims = claims
+			report.Claims = make([]structuredGoalClaim, 0, len(claims))
+			for _, claim := range claims {
+				report.Claims = append(report.Claims, structuredGoalClaim{
+					ID:           claim.ID,
+					MilestoneID:  claim.MilestoneID,
+					Claim:        claim.Claim,
+					Evidence:     goalReportStrings(claim.Evidence),
+					SourceTaskID: claim.SourceTaskID,
+					Status:       claim.Status,
+					CreatedAt:    claim.CreatedAt,
+				})
+			}
 			if report.Challenge != nil {
 				challenge := assistantstore.NormalizeGoalChallenge(*report.Challenge, 0)
 				report.Challenge = &challenge

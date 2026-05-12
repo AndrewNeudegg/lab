@@ -7392,6 +7392,92 @@ func TestGoalAutopilotBlocksUnverifiedRemoteReview(t *testing.T) {
 	}
 }
 
+func TestGoalAutopilotRechecksReviewerBlockedRemoteTask(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build replacement data grid",
+		Objective:     "Build a replacement for AG Grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 3},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusBlocked
+	task.AssignedTo = "OrchestratorAgent"
+	task.Result = `remote agent finished; ready for review.
+GOAL_REPORT: {"summary":"Closed context menu typeahead","advanced_goal":true,"phase_complete":false,"goal_complete":false,"changed_files":["src/open-grid.js","tests/grid-core.test.js"],"validation":["bun test tests/grid-core.test.js"],"follow_ups":[],"blockers":[],"questions":[],"claims":[{"claim":"Typeahead is implemented","evidence":"tests/grid-core.test.js passed"}]}
+ReviewerAgent could not verify remote Goal progress: old parser missed validation.`
+	task.RemoteDiff = "diff --git a/src/open-grid.js b/src/open-grid.js\nnew file mode 100644\n"
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want automatic re-review and acceptance", changed)
+	}
+	accepted, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Status != taskstore.StatusDone {
+		t.Fatalf("status = %q, want done after automatic re-review", accepted.Status)
+	}
+	if !strings.Contains(accepted.Result, "ReviewerAgent independently reviewed remote result") || !strings.Contains(accepted.Result, "accepted by Assistant Autopilot") {
+		t.Fatalf("result = %q, want re-review and Autopilot acceptance", accepted.Result)
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status == assistantstore.GoalAutopilotStatusBlocked {
+		t.Fatalf("autopilot = %#v, want Goal to continue instead of exposing stale reviewer blocker", loaded.Goal.Autopilot)
+	}
+	if loaded.Goal.Autopilot.CurrentTaskID != "" {
+		t.Fatalf("current task = %q, want recovered task cleared before the next supervisor pass", loaded.Goal.Autopilot.CurrentTaskID)
+	}
+	foundReport := false
+	for _, report := range loaded.TaskReports {
+		if report.TaskID == taskID {
+			foundReport = true
+			if report.ReviewDecision != goalTaskReviewVerifiedProgress || len(report.Validation) == 0 {
+				t.Fatalf("report = %#v, want verified progress with validation", report)
+			}
+		}
+	}
+	if !foundReport {
+		t.Fatalf("task reports = %#v, want report for rechecked task", loaded.TaskReports)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started while recovering remote Autopilot task")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestReviewRemoteTaskCanRecheckReviewerBlockedTask(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	ctx := context.Background()
@@ -7678,7 +7764,7 @@ func TestGoalTaskReportParsesInlineRecoveredGoalReport(t *testing.T) {
 		Goal:        "Build context menu typeahead for the replacement data grid.",
 		Status:      taskstore.StatusBlocked,
 		Target:      remote1ExecutionTarget(),
-		Result:      `Recovered completion. GOAL_REPORT: {"summary":"Closed context menu typeahead","advanced_goal":true,"phase_complete":false,"goal_complete":false,"changed_files":["src/open-grid.js","tests/grid-core.test.js"],"validation":["bun test tests/grid-core.test.js"],"follow_ups":[],"blockers":[],"questions":[]} ReviewerAgent could not verify remote Goal progress: old parser missed validation.`,
+		Result:      `Recovered completion. GOAL_REPORT: {"summary":"Closed context menu typeahead","advanced_goal":true,"phase_complete":false,"goal_complete":false,"changed_files":["src/open-grid.js","tests/grid-core.test.js"],"validation":["bun test tests/grid-core.test.js"],"claims":[{"claim":"Typeahead is implemented","evidence":"tests/grid-core.test.js passed"}],"follow_ups":[],"blockers":[],"questions":[]} ReviewerAgent could not verify remote Goal progress: old parser missed validation.`,
 		RemoteDiff:  "diff --git a/src/open-grid.js b/src/open-grid.js\nnew file mode 100644\n",
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -7688,7 +7774,7 @@ func TestGoalTaskReportParsesInlineRecoveredGoalReport(t *testing.T) {
 	}
 
 	report := orch.goalTaskReportFromTask(ctx, goal, task)
-	if report.ReviewDecision != goalTaskReviewVerifiedProgress || len(report.Validation) == 0 {
+	if report.ReviewDecision != goalTaskReviewVerifiedProgress || len(report.Validation) == 0 || len(report.Claims) == 0 || len(report.Claims[0].Evidence) == 0 {
 		t.Fatalf("report = %#v, want inline GOAL_REPORT validation to verify progress", report)
 	}
 }

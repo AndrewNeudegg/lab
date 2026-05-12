@@ -8481,6 +8481,12 @@ func taskBlockedByReviewChecks(t taskstore.Task) bool {
 	return t.Status == taskstore.StatusBlocked && strings.HasPrefix(strings.TrimSpace(t.Result), "ReviewerAgent checks failed:")
 }
 
+const remoteGoalReviewBlockerMarker = "ReviewerAgent could not verify remote Goal progress:"
+
+func taskBlockedByRemoteGoalReview(t taskstore.Task) bool {
+	return t.Status == taskstore.StatusBlocked && remoteTask(t) && strings.Contains(t.Result, remoteGoalReviewBlockerMarker)
+}
+
 func (o *Orchestrator) currentReviewTask(ctx context.Context, taskID string) (taskstore.Task, bool, string, error) {
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
@@ -8509,7 +8515,7 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 	if t.Status == taskstore.StatusTimedOut {
 		return fmt.Sprintf("Remote task %s timed out on %s in %s. No review ran.\nNext: raise the backend timeout or narrow the instruction, then `retry %s codex <instruction>` or `reopen %s <reason>`.", shortID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
 	}
-	if t.Status == taskstore.StatusBlocked && strings.Contains(t.Result, "ReviewerAgent could not verify remote Goal progress:") {
+	if taskBlockedByRemoteGoalReview(t) {
 		t.Status = taskstore.StatusReadyForReview
 	}
 	if t.Status != taskstore.StatusReadyForReview {
@@ -8537,7 +8543,7 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 	case goalTaskReviewNeedsValidation, goalTaskReviewMisaligned, goalTaskReviewInsufficientEvidence:
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
-		t.Result = appendResultLine(t.Result, "ReviewerAgent could not verify remote Goal progress: "+review.Summary)
+		t.Result = appendResultLine(t.Result, remoteGoalReviewBlockerMarker+" "+review.Summary)
 		if err := o.tasks.Save(t); err != nil {
 			return "", err
 		}

@@ -89,6 +89,32 @@ const waitingGoalTask = {
   }
 };
 
+const agentRepairTaskID = 'task_20260428_120900_repair1';
+const agentRepairTask = {
+  ...blockerTask,
+  id: agentRepairTaskID,
+  status: 'blocked',
+  title: 'Map enterprise parity scope',
+  result: 'Autopilot found an actionable gap-fix task.',
+  goal_blocker_trace: {
+    ...blockerTask.goal_blocker_trace,
+    status: 'needs_agent_repair',
+    resolver: 'agent',
+    human_action_required: false,
+    blocking_task_id: agentRepairTaskID,
+    blocking_task_url: `/tasks?task=${agentRepairTaskID}`,
+    reason:
+      'Autopilot found more repair work: open high gap ggap_scope prevents Goal completion.',
+    next_action:
+      'Map every current Enterprise feature category to implemented evidence, accepted exclusion, or explicit gap severity.',
+    operator_action:
+      'No human decision is required. Autopilot should record this as repair work and create the next gap-fix task.',
+    questions: [],
+    blockers: ['Open high gap ggap_scope prevents credible completion.'],
+    follow_ups: ['Rerun the public-doc challenge after mapping the feature categories.']
+  }
+};
+
 const freezeTime = async (page: Page) => {
   await page.addInitScript((fixedNow) => {
     const RealDate = Date;
@@ -301,6 +327,20 @@ for (const viewport of [
         .getByLabel('Instruction for the next run')
         .fill('Compare against the licensed AG Grid reference fixture before closing Phase 04.');
       await expect(blockerTrace.getByRole('button', { name: 'Reopen with custom answer' })).toBeEnabled();
+    });
+
+    test('agent-resolvable Goal blockers say Autopilot owns the next step', async ({ page }) => {
+      await mockTaskApis(page, [agentRepairTask]);
+      await page.goto(`/tasks?task=${agentRepairTaskID}`);
+      await expect(page.getByRole('heading', { name: 'Map enterprise parity scope' })).toBeVisible();
+      const blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(blockerTrace).toContainText('Autopilot found repair work');
+      await expect(blockerTrace).toContainText('Next autonomous step');
+      await expect(blockerTrace).toContainText('No human decision needed');
+      await expect(blockerTrace).toContainText('Map every current Enterprise feature category');
+      await expect(blockerTrace.getByRole('button', { name: 'Let Autopilot repair' })).toBeVisible();
+      await expect(blockerTrace.getByRole('button', { name: /Accept current evidence/ })).toHaveCount(0);
+      await expectNoAxeViolations(page);
     });
   });
 }

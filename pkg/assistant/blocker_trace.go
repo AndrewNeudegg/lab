@@ -7,7 +7,12 @@ import (
 )
 
 const (
-	GoalBlockerTraceStatusBlocked = "blocked"
+	GoalBlockerTraceStatusBlocked          = "blocked"
+	GoalBlockerTraceStatusNeedsAgentRepair = "needs_agent_repair"
+
+	GoalBlockerResolverHuman    = "human"
+	GoalBlockerResolverAgent    = "agent"
+	GoalBlockerResolverExternal = "external"
 
 	GoalBlockerSourceOpenQuestions = "open_questions"
 	GoalBlockerSourceTaskReport    = "task_report"
@@ -30,6 +35,7 @@ func DeriveGoalBlockerTrace(goal Goal, decisions []GoalSupervisorDecision, repor
 
 	trace := GoalBlockerTrace{
 		Status:         GoalBlockerTraceStatusBlocked,
+		Resolver:       GoalBlockerResolverHuman,
 		GoalID:         goal.ID,
 		PhaseID:        phaseID,
 		PhaseTitle:     phaseTitle,
@@ -53,32 +59,56 @@ func DeriveGoalBlockerTrace(goal Goal, decisions []GoalSupervisorDecision, repor
 	case len(goal.OpenQuestions) > 0 && (decision.Decision == GoalSupervisorDecisionAskQuestion || report.TaskID == ""):
 		trace.SourceType = GoalBlockerSourceOpenQuestions
 		trace.SourceID = goal.ID
+		trace.Resolver = GoalBlockerResolverHuman
+		trace.HumanAction = true
 		trace.Questions = append([]string(nil), goal.OpenQuestions...)
 		trace.Reason = "Goal has unanswered operator questions: " + goal.OpenQuestions[0]
+		trace.NextAction = "Answer the Goal question so Autopilot can choose the next task."
 		trace.OperatorAction = "Answer the Goal question, then resume Autopilot."
 		trace.CreatedAt = latestGoalBlockerTime(decision.CreatedAt, goal.UpdatedAt)
 	case report.TaskID != "" && (len(report.Blockers) > 0 || len(report.Questions) > 0 || report.ReviewDecision != ""):
 		trace.SourceType = GoalBlockerSourceTaskReport
 		trace.SourceID = report.ID
-		trace.Reason = taskReportBlockerReason(report)
-		trace.OperatorAction = taskReportOperatorAction(report)
+		if gap, ok := taskReportAgentRepairGap(goal, report); ok {
+			trace.Status = GoalBlockerTraceStatusNeedsAgentRepair
+			trace.Resolver = GoalBlockerResolverAgent
+			trace.HumanAction = false
+			trace.Reason = agentRepairBlockerReason(report, gap)
+			trace.NextAction = agentRepairNextAction(gap)
+			trace.OperatorAction = "No human decision is required. Autopilot should record this as repair work and create the next gap-fix task."
+		} else {
+			trace.Resolver = goalBlockerResolverForReport(report)
+			trace.HumanAction = trace.Resolver == GoalBlockerResolverHuman
+			trace.Reason = taskReportBlockerReason(report)
+			trace.NextAction = taskReportNextAction(report)
+			trace.OperatorAction = taskReportOperatorAction(report)
+		}
 		trace.CreatedAt = latestGoalBlockerTime(report.CreatedAt, decision.CreatedAt)
 	case decision.ID != "":
 		trace.SourceType = GoalBlockerSourceDecision
 		trace.SourceID = decision.ID
+		trace.Resolver = GoalBlockerResolverHuman
+		trace.HumanAction = true
 		trace.Reason = firstNonEmptyString(decision.StopReason, decision.Rationale, decision.Summary, "Goal supervisor paused Autopilot.")
+		trace.NextAction = decisionOperatorAction(decision)
 		trace.OperatorAction = decisionOperatorAction(decision)
 		trace.CreatedAt = latestGoalBlockerTime(decision.CreatedAt, goal.UpdatedAt)
 	case goal.Autopilot != nil && len(goal.Autopilot.StopReasons) > 0:
 		trace.SourceType = GoalBlockerSourceAutopilot
 		trace.SourceID = goal.ID
+		trace.Resolver = GoalBlockerResolverHuman
+		trace.HumanAction = true
 		trace.Reason = goal.Autopilot.StopReasons[0]
+		trace.NextAction = "Resolve or accept the Autopilot stop reason."
 		trace.OperatorAction = "Resolve or accept the Autopilot stop reason, then resume Autopilot."
 		trace.CreatedAt = latestGoalBlockerTime(goal.UpdatedAt)
 	default:
 		trace.SourceType = GoalBlockerSourcePlan
 		trace.SourceID = goal.ID
+		trace.Resolver = GoalBlockerResolverHuman
+		trace.HumanAction = true
 		trace.Reason = "Goal plan is blocked by the current phase."
+		trace.NextAction = "Inspect the current phase and blocking task reports."
 		trace.OperatorAction = "Inspect the current phase and blocking task reports, then revise the plan or resume Autopilot."
 		trace.CreatedAt = latestGoalBlockerTime(goal.UpdatedAt)
 	}
@@ -98,6 +128,10 @@ func NormalizeGoalBlockerTrace(trace *GoalBlockerTrace) *GoalBlockerTrace {
 	if value.Status == "" {
 		value.Status = GoalBlockerTraceStatusBlocked
 	}
+	value.Resolver = strings.TrimSpace(value.Resolver)
+	if value.Resolver == "" {
+		value.Resolver = GoalBlockerResolverHuman
+	}
 	value.SourceType = strings.TrimSpace(value.SourceType)
 	value.SourceID = strings.TrimSpace(value.SourceID)
 	value.DecisionID = strings.TrimSpace(value.DecisionID)
@@ -108,6 +142,7 @@ func NormalizeGoalBlockerTrace(trace *GoalBlockerTrace) *GoalBlockerTrace {
 	value.BlockingTaskID = strings.TrimSpace(value.BlockingTaskID)
 	value.ReviewDecision = strings.TrimSpace(value.ReviewDecision)
 	value.Reason = strings.TrimSpace(value.Reason)
+	value.NextAction = strings.TrimSpace(value.NextAction)
 	value.OperatorAction = strings.TrimSpace(value.OperatorAction)
 	value.SourceURL = strings.TrimSpace(value.SourceURL)
 	value.BlockingTaskURL = strings.TrimSpace(value.BlockingTaskURL)
@@ -227,6 +262,101 @@ func goalReportBlocksAutopilot(report GoalTaskReport) bool {
 	}
 }
 
+func taskReportAgentRepairGap(goal Goal, report GoalTaskReport) (GoalGap, bool) {
+	report = NormalizeGoalTaskReport(report)
+	if strings.EqualFold(report.BlockerResolver, GoalBlockerResolverHuman) || strings.EqualFold(report.BlockerResolver, GoalBlockerResolverExternal) {
+		return GoalGap{}, false
+	}
+	if len(report.Questions) > 0 {
+		return GoalGap{}, false
+	}
+	if report.Challenge != nil && report.Challenge.Verdict == GoalChallengeVerdictNeedsUser {
+		return GoalGap{}, false
+	}
+	gap, ok := firstOpenActionableGoalGap(goal.Plan, report.GapIDs)
+	if !ok {
+		return GoalGap{}, false
+	}
+	if len(report.Blockers) == 0 && report.ReviewDecision == "" && len(report.FollowUps) == 0 {
+		return GoalGap{}, false
+	}
+	return gap, true
+}
+
+func firstOpenActionableGoalGap(plan *GoalPlan, attemptedGapIDs []string) (GoalGap, bool) {
+	if plan == nil {
+		return GoalGap{}, false
+	}
+	planValue := NormalizeGoalPlan(*plan)
+	var fallback GoalGap
+	for _, severity := range []string{GoalGapSeverityCritical, GoalGapSeverityHigh, GoalGapSeverityMedium, GoalGapSeverityLow} {
+		for _, gap := range planValue.Gaps {
+			if gap.Status != GoalGapStatusOpen || gap.Severity != severity {
+				continue
+			}
+			if strings.TrimSpace(gap.SuggestedTask) == "" && strings.TrimSpace(gap.Claim) == "" {
+				continue
+			}
+			if fallback.ID == "" {
+				fallback = gap
+			}
+			if !stringSliceContains(attemptedGapIDs, gap.ID) {
+				return gap, true
+			}
+		}
+	}
+	if fallback.ID != "" {
+		return fallback, true
+	}
+	return GoalGap{}, false
+}
+
+func agentRepairBlockerReason(report GoalTaskReport, gap GoalGap) string {
+	if gap.ID != "" {
+		return "Autopilot found more repair work: open " + firstNonEmptyString(gap.Severity, "unscored") + " gap " + gap.ID + " prevents Goal completion."
+	}
+	if len(report.Blockers) > 0 {
+		return "Autopilot found more repair work: " + report.Blockers[0]
+	}
+	return "Autopilot found more repair work before the Goal can complete."
+}
+
+func agentRepairNextAction(gap GoalGap) string {
+	return firstNonEmptyString(gap.SuggestedTask, gap.Claim, "Create the next gap-fix task, then rerun the relevant challenge.")
+}
+
+func goalBlockerResolverForReport(report GoalTaskReport) string {
+	report = NormalizeGoalTaskReport(report)
+	switch strings.TrimSpace(report.BlockerResolver) {
+	case GoalBlockerResolverAgent, GoalBlockerResolverHuman, GoalBlockerResolverExternal:
+		return report.BlockerResolver
+	}
+	for _, question := range report.Questions {
+		if strings.TrimSpace(question) != "" {
+			return GoalBlockerResolverHuman
+		}
+	}
+	for _, blocker := range report.Blockers {
+		text := strings.ToLower(blocker)
+		switch {
+		case strings.Contains(text, "credential"),
+			strings.Contains(text, "secret"),
+			strings.Contains(text, "permission"),
+			strings.Contains(text, "approval"),
+			strings.Contains(text, "operator"),
+			strings.Contains(text, "human"):
+			return GoalBlockerResolverHuman
+		case strings.Contains(text, "rate limit"),
+			strings.Contains(text, "429"),
+			strings.Contains(text, "network"),
+			strings.Contains(text, "service unavailable"),
+			strings.Contains(text, "dependency"):
+			return GoalBlockerResolverExternal
+		}
+	}
+	return GoalBlockerResolverHuman
+}
+
 func currentBlockedGoalPhase(goal Goal, report GoalTaskReport) (string, string) {
 	phaseID := firstNonEmptyString(report.PhaseID)
 	if phaseID == "" && goal.Plan != nil {
@@ -282,6 +412,26 @@ func taskReportOperatorAction(report GoalTaskReport) string {
 	}
 }
 
+func taskReportNextAction(report GoalTaskReport) string {
+	if strings.TrimSpace(report.NextAction) != "" {
+		return report.NextAction
+	}
+	if len(report.Questions) > 0 {
+		return "Answer the task question."
+	}
+	if len(report.Blockers) > 0 {
+		return firstNonEmptyString(report.Blockers[0], "Resolve or accept the reported blocker.")
+	}
+	switch report.ReviewDecision {
+	case "needs_validation":
+		return "Provide missing validation or reject the task with a stricter instruction."
+	case "insufficient_evidence", "misaligned":
+		return "Review the evidence and choose whether to revise the plan or rerun the task."
+	default:
+		return "Review the blocking task and decide the next action."
+	}
+}
+
 func decisionOperatorAction(decision GoalSupervisorDecision) string {
 	switch decision.Decision {
 	case GoalSupervisorDecisionAskQuestion:
@@ -316,6 +466,19 @@ func shortGoalBlockerID(id string) string {
 		return id
 	}
 	return id[len(id)-8:]
+}
+
+func stringSliceContains(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmptyString(values ...string) string {

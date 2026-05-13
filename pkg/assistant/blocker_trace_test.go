@@ -211,3 +211,68 @@ func TestDeriveGoalBlockerTraceIgnoresHistoricalReportWhenPlanIsNotBlocked(t *te
 		t.Fatalf("trace = %#v, want nil because old report is not the current blocker", trace)
 	}
 }
+
+func TestDeriveGoalBlockerTraceClassifiesActionableGapAsAgentRepair(t *testing.T) {
+	now := time.Date(2026, 5, 13, 7, 0, 0, 0, time.UTC)
+	goal := Goal{
+		ID:            "goal_1",
+		Status:        GoalStatusBlocked,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		Autopilot:     &GoalAutopilot{Status: GoalAutopilotStatusBlocked},
+		Plan: &GoalPlan{
+			Status:         GoalPlanStatusBlocked,
+			CurrentPhaseID: "phase_final_audit",
+			Phases: []GoalPlanPhase{
+				{ID: "phase_final_audit", Title: "Final audit", Status: GoalPlanPhaseStatusBlocked},
+			},
+			Gaps: []GoalGap{{
+				ID:            "ggap_scope",
+				PhaseID:       "phase_final_audit",
+				Area:          "public parity scope",
+				Claim:         "Enterprise feature categories are under-scoped.",
+				Severity:      GoalGapSeverityHigh,
+				Status:        GoalGapStatusOpen,
+				SuggestedTask: "Map every current Enterprise feature category to evidence, exclusion, or gap severity.",
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}},
+		},
+		UpdatedAt: now,
+	}
+	reports := []GoalTaskReport{{
+		ID:             "greport_1",
+		GoalID:         "goal_1",
+		TaskID:         "task_gap_fix",
+		PhaseID:        "phase_final_audit",
+		Summary:        "Delivery cleanliness is fixed, but scope gap remains.",
+		Blockers:       []string{"Open high gap ggap_scope prevents credible completion."},
+		FollowUps:      []string{"Map every current Enterprise feature category."},
+		ReviewDecision: "needs_validation",
+		GapIDs:         []string{"ggap_delivery"},
+		CreatedAt:      now,
+	}}
+
+	trace := DeriveGoalBlockerTrace(goal, []GoalSupervisorDecision{{
+		ID:        "gdec_blocked",
+		GoalID:    "goal_1",
+		Decision:  GoalSupervisorDecisionPauseBlocked,
+		TaskID:    "task_gap_fix",
+		CreatedAt: now,
+	}}, reports)
+
+	if trace == nil {
+		t.Fatal("trace is nil, want agent-repair trace")
+	}
+	if trace.Status != GoalBlockerTraceStatusNeedsAgentRepair {
+		t.Fatalf("status = %q, want agent repair", trace.Status)
+	}
+	if trace.Resolver != GoalBlockerResolverAgent || trace.HumanAction {
+		t.Fatalf("resolver/human = %q/%v, want agent/false", trace.Resolver, trace.HumanAction)
+	}
+	if !strings.Contains(trace.NextAction, "Map every current Enterprise feature category") {
+		t.Fatalf("next action = %q, want gap suggested task", trace.NextAction)
+	}
+	if !strings.Contains(trace.OperatorAction, "No human decision") {
+		t.Fatalf("operator action = %q, want no-human guidance", trace.OperatorAction)
+	}
+}

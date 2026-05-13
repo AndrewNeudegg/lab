@@ -1091,6 +1091,9 @@ func (o *Orchestrator) reconcileGoalAutopilotTask(ctx context.Context, store *as
 		if taskBlockedByRemoteGoalReview(t) {
 			return o.recheckBlockedRemoteGoalTask(ctx, store, goal, t)
 		}
+		if continued, reply, err := o.continueGoalAutopilotFromAgentRepairBlock(ctx, store, goal.ID, t.ID, ""); err != nil || continued {
+			return continued, reply, err
+		}
 		if ok, _ := automaticTaskRecoveryCandidate(t, time.Now().UTC()); ok {
 			return false, fmt.Sprintf("Autopilot is waiting for task supervisor recovery on task %s.", taskShortID(t.ID)), nil
 		}
@@ -1116,6 +1119,9 @@ func (o *Orchestrator) recheckBlockedRemoteGoalTask(ctx context.Context, store *
 		return false, "", err
 	}
 	if refreshed.Status == taskstore.StatusBlocked {
+		if continued, continueReply, err := o.continueGoalAutopilotFromAgentRepairBlock(ctx, store, goal.ID, refreshed.ID, reply); err != nil || continued {
+			return continued, continueReply, err
+		}
 		reason := fmt.Sprintf("Linked remote task %s is still blocked after automatic validation review.", shortID)
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, reason)
 	}
@@ -1139,6 +1145,165 @@ func (o *Orchestrator) recheckBlockedRemoteGoalTask(ctx context.Context, store *
 		return true, fmt.Sprintf("Autopilot rechecked blocked remote Goal task %s.\n%s\nAutopilot found the task already accepted and will select the next Goal step on the next supervisor pass.", shortID, reply), nil
 	}
 	return true, fmt.Sprintf("Autopilot rechecked blocked remote Goal task %s.\n%s", shortID, reply), nil
+}
+
+func (o *Orchestrator) continueGoalAutopilotFromAgentRepairBlock(ctx context.Context, store *assistantstore.GoalStore, goalID, taskID, reviewReply string) (bool, string, error) {
+	goalID = strings.TrimSpace(goalID)
+	taskID = strings.TrimSpace(taskID)
+	if goalID == "" || taskID == "" {
+		return false, "", nil
+	}
+	goal, err := store.LoadGoal(goalID)
+	if err != nil {
+		return false, "", err
+	}
+	goal = assistantstore.NormalizeGoal(goal)
+	reports, err := store.ListTaskReports(goal.ID)
+	if err != nil {
+		return false, "", err
+	}
+	report, ok := goalTaskReportForTask(reports, taskID)
+	if !ok {
+		return false, "", nil
+	}
+	gap, ok := goalTaskReportHasAutonomousRepairPath(goal, report)
+	if !ok {
+		return false, "", nil
+	}
+	now := time.Now().UTC()
+	if task, err := o.tasks.Load(taskID); err == nil && !taskTerminal(task.Status) {
+		task.Status = taskstore.StatusDone
+		task.Result = strings.TrimSpace(task.Result + "\n\nAssistant Autopilot consumed this blocked result as actionable agent-repair work and continued with the next Goal gap.")
+		task.UpdatedAt = now
+		if err := o.tasks.Save(task); err != nil {
+			return false, "", err
+		}
+	}
+	if goal.Autopilot == nil {
+		autopilot := assistantstore.NormalizeGoalAutopilot(nil)
+		goal.Autopilot = &autopilot
+	}
+	if strings.TrimSpace(goal.Autopilot.CurrentTaskID) == taskID {
+		goal.Autopilot.CurrentTaskID = ""
+	}
+	goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
+	goal.Autopilot.StopReasons = nil
+	goal.Autopilot.LastStepAt = &now
+	if goal.Status == assistantstore.GoalStatusBlocked {
+		goal.Status = assistantstore.GoalStatusActive
+	}
+	if goal.Plan != nil {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		if plan.Status == assistantstore.GoalPlanStatusBlocked {
+			plan.Status = assistantstore.GoalPlanStatusActive
+		}
+		plan.UpdatedAt = now
+		goal.Plan = &plan
+	}
+	goal.UpdatedAt = now
+	if err := store.SaveGoal(goal); err != nil {
+		return false, "", err
+	}
+	noteBody := fmt.Sprintf("Autopilot treated linked task %s as agent-repair work instead of a human blocker. Next repair gap: %s.", taskShortID(taskID), firstNonEmptyString(gap.ID, gap.Area, "open gap"))
+	if gap.SuggestedTask != "" {
+		noteBody += " " + gap.SuggestedTask
+	}
+	_ = store.SaveNote(assistantstore.GoalNote{
+		ID:        id.New("gnote"),
+		GoalID:    goal.ID,
+		Kind:      "autopilot",
+		Title:     "Autopilot continuing repair work",
+		Body:      noteBody,
+		TaskID:    taskID,
+		CreatedBy: "assistant",
+		CreatedAt: now,
+	})
+	o.appendGoalEvent(ctx, "assistant.goal.autopilot.agent_repair.continued", goal, map[string]any{
+		"goal_id": goal.ID,
+		"task_id": taskID,
+		"gap_id":  gap.ID,
+	})
+	latest, err := store.LoadGoal(goal.ID)
+	if err != nil {
+		return false, "", err
+	}
+	_, reconcileReply, err := o.reconcileGoalAutopilot(ctx, store, latest)
+	if err != nil {
+		return false, "", err
+	}
+	replyParts := []string{noteBody}
+	if strings.TrimSpace(reviewReply) != "" {
+		replyParts = append(replyParts, strings.TrimSpace(reviewReply))
+	}
+	if strings.TrimSpace(reconcileReply) != "" {
+		replyParts = append(replyParts, strings.TrimSpace(reconcileReply))
+	}
+	return true, strings.Join(replyParts, "\n"), nil
+}
+
+func goalTaskReportForTask(reports []assistantstore.GoalTaskReport, taskID string) (assistantstore.GoalTaskReport, bool) {
+	taskID = strings.TrimSpace(taskID)
+	for _, report := range reports {
+		report = assistantstore.NormalizeGoalTaskReport(report)
+		if strings.TrimSpace(report.TaskID) == taskID {
+			return report, true
+		}
+	}
+	return assistantstore.GoalTaskReport{}, false
+}
+
+func goalTaskReportHasAutonomousRepairPath(goal assistantstore.Goal, report assistantstore.GoalTaskReport) (assistantstore.GoalGap, bool) {
+	goal = assistantstore.NormalizeGoal(goal)
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	switch strings.TrimSpace(report.BlockerResolver) {
+	case assistantstore.GoalBlockerResolverHuman, assistantstore.GoalBlockerResolverExternal:
+		return assistantstore.GoalGap{}, false
+	}
+	if len(report.Questions) > 0 {
+		return assistantstore.GoalGap{}, false
+	}
+	if report.Challenge != nil && report.Challenge.Verdict == assistantstore.GoalChallengeVerdictNeedsUser {
+		return assistantstore.GoalGap{}, false
+	}
+	gap, ok := firstOpenAutonomousRepairGap(goal.Plan, report.GapIDs)
+	if !ok {
+		return assistantstore.GoalGap{}, false
+	}
+	if !stringSliceContains(report.GapIDs, gap.ID) {
+		return gap, true
+	}
+	if report.AdvancedGoal || len(report.ChangedFiles) > 0 || len(report.Claims) > 0 || len(report.Validation) > 0 {
+		return gap, true
+	}
+	return assistantstore.GoalGap{}, false
+}
+
+func firstOpenAutonomousRepairGap(plan *assistantstore.GoalPlan, attemptedGapIDs []string) (assistantstore.GoalGap, bool) {
+	if plan == nil {
+		return assistantstore.GoalGap{}, false
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	var fallback assistantstore.GoalGap
+	for _, severity := range []string{assistantstore.GoalGapSeverityCritical, assistantstore.GoalGapSeverityHigh, assistantstore.GoalGapSeverityMedium, assistantstore.GoalGapSeverityLow} {
+		for _, gap := range planValue.Gaps {
+			if gap.Status != assistantstore.GoalGapStatusOpen || gap.Severity != severity {
+				continue
+			}
+			if strings.TrimSpace(gap.SuggestedTask) == "" && strings.TrimSpace(gap.Claim) == "" {
+				continue
+			}
+			if fallback.ID == "" {
+				fallback = gap
+			}
+			if !stringSliceContains(attemptedGapIDs, gap.ID) {
+				return gap, true
+			}
+		}
+	}
+	if fallback.ID != "" {
+		return fallback, true
+	}
+	return assistantstore.GoalGap{}, false
 }
 
 func (o *Orchestrator) clearGoalAutopilotCurrentTask(store *assistantstore.GoalStore, goalID, taskID, noteBody string) error {
@@ -2388,6 +2553,8 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_REPORT:`.")
 	b.WriteString("\nThe object must include: task_type, phase_id, milestone_id, summary, advanced_goal, phase_complete, goal_complete, changed_files, validation, follow_ups, blockers, questions, claims.")
 	b.WriteString("\nUse task_type `build` for normal milestone work and `gap_fix` when this task is repairing a selected challenge gap. Include gap_ids for gap-fix work.")
+	b.WriteString("\nUse blockers only for conditions that genuinely stop autonomous work, such as missing credentials, unsafe/destructive action, external outage, or a product decision. Do not put ordinary open repair gaps in blockers; record them as follow_ups and gap_ids so Autopilot can continue.")
+	b.WriteString("\nIf a blocker is unavoidable, include blocker_resolver as `human`, `agent`, or `external`, plus next_action. Use `human` only when the operator must decide or provide something; use `agent` when the next step is another autonomous repair task.")
 	b.WriteString("\nClaims must be an array of objects with claim and evidence fields. Make claims specific enough for a later challenge task to disprove.")
 	b.WriteString("\nThe reviewer will independently compare the diff, validation, and changed files against the Goal; do not claim progress unless the task materially advances the selected phase.")
 	b.WriteString("\nA build or gap-fix task may claim a milestone or phase complete, but the supervisor will not accept it as done until a separate challenge task passes.")
@@ -2475,6 +2642,7 @@ func goalAutopilotChallengeTaskGoal(goal assistantstore.Goal, decision assistant
 		b.WriteString("\n- Evaluate every Goal success criterion and constraint against the current repo, docs, tests, examples, browser or operational evidence, and recent challenge history.")
 		b.WriteString("\n- For remote build Goals, inspect the target repository delivery state. A dirty worktree, uncaptured diff, uncommitted deliverable, or missing exact commit/version is a high delivery gap unless the Goal explicitly permits an undelivered state.")
 		b.WriteString("\n- If the Goal is not complete, return concrete gaps, blockers, or operator questions that the supervisor can act on. Do not return a generic pass with goal_complete false and no gaps.")
+		b.WriteString("\n- Treat agent-repair work and human blockers differently. If another autonomous task can repair the issue, report it as a concrete gap with a suggested_task, not as a human blocker.")
 		b.WriteString("\n- Set goal_complete true only when the whole Goal is credibly complete, not merely when this audit task ran successfully.")
 	}
 	b.WriteString("\n\nChallenge mode:")
@@ -3175,6 +3343,8 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		report.Validation = []string(structured.Validation)
 		report.FollowUps = []string(structured.FollowUps)
 		report.Blockers = []string(structured.Blockers)
+		report.BlockerResolver = structured.BlockerResolver
+		report.NextAction = structured.NextAction
 		report.Questions = []string(structured.Questions)
 		report.Claims = structured.normalizedClaims()
 		report.GapIDs = []string(structured.GapIDs)
@@ -3223,7 +3393,7 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 	if !hasDiffEvidence && !report.NoChange {
 		report.AdvancedGoal = false
 	}
-	if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+	if goalTaskReportRequiresPlanBlock(report) {
 		report.PhaseComplete = false
 		report.GoalComplete = false
 	}
@@ -3282,22 +3452,24 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 }
 
 type structuredGoalReport struct {
-	TaskType      string                        `json:"task_type"`
-	PhaseID       string                        `json:"phase_id"`
-	MilestoneID   string                        `json:"milestone_id"`
-	Summary       string                        `json:"summary"`
-	AdvancedGoal  bool                          `json:"advanced_goal"`
-	PhaseComplete bool                          `json:"phase_complete"`
-	GoalComplete  bool                          `json:"goal_complete"`
-	NoChange      bool                          `json:"no_change"`
-	ChangedFiles  goalReportStrings             `json:"changed_files"`
-	Validation    goalReportStrings             `json:"validation"`
-	FollowUps     goalReportStrings             `json:"follow_ups"`
-	Blockers      goalReportStrings             `json:"blockers"`
-	Questions     goalReportStrings             `json:"questions"`
-	Claims        []structuredGoalClaim         `json:"claims"`
-	Challenge     *assistantstore.GoalChallenge `json:"challenge"`
-	GapIDs        goalReportStrings             `json:"gap_ids"`
+	TaskType        string                        `json:"task_type"`
+	PhaseID         string                        `json:"phase_id"`
+	MilestoneID     string                        `json:"milestone_id"`
+	Summary         string                        `json:"summary"`
+	AdvancedGoal    bool                          `json:"advanced_goal"`
+	PhaseComplete   bool                          `json:"phase_complete"`
+	GoalComplete    bool                          `json:"goal_complete"`
+	NoChange        bool                          `json:"no_change"`
+	ChangedFiles    goalReportStrings             `json:"changed_files"`
+	Validation      goalReportStrings             `json:"validation"`
+	FollowUps       goalReportStrings             `json:"follow_ups"`
+	Blockers        goalReportStrings             `json:"blockers"`
+	BlockerResolver string                        `json:"blocker_resolver"`
+	NextAction      string                        `json:"next_action"`
+	Questions       goalReportStrings             `json:"questions"`
+	Claims          []structuredGoalClaim         `json:"claims"`
+	Challenge       *assistantstore.GoalChallenge `json:"challenge"`
+	GapIDs          goalReportStrings             `json:"gap_ids"`
 }
 
 func (report structuredGoalReport) normalizedClaims() []assistantstore.GoalClaim {
@@ -3391,6 +3563,8 @@ func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
 			report.Validation = goalReportStrings(normalizeGoalReportStrings([]string(report.Validation), 24))
 			report.FollowUps = goalReportStrings(normalizeGoalReportStrings([]string(report.FollowUps), 24))
 			report.Blockers = goalReportStrings(normalizeGoalReportStrings([]string(report.Blockers), 24))
+			report.BlockerResolver = strings.TrimSpace(report.BlockerResolver)
+			report.NextAction = strings.TrimSpace(report.NextAction)
 			report.Questions = goalReportStrings(normalizeGoalReportStrings([]string(report.Questions), 12))
 			report.GapIDs = goalReportStrings(normalizeGoalReportStrings([]string(report.GapIDs), 24))
 			claims := make([]assistantstore.GoalClaim, 0, len(report.Claims))
@@ -3618,7 +3792,7 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 			}
 			milestone.Evidence = appendUniqueStrings(milestone.Evidence, report.Summary)
 			milestone.Evidence = appendUniqueStrings(milestone.Evidence, report.Validation...)
-			if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+			if goalTaskReportRequiresPlanBlock(report) {
 				milestone.Status = assistantstore.GoalMilestoneStatusBlocked
 			} else if report.AdvancedGoal || report.PhaseComplete || report.GoalComplete || len(report.Claims) > 0 {
 				milestone.Status = assistantstore.GoalMilestoneStatusClaimed
@@ -3626,7 +3800,7 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 				milestone.Status = assistantstore.GoalMilestoneStatusInProgress
 			}
 		}
-		if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+		if goalTaskReportRequiresPlanBlock(report) {
 			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusBlocked
 		} else {
 			plan.Phases[index].Status = assistantstore.GoalPlanPhaseStatusInProgress
@@ -3644,7 +3818,7 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 				}
 				plan.Gaps[index].TaskIDs = appendUniqueStrings(plan.Gaps[index].TaskIDs, report.TaskID)
 				plan.Gaps[index].UpdatedAt = now
-				if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+				if goalTaskReportRequiresPlanBlock(report) {
 					plan.Gaps[index].Status = assistantstore.GoalGapStatusOpen
 				} else if report.NoChange {
 					plan.Gaps[index].Status = assistantstore.GoalGapStatusDisproven
@@ -3655,7 +3829,7 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 			}
 		}
 	}
-	if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+	if goalTaskReportRequiresPlanBlock(report) {
 		plan.Status = assistantstore.GoalPlanStatusBlocked
 	} else {
 		updateGoalPlanProgress(&plan, now)
@@ -3670,6 +3844,20 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 	if goal.Autopilot != nil {
 		goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
 	}
+}
+
+func goalTaskReportRequiresPlanBlock(report assistantstore.GoalTaskReport) bool {
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	if len(report.Questions) > 0 {
+		return true
+	}
+	if report.Challenge != nil && report.Challenge.Verdict == assistantstore.GoalChallengeVerdictNeedsUser {
+		return true
+	}
+	if len(report.Blockers) == 0 {
+		return false
+	}
+	return !strings.EqualFold(report.BlockerResolver, assistantstore.GoalBlockerResolverAgent)
 }
 
 func applyGoalChallengeReportToPlan(plan *assistantstore.GoalPlan, report assistantstore.GoalTaskReport, now time.Time) {
@@ -3870,7 +4058,7 @@ func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.Goal
 
 	score := goalAlignmentScore(goal, phase, report)
 	hasProductFile := goalReportHasProductFile(report)
-	if len(report.Blockers) > 0 || len(report.Questions) > 0 {
+	if goalTaskReportRequiresPlanBlock(report) {
 		if score > 0 {
 			return goalTaskProgressReview{
 				Decision: goalTaskReviewBlockedWithProgress,

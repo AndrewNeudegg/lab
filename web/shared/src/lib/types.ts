@@ -884,8 +884,11 @@ export interface AssistantGoalBlockerTrace {
   phase_title?: string;
   blocking_task_id?: string;
   review_decision?: string;
+  resolver?: 'human' | 'agent' | 'external' | string;
   reason: string;
+  next_action?: string;
   operator_action?: string;
+  human_action_required?: boolean;
   source_url?: string;
   blocking_task_url?: string;
   blockers?: string[];

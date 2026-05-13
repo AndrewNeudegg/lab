@@ -175,6 +175,7 @@ type GoalAutopilot struct {
 
 type GoalBlockerTrace struct {
 	Status          string     `json:"status,omitempty"`
+	Resolver        string     `json:"resolver,omitempty"`
 	SourceType      string     `json:"source_type,omitempty"`
 	SourceID        string     `json:"source_id,omitempty"`
 	DecisionID      string     `json:"decision_id,omitempty"`
@@ -185,7 +186,9 @@ type GoalBlockerTrace struct {
 	BlockingTaskID  string     `json:"blocking_task_id,omitempty"`
 	ReviewDecision  string     `json:"review_decision,omitempty"`
 	Reason          string     `json:"reason,omitempty"`
+	NextAction      string     `json:"next_action,omitempty"`
 	OperatorAction  string     `json:"operator_action,omitempty"`
+	HumanAction     bool       `json:"human_action_required"`
 	SourceURL       string     `json:"source_url,omitempty"`
 	BlockingTaskURL string     `json:"blocking_task_url,omitempty"`
 	Blockers        []string   `json:"blockers,omitempty"`
@@ -294,35 +297,37 @@ type GoalSupervisorDecision struct {
 }
 
 type GoalTaskReport struct {
-	ID             string         `json:"id"`
-	GoalID         string         `json:"goal_id"`
-	TaskID         string         `json:"task_id"`
-	PhaseID        string         `json:"phase_id,omitempty"`
-	MilestoneID    string         `json:"milestone_id,omitempty"`
-	TaskType       string         `json:"task_type,omitempty"`
-	Title          string         `json:"title,omitempty"`
-	Status         string         `json:"status,omitempty"`
-	Summary        string         `json:"summary,omitempty"`
-	AdvancedGoal   bool           `json:"advanced_goal,omitempty"`
-	PhaseComplete  bool           `json:"phase_complete,omitempty"`
-	GoalComplete   bool           `json:"goal_complete,omitempty"`
-	NoChange       bool           `json:"no_change,omitempty"`
-	ChangedFiles   []string       `json:"changed_files,omitempty"`
-	Validation     []string       `json:"validation,omitempty"`
-	FollowUps      []string       `json:"follow_ups,omitempty"`
-	Blockers       []string       `json:"blockers,omitempty"`
-	Questions      []string       `json:"questions,omitempty"`
-	Claims         []GoalClaim    `json:"claims,omitempty"`
-	Challenge      *GoalChallenge `json:"challenge,omitempty"`
-	GapIDs         []string       `json:"gap_ids,omitempty"`
-	ReviewDecision string         `json:"review_decision,omitempty"`
-	ReviewSummary  string         `json:"review_summary,omitempty"`
-	ReviewEvidence []string       `json:"review_evidence,omitempty"`
-	DiffFiles      int            `json:"diff_files,omitempty"`
-	Additions      int            `json:"additions,omitempty"`
-	Deletions      int            `json:"deletions,omitempty"`
-	ResultExcerpt  string         `json:"result_excerpt,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID              string         `json:"id"`
+	GoalID          string         `json:"goal_id"`
+	TaskID          string         `json:"task_id"`
+	PhaseID         string         `json:"phase_id,omitempty"`
+	MilestoneID     string         `json:"milestone_id,omitempty"`
+	TaskType        string         `json:"task_type,omitempty"`
+	Title           string         `json:"title,omitempty"`
+	Status          string         `json:"status,omitempty"`
+	Summary         string         `json:"summary,omitempty"`
+	AdvancedGoal    bool           `json:"advanced_goal,omitempty"`
+	PhaseComplete   bool           `json:"phase_complete,omitempty"`
+	GoalComplete    bool           `json:"goal_complete,omitempty"`
+	NoChange        bool           `json:"no_change,omitempty"`
+	ChangedFiles    []string       `json:"changed_files,omitempty"`
+	Validation      []string       `json:"validation,omitempty"`
+	FollowUps       []string       `json:"follow_ups,omitempty"`
+	Blockers        []string       `json:"blockers,omitempty"`
+	BlockerResolver string         `json:"blocker_resolver,omitempty"`
+	NextAction      string         `json:"next_action,omitempty"`
+	Questions       []string       `json:"questions,omitempty"`
+	Claims          []GoalClaim    `json:"claims,omitempty"`
+	Challenge       *GoalChallenge `json:"challenge,omitempty"`
+	GapIDs          []string       `json:"gap_ids,omitempty"`
+	ReviewDecision  string         `json:"review_decision,omitempty"`
+	ReviewSummary   string         `json:"review_summary,omitempty"`
+	ReviewEvidence  []string       `json:"review_evidence,omitempty"`
+	DiffFiles       int            `json:"diff_files,omitempty"`
+	Additions       int            `json:"additions,omitempty"`
+	Deletions       int            `json:"deletions,omitempty"`
+	ResultExcerpt   string         `json:"result_excerpt,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
 }
 
 type GoalAutopilotRequest struct {
@@ -1312,6 +1317,8 @@ func NormalizeGoalTaskReport(report GoalTaskReport) GoalTaskReport {
 	report.Validation = normalizeRunStringList(report.Validation, 24)
 	report.FollowUps = normalizeRunStringList(report.FollowUps, 24)
 	report.Blockers = normalizeRunStringList(report.Blockers, 24)
+	report.BlockerResolver = strings.TrimSpace(report.BlockerResolver)
+	report.NextAction = strings.TrimSpace(report.NextAction)
 	report.Questions = normalizeRunStringList(report.Questions, 12)
 	claims := make([]GoalClaim, 0, len(report.Claims))
 	for index, claim := range report.Claims {

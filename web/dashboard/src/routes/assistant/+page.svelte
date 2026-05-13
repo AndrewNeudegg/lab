@@ -860,6 +860,9 @@
     if (!trace) {
       return 'Goal is not blocked';
     }
+    if (trace.resolver === 'agent' || trace.status === 'needs_agent_repair') {
+      return 'Autopilot found repair work';
+    }
     if (trace.blocking_task_id) {
       return `Blocked by task ${shortAssistantId(trace.blocking_task_id)}`;
     }
@@ -879,7 +882,11 @@
   const goalBlockerInlineLabel = (trace: AssistantGoalBlockerTrace | undefined) =>
     trace
       ? [
-          trace.blocking_task_id ? `Blocking task ${shortAssistantId(trace.blocking_task_id)}` : goalBlockerSourceLabel(trace),
+          trace.resolver === 'agent' || trace.status === 'needs_agent_repair'
+            ? 'Agent repair'
+            : trace.blocking_task_id
+              ? `Blocking task ${shortAssistantId(trace.blocking_task_id)}`
+              : goalBlockerSourceLabel(trace),
           trace.phase_title
         ]
           .filter(Boolean)
@@ -888,11 +895,27 @@
 
   const goalBlockerEvidence = (trace: AssistantGoalBlockerTrace | undefined) =>
     [
+      trace?.next_action,
       ...(trace?.blockers || []),
       ...(trace?.questions || []),
       ...(trace?.follow_ups || []),
       ...(trace?.evidence || [])
-    ].slice(0, 3);
+    ].filter((item): item is string => Boolean(item?.trim())).slice(0, 3);
+
+  const goalBlockerNeedsAgentRepair = (trace: AssistantGoalBlockerTrace | undefined) =>
+    trace?.resolver === 'agent' || trace?.status === 'needs_agent_repair' || trace?.human_action_required === false;
+
+  const goalAutopilotRepairLabel = (trace: AssistantGoalBlockerTrace | undefined, loading: boolean) =>
+    goalBlockerNeedsAgentRepair(trace)
+      ? loading
+        ? 'Starting repair'
+        : 'Let Autopilot repair'
+      : loading
+        ? 'Resuming'
+        : 'Resume Autopilot';
+
+  const goalBlockerTaskLinkLabel = (trace: AssistantGoalBlockerTrace | undefined) =>
+    goalBlockerNeedsAgentRepair(trace) ? 'Open repair task' : 'Open blocking task';
 
   const runRelatedGoalID = (run: AssistantRun | undefined) => {
     if (!run) {
@@ -2187,6 +2210,9 @@
                   <small>{goalBlockerMeta(selectedGoalBlockerTrace)}</small>
                 {/if}
                 <p>{selectedGoalBlockerTrace.reason}</p>
+                {#if goalBlockerNeedsAgentRepair(selectedGoalBlockerTrace)}
+                  <p class="goal-blocker-owner">Owner: Autopilot. The next step is repair work, not an operator decision.</p>
+                {/if}
                 {#if selectedGoalBlockerTrace.operator_action}
                   <p>{selectedGoalBlockerTrace.operator_action}</p>
                 {/if}
@@ -2201,7 +2227,7 @@
               <div class="blocker-actions" role="group" aria-label="Goal blocker actions">
                 {#if selectedGoalBlockerTrace.blocking_task_url}
                   <a class="text-action notice-action" href={selectedGoalBlockerTrace.blocking_task_url}>
-                    Open blocking task
+                    {goalBlockerTaskLinkLabel(selectedGoalBlockerTrace)}
                   </a>
                 {/if}
                 <button
@@ -2219,7 +2245,7 @@
                     disabled={goalAutopilotUpdating || selectedGoal.status === 'archived'}
                     on:click={() => void updateSelectedGoalAutopilot('resume')}
                   >
-                    Resume Autopilot
+                    {goalAutopilotRepairLabel(selectedGoalBlockerTrace, goalAutopilotUpdating)}
                   </button>
                 {/if}
               </div>
@@ -2794,6 +2820,9 @@
                   <small>{goalBlockerMeta(selectedRunGoalBlockerTrace)}</small>
                 {/if}
                 <p>{selectedRunGoalBlockerTrace.reason}</p>
+                {#if goalBlockerNeedsAgentRepair(selectedRunGoalBlockerTrace)}
+                  <p class="goal-blocker-owner">Owner: Autopilot. The next step is repair work, not an operator decision.</p>
+                {/if}
                 {#if selectedRunGoalBlockerTrace.operator_action}
                   <p>{selectedRunGoalBlockerTrace.operator_action}</p>
                 {/if}
@@ -2804,7 +2833,7 @@
                 {/if}
                 {#if selectedRunGoalBlockerTrace.blocking_task_url}
                   <a class="text-action notice-action" href={selectedRunGoalBlockerTrace.blocking_task_url}>
-                    Open blocking task
+                    {goalBlockerTaskLinkLabel(selectedRunGoalBlockerTrace)}
                   </a>
                 {/if}
               </div>
@@ -4178,6 +4207,10 @@
     font-size: 0.74rem;
     font-weight: 800;
     opacity: 0.82;
+  }
+
+  .goal-blocker-owner {
+    font-weight: 800;
   }
 
   .blocker-actions {

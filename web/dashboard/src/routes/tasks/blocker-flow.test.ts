@@ -77,6 +77,30 @@ describe('Goal blocker task flow', () => {
     expect(flow?.showCheckGoalAction).toBe(true);
   });
 
+  test('labels agent-resolvable gaps as autonomous repair instead of a human decision', () => {
+    const flow = goalBlockerFlow(
+      baseTask({
+        id: 'task_blocker',
+        status: 'blocked',
+        goal_blocker_trace: {
+          ...trace,
+          status: 'needs_agent_repair',
+          resolver: 'agent',
+          human_action_required: false,
+          next_action: 'Create a gap-fix task for the public parity scope gap.',
+          questions: [],
+          blockers: ['Open high gap ggap_scope prevents credible completion.']
+        }
+      })
+    );
+
+    expect(flow?.role).toBe('agent_repair');
+    expect(flow?.decisionLabel).toBe('No human decision needed');
+    expect(flow?.decisionDetail).toContain('public parity scope');
+    expect(flow?.showResumeGoalAction).toBe(true);
+    expect(flow?.decisionChoices).toEqual([]);
+  });
+
   test('returns no flow for ordinary tasks', () => {
     expect(goalBlockerFlow(baseTask())).toBeUndefined();
   });

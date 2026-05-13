@@ -811,12 +811,26 @@
   const taskGoalBlockerEvidence = (task: HomelabdTask | undefined) => {
     const trace = taskGoalBlockerTrace(task);
     return [
+      trace?.next_action,
       ...(trace?.blockers || []),
       ...(trace?.questions || []),
       ...(trace?.follow_ups || []),
       ...(trace?.evidence || [])
-    ].slice(0, 3);
+    ].filter((item): item is string => Boolean(item?.trim())).slice(0, 3);
   };
+
+  const goalBlockerDecisionHeading = (flow: ReturnType<typeof goalBlockerFlow>) =>
+    flow?.role === 'agent_repair' ? 'Next autonomous step' : 'Decision needed';
+
+  const goalBlockerResumeLabel = (flow: ReturnType<typeof goalBlockerFlow>, loading: boolean) => {
+    if (flow?.role === 'agent_repair') {
+      return loading ? 'Starting repair' : 'Let Autopilot repair';
+    }
+    return loading ? 'Resuming' : 'Resume Autopilot';
+  };
+
+  const goalBlockerTaskLinkLabel = (flow: ReturnType<typeof goalBlockerFlow>) =>
+    flow?.role === 'agent_repair' ? 'Open repair task' : 'Open blocking task';
 
   const actionPanelLabel = (action: PrimaryTaskAction) => {
     if (action.type === 'approval') {
@@ -2018,7 +2032,7 @@
                   {/if}
                   {#if currentGoalBlockerFlow}
                     <div class="goal-blocker-decision" aria-label="Required blocker decision">
-                      <span>Decision needed</span>
+                      <span>{goalBlockerDecisionHeading(currentGoalBlockerFlow)}</span>
                       <strong>{currentGoalBlockerFlow.decisionLabel}</strong>
                       <p>{currentGoalBlockerFlow.decisionDetail}</p>
                     </div>
@@ -2087,7 +2101,7 @@
                       <a href={currentGoalBlockerTrace.source_url}>Open Goal</a>
                     {/if}
                     {#if currentGoalBlockerTrace.blocking_task_url && currentGoalBlockerFlow?.showBlockingTaskLink}
-                      <a href={currentGoalBlockerTrace.blocking_task_url}>Open blocking task</a>
+                      <a href={currentGoalBlockerTrace.blocking_task_url}>{goalBlockerTaskLinkLabel(currentGoalBlockerFlow)}</a>
                     {/if}
                     {#if currentGoalBlockerFlow?.showResumeGoalAction && !currentGoalBlockerFlow.decisionChoices.length}
                       <button
@@ -2096,7 +2110,7 @@
                         disabled={goalBlockerActionLoading !== ''}
                         on:click={() => void performGoalBlockerAction('resume')}
                       >
-                        {goalBlockerActionLoading === 'resume' ? 'Resuming' : 'Resume Autopilot'}
+                        {goalBlockerResumeLabel(currentGoalBlockerFlow, goalBlockerActionLoading === 'resume')}
                       </button>
                     {/if}
                     {#if currentGoalBlockerFlow?.showCheckGoalAction}

@@ -8383,6 +8383,151 @@ GOAL_CHALLENGE: {"milestone_id":"%s","verdict":"failed","summary":"Foundation is
 	}
 }
 
+func TestGoalAutopilotContinuesBlockedTaskWhenReportHasAutonomousRepairGap(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	blockedTaskID := "task_blocked_gap_fix"
+	autopilot := assistantstore.NormalizeGoalAutopilot(&assistantstore.GoalAutopilot{
+		Status:        assistantstore.GoalAutopilotStatusRunning,
+		BudgetTasks:   5,
+		TasksStarted:  1,
+		CurrentTaskID: blockedTaskID,
+		StartedAt:     &now,
+		LastStepAt:    &now,
+	})
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:            "goal_agent_repair",
+		Title:         "Build grid",
+		Objective:     "Build a credible grid.",
+		Status:        assistantstore.GoalStatusActive,
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Target:        remote1ExecutionTarget(),
+		Autopilot:     &autopilot,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusBlocked,
+			Summary:        "Grid plan",
+			CurrentPhaseID: goalFinalAuditPhaseID,
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:     goalFinalAuditPhaseID,
+				Title:  goalFinalAuditMarker,
+				Status: assistantstore.GoalPlanPhaseStatusBlocked,
+				Milestones: []assistantstore.GoalMilestone{{
+					ID:      goalFinalAuditMilestoneID,
+					PhaseID: goalFinalAuditPhaseID,
+					Title:   goalFinalAuditMarker,
+					Status:  assistantstore.GoalMilestoneStatusBlocked,
+					TaskIDs: []string{blockedTaskID},
+				}},
+				TaskIDs: []string{blockedTaskID},
+			}},
+			Gaps: []assistantstore.GoalGap{
+				{
+					ID:            "ggap_delivery",
+					PhaseID:       goalFinalAuditPhaseID,
+					MilestoneID:   goalFinalAuditMilestoneID,
+					Area:          "delivery cleanliness",
+					Severity:      assistantstore.GoalGapSeverityHigh,
+					Status:        assistantstore.GoalGapStatusFixed,
+					SuggestedTask: "Commit the deliverable state.",
+					CreatedAt:     now,
+					UpdatedAt:     now,
+				},
+				{
+					ID:            "ggap_scope",
+					PhaseID:       goalFinalAuditPhaseID,
+					MilestoneID:   goalFinalAuditMilestoneID,
+					Area:          "public parity scope",
+					Claim:         "Enterprise landing-page categories are not fully mapped.",
+					Severity:      assistantstore.GoalGapSeverityHigh,
+					Status:        assistantstore.GoalGapStatusOpen,
+					SuggestedTask: "Map every current Enterprise feature category to evidence, accepted exclusion, or explicit gap severity.",
+					SourceTaskID:  "task_final_audit",
+					CreatedAt:     now,
+					UpdatedAt:     now,
+				},
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		LinkedTasks: []string{blockedTaskID},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:            blockedTaskID,
+		GoalID:        goal.ID,
+		GoalPhaseID:   goalFinalAuditPhaseID,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		GoalKind:      assistantstore.GoalKindBuild,
+		Title:         "Fix delivery cleanliness",
+		Goal:          "Fix delivery cleanliness",
+		Status:        taskstore.StatusBlocked,
+		AssignedTo:    "remote1-agent",
+		Target:        remote1ExecutionTarget(),
+		RemoteDiff:    "diff --git a/README.md b/README.md\n",
+		Result:        "Blocked after review: scope gap remains.",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveTaskReport(assistantstore.GoalTaskReport{
+		ID:             "greport_blocked_gap_fix",
+		GoalID:         goal.ID,
+		TaskID:         blockedTaskID,
+		PhaseID:        goalFinalAuditPhaseID,
+		MilestoneID:    goalFinalAuditMilestoneID,
+		TaskType:       assistantstore.GoalTaskTypeGapFix,
+		Status:         taskstore.StatusBlocked,
+		Summary:        "Delivery cleanliness was fixed, but public parity scope remains open.",
+		AdvancedGoal:   true,
+		ChangedFiles:   []string{"README.md"},
+		Validation:     []string{"git status clean"},
+		FollowUps:      []string{"Map every current Enterprise feature category."},
+		Blockers:       []string{"Open high gap ggap_scope prevents credible whole-goal completion."},
+		GapIDs:         []string{"ggap_delivery"},
+		ReviewDecision: goalTaskReviewNeedsValidation,
+		CreatedAt:      now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, reply, err := orch.reconcileGoalAutopilot(ctx, store, goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatalf("changed = false, reply = %q", reply)
+	}
+	continued, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Goal.Status != assistantstore.GoalStatusActive || continued.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning {
+		t.Fatalf("goal status/autopilot = %s/%s, want active/running", continued.Goal.Status, continued.Goal.Autopilot.Status)
+	}
+	if continued.Goal.Autopilot.CurrentTaskID == "" || continued.Goal.Autopilot.CurrentTaskID == blockedTaskID {
+		t.Fatalf("current task = %q, want new gap-fix task", continued.Goal.Autopilot.CurrentTaskID)
+	}
+	nextTask, err := orch.tasks.Load(continued.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(nextTask.Goal, "ggap_scope") || !strings.Contains(nextTask.Goal, "gap_fix") {
+		t.Fatalf("next task goal did not target autonomous repair gap:\n%s", nextTask.Goal)
+	}
+}
+
 func TestGoalAutopilotStopsAfterRepeatedNoProgressReports(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	ctx := context.Background()

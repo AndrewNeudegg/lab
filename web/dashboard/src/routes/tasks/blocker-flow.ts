@@ -1,6 +1,10 @@
 import type { HomelabdTask } from '@homelab/shared';
 
-export type GoalBlockerFlowRole = 'waiting_on_blocking_task' | 'blocking_task' | 'goal_blocked';
+export type GoalBlockerFlowRole =
+  | 'waiting_on_blocking_task'
+  | 'blocking_task'
+  | 'agent_repair'
+  | 'goal_blocked';
 export type GoalBlockerDecisionChoiceID = 'accept_current' | 'require_more' | 'custom';
 export type GoalBlockerDecisionKind = 'resume' | 'reopen' | 'custom';
 
@@ -90,6 +94,26 @@ export const goalBlockerFlow = (task: HomelabdTask | undefined): GoalBlockerFlow
 
   const trace = task.goal_blocker_trace;
   const goalID = goalIdForTask(task);
+  const resolver = trace.resolver || (trace.human_action_required === false ? 'agent' : 'human');
+  const nextAction =
+    trace.next_action ||
+    trace.operator_action ||
+    trace.blockers?.find((blocker) => blocker.trim()) ||
+    trace.follow_ups?.find((followUp) => followUp.trim()) ||
+    'Create the next repair task and rerun the relevant challenge.';
+
+  if (resolver === 'agent') {
+    return {
+      role: 'agent_repair',
+      title: taskIsGoalBlocker(task) ? 'Autopilot found repair work' : 'Goal needs autonomous repair',
+      decisionLabel: 'No human decision needed',
+      decisionDetail: nextAction,
+      showBlockingTaskLink: Boolean(trace.blocking_task_id && !taskIsGoalBlocker(task)),
+      showResumeGoalAction: true,
+      showCheckGoalAction: Boolean(goalID),
+      decisionChoices: []
+    };
+  }
 
   if (!taskIsGoalBlocker(task)) {
     if (trace.blocking_task_id) {

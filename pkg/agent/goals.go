@@ -1637,6 +1637,20 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 	if err != nil {
 		return assistantstore.GoalSupervisorDecision{}, err
 	}
+	if len(reports) > 0 && goal.Plan != nil && goalTaskReportCompletesGoal(reports[0]) {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		if closeGoalGapsAfterCompletingFinalAudit(&plan, reports[0], now) || plan.Status == assistantstore.GoalPlanStatusBlocked {
+			updateGoalPlanProgress(&plan, now)
+			goal.Plan = &plan
+			goal.UpdatedAt = now
+			if goal.Autopilot != nil {
+				goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
+			}
+			if err := store.SaveGoal(goal); err != nil {
+				return assistantstore.GoalSupervisorDecision{}, err
+			}
+		}
+	}
 	if len(goal.OpenQuestions) > 0 {
 		decision := assistantstore.GoalSupervisorDecision{
 			Decision:   assistantstore.GoalSupervisorDecisionAskQuestion,
@@ -1686,17 +1700,6 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 		}
 		decision.TaskGoal = goalAutopilotTaskGoalForDecision(goal, decision, reports)
 		return assistantstore.NormalizeGoalSupervisorDecision(decision), nil
-	}
-	if goal.Plan != nil && assistantstore.NormalizeGoalPlan(*goal.Plan).Status == assistantstore.GoalPlanStatusBlocked {
-		decision := assistantstore.GoalSupervisorDecision{
-			Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
-			Summary:    "Goal plan is blocked.",
-			Rationale:  "A linked task reported blockers or questions for the current plan phase.",
-			StopReason: "Goal plan is blocked by the current phase.",
-			Evidence:   goalSupervisorEvidence(goal, reports),
-		}
-		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
-		return decision, nil
 	}
 	if goalPlanComplete(goal.Plan) && allGoalGapsClosed(goal.Plan) {
 		if recentGoalReportCompletes(reports) {
@@ -1761,6 +1764,17 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 		}
 		decision.TaskGoal = goalAutopilotTaskGoalForDecision(goal, decision, reports)
 		return assistantstore.NormalizeGoalSupervisorDecision(decision), nil
+	}
+	if goal.Plan != nil && assistantstore.NormalizeGoalPlan(*goal.Plan).Status == assistantstore.GoalPlanStatusBlocked {
+		decision := assistantstore.GoalSupervisorDecision{
+			Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
+			Summary:    "Goal plan is blocked.",
+			Rationale:  "A linked task reported blockers or questions for the current plan phase.",
+			StopReason: "Goal plan is blocked by the current phase.",
+			Evidence:   goalSupervisorEvidence(goal, reports),
+		}
+		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+		return decision, nil
 	}
 	if noProgress, reason := recentGoalReportsShowNoProgress(reports); noProgress {
 		decision := assistantstore.GoalSupervisorDecision{
@@ -1990,6 +2004,29 @@ func allGoalGapsClosed(plan *assistantstore.GoalPlan) bool {
 		}
 	}
 	return true
+}
+
+func closeGoalGapsAfterCompletingFinalAudit(plan *assistantstore.GoalPlan, report assistantstore.GoalTaskReport, now time.Time) bool {
+	if plan == nil || !goalTaskReportCompletesGoal(report) {
+		return false
+	}
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	if len(report.Blockers) > 0 || len(report.Questions) > 0 || report.Challenge == nil || len(report.Challenge.Gaps) > 0 {
+		return false
+	}
+	changed := false
+	for index := range plan.Gaps {
+		switch plan.Gaps[index].Status {
+		case assistantstore.GoalGapStatusFixed, assistantstore.GoalGapStatusAcceptedRisk, assistantstore.GoalGapStatusDisproven:
+			continue
+		default:
+			plan.Gaps[index].Status = assistantstore.GoalGapStatusFixed
+			plan.Gaps[index].TaskIDs = appendUniqueStrings(plan.Gaps[index].TaskIDs, report.TaskID)
+			plan.Gaps[index].UpdatedAt = now
+			changed = true
+		}
+	}
+	return changed
 }
 
 func goalPhaseMilestonesAccepted(phase assistantstore.GoalPlanPhase) bool {
@@ -3743,6 +3780,7 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 	ensureGoalPlanMilestones(&plan, *goal, now)
 	if report.TaskType == assistantstore.GoalTaskTypeChallenge && report.Challenge != nil {
 		applyGoalChallengeReportToPlan(&plan, report, now)
+		closeGoalGapsAfterCompletingFinalAudit(&plan, report, now)
 		updateGoalPlanProgress(&plan, now)
 		goal.Plan = &plan
 		if goal.Autopilot != nil {

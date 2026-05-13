@@ -8303,6 +8303,200 @@ GOAL_CHALLENGE: {"milestone_id":"phase_final_audit_milestone_01","verdict":"pass
 	}
 }
 
+func TestGoalFinalAuditCompletionClosesStaleInProgressGaps(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	autopilot := assistantstore.NormalizeGoalAutopilot(&assistantstore.GoalAutopilot{
+		Status:        assistantstore.GoalAutopilotStatusRunning,
+		BudgetTasks:   5,
+		TasksStarted:  2,
+		CurrentTaskID: "task_final_audit_passed",
+		StartedAt:     &now,
+		LastStepAt:    &now,
+	})
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:            "goal_final_audit_stale_gap",
+		Title:         "Build grid",
+		Objective:     "Build a complete grid.",
+		Status:        assistantstore.GoalStatusActive,
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &autopilot,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusBlocked,
+			CurrentPhaseID: goalFinalAuditPhaseID,
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:     goalFinalAuditPhaseID,
+				Title:  goalFinalAuditMarker,
+				Status: assistantstore.GoalPlanPhaseStatusBlocked,
+				Milestones: []assistantstore.GoalMilestone{{
+					ID:      goalFinalAuditMilestoneID,
+					PhaseID: goalFinalAuditPhaseID,
+					Title:   goalFinalAuditMarker,
+					Status:  assistantstore.GoalMilestoneStatusChallenged,
+				}},
+			}},
+			Gaps: []assistantstore.GoalGap{{
+				ID:            "ggap_stale_duplicate",
+				PhaseID:       goalFinalAuditPhaseID,
+				MilestoneID:   goalFinalAuditMilestoneID,
+				Area:          "public parity scope",
+				Severity:      assistantstore.GoalGapSeverityHigh,
+				Status:        assistantstore.GoalGapStatusInProgress,
+				SuggestedTask: "Map every current Enterprise feature category.",
+				TaskIDs:       []string{"task_old_gap_fix"},
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		LinkedTasks: []string{"task_old_gap_fix", "task_final_audit_passed"},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	orch.reflectGoalTaskCompletion(ctx, taskstore.Task{
+		ID:            "task_final_audit_passed",
+		GoalID:        goal.ID,
+		GoalPhaseID:   goalFinalAuditPhaseID,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		GoalKind:      assistantstore.GoalKindBuild,
+		Title:         "Final whole-goal audit",
+		Goal:          goalFinalAuditMarker,
+		Status:        taskstore.StatusDone,
+		Result: `Final audit passed.
+GOAL_CHALLENGE: {"milestone_id":"phase_final_audit_milestone_01","verdict":"passed","summary":"Whole Goal is complete.","evidence":["checked current repo","no open gaps remain"],"claims_challenged":["whole Goal"],"gaps":[],"goal_complete":true}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	loaded, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Goal.Status != assistantstore.GoalStatusCompleted || loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusCompleted {
+		t.Fatalf("goal = %#v, want completed after certified final audit", loaded.Goal)
+	}
+	if loaded.Goal.Plan == nil || loaded.Goal.Plan.Status != assistantstore.GoalPlanStatusCompleted {
+		t.Fatalf("plan = %#v, want completed", loaded.Goal.Plan)
+	}
+	if len(loaded.Goal.Plan.Gaps) != 1 || loaded.Goal.Plan.Gaps[0].Status != assistantstore.GoalGapStatusFixed {
+		t.Fatalf("gaps = %#v, want stale gap fixed by final audit", loaded.Goal.Plan.Gaps)
+	}
+}
+
+func TestGoalSupervisorCompletesBlockedPlanAfterPersistedFinalAuditCertification(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	autopilot := assistantstore.NormalizeGoalAutopilot(&assistantstore.GoalAutopilot{
+		Status:       assistantstore.GoalAutopilotStatusRunning,
+		BudgetTasks:  5,
+		TasksStarted: 3,
+		StartedAt:    &now,
+		LastStepAt:   &now,
+	})
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:            "goal_persisted_final_audit",
+		Title:         "Build grid",
+		Objective:     "Build a complete grid.",
+		Status:        assistantstore.GoalStatusActive,
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &autopilot,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusBlocked,
+			CurrentPhaseID: goalFinalAuditPhaseID,
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:     goalFinalAuditPhaseID,
+				Title:  goalFinalAuditMarker,
+				Status: assistantstore.GoalPlanPhaseStatusCompleted,
+				Milestones: []assistantstore.GoalMilestone{{
+					ID:                goalFinalAuditMilestoneID,
+					PhaseID:           goalFinalAuditPhaseID,
+					Title:             goalFinalAuditMarker,
+					Status:            assistantstore.GoalMilestoneStatusAccepted,
+					ChallengeTaskIDs:  []string{"task_final_audit_passed"},
+					LatestChallengeID: "gchallenge_final",
+				}},
+			}},
+			Gaps: []assistantstore.GoalGap{{
+				ID:          "ggap_stale_in_progress",
+				PhaseID:     goalFinalAuditPhaseID,
+				MilestoneID: goalFinalAuditMilestoneID,
+				Area:        "public parity scope",
+				Severity:    assistantstore.GoalGapSeverityHigh,
+				Status:      assistantstore.GoalGapStatusInProgress,
+				TaskIDs:     []string{"task_old_gap_fix"},
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveTaskReport(assistantstore.GoalTaskReport{
+		ID:             "greport_final_audit_passed",
+		GoalID:         goal.ID,
+		TaskID:         "task_final_audit_passed",
+		PhaseID:        goalFinalAuditPhaseID,
+		MilestoneID:    goalFinalAuditMilestoneID,
+		TaskType:       assistantstore.GoalTaskTypeChallenge,
+		Status:         taskstore.StatusDone,
+		Summary:        "Final audit certified the whole Goal.",
+		AdvancedGoal:   true,
+		GoalComplete:   true,
+		ReviewDecision: goalTaskReviewVerifiedProgress,
+		Challenge: &assistantstore.GoalChallenge{
+			ID:               "gchallenge_final",
+			TaskID:           "task_final_audit_passed",
+			MilestoneID:      goalFinalAuditMilestoneID,
+			Verdict:          assistantstore.GoalChallengeVerdictPassed,
+			Summary:          "Final audit certified the whole Goal.",
+			Evidence:         []string{"checked current repo", "no open gaps remain"},
+			ClaimsChallenged: []string{"whole Goal"},
+			GoalComplete:     true,
+			CreatedAt:        now,
+		},
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := orch.goalSupervisorDecision(ctx, store, goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Decision != assistantstore.GoalSupervisorDecisionMarkComplete {
+		t.Fatalf("decision = %#v, want mark_complete", decision)
+	}
+	loaded, err := store.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Plan == nil || loaded.Plan.Status != assistantstore.GoalPlanStatusCompleted {
+		t.Fatalf("plan = %#v, want completed", loaded.Plan)
+	}
+	if len(loaded.Plan.Gaps) != 1 || loaded.Plan.Gaps[0].Status != assistantstore.GoalGapStatusFixed {
+		t.Fatalf("gaps = %#v, want stale gap fixed by persisted final audit", loaded.Plan.Gaps)
+	}
+}
+
 func TestGoalAutopilotCreatesGapFixAfterFailedChallenge(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),

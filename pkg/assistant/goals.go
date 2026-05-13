@@ -972,6 +972,9 @@ func NormalizeGoal(goal Goal) Goal {
 	}
 	if goal.Plan != nil {
 		plan := NormalizeGoalPlan(*goal.Plan)
+		if goalCompletedForGapNormalisation(goal, plan) {
+			closeCompletedGoalPlanGaps(&plan)
+		}
 		if len(plan.Phases) > 0 || plan.Summary != "" {
 			goal.Plan = &plan
 		} else {
@@ -1029,6 +1032,27 @@ func NormalizeGoal(goal Goal) Goal {
 		}
 	}
 	return goal
+}
+
+func goalCompletedForGapNormalisation(goal Goal, plan GoalPlan) bool {
+	if goal.Status == GoalStatusCompleted || plan.Status == GoalPlanStatusCompleted {
+		return true
+	}
+	return goal.Autopilot != nil && goal.Autopilot.Status == GoalAutopilotStatusCompleted
+}
+
+func closeCompletedGoalPlanGaps(plan *GoalPlan) {
+	if plan == nil {
+		return
+	}
+	for index := range plan.Gaps {
+		switch plan.Gaps[index].Status {
+		case GoalGapStatusFixed, GoalGapStatusAcceptedRisk, GoalGapStatusDisproven:
+			continue
+		default:
+			plan.Gaps[index].Status = GoalGapStatusFixed
+		}
+	}
 }
 
 func goalClearsOpenQuestions(goal Goal) bool {

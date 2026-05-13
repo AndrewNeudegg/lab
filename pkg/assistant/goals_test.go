@@ -136,12 +136,27 @@ func TestNormalizeGoalClearsQuestionsThatAreNoLongerOpen(t *testing.T) {
 		ExecutionMode: GoalExecutionModeAutopilot,
 		OpenQuestions: []string{"old question"},
 		Autopilot:     &GoalAutopilot{Status: GoalAutopilotStatusCompleted},
-		Plan:          &GoalPlan{Status: GoalPlanStatusCompleted, CreatedAt: now, UpdatedAt: now},
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		Plan: &GoalPlan{
+			Status:    GoalPlanStatusCompleted,
+			Summary:   "completed plan",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Gaps: []GoalGap{{
+				ID:        "ggap_old",
+				Status:    GoalGapStatusInProgress,
+				Severity:  GoalGapSeverityHigh,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	})
 	if len(goal.OpenQuestions) != 0 {
 		t.Fatalf("open questions = %#v, want none for completed Goal", goal.OpenQuestions)
+	}
+	if goal.Plan == nil || len(goal.Plan.Gaps) != 1 || goal.Plan.Gaps[0].Status != GoalGapStatusFixed {
+		t.Fatalf("completed Goal gaps = %#v, want stale gaps fixed", goal.Plan)
 	}
 
 	blocked := NormalizeGoal(Goal{

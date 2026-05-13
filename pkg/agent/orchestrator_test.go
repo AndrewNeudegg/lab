@@ -8478,22 +8478,28 @@ func TestGoalSupervisorCompletesBlockedPlanAfterPersistedFinalAuditCertification
 	}); err != nil {
 		t.Fatal(err)
 	}
-	decision, err := orch.goalSupervisorDecision(ctx, store, goal)
+	changed, reply, err := orch.reconcileGoalAutopilot(ctx, store, goal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Decision != assistantstore.GoalSupervisorDecisionMarkComplete {
-		t.Fatalf("decision = %#v, want mark_complete", decision)
+	if !changed {
+		t.Fatalf("changed = false, reply = %q", reply)
 	}
-	loaded, err := store.LoadGoal(goal.ID)
+	loaded, err := orch.LoadGoal(goal.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Plan == nil || loaded.Plan.Status != assistantstore.GoalPlanStatusCompleted {
-		t.Fatalf("plan = %#v, want completed", loaded.Plan)
+	if loaded.Goal.Status != assistantstore.GoalStatusCompleted || loaded.Goal.Autopilot == nil || loaded.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusCompleted {
+		t.Fatalf("goal = %#v, want completed after persisted final audit certification", loaded.Goal)
 	}
-	if len(loaded.Plan.Gaps) != 1 || loaded.Plan.Gaps[0].Status != assistantstore.GoalGapStatusFixed {
-		t.Fatalf("gaps = %#v, want stale gap fixed by persisted final audit", loaded.Plan.Gaps)
+	if len(loaded.Decisions) == 0 || loaded.Decisions[0].Decision != assistantstore.GoalSupervisorDecisionMarkComplete {
+		t.Fatalf("decisions = %#v, want mark_complete", loaded.Decisions)
+	}
+	if loaded.Goal.Plan == nil || loaded.Goal.Plan.Status != assistantstore.GoalPlanStatusCompleted {
+		t.Fatalf("plan = %#v, want completed", loaded.Goal.Plan)
+	}
+	if len(loaded.Goal.Plan.Gaps) != 1 || loaded.Goal.Plan.Gaps[0].Status != assistantstore.GoalGapStatusFixed {
+		t.Fatalf("gaps = %#v, want stale gap fixed by persisted final audit", loaded.Goal.Plan.Gaps)
 	}
 }
 

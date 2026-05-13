@@ -1822,6 +1822,7 @@ func (o *Orchestrator) completeGoalAutopilot(ctx context.Context, store *assista
 	goal.Status = assistantstore.GoalStatusCompleted
 	if goal.Plan != nil {
 		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		closeIncompleteGoalGaps(&plan, "", now)
 		plan.Status = assistantstore.GoalPlanStatusCompleted
 		for index := range plan.Phases {
 			if plan.Phases[index].Status != assistantstore.GoalPlanPhaseStatusSkipped {
@@ -2014,6 +2015,13 @@ func closeGoalGapsAfterCompletingFinalAudit(plan *assistantstore.GoalPlan, repor
 	if len(report.Blockers) > 0 || len(report.Questions) > 0 || report.Challenge == nil || len(report.Challenge.Gaps) > 0 {
 		return false
 	}
+	return closeIncompleteGoalGaps(plan, report.TaskID, now)
+}
+
+func closeIncompleteGoalGaps(plan *assistantstore.GoalPlan, taskID string, now time.Time) bool {
+	if plan == nil {
+		return false
+	}
 	changed := false
 	for index := range plan.Gaps {
 		switch plan.Gaps[index].Status {
@@ -2021,7 +2029,9 @@ func closeGoalGapsAfterCompletingFinalAudit(plan *assistantstore.GoalPlan, repor
 			continue
 		default:
 			plan.Gaps[index].Status = assistantstore.GoalGapStatusFixed
-			plan.Gaps[index].TaskIDs = appendUniqueStrings(plan.Gaps[index].TaskIDs, report.TaskID)
+			if strings.TrimSpace(taskID) != "" {
+				plan.Gaps[index].TaskIDs = appendUniqueStrings(plan.Gaps[index].TaskIDs, taskID)
+			}
 			plan.Gaps[index].UpdatedAt = now
 			changed = true
 		}

@@ -8015,17 +8015,291 @@ GOAL_CHALLENGE: {"milestone_id":"phase_01_done_milestone_01","verdict":"passed",
 	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
 		t.Fatal(err)
 	} else if changed != 1 {
-		t.Fatalf("changed = %d, want challenge acceptance", changed)
+		t.Fatalf("changed = %d, want final audit task creation", changed)
+	}
+	auditing, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auditing.Goal.Status == assistantstore.GoalStatusCompleted {
+		t.Fatalf("goal = %#v, non-audit challenge must not complete Goal", auditing.Goal)
+	}
+	finalAuditTaskID := auditing.Goal.Autopilot.CurrentTaskID
+	finalAuditTask, err := orch.tasks.Load(finalAuditTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalAuditTask.GoalPhaseID != goalFinalAuditPhaseID {
+		t.Fatalf("final audit task = %#v, want explicit final audit before completion", finalAuditTask)
+	}
+	finalAuditTask.Status = taskstore.StatusAwaitingVerification
+	finalAuditTask.Result = `Final audit passed.
+GOAL_CHALLENGE: {"milestone_id":"phase_final_audit_milestone_01","verdict":"passed","summary":"Whole Goal evidence is credible and no gaps remain.","evidence":["reviewed src/grid.ts","go test ./... passed","delivery state clean"],"claims_challenged":["whole Goal"],"gaps":[],"goal_complete":true}`
+	if err := orch.tasks.Save(finalAuditTask); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("changed = %d, want final audit acceptance", changed)
 	}
 	completed, err := orch.LoadGoal(goal.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if completed.Goal.Status != assistantstore.GoalStatusCompleted || completed.Goal.Autopilot == nil || completed.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusCompleted {
-		t.Fatalf("goal = %#v, want completed after passing final challenge", completed.Goal)
+		t.Fatalf("goal = %#v, want completed after passing final audit", completed.Goal)
 	}
-	if completed.Goal.Plan == nil || completed.Goal.Plan.Status != assistantstore.GoalPlanStatusCompleted || completed.Goal.Plan.Phases[0].Milestones[0].Status != assistantstore.GoalMilestoneStatusAccepted {
-		t.Fatalf("plan = %#v, want accepted milestone and completed plan", completed.Goal.Plan)
+	if completed.Goal.Plan == nil || completed.Goal.Plan.Status != assistantstore.GoalPlanStatusCompleted || completed.Goal.Plan.Phases[0].Milestones[0].Status != assistantstore.GoalMilestoneStatusAccepted || completed.Goal.Plan.Phases[1].Milestones[0].Status != assistantstore.GoalMilestoneStatusAccepted {
+		t.Fatalf("plan = %#v, want accepted milestones and completed plan", completed.Goal.Plan)
+	}
+}
+
+func TestGoalAutopilotSchedulesFinalAuditWhenPlanExhaustedWithoutGoalComplete(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build small grid",
+		Objective:     "Build a small usable grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 6},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	goal := timeline.Goal
+	goal.Plan = &assistantstore.GoalPlan{
+		Status:         assistantstore.GoalPlanStatusActive,
+		CurrentPhaseID: "phase_01_done",
+		Phases: []assistantstore.GoalPlanPhase{{
+			ID:        "phase_01_done",
+			Title:     "Ship usable grid",
+			Objective: "Ship the usable grid slice.",
+			Status:    assistantstore.GoalPlanPhaseStatusPending,
+			Milestones: []assistantstore.GoalMilestone{{
+				ID:        "phase_01_done_milestone_01",
+				PhaseID:   "phase_01_done",
+				Title:     "Complete usable grid",
+				Objective: "Finish the usable grid and evidence.",
+				Status:    assistantstore.GoalMilestoneStatusPending,
+			}},
+		}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildTask, err := orch.tasks.Load(started.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildTask.Status = taskstore.StatusAwaitingVerification
+	buildTask.Result = `Grid milestone done.
+GOAL_REPORT: {"task_type":"build","phase_id":"phase_01_done","milestone_id":"phase_01_done_milestone_01","summary":"Usable grid milestone is done","advanced_goal":true,"phase_complete":true,"goal_complete":false,"changed_files":["src/grid.ts"],"validation":["go test ./..."],"claims":[{"claim":"The usable grid slice is implemented","evidence":["src/grid.ts","go test ./..."]}],"follow_ups":[],"blockers":[],"questions":[]}`
+	buildTask.RemoteDiff = "diff --git a/src/grid.ts b/src/grid.ts\nnew file mode 100644\n"
+	if err := orch.tasks.Save(buildTask); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("changed = %d, want milestone challenge creation", changed)
+	}
+	loaded, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	milestoneChallengeID := loaded.Goal.Autopilot.CurrentTaskID
+	milestoneChallenge, err := orch.tasks.Load(milestoneChallengeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	milestoneChallenge.Status = taskstore.StatusAwaitingVerification
+	milestoneChallenge.Result = `Milestone challenge passed.
+GOAL_CHALLENGE: {"milestone_id":"phase_01_done_milestone_01","verdict":"passed","summary":"Milestone evidence is credible, but this was not a whole-goal audit.","evidence":["reviewed src/grid.ts"],"claims_challenged":["The usable grid slice is implemented"],"gaps":[],"goal_complete":false}`
+	if err := orch.tasks.Save(milestoneChallenge); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("changed = %d, want final audit creation", changed)
+	}
+	auditing, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auditing.Goal.Status == assistantstore.GoalStatusCompleted || auditing.Goal.Autopilot == nil || auditing.Goal.Autopilot.Status == assistantstore.GoalAutopilotStatusCompleted {
+		t.Fatalf("goal = %#v, milestone challenge with goal_complete false must not complete Goal", auditing.Goal)
+	}
+	if auditing.Goal.Plan == nil || len(auditing.Goal.Plan.Phases) != 2 || auditing.Goal.Plan.Phases[1].ID != goalFinalAuditPhaseID {
+		t.Fatalf("plan = %#v, want appended final audit phase", auditing.Goal.Plan)
+	}
+	finalAuditTask, err := orch.tasks.Load(auditing.Goal.Autopilot.CurrentTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalAuditTask.ID == milestoneChallengeID || finalAuditTask.GoalPhaseID != goalFinalAuditPhaseID {
+		t.Fatalf("final audit task = %#v, want new task on final audit phase", finalAuditTask)
+	}
+	for _, want := range []string{goalFinalAuditMarker, "Final whole-goal audit mode", "dirty worktree", "goal_complete true"} {
+		if !strings.Contains(finalAuditTask.Goal, want) {
+			t.Fatalf("final audit task goal missing %q:\n%s", want, finalAuditTask.Goal)
+		}
+	}
+}
+
+func TestGoalAutopilotBlocksWhenFinalAuditDoesNotCertify(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build small grid",
+		Objective:     "Build a small usable grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	goal := timeline.Goal
+	goal.Plan = &assistantstore.GoalPlan{
+		Status:         assistantstore.GoalPlanStatusCompleted,
+		CurrentPhaseID: "",
+		Phases: []assistantstore.GoalPlanPhase{{
+			ID:        "phase_01_done",
+			Title:     "Ship usable grid",
+			Objective: "Ship the usable grid slice.",
+			Status:    assistantstore.GoalPlanPhaseStatusCompleted,
+			Milestones: []assistantstore.GoalMilestone{{
+				ID:        "phase_01_done_milestone_01",
+				PhaseID:   "phase_01_done",
+				Title:     "Complete usable grid",
+				Objective: "Finish the usable grid and evidence.",
+				Status:    assistantstore.GoalMilestoneStatusAccepted,
+			}},
+		}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalAuditTaskID := started.Goal.Autopilot.CurrentTaskID
+	finalAuditTask, err := orch.tasks.Load(finalAuditTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalAuditTask.GoalPhaseID != goalFinalAuditPhaseID {
+		t.Fatalf("task = %#v, want final audit task", finalAuditTask)
+	}
+	finalAuditTask.Status = taskstore.StatusAwaitingVerification
+	finalAuditTask.Result = `Final audit ran.
+GOAL_CHALLENGE: {"milestone_id":"phase_final_audit_milestone_01","verdict":"passed","summary":"Audit ran but did not certify the whole Goal.","evidence":["reviewed current evidence"],"claims_challenged":["whole Goal"],"gaps":[],"goal_complete":false}`
+	if err := orch.tasks.Save(finalAuditTask); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := orch.ReconcileGoalAutopilots(ctx); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("changed = %d, want final audit block", changed)
+	}
+	blocked, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Goal.Status != assistantstore.GoalStatusBlocked || blocked.Goal.Autopilot == nil || blocked.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusBlocked {
+		t.Fatalf("goal = %#v, want blocked after uncertified final audit", blocked.Goal)
+	}
+	if len(blocked.Decisions) == 0 || blocked.Decisions[0].Summary != "Final audit did not certify the Goal." {
+		t.Fatalf("decisions = %#v, want final audit block decision", blocked.Decisions)
+	}
+}
+
+func TestGoalTaskReportDemotesRemoteGoalCompleteWhenDirty(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:        "goal_dirty_remote",
+		Title:     "Build remote grid",
+		Objective: "Build a remote grid.",
+		Kind:      assistantstore.GoalKindBuild,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusActive,
+			CurrentPhaseID: goalFinalAuditPhaseID,
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:         goalFinalAuditPhaseID,
+				Title:      goalFinalAuditMarker,
+				Objective:  "Audit the whole Goal.",
+				Status:     assistantstore.GoalPlanPhaseStatusInProgress,
+				Milestones: []assistantstore.GoalMilestone{finalAuditMilestone()},
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	task := taskstore.Task{
+		ID:          "task_dirty_final_audit",
+		GoalID:      goal.ID,
+		GoalPhaseID: goalFinalAuditPhaseID,
+		Title:       "Final audit",
+		Goal:        goalFinalAuditMarker,
+		Status:      taskstore.StatusAwaitingVerification,
+		Target:      remote1ExecutionTarget(),
+		Result: `remote agent reported no change required.
+warning: Git tree '/home/lab/remote1' is dirty
+GOAL_CHALLENGE: {"milestone_id":"phase_final_audit_milestone_01","verdict":"passed","summary":"Everything is complete.","evidence":["checked tests"],"claims_challenged":["whole Goal"],"gaps":[],"goal_complete":true}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	report := orch.goalTaskReportFromTask(ctx, goal, task)
+	if report.GoalComplete || report.Challenge == nil || report.Challenge.GoalComplete {
+		t.Fatalf("report = %#v, dirty remote warning must demote goal completion", report)
+	}
+	if len(report.Challenge.Gaps) != 1 || report.Challenge.Gaps[0].Severity != assistantstore.GoalGapSeverityHigh || report.Challenge.Gaps[0].Area != "delivery state" {
+		t.Fatalf("challenge gaps = %#v, want high delivery-state gap", report.Challenge.Gaps)
 	}
 }
 

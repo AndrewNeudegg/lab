@@ -15,6 +15,12 @@ import (
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
 )
 
+const (
+	goalFinalAuditPhaseID     = "phase_final_audit"
+	goalFinalAuditMilestoneID = goalFinalAuditPhaseID + "_milestone_01"
+	goalFinalAuditMarker      = "Final whole-goal audit"
+)
+
 func (o *Orchestrator) assistantGoalStore() (*assistantstore.GoalStore, error) {
 	if strings.TrimSpace(o.cfg.DataDir) == "" {
 		return nil, fmt.Errorf("assistant goal store is not configured")
@@ -1528,15 +1534,68 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 		return decision, nil
 	}
 	if goalPlanComplete(goal.Plan) && allGoalGapsClosed(goal.Plan) {
-		decision := assistantstore.GoalSupervisorDecision{
-			Decision:   assistantstore.GoalSupervisorDecisionMarkComplete,
-			Summary:    "Goal plan is complete.",
-			Rationale:  "All plan milestones have been accepted after challenge and no open challenge gaps remain.",
-			StopReason: "Goal success criteria are satisfied after milestone challenge.",
-			Evidence:   goalSupervisorEvidence(goal, reports),
+		if recentGoalReportCompletes(reports) {
+			decision := assistantstore.GoalSupervisorDecision{
+				Decision:   assistantstore.GoalSupervisorDecisionMarkComplete,
+				Summary:    "Final audit certified the Goal.",
+				Rationale:  "The plan is exhausted, all gaps are closed, and the latest challenge explicitly set goal_complete true.",
+				StopReason: "Goal success criteria are satisfied by final whole-goal audit.",
+				Evidence:   goalSupervisorEvidence(goal, reports),
+			}
+			decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+			return decision, nil
 		}
-		decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
-		return decision, nil
+		if report, ok := latestFinalAuditChallengeReport(reports); ok && !goalReportsAdvancedSinceFinalAudit(reports, report.TaskID) {
+			decision := assistantstore.GoalSupervisorDecision{
+				Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
+				Summary:    "Final audit did not certify the Goal.",
+				Rationale:  "The plan is exhausted, but the latest final audit did not set goal_complete true. The supervisor will not mark the Goal done without a whole-goal certification.",
+				StopReason: "Final audit required more work or operator direction before completion.",
+				Evidence:   goalSupervisorEvidence(goal, reports),
+			}
+			if report.Summary != "" {
+				decision.Evidence = appendUniqueStrings(decision.Evidence, "final audit: "+report.Summary)
+			}
+			decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+			return decision, nil
+		}
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		if ensureGoalFinalAuditMilestone(&plan, goal, now) {
+			goal.Plan = &plan
+			goal.UpdatedAt = now
+			if goal.Autopilot != nil {
+				goal.Autopilot.CurrentPhaseID = goalFinalAuditPhaseID
+			}
+			if err := store.SaveGoal(goal); err != nil {
+				return assistantstore.GoalSupervisorDecision{}, err
+			}
+		}
+		phase, milestone, ok := finalAuditPlanMilestone(&plan)
+		if !ok {
+			decision := assistantstore.GoalSupervisorDecision{
+				Decision:   assistantstore.GoalSupervisorDecisionPauseBlocked,
+				Summary:    "Final audit could not be scheduled.",
+				Rationale:  "The plan is exhausted, but the supervisor could not create or find the final whole-goal audit milestone.",
+				StopReason: "No actionable final audit milestone is ready.",
+				Evidence:   goalSupervisorEvidence(goal, reports),
+			}
+			decision = o.saveGoalSupervisorDecision(ctx, store, &goal, decision)
+			return decision, nil
+		}
+		decision := assistantstore.GoalSupervisorDecision{
+			ID:          id.New("gdec"),
+			GoalID:      goal.ID,
+			Decision:    assistantstore.GoalSupervisorDecisionCreateTask,
+			Summary:     "Run final whole-goal audit before completion.",
+			Rationale:   "All planned milestones are accepted and no gaps remain, but completion requires an explicit challenge with goal_complete true.",
+			PhaseID:     phase.ID,
+			MilestoneID: milestone.ID,
+			TaskType:    assistantstore.GoalTaskTypeChallenge,
+			Evidence:    goalSupervisorEvidence(goal, reports),
+			CreatedAt:   now,
+		}
+		decision.TaskGoal = goalAutopilotTaskGoalForDecision(goal, decision, reports)
+		return assistantstore.NormalizeGoalSupervisorDecision(decision), nil
 	}
 	if noProgress, reason := recentGoalReportsShowNoProgress(reports); noProgress {
 		decision := assistantstore.GoalSupervisorDecision{
@@ -1655,7 +1714,41 @@ func goalTaskReportCompletesGoal(report assistantstore.GoalTaskReport) bool {
 	if !report.GoalComplete || report.TaskType != assistantstore.GoalTaskTypeChallenge || report.Challenge == nil {
 		return false
 	}
-	return report.Challenge.Verdict == assistantstore.GoalChallengeVerdictPassed
+	return report.Challenge.Verdict == assistantstore.GoalChallengeVerdictPassed && (isFinalAuditMilestoneID(report.MilestoneID) || isFinalAuditMilestoneID(report.Challenge.MilestoneID))
+}
+
+func latestFinalAuditChallengeReport(reports []assistantstore.GoalTaskReport) (assistantstore.GoalTaskReport, bool) {
+	for _, report := range reports {
+		report = assistantstore.NormalizeGoalTaskReport(report)
+		if report.TaskType != assistantstore.GoalTaskTypeChallenge || report.Challenge == nil {
+			continue
+		}
+		if isFinalAuditMilestoneID(report.MilestoneID) || isFinalAuditMilestoneID(report.Challenge.MilestoneID) {
+			return report, true
+		}
+	}
+	return assistantstore.GoalTaskReport{}, false
+}
+
+func goalReportsAdvancedSinceFinalAudit(reports []assistantstore.GoalTaskReport, finalAuditTaskID string) bool {
+	finalAuditTaskID = strings.TrimSpace(finalAuditTaskID)
+	for _, report := range reports {
+		report = assistantstore.NormalizeGoalTaskReport(report)
+		if finalAuditTaskID != "" && report.TaskID == finalAuditTaskID {
+			return false
+		}
+		if report.TaskType == assistantstore.GoalTaskTypeGapFix && report.AdvancedGoal {
+			return true
+		}
+		if report.TaskType == assistantstore.GoalTaskTypeBuild && (report.AdvancedGoal || report.PhaseComplete || len(report.ChangedFiles) > 0 || report.DiffFiles > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFinalAuditMilestoneID(milestoneID string) bool {
+	return strings.EqualFold(strings.TrimSpace(milestoneID), goalFinalAuditMilestoneID)
 }
 
 func recentGoalReportsShowNoProgress(reports []assistantstore.GoalTaskReport) (bool, string) {
@@ -1934,6 +2027,119 @@ func ensureGoalPlanMilestones(plan *assistantstore.GoalPlan, goal assistantstore
 	return changed
 }
 
+func ensureGoalFinalAuditMilestone(plan *assistantstore.GoalPlan, goal assistantstore.Goal, now time.Time) bool {
+	if plan == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	changed := false
+	lastDependency := ""
+	finalPhaseIndex := -1
+	for index := range plan.Phases {
+		phaseID := strings.TrimSpace(plan.Phases[index].ID)
+		if phaseID == goalFinalAuditPhaseID {
+			finalPhaseIndex = index
+			continue
+		}
+		if phaseID != "" && plan.Phases[index].Status != assistantstore.GoalPlanPhaseStatusSkipped {
+			lastDependency = phaseID
+		}
+	}
+	if finalPhaseIndex < 0 {
+		phase := assistantstore.GoalPlanPhase{
+			ID:        goalFinalAuditPhaseID,
+			Title:     goalFinalAuditMarker,
+			Objective: "Challenge the whole Goal against every success criterion, constraint, durable evidence item, and delivery state before completion.",
+			Status:    assistantstore.GoalPlanPhaseStatusInProgress,
+			DependsOn: nonEmptyStringSlice(lastDependency),
+			AcceptanceCriteria: []string{
+				"Every Goal success criterion is directly evaluated, not only the last milestone.",
+				"Repository delivery state is checked and either clean, committed, or recorded as an explicit gap.",
+				"The challenge report sets goal_complete true only when the whole Goal is credibly complete.",
+			},
+			Milestones: []assistantstore.GoalMilestone{finalAuditMilestone()},
+		}
+		plan.Phases = append(plan.Phases, phase)
+		finalPhaseIndex = len(plan.Phases) - 1
+		changed = true
+	}
+	phase := &plan.Phases[finalPhaseIndex]
+	if phase.Status != assistantstore.GoalPlanPhaseStatusInProgress {
+		phase.Status = assistantstore.GoalPlanPhaseStatusInProgress
+		changed = true
+	}
+	if strings.TrimSpace(phase.Title) == "" {
+		phase.Title = goalFinalAuditMarker
+		changed = true
+	}
+	if strings.TrimSpace(phase.Objective) == "" {
+		phase.Objective = "Challenge the whole Goal against every success criterion, constraint, durable evidence item, and delivery state before completion."
+		changed = true
+	}
+	milestoneIndex := -1
+	for index := range phase.Milestones {
+		if isFinalAuditMilestoneID(phase.Milestones[index].ID) {
+			milestoneIndex = index
+			break
+		}
+	}
+	if milestoneIndex < 0 {
+		phase.Milestones = append(phase.Milestones, finalAuditMilestone())
+		milestoneIndex = len(phase.Milestones) - 1
+		changed = true
+	}
+	milestone := &phase.Milestones[milestoneIndex]
+	if milestone.PhaseID != goalFinalAuditPhaseID {
+		milestone.PhaseID = goalFinalAuditPhaseID
+		changed = true
+	}
+	if milestone.Status != assistantstore.GoalMilestoneStatusClaimed && milestone.Status != assistantstore.GoalMilestoneStatusChallenged {
+		milestone.Status = assistantstore.GoalMilestoneStatusClaimed
+		changed = true
+	}
+	plan.Status = assistantstore.GoalPlanStatusActive
+	plan.CurrentPhaseID = goalFinalAuditPhaseID
+	plan.UpdatedAt = now
+	return changed
+}
+
+func finalAuditMilestone() assistantstore.GoalMilestone {
+	milestone := goalMilestone(goalFinalAuditPhaseID, "01", goalFinalAuditMarker, "Run a read-only whole-goal audit and decide whether the Goal can be completed.", assistantstore.GoalMilestoneStatusClaimed)
+	milestone.ID = goalFinalAuditMilestoneID
+	milestone.AcceptanceCriteria = []string{
+		"The audit covers every Goal success criterion and constraint.",
+		"The audit checks current repo state, tests, docs, examples, browser or operational evidence, and delivery cleanliness.",
+		"If the Goal is not complete, the report includes concrete gaps, blockers, or operator questions instead of a generic pass.",
+	}
+	milestone.EvidenceRequirements = []string{
+		"Validation commands or inspection evidence for the whole Goal.",
+		"Explicit delivery state, including commit or clean working tree status for remote build Goals.",
+		"A GOAL_CHALLENGE report whose goal_complete field is true only when the whole Goal is certifiably complete.",
+	}
+	milestone.ChallengePolicy = "This final audit is the only challenge allowed to complete the Goal."
+	return milestone
+}
+
+func finalAuditPlanMilestone(plan *assistantstore.GoalPlan) (assistantstore.GoalPlanPhase, assistantstore.GoalMilestone, bool) {
+	if plan == nil {
+		return assistantstore.GoalPlanPhase{}, assistantstore.GoalMilestone{}, false
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	for _, phase := range planValue.Phases {
+		if phase.ID != goalFinalAuditPhaseID {
+			continue
+		}
+		for _, milestone := range phase.Milestones {
+			if isFinalAuditMilestoneID(milestone.ID) {
+				return phase, milestone, true
+			}
+		}
+	}
+	return assistantstore.GoalPlanPhase{}, assistantstore.GoalMilestone{}, false
+}
+
 func phaseHasActiveMilestone(phase assistantstore.GoalPlanPhase) bool {
 	for _, milestone := range phase.Milestones {
 		switch milestone.Status {
@@ -2202,6 +2408,7 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 }
 
 func goalAutopilotChallengeTaskGoal(goal assistantstore.Goal, decision assistantstore.GoalSupervisorDecision, phase assistantstore.GoalPlanPhase, milestone assistantstore.GoalMilestone, hasPhase, hasMilestone bool, reports []assistantstore.GoalTaskReport) string {
+	finalAudit := isFinalAuditMilestoneID(decision.MilestoneID) || isFinalAuditMilestoneID(milestone.ID)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Autopilot challenge task for %s Goal `%s`: %s\n\nObjective: %s", goal.Kind, goal.ID, goal.Title, goal.Objective)
 	if hasPhase {
@@ -2262,11 +2469,23 @@ func goalAutopilotChallengeTaskGoal(goal assistantstore.Goal, decision assistant
 			}
 		}
 	}
+	if finalAudit {
+		b.WriteString("\n\nFinal whole-goal audit mode:")
+		b.WriteString("\n- This task decides whether the Goal can be marked complete. Do not limit the review to the last phase or milestone.")
+		b.WriteString("\n- Evaluate every Goal success criterion and constraint against the current repo, docs, tests, examples, browser or operational evidence, and recent challenge history.")
+		b.WriteString("\n- For remote build Goals, inspect the target repository delivery state. A dirty worktree, uncaptured diff, uncommitted deliverable, or missing exact commit/version is a high delivery gap unless the Goal explicitly permits an undelivered state.")
+		b.WriteString("\n- If the Goal is not complete, return concrete gaps, blockers, or operator questions that the supervisor can act on. Do not return a generic pass with goal_complete false and no gaps.")
+		b.WriteString("\n- Set goal_complete true only when the whole Goal is credibly complete, not merely when this audit task ran successfully.")
+	}
 	b.WriteString("\n\nChallenge mode:")
 	b.WriteString("\n- Do not implement new features in this task. Inspect the repo, docs, tests, examples, browser behaviour, and durable planning artefacts.")
 	b.WriteString("\n- Try to disprove the milestone claims. Look for missing behaviour, shallow tests, self-certified matrices, broken examples, accessibility gaps, packaging gaps, performance gaps, and mismatches with the Goal.")
 	b.WriteString("\n- Run lightweight validation or browser checks where practical, but keep the task read-only unless a tiny diagnostic artefact is unavoidable.")
-	b.WriteString("\n- Passing means the milestone evidence is credible enough for Autopilot to move on. Failing is useful progress: record concrete gaps with suggested repair tasks.")
+	if finalAudit {
+		b.WriteString("\n- Passing with goal_complete true means the whole Goal can complete. Failing is useful progress: record concrete gaps with suggested repair tasks.")
+	} else {
+		b.WriteString("\n- Passing means the milestone evidence is credible enough for Autopilot to move on. Failing is useful progress: record concrete gaps with suggested repair tasks.")
+	}
 	b.WriteString("\n\nGoal challenge report contract:")
 	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_CHALLENGE:`.")
 	b.WriteString("\nThe object must include: milestone_id, verdict, summary, evidence, claims_challenged, gaps, goal_complete.")
@@ -3012,6 +3231,30 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		report.Questions = appendUniqueStrings(report.Questions, firstNonEmptyString(report.Challenge.Summary, "Challenge needs operator input before this milestone can be accepted."))
 		report.GoalComplete = false
 	}
+	if report.TaskType == assistantstore.GoalTaskTypeChallenge && report.GoalComplete && remoteTask(t) && resultWarnsDirtyGitTree(t.Result) {
+		report.GoalComplete = false
+		deliveryGap := assistantstore.NormalizeGoalGap(assistantstore.GoalGap{
+			ID:            id.New("ggap"),
+			PhaseID:       report.PhaseID,
+			MilestoneID:   report.MilestoneID,
+			Area:          "delivery state",
+			Claim:         "Remote build Goal cannot complete while the target repository is dirty or undelivered.",
+			Severity:      assistantstore.GoalGapSeverityHigh,
+			Evidence:      "Remote result included a dirty Git worktree warning.",
+			SuggestedTask: "Commit or intentionally capture the remote repository deliverable, then rerun the final whole-goal audit with the exact commit/version recorded.",
+			Source:        "supervisor",
+			SourceTaskID:  report.TaskID,
+			Status:        assistantstore.GoalGapStatusOpen,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}, 0)
+		if report.Challenge != nil {
+			report.Challenge.GoalComplete = false
+			report.Challenge.Gaps = appendGoalGap(report.Challenge.Gaps, deliveryGap)
+		}
+		report.Summary = firstNonEmptyString(report.Summary, "Challenge passed") + " Delivery is not complete because the remote target repository is dirty."
+		report.Validation = appendUniqueStrings(report.Validation, deliveryGap.Evidence)
+	}
 	if report.GoalComplete && report.TaskType != assistantstore.GoalTaskTypeChallenge {
 		report.GoalComplete = false
 		report.FollowUps = appendUniqueStrings(report.FollowUps, "Worker claimed Goal completion; supervisor will require a read-only challenge before accepting it.")
@@ -3288,6 +3531,11 @@ func goalTaskResultSummary(result string) string {
 		return truncateAssistantRunText(line, 240)
 	}
 	return truncateAssistantRunText(result, 240)
+}
+
+func resultWarnsDirtyGitTree(result string) bool {
+	normalized := strings.ToLower(result)
+	return strings.Contains(normalized, "warning: git tree") && strings.Contains(normalized, "dirty")
 }
 
 func inferReportMilestone(goal assistantstore.Goal, phaseID string) (assistantstore.GoalMilestone, bool) {

@@ -40,12 +40,25 @@ func (o *Orchestrator) ListGoals() ([]assistantstore.Goal, error) {
 		if err != nil {
 			return nil, err
 		}
-		goals[index] = goal
+		goals[index] = compactGoalForList(goal)
 	}
 	return goals, nil
 }
 
+func compactGoalForList(goal assistantstore.Goal) assistantstore.Goal {
+	goal.Plan = nil
+	return goal
+}
+
+type GoalTimelineOptions struct {
+	Limit int
+}
+
 func (o *Orchestrator) LoadGoal(goalID string) (assistantstore.GoalTimeline, error) {
+	return o.LoadGoalWithOptions(goalID, GoalTimelineOptions{})
+}
+
+func (o *Orchestrator) LoadGoalWithOptions(goalID string, opts GoalTimelineOptions) (assistantstore.GoalTimeline, error) {
 	store, err := o.assistantGoalStore()
 	if err != nil {
 		return assistantstore.GoalTimeline{}, err
@@ -84,7 +97,7 @@ func (o *Orchestrator) LoadGoal(goalID string) (assistantstore.GoalTimeline, err
 	}
 	trace := assistantstore.DeriveGoalBlockerTrace(goal, decisions, reports)
 	goal.BlockerTrace = trace
-	return assistantstore.GoalTimeline{
+	timeline := assistantstore.GoalTimeline{
 		Goal:         goal,
 		BlockerTrace: trace,
 		Watches:      watches,
@@ -93,7 +106,50 @@ func (o *Orchestrator) LoadGoal(goalID string) (assistantstore.GoalTimeline, err
 		Assessments:  assessments,
 		Decisions:    decisions,
 		TaskReports:  reports,
-	}, nil
+	}
+	trimGoalTimeline(&timeline, opts.Limit)
+	return timeline, nil
+}
+
+func trimGoalTimeline(timeline *assistantstore.GoalTimeline, limit int) {
+	if timeline == nil {
+		return
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if limit == 0 {
+		return
+	}
+	timeline.Counts = &assistantstore.GoalTimelineCounts{
+		Watches:     len(timeline.Watches),
+		Signals:     len(timeline.Signals),
+		Notes:       len(timeline.Notes),
+		Assessments: len(timeline.Assessments),
+		Decisions:   len(timeline.Decisions),
+		TaskReports: len(timeline.TaskReports),
+	}
+	if len(timeline.Watches) > limit {
+		timeline.Watches = timeline.Watches[:limit]
+	}
+	if len(timeline.Signals) > limit {
+		timeline.Signals = timeline.Signals[:limit]
+	}
+	if len(timeline.Notes) > limit {
+		timeline.Notes = timeline.Notes[:limit]
+	}
+	if len(timeline.Assessments) > limit {
+		timeline.Assessments = timeline.Assessments[:limit]
+	}
+	if len(timeline.Decisions) > limit {
+		timeline.Decisions = timeline.Decisions[:limit]
+	}
+	if len(timeline.TaskReports) > limit {
+		timeline.TaskReports = timeline.TaskReports[:limit]
+	}
 }
 
 func (o *Orchestrator) attachGoalBlockerTrace(store *assistantstore.GoalStore, goal assistantstore.Goal) (assistantstore.Goal, error) {

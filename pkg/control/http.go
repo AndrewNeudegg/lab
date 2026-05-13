@@ -172,7 +172,7 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 	if len(parts) == 1 {
 		switch req.Method {
 		case http.MethodGet:
-			timeline, err := s.Orchestrator.LoadGoal(goalID)
+			timeline, err := s.Orchestrator.LoadGoalWithOptions(goalID, agent.GoalTimelineOptions{Limit: assistantGoalTimelineLimit(req)})
 			if err != nil {
 				writeError(rw, http.StatusNotFound, err.Error())
 				return
@@ -190,6 +190,13 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 			if err != nil {
 				writeError(rw, http.StatusInternalServerError, err.Error())
 				return
+			}
+			if limit := assistantGoalTimelineLimit(req); limit > 0 {
+				timeline, err = s.Orchestrator.LoadGoalWithOptions(goalID, agent.GoalTimelineOptions{Limit: limit})
+				if err != nil {
+					writeError(rw, http.StatusInternalServerError, err.Error())
+					return
+				}
 			}
 			writeJSON(rw, http.StatusOK, timeline)
 		default:
@@ -227,6 +234,13 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if limit := assistantGoalTimelineLimit(req); limit > 0 {
+			timeline, err = s.Orchestrator.LoadGoalWithOptions(goalID, agent.GoalTimelineOptions{Limit: limit})
+			if err != nil {
+				writeError(rw, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
 		writeJSON(rw, http.StatusOK, map[string]any{"timeline": timeline, "reply": reply})
 		return
 	}
@@ -255,6 +269,13 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if limit := assistantGoalTimelineLimit(req); limit > 0 {
+			timeline, err = s.Orchestrator.LoadGoalWithOptions(goalID, agent.GoalTimelineOptions{Limit: limit})
+			if err != nil {
+				writeError(rw, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
 		writeJSON(rw, http.StatusCreated, timeline)
 	case "notes":
 		var in assistant.GoalNoteRequest
@@ -269,10 +290,35 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if limit := assistantGoalTimelineLimit(req); limit > 0 {
+			timeline, err = s.Orchestrator.LoadGoalWithOptions(goalID, agent.GoalTimelineOptions{Limit: limit})
+			if err != nil {
+				writeError(rw, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
 		writeJSON(rw, http.StatusCreated, timeline)
 	default:
 		writeError(rw, http.StatusNotFound, "assistant goal action not found")
 	}
+}
+
+func assistantGoalTimelineLimit(req *http.Request) int {
+	if req == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(req.URL.Query().Get("limit"))
+	if raw == "" {
+		return 0
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return 0
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
 }
 
 func (s *Server) handleAssistantRuns(rw http.ResponseWriter, req *http.Request) {
@@ -295,8 +341,10 @@ func (s *Server) handleAssistantRuns(rw http.ResponseWriter, req *http.Request) 
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
 		}
+		counts := countAssistantRunsByArchive(runs)
 		runs = filterAssistantRunsByArchive(runs, req.URL.Query().Get("archived"))
-		writeJSON(rw, http.StatusOK, map[string]any{"runs": runs})
+		runs = limitAssistantRuns(runs, assistantListLimit(req))
+		writeJSON(rw, http.StatusOK, map[string]any{"runs": runs, "counts": counts})
 	case http.MethodPost:
 		var in assistant.RunRequest
 		if req.Body != nil {
@@ -423,6 +471,43 @@ func filterAssistantRunsByArchive(runs []assistant.Run, mode string) []assistant
 		}
 	}
 	return out
+}
+
+func countAssistantRunsByArchive(runs []assistant.Run) assistant.RunListCounts {
+	counts := assistant.RunListCounts{Total: len(runs)}
+	for _, run := range runs {
+		if run.Archived {
+			counts.Archived++
+		} else {
+			counts.Active++
+		}
+	}
+	return counts
+}
+
+func limitAssistantRuns(runs []assistant.Run, limit int) []assistant.Run {
+	if limit <= 0 || len(runs) <= limit {
+		return runs
+	}
+	return runs[:limit]
+}
+
+func assistantListLimit(req *http.Request) int {
+	if req == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(req.URL.Query().Get("limit"))
+	if raw == "" {
+		return 0
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return 0
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
 }
 
 func (s *Server) handleAssistantRunArchive(rw http.ResponseWriter, req *http.Request, runID string) {

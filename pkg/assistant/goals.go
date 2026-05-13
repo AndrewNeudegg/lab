@@ -435,12 +435,22 @@ type GoalSnapshotRef struct {
 type GoalTimeline struct {
 	Goal         Goal                     `json:"goal"`
 	BlockerTrace *GoalBlockerTrace        `json:"blocker_trace,omitempty"`
+	Counts       *GoalTimelineCounts      `json:"counts,omitempty"`
 	Watches      []GoalWatch              `json:"watches,omitempty"`
 	Signals      []GoalSignal             `json:"signals,omitempty"`
 	Notes        []GoalNote               `json:"notes,omitempty"`
 	Assessments  []GoalAssessment         `json:"assessments,omitempty"`
 	Decisions    []GoalSupervisorDecision `json:"decisions,omitempty"`
 	TaskReports  []GoalTaskReport         `json:"task_reports,omitempty"`
+}
+
+type GoalTimelineCounts struct {
+	Watches     int `json:"watches,omitempty"`
+	Signals     int `json:"signals,omitempty"`
+	Notes       int `json:"notes,omitempty"`
+	Assessments int `json:"assessments,omitempty"`
+	Decisions   int `json:"decisions,omitempty"`
+	TaskReports int `json:"task_reports,omitempty"`
 }
 
 type GoalStore struct {

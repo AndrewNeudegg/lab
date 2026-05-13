@@ -486,6 +486,13 @@ export type AssistantRunArchiveMode = 'active' | 'include' | 'archived';
 
 export interface AssistantRunsOptions {
   archived?: AssistantRunArchiveMode;
+  limit?: number;
+}
+
+export interface AssistantRunCounts {
+  active?: number;
+  archived?: number;
+  total?: number;
 }
 
 export interface AssistantRunArchiveRequest {
@@ -792,6 +799,7 @@ export interface AssistantRunCapabilityRoute {
 
 export interface AssistantRunsResponse {
   runs: AssistantRun[];
+  counts?: AssistantRunCounts;
 }
 
 export interface AssistantRunActionResponse {
@@ -1158,6 +1166,7 @@ export interface AssistantGoalAssessment {
 export interface AssistantGoalTimeline {
   goal: AssistantGoal;
   blocker_trace?: AssistantGoalBlockerTrace;
+  counts?: AssistantGoalTimelineCounts;
   watches?: AssistantGoalWatch[];
   signals?: AssistantGoalSignal[];
   notes?: AssistantGoalNote[];
@@ -1166,8 +1175,21 @@ export interface AssistantGoalTimeline {
   task_reports?: AssistantGoalTaskReport[];
 }
 
+export interface AssistantGoalTimelineCounts {
+  watches?: number;
+  signals?: number;
+  notes?: number;
+  assessments?: number;
+  decisions?: number;
+  task_reports?: number;
+}
+
 export interface AssistantGoalsResponse {
   goals: AssistantGoal[];
+}
+
+export interface AssistantGoalTimelineOptions {
+  limit?: number;
 }
 
 export interface HomelabdKnowledgeSpace {
@@ -1783,22 +1805,29 @@ export interface HomelabdClient {
   ): Promise<AssistantRunActionResponse>;
   listAssistantGoals(): Promise<AssistantGoalsResponse>;
   createAssistantGoal(request: AssistantGoalCreateRequest): Promise<AssistantGoalTimeline>;
-  getAssistantGoal(goalId: string): Promise<AssistantGoalTimeline>;
+  getAssistantGoal(goalId: string, options?: AssistantGoalTimelineOptions): Promise<AssistantGoalTimeline>;
   updateAssistantGoal(
     goalId: string,
-    request: AssistantGoalUpdateRequest
+    request: AssistantGoalUpdateRequest,
+    options?: AssistantGoalTimelineOptions
   ): Promise<AssistantGoalTimeline>;
   checkAssistantGoal(goalId: string): Promise<AssistantRunActionResponse>;
   updateAssistantGoalAutopilot(
     goalId: string,
     action: 'start' | 'pause' | 'resume' | 'stop' | string,
-    request?: AssistantGoalAutopilotRequest
+    request?: AssistantGoalAutopilotRequest,
+    options?: AssistantGoalTimelineOptions
   ): Promise<AssistantGoalAutopilotResponse>;
   addAssistantGoalWatch(
     goalId: string,
-    request: AssistantGoalWatchRequest
+    request: AssistantGoalWatchRequest,
+    options?: AssistantGoalTimelineOptions
   ): Promise<AssistantGoalTimeline>;
-  addAssistantGoalNote(goalId: string, request: AssistantGoalNoteRequest): Promise<AssistantGoalTimeline>;
+  addAssistantGoalNote(
+    goalId: string,
+    request: AssistantGoalNoteRequest,
+    options?: AssistantGoalTimelineOptions
+  ): Promise<AssistantGoalTimeline>;
   clearChat(request: HomelabdClearChatRequest): Promise<HomelabdClearChatResponse>;
   createTask(request: HomelabdCreateTaskRequest): Promise<HomelabdCreateTaskResponse>;
   listTasks(): Promise<HomelabdTasksResponse>;

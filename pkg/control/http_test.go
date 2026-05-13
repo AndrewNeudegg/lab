@@ -300,6 +300,23 @@ func TestAssistantRunEndpointsStartListAndLoadRuns(t *testing.T) {
 	if !strings.Contains(archivedOnly.Body.String(), startResponse.Run.ID) {
 		t.Fatalf("archived list did not include run %q: %s", startResponse.Run.ID, archivedOnly.Body.String())
 	}
+	limitedArchived := requestJSON(t, mux, http.MethodGet, "/assistant/runs?archived=only&limit=1", "", "", http.StatusOK)
+	var limitedArchivedResponse struct {
+		Runs []struct {
+			ID string `json:"id"`
+		} `json:"runs"`
+		Counts struct {
+			Active   int `json:"active"`
+			Archived int `json:"archived"`
+			Total    int `json:"total"`
+		} `json:"counts"`
+	}
+	if err := json.NewDecoder(limitedArchived.Body).Decode(&limitedArchivedResponse); err != nil {
+		t.Fatal(err)
+	}
+	if len(limitedArchivedResponse.Runs) != 1 || limitedArchivedResponse.Counts.Archived != 1 || limitedArchivedResponse.Counts.Total != 1 {
+		t.Fatalf("limited archived response = %#v, want bounded rows plus unbounded counts", limitedArchivedResponse)
+	}
 	restored := requestJSON(t, mux, http.MethodPatch, "/assistant/runs/"+startResponse.Run.ID, `{"archived":false,"actor":"codex"}`, "", http.StatusOK)
 	if strings.Contains(restored.Body.String(), `"archived":true`) || !strings.Contains(restored.Body.String(), `"run_restored"`) {
 		t.Fatalf("restore response did not clear archive metadata or receipt: %s", restored.Body.String())
@@ -422,7 +439,8 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 	listed := requestJSON(t, mux, http.MethodGet, "/assistant/goals", "", "", http.StatusOK)
 	var listResponse struct {
 		Goals []struct {
-			ID string `json:"id"`
+			ID   string           `json:"id"`
+			Plan *json.RawMessage `json:"plan"`
 		} `json:"goals"`
 	}
 	if err := json.NewDecoder(listed.Body).Decode(&listResponse); err != nil {
@@ -430,6 +448,9 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 	}
 	if len(listResponse.Goals) != 1 || listResponse.Goals[0].ID != timeline.Goal.ID {
 		t.Fatalf("goals = %#v, want created goal", listResponse.Goals)
+	}
+	if listResponse.Goals[0].Plan != nil {
+		t.Fatalf("goals[0].plan is present in list response; list endpoint should stay compact")
 	}
 
 	requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/notes", `{"body":"Watch the morning routine.","created_by":"test"}`, "", http.StatusCreated)
@@ -452,6 +473,26 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 	}
 	if loadedTimeline.Goal.ID != timeline.Goal.ID || len(loadedTimeline.Notes) < 2 || len(loadedTimeline.Watches) < 2 {
 		t.Fatalf("loaded timeline = %#v, want notes and watches", loadedTimeline)
+	}
+
+	limited := requestJSON(t, mux, http.MethodGet, "/assistant/goals/"+timeline.Goal.ID+"?limit=1", "", "", http.StatusOK)
+	var limitedTimeline struct {
+		Counts struct {
+			Notes   int `json:"notes"`
+			Watches int `json:"watches"`
+		} `json:"counts"`
+		Notes []struct {
+			Body string `json:"body"`
+		} `json:"notes"`
+		Watches []struct {
+			Title string `json:"title"`
+		} `json:"watches"`
+	}
+	if err := json.NewDecoder(limited.Body).Decode(&limitedTimeline); err != nil {
+		t.Fatal(err)
+	}
+	if len(limitedTimeline.Notes) != 1 || len(limitedTimeline.Watches) != 1 || limitedTimeline.Counts.Notes < 2 || limitedTimeline.Counts.Watches < 2 {
+		t.Fatalf("limited timeline = %#v, want latest entries plus total counts", limitedTimeline)
 	}
 
 	checked := requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/check", "", "", http.StatusCreated)

@@ -17,6 +17,7 @@
     type AssistantGoalSupervisorDecision,
     type AssistantGoalTaskReport,
     type AssistantGoalTimeline,
+    type AssistantRunCounts,
 	    type AssistantRun,
 	    type AssistantRunAction,
 	    type AssistantRunFinding,
@@ -54,12 +55,16 @@
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
 	  const client = createHomelabdClient({ baseUrl: apiBase });
+	  const goalTimelineLimit = 8;
+  const runListLimit = 60;
 	  type MobilePanel = 'runs' | 'detail';
 	  type DetailKind = 'goal' | 'run';
 	  type GoalTargetMode = 'auto' | 'local' | 'remote';
+	  type GoalTimelineCountKind = 'watches' | 'notes' | 'assessments' | 'decisions' | 'task_reports';
 
-	  let runs: AssistantRun[] = [];
-	  let signals: AssistantSignalCandidate[] = [];
+  let runs: AssistantRun[] = [];
+  let runCounts: AssistantRunCounts = {};
+  let signals: AssistantSignalCandidate[] = [];
   let goals: AssistantGoal[] = [];
   let workspaces: HomelabdRemoteWorkspace[] = [];
   let selectedGoalId = '';
@@ -77,6 +82,8 @@
   let selectedRunSummary: AssistantRun | undefined;
   let selectedRun: AssistantRun | undefined;
   let runsLoading = true;
+  let archivedRunsLoading = false;
+  let archivedRunsLoaded = false;
   let runDetails: Record<string, AssistantRun> = {};
   let runDetailLoadingId = '';
   let runDetailError = '';
@@ -160,6 +167,8 @@
   $: latestGoalReports = selectedGoalTimeline?.task_reports?.slice(0, 4) || [];
   $: displayedActions = visibleRecommendedActions(selectedRun);
   $: openRunActions = activeRuns.reduce((total, run) => total + runOpenActionCount(run), 0);
+  $: activeRunTotal = runCounts.active ?? activeRuns.length;
+  $: archivedRunTotal = runCounts.archived ?? archivedRuns.length;
 	  $: activeSignals = signals.filter((signal) => !signal.suppressed && !signal.created_task_id);
 	  $: activeGoals = activeAssistantGoals(goals);
 	  $: dueGoals = dueAssistantGoals(goals);
@@ -184,18 +193,18 @@
 	    workspaces.find((workspace) => workspace.id === goalEditTargetWorkspaceId) ||
 	    onlineWorkspaceItems[0] ||
 	    workspaces[0];
-	  $: runSpaces = [
+  $: runSpaces = [
     {
       id: 'active' as AssistantRunView,
       label: 'Active',
-      count: activeRuns.length,
+      count: activeRunTotal,
       detail: openRunActions ? plural(openRunActions, 'open decision') : 'No open decisions'
     },
     {
       id: 'archived' as AssistantRunView,
       label: 'Archived',
-      count: archivedRuns.length,
-      detail: 'Stored for review'
+      count: archivedRunTotal,
+      detail: archivedRunsLoaded ? `Showing latest ${archivedRuns.length}` : 'Loads on selection'
     }
   ];
 
@@ -206,17 +215,102 @@
       second: '2-digit'
     });
 
+  const sortAssistantRunList = (values: AssistantRun[]) =>
+    [...values].sort((left, right) => {
+      const leftTime = Date.parse(left.updated_at || left.finished_at || left.started_at || left.created_at || '');
+      const rightTime = Date.parse(right.updated_at || right.finished_at || right.started_at || right.created_at || '');
+      return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+    });
+
+  const mergeRunPage = (incoming: AssistantRun[], view: AssistantRunView, counts?: AssistantRunCounts) => {
+    const incomingIds = new Set(incoming.map((run) => run.id));
+    const preserved = runs.filter((run) => assistantRunView(run) !== view && !incomingIds.has(run.id));
+    runs = sortAssistantRunList([...preserved, ...incoming]);
+    if (counts) {
+      runCounts = { ...runCounts, ...counts };
+    }
+    if (view === 'archived') {
+      archivedRunsLoaded = true;
+    }
+  };
+
+  const upsertAssistantRun = (updated: AssistantRun) => {
+    const previous = runs.find((run) => run.id === updated.id);
+    const previousView = previous ? assistantRunView(previous) : undefined;
+    const nextView = assistantRunView(updated);
+    if (
+      runCounts.active !== undefined ||
+      runCounts.archived !== undefined ||
+      runCounts.total !== undefined
+    ) {
+      let active = runCounts.active ?? activeRuns.length;
+      let archived = runCounts.archived ?? archivedRuns.length;
+      let total = runCounts.total ?? runs.length;
+      if (!previous) {
+        total += 1;
+        if (nextView === 'archived') {
+          archived += 1;
+        } else {
+          active += 1;
+        }
+      } else if (previousView !== nextView) {
+        if (previousView === 'archived') {
+          archived = Math.max(0, archived - 1);
+          active += 1;
+        } else {
+          active = Math.max(0, active - 1);
+          archived += 1;
+        }
+      }
+      runCounts = { ...runCounts, active, archived, total };
+    }
+    runs = sortAssistantRunList([updated, ...runs.filter((run) => run.id !== updated.id)]);
+  };
+
+  const loadRunsForView = async (view: AssistantRunView) => {
+    if (view === 'archived') {
+      archivedRunsLoading = true;
+    }
+    try {
+      const response = await client.listAssistantRuns({
+        archived: view === 'archived' ? 'archived' : 'active',
+        limit: runListLimit
+      });
+      mergeRunPage(response.runs || [], view, response.counts);
+      return response.runs || [];
+    } finally {
+      if (view === 'archived') {
+        archivedRunsLoading = false;
+      }
+    }
+  };
+
+  const selectFirstRunForView = (view: AssistantRunView) => {
+    const candidates = assistantRunsForView(runs, view);
+    selectedRunId = candidates[0]?.id || '';
+    if (selectedRunId) {
+      void refreshSelectedRunDetail(selectedRunId);
+    }
+  };
+
   const refreshAssistantRuns = async () => {
     runsLoading = true;
     runsError = '';
     try {
-	      const [runResponse, signalResponse, goalResponse, workspaceResponse] = await Promise.all([
-	        client.listAssistantRuns({ archived: 'include' }),
+      const routeView = currentRunRouteView();
+	      const [runResponse, archivedRunResponse, signalResponse, goalResponse, workspaceResponse] = await Promise.all([
+	        client.listAssistantRuns({ archived: 'active', limit: runListLimit }),
+        routeView === 'archived'
+          ? client.listAssistantRuns({ archived: 'archived', limit: runListLimit })
+          : Promise.resolve(undefined),
 	        client.listAssistantSignals(),
 	        client.listAssistantGoals(),
 	        client.listWorkspaces()
 	      ]);
-	      runs = runResponse.runs || [];
+      mergeRunPage(runResponse.runs || [], 'active', runResponse.counts);
+      if (archivedRunResponse) {
+        mergeRunPage(archivedRunResponse.runs || [], 'archived', archivedRunResponse.counts);
+      }
 	      const runIds = new Set(runs.map((run) => run.id));
 	      runDetails = Object.fromEntries(
 	        Object.entries(runDetails).filter(([runId]) => runIds.has(runId))
@@ -250,7 +344,7 @@
       return;
     }
     try {
-      selectedGoalTimeline = await client.getAssistantGoal(nextGoalId);
+      selectedGoalTimeline = await client.getAssistantGoal(nextGoalId, { limit: goalTimelineLimit });
     } catch {
       selectedGoalTimeline = undefined;
     }
@@ -262,7 +356,7 @@
       return;
     }
     try {
-      selectedGoalTimeline = await client.getAssistantGoal(goalId);
+      selectedGoalTimeline = await client.getAssistantGoal(goalId, { limit: goalTimelineLimit });
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to load Goal details.';
     }
@@ -447,10 +541,19 @@
   const setRunView = (view: AssistantRunView) => {
     runView = view;
     selectedDetailKind = 'run';
-    const candidates = assistantRunsForView(runs, view);
-    selectedRunId = candidates[0]?.id || '';
-    if (selectedRunId) {
-      void refreshSelectedRunDetail(selectedRunId);
+    if (view === 'archived' && !archivedRunsLoaded) {
+      selectedRunId = '';
+      void loadRunsForView('archived')
+        .then(() => {
+          if (runView === 'archived') {
+            selectFirstRunForView('archived');
+          }
+        })
+        .catch((err) => {
+          runsError = err instanceof Error ? err.message : 'Unable to load archived Assistant runs.';
+        });
+    } else {
+      selectFirstRunForView(view);
     }
     navigateToRunOverview(false, view);
   };
@@ -733,8 +836,8 @@
   const goalProgress = (goal: AssistantGoal | undefined) =>
     goal?.progress_summary || goal?.objective || 'Goal is waiting for its first Assistant assessment.';
 
-  const goalTimelineCount = (kind: 'watches' | 'notes' | 'assessments' | 'decisions' | 'task_reports') =>
-    selectedGoalTimeline?.[kind]?.length || 0;
+  const goalTimelineCount = (kind: GoalTimelineCountKind) =>
+    selectedGoalTimeline?.counts?.[kind] ?? selectedGoalTimeline?.[kind]?.length ?? 0;
 
   const goalBlockerSourceLabel = (trace: AssistantGoalBlockerTrace | undefined) => {
     switch (trace?.source_type) {
@@ -1060,7 +1163,7 @@
         goal: 'Review current homelabd state and recommend useful next actions.',
         autonomy: 'propose'
       });
-      runs = [response.run, ...runs.filter((run) => run.id !== response.run.id)];
+      upsertAssistantRun(response.run);
       runDetails = { ...runDetails, [response.run.id]: response.run };
       selectRun(response.run.id, false, 'active');
       runNotice = response.reply || 'Assistant proactive check completed.';
@@ -1164,23 +1267,27 @@
     goalError = '';
     goalNotice = '';
     try {
-      const timeline = await client.updateAssistantGoal(selectedGoalId, {
-        title,
-        objective,
-        details: goalEditDetails.trim(),
-        kind: goalEditKind,
-        execution_mode: goalEditExecutionMode,
-        cadence: goalEditCadence.trim(),
-        autonomy: goalEditAutonomy.trim(),
-        target: goalTargetFromEditForm(),
-        autopilot:
-          goalEditExecutionMode === 'autopilot'
-            ? {
-                ...(selectedGoal?.autopilot || { status: 'ready' }),
-                budget_tasks: normaliseGoalAutopilotTaskBudget(goalEditAutopilotBudget)
-              }
-            : undefined
-      });
+      const timeline = await client.updateAssistantGoal(
+        selectedGoalId,
+        {
+          title,
+          objective,
+          details: goalEditDetails.trim(),
+          kind: goalEditKind,
+          execution_mode: goalEditExecutionMode,
+          cadence: goalEditCadence.trim(),
+          autonomy: goalEditAutonomy.trim(),
+          target: goalTargetFromEditForm(),
+          autopilot:
+            goalEditExecutionMode === 'autopilot'
+              ? {
+                  ...(selectedGoal?.autopilot || { status: 'ready' }),
+                  budget_tasks: normaliseGoalAutopilotTaskBudget(goalEditAutopilotBudget)
+                }
+              : undefined
+        },
+        { limit: goalTimelineLimit }
+      );
       goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
       selectedGoalTimeline = timeline;
       selectedGoalId = timeline.goal.id;
@@ -1202,7 +1309,7 @@
     goalNotice = '';
     try {
       const response = await client.checkAssistantGoal(selectedGoalId);
-      runs = [response.run, ...runs.filter((run) => run.id !== response.run.id)];
+      upsertAssistantRun(response.run);
       await refreshGoalTimeline(selectedGoalId);
       selectRun(response.run.id, false, 'active');
       goalNotice = response.reply || 'Goal check completed.';
@@ -1221,7 +1328,7 @@
     goalError = '';
     goalNotice = '';
     try {
-      const timeline = await client.updateAssistantGoal(selectedGoalId, { status });
+      const timeline = await client.updateAssistantGoal(selectedGoalId, { status }, { limit: goalTimelineLimit });
       goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
       selectedGoalTimeline = timeline;
       goalNotice = `Goal ${assistantGoalStatusLabel(status).toLowerCase()}.`;
@@ -1244,7 +1351,9 @@
         action === 'start' || action === 'resume'
           ? { budget_tasks: selectedGoal?.autopilot?.budget_tasks ?? normaliseGoalAutopilotTaskBudget(goalAutopilotBudget) }
           : {};
-      const response = await client.updateAssistantGoalAutopilot(selectedGoalId, action, request);
+      const response = await client.updateAssistantGoalAutopilot(selectedGoalId, action, request, {
+        limit: goalTimelineLimit
+      });
       const timeline = response.timeline;
       goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
       selectedGoalTimeline = timeline;
@@ -1282,7 +1391,7 @@
         feedback,
         snooze_seconds: feedback === 'snooze' ? snoozeSeconds : undefined
       });
-      runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
+      upsertAssistantRun(response.run);
       runDetails = { ...runDetails, [response.run.id]: response.run };
       selectedRunId = response.run.id;
       mobilePanel = 'detail';
@@ -1309,7 +1418,7 @@
         actor: 'dashboard',
         reason: archived ? 'No longer required.' : undefined
       });
-      runs = runs.map((run) => (run.id === response.run.id ? response.run : run));
+      upsertAssistantRun(response.run);
       runDetails = { ...runDetails, [response.run.id]: response.run };
       const nextView = assistantRunView(response.run);
       selectedRunId = response.run.id;
@@ -1378,11 +1487,23 @@
     }
     if (!runId) {
       runView = routeView;
-      const candidates = assistantRunsForView(runs, runView);
-      if (selectedRunId && !candidates.some((run) => run.id === selectedRunId)) {
-        selectedRunId = candidates[0]?.id || '';
-      } else if (!selectedRunId) {
-        selectedRunId = candidates[0]?.id || '';
+      if (routeView === 'archived' && !archivedRunsLoaded) {
+        void loadRunsForView('archived')
+          .then(() => {
+            if (runView === 'archived') {
+              selectFirstRunForView('archived');
+            }
+          })
+          .catch((err) => {
+            runsError = err instanceof Error ? err.message : 'Unable to load archived Assistant runs.';
+          });
+      } else {
+        const candidates = assistantRunsForView(runs, runView);
+        if (selectedRunId && !candidates.some((run) => run.id === selectedRunId)) {
+          selectedRunId = candidates[0]?.id || '';
+        } else if (!selectedRunId) {
+          selectedRunId = candidates[0]?.id || '';
+        }
       }
       if (selectedRunId) {
         void refreshSelectedRunDetail(selectedRunId);
@@ -1397,6 +1518,18 @@
     }
     pendingOverviewRoute = false;
     pendingRouteGoalId = '';
+    if (routeView === 'archived' && !archivedRunsLoaded) {
+      void loadRunsForView('archived')
+        .then(() => {
+          if (runView === 'archived' && runs.some((run) => run.id === runId)) {
+            applyRouteRunSelection(runId, routeView);
+            lastAppliedRouteRunId = runId;
+          }
+        })
+        .catch((err) => {
+          runsError = err instanceof Error ? err.message : 'Unable to load archived Assistant runs.';
+        });
+    }
     if (pendingRouteRunId === runId) {
       const pendingRun = runs.find((run) => run.id === runId);
       runView = pendingRun ? assistantRunView(pendingRun) : routeView;
@@ -1487,8 +1620,8 @@
       </header>
 
       <div class="run-metrics" aria-label="Assistant run totals">
-        <span><strong>{activeRuns.length}</strong> active</span>
-        <span><strong>{archivedRuns.length}</strong> archived</span>
+        <span><strong>{activeRunTotal}</strong> active</span>
+        <span><strong>{archivedRunTotal}</strong> archived</span>
         <span><strong>{openRunActions}</strong> open</span>
         <span><strong>{activeSignals.length}</strong> signals</span>
       </div>
@@ -1797,8 +1930,8 @@
       {/if}
 
       <section class="run-list" aria-label={runView === 'archived' ? 'Archived Assistant runs' : 'Active Assistant runs'}>
-        {#if runsLoading}
-          <p class="empty">Loading proactive runs...</p>
+        {#if runsLoading || (runView === 'archived' && archivedRunsLoading)}
+          <p class="empty">{runView === 'archived' ? 'Loading archived decisions...' : 'Loading proactive runs...'}</p>
         {:else if visibleRuns.length}
           {#each visibleRuns as run}
             <a
@@ -3624,7 +3757,7 @@
     padding-left: 1.1rem;
   }
 
-  .goal-plan-list li {
+  .goal-plan-list > li {
     display: grid;
     gap: 0.35rem;
     padding: 0.65rem;
@@ -3633,14 +3766,14 @@
     background: var(--surface-muted, #f8fafc);
   }
 
-  .goal-plan-list li.current {
+  .goal-plan-list > li.current {
     border-color: var(--accent, #2563eb);
     box-shadow: inset 3px 0 0 var(--accent, #2563eb);
   }
 
-  .goal-plan-list li > div,
-  .goal-milestone-list li,
-  .goal-feedback-list li,
+  .goal-plan-list > li > div,
+  .goal-milestone-list > li,
+  .goal-feedback-list > li,
   .supervisor-card header,
   .report-title {
     display: flex;
@@ -3648,7 +3781,7 @@
     gap: 0.5rem;
   }
 
-  .goal-plan-list li > div > div {
+  .goal-plan-list > li > div > div {
     display: grid;
     gap: 0.1rem;
     min-width: 0;
@@ -3661,13 +3794,22 @@
     border-left: 2px solid var(--border-soft, #dbe3ef);
   }
 
-  .goal-milestone-list li {
-    padding: 0.25rem 0 0.25rem 0.55rem;
+  .goal-milestone-list > li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.5rem;
+    padding: 0.45rem 0 0.45rem 0.55rem;
   }
 
-  .goal-milestone-list li.current {
+  .goal-milestone-list > li.current {
     border-left: 3px solid var(--accent, #2563eb);
     padding-left: 0.45rem;
+  }
+
+  .goal-milestone-list > li > div {
+    display: grid;
+    gap: 0.18rem;
+    min-width: 0;
   }
 
   .milestone-title,
@@ -3710,12 +3852,12 @@
     list-style: none;
   }
 
-  .goal-feedback-list li {
+  .goal-feedback-list > li {
     padding: 0.35rem 0;
     border-top: 1px solid var(--border-soft, #dbe3ef);
   }
 
-  .goal-feedback-list li:first-child {
+  .goal-feedback-list > li:first-child {
     border-top: 0;
   }
 
@@ -4434,7 +4576,8 @@
   :global(html[data-theme='dark'] .signal-inbox-row),
   :global(html[data-theme='dark'] .recommendation-card),
   :global(html[data-theme='dark'] .signal-card),
-  :global(html[data-theme='dark'] .goal-plan-list li),
+  :global(html[data-theme='dark'] .goal-plan-list > li),
+  :global(html[data-theme='dark'] .goal-milestone-list > li),
   :global(html[data-theme='dark'] .supervisor-card),
   :global(html[data-theme='dark'] .object-list article),
   :global(html[data-theme='dark'] .receipt-list li),
@@ -4447,7 +4590,7 @@
 
   :global(html[data-theme='dark'] .goal-milestone-list),
   :global(html[data-theme='dark'] .goal-feedback-grid),
-  :global(html[data-theme='dark'] .goal-feedback-list li) {
+  :global(html[data-theme='dark'] .goal-feedback-list > li) {
     border-color: var(--border-soft) !important;
   }
 
@@ -4564,6 +4707,8 @@
     }
 
     .record-actions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr));
       width: 100%;
     }
 
@@ -4584,11 +4729,60 @@
     .milestone-title,
     .goal-feedback-grid header {
       flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+
+    .goal-plan-list,
+    .goal-milestone-list {
+      padding-left: 0;
+      list-style: none;
+    }
+
+    .goal-plan-list > li {
+      padding: 0.6rem;
+    }
+
+    .goal-plan-list > li > div {
+      flex-wrap: wrap;
+    }
+
+    .goal-plan-list > li > div > .status {
+      margin-left: 1.25rem;
+    }
+
+    .goal-milestone-list {
+      border-left: 0;
+    }
+
+    .goal-milestone-list > li {
+      grid-template-columns: auto minmax(0, 1fr);
+      padding: 0.5rem;
+      border: 1px solid var(--border-soft, #dbe3ef);
+      border-radius: 8px;
+      background: var(--surface, #ffffff);
+    }
+
+    .goal-milestone-list > li.current {
+      border-left: 3px solid var(--accent, #2563eb);
+    }
+
+    .milestone-title {
+      gap: 0.3rem;
+    }
+
+    .milestone-title .status {
+      margin-left: 0;
     }
 
     .primary-action,
     .run-button {
       width: fit-content;
+    }
+
+    .record-actions .primary-action,
+    .record-actions .text-action,
+    .record-actions .danger-action {
+      width: 100%;
     }
 
     .action-toolbar {

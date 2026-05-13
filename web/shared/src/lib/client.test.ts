@@ -437,7 +437,7 @@ describe('homelabd client', () => {
       }
     });
 
-    const runs = await client.listAssistantRuns({ archived: 'include' });
+    const runs = await client.listAssistantRuns({ archived: 'include', limit: 25 });
     const run = await client.getAssistantRun('arun_1');
     const started = await client.startAssistantRun({
       trigger_kind: 'manual',
@@ -459,7 +459,7 @@ describe('homelabd client', () => {
     expect(feedback.run.recommended_actions?.[0].status).toBe('useful');
     expect(archived.run.archived).toBe(true);
     expect(requests.map((request) => request.url)).toEqual([
-      'http://homelabd/assistant/runs?archived=include',
+      'http://homelabd/assistant/runs?archived=include&limit=25',
       'http://homelabd/assistant/runs/arun_1',
       'http://homelabd/assistant/runs',
       'http://homelabd/assistant/runs/arun_1/actions/action_1',

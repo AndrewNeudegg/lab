@@ -364,6 +364,107 @@ const blockedAssistantGoal = {
   linked_tasks: ['task_goal_grid_core'],
   progress_summary: 'Autopilot is blocked by missing package validation tooling.',
   blocker_trace: blockedGoalBlockerTrace,
+  plan: {
+    status: 'active',
+    summary:
+      'Supervisor plan for rebuilding the grid with parity slices, proof, and challenge feedback before completion.',
+    current_phase_id: 'phase_grid_parity',
+    phases: [
+      {
+        id: 'phase_grid_parity',
+        title: 'A durable clean-room parity matrix maps major enterprise grid feature areas to evidence',
+        objective:
+          'Map implemented evidence, explicit accepted exclusions, and open gaps so the operator can judge parity without trusting a self-certified row.',
+        status: 'in_progress',
+        acceptance_criteria: ['Evidence is independently checkable.', 'Open gaps are represented as work.'],
+        task_ids: ['task_goal_grid_core'],
+        milestones: [
+          {
+            id: 'phase_grid_scope',
+            phase_id: 'phase_grid_parity',
+            title: 'Scope the slice',
+            objective:
+              'Identify exact feature matrix entries, acceptance criteria, public comparison evidence, and risks before broad implementation.',
+            status: 'challenged',
+            task_ids: ['task_goal_grid_core'],
+            challenge_task_ids: ['task_goal_grid_challenge'],
+            claims: [
+              {
+                claim: 'The parity matrix now names row grouping, tree data, master detail, charts, and export evidence.',
+                evidence: 'docs/feature-parity-matrix.md'
+              }
+            ],
+            evidence: ['docs/feature-parity-matrix.md', 'tests/grid-core.test.js']
+          },
+          {
+            id: 'phase_grid_build',
+            phase_id: 'phase_grid_parity',
+            title: 'Deliver a usable slice',
+            objective:
+              'Implement the smallest cohesive capability that an operator can inspect and use, with code and documentation kept in sync.',
+            status: 'pending',
+            task_ids: [],
+            challenge_task_ids: []
+          },
+          {
+            id: 'phase_grid_prove',
+            phase_id: 'phase_grid_parity',
+            title: 'Prove the slice',
+            objective:
+              'Run focused checks, browser UAT, and update durable evidence so the supervisor can decide whether work really advanced.',
+            status: 'pending',
+            task_ids: [],
+            challenge_task_ids: []
+          }
+        ]
+      },
+      {
+        id: 'phase_grid_package',
+        title: 'The package is dependency-free at runtime, importable by consumers, documented, and inspectable',
+        objective:
+          'Show that a consumer can import the package, open the example, and verify desktop and mobile workflows without hidden runtime dependencies.',
+        status: 'pending',
+        depends_on: ['phase_grid_parity'],
+        task_ids: [],
+        milestones: [
+          {
+            id: 'phase_grid_package_scope',
+            phase_id: 'phase_grid_package',
+            title: 'Scope package proof',
+            objective:
+              'Name the import, manifest, documentation, and browser evidence required before package readiness is accepted.',
+            status: 'pending',
+            task_ids: [],
+            challenge_task_ids: []
+          }
+        ]
+      }
+    ],
+    gaps: [
+      {
+        id: 'gap_grid_npm',
+        area: 'Package validation',
+        claim: 'Package readiness is proven',
+        evidence: 'npm pack --dry-run could not run because npm is unavailable.',
+        severity: 'high',
+        status: 'open',
+        suggested_task: 'Provide a Nix-backed package validation path or install the missing tool.'
+      }
+    ],
+    challenges: [
+      {
+        id: 'challenge_grid_scope',
+        milestone_id: 'phase_grid_scope',
+        task_id: 'task_goal_grid_challenge',
+        verdict: 'failed',
+        summary: 'The package proof could not be validated because the environment lacks npm.',
+        evidence: ['npm pack --dry-run failed before package contents could be inspected.'],
+        created_at: now
+      }
+    ],
+    created_at: now,
+    updated_at: now
+  },
   autopilot: {
     status: 'blocked',
     budget_tasks: 500,
@@ -646,7 +747,25 @@ const mockAssistantApis = async (
       await route.fulfill({ json: runs.find((run) => run.id === runID) || runs[0] });
       return;
     }
-    await route.fulfill({ json: { runs } });
+    const archiveMode = url.searchParams.get('archived');
+    const visibleRuns =
+      archiveMode === 'include'
+        ? runs
+        : archiveMode === 'only'
+          ? runs.filter((run) => run.archived)
+          : runs.filter((run) => !run.archived);
+    const limit = Number(url.searchParams.get('limit'));
+    const boundedRuns = Number.isFinite(limit) && limit > 0 ? visibleRuns.slice(0, Math.floor(limit)) : visibleRuns;
+    await route.fulfill({
+      json: {
+        runs: boundedRuns,
+        counts: {
+          active: runs.filter((run) => !run.archived).length,
+          archived: runs.filter((run) => run.archived).length,
+          total: runs.length
+        }
+      }
+    });
   });
   await page.route(/\/api\/assistant\/signals(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
@@ -1321,6 +1440,32 @@ for (const viewport of [
       await expect(blockerTrace.getByRole('button', { name: 'Check Goal now' })).toBeVisible();
       await expect(blockerTrace.getByRole('button', { name: 'Resume Autopilot' })).toBeVisible();
 
+      const plan = selectedGoalRegion.getByLabel('Goal supervisor plan');
+      await expect(plan).toContainText('A durable clean-room parity matrix');
+      await expect(plan).toContainText('Scope the slice');
+      const milestoneLayout = await plan.locator('.goal-milestone-list > li').evaluateAll((items) =>
+        items.map((item) => {
+          const title = item.querySelector('.milestone-title')?.getBoundingClientRect();
+          const body = item.querySelector('p')?.getBoundingClientRect();
+          const content = item.querySelector(':scope > div')?.getBoundingClientRect();
+          return {
+            title: item.querySelector('.milestone-title strong')?.textContent?.trim() || '',
+            contentWidth: content?.width || 0,
+            bodyStartsBelowTitle: !title || !body || body.top >= title.bottom - 1
+          };
+        })
+      );
+      expect(
+        milestoneLayout.filter((item) => !item.bodyStartsBelowTitle),
+        JSON.stringify(milestoneLayout)
+      ).toEqual([]);
+      if (viewport.mobile) {
+        expect(
+          milestoneLayout.every((item) => item.contentWidth >= 230),
+          JSON.stringify(milestoneLayout)
+        ).toBe(true);
+      }
+
       const layout = await blockerTrace.evaluate((panel) => {
         const panelRect = panel.getBoundingClientRect();
         const copyRect = panel.querySelector(':scope > div:first-child')?.getBoundingClientRect();
@@ -1377,6 +1522,12 @@ for (const viewport of [
       await expectNoAxeViolations(page);
       await blockerTrace.scrollIntoViewIfNeeded();
       await expect(blockerTrace).toHaveScreenshot(`assistant-goal-blocker-${viewport.name}.png`, {
+        animations: 'disabled'
+      });
+      const planList = plan.locator('.goal-plan-list');
+      await page.addStyleTag({ content: '.navbar { display: none !important; }' });
+      await planList.scrollIntoViewIfNeeded();
+      await expect(planList).toHaveScreenshot(`assistant-goal-plan-${viewport.name}.png`, {
         animations: 'disabled'
       });
     });

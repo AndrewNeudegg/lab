@@ -75,6 +75,12 @@ type Run struct {
 	UpdatedAt          time.Time            `json:"updated_at"`
 }
 
+type RunListCounts struct {
+	Active   int `json:"active"`
+	Archived int `json:"archived"`
+	Total    int `json:"total"`
+}
+
 type RunDecisionCompiler struct {
 	Status      string                    `json:"status,omitempty"`
 	Source      string                    `json:"source,omitempty"`

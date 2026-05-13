@@ -127,9 +127,6 @@ func (o *Orchestrator) ListAssistantRuns() ([]assistantstore.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := o.maintainAssistantRuns(context.Background(), store, time.Now().UTC()); err != nil {
-		o.log().Warn("assistant lifecycle maintenance failed", "error", err)
-	}
 	return store.List()
 }
 
@@ -137,9 +134,6 @@ func (o *Orchestrator) ListAssistantRunSummaries() ([]assistantstore.Run, error)
 	store, err := o.assistantRunStore()
 	if err != nil {
 		return nil, err
-	}
-	if _, err := o.maintainAssistantRuns(context.Background(), store, time.Now().UTC()); err != nil {
-		o.log().Warn("assistant lifecycle maintenance failed", "error", err)
 	}
 	return store.ListSummaries()
 }

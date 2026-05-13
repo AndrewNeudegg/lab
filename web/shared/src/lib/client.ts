@@ -7,6 +7,7 @@ import type {
   AssistantGoalNoteRequest,
   AssistantGoalsResponse,
   AssistantGoalTimeline,
+  AssistantGoalTimelineOptions,
   AssistantGoalUpdateRequest,
   AssistantGoalWatchRequest,
   AssistantRun,
@@ -79,6 +80,14 @@ const DEFAULT_SAFE_REQUEST_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 400;
 const MAX_RETRY_DELAY_MS = 5000;
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+
+const assistantGoalTimelineQuery = (options: AssistantGoalTimelineOptions = {}) => {
+  const params = new URLSearchParams();
+  if (options.limit && options.limit > 0) {
+    params.set('limit', String(Math.floor(options.limit)));
+  }
+  return params.toString() ? `?${params.toString()}` : '';
+};
 
 class HttpRequestError extends Error {}
 
@@ -203,6 +212,9 @@ export const createHomelabdClient = (
       } else if (options.archived === 'archived') {
         params.set('archived', 'only');
       }
+      if (options.limit && options.limit > 0) {
+        params.set('limit', String(Math.floor(options.limit)));
+      }
       const query = params.toString() ? `?${params.toString()}` : '';
       return apiFetch<AssistantRunsResponse>(`/assistant/runs${query}`, {
         baseUrl,
@@ -285,14 +297,18 @@ export const createHomelabdClient = (
         body: JSON.stringify(request)
       });
     },
-    getAssistantGoal(goalId: string) {
-      return apiFetch<AssistantGoalTimeline>(`/assistant/goals/${encodeURIComponent(goalId)}`, {
+    getAssistantGoal(goalId: string, options: AssistantGoalTimelineOptions = {}) {
+      return apiFetch<AssistantGoalTimeline>(`/assistant/goals/${encodeURIComponent(goalId)}${assistantGoalTimelineQuery(options)}`, {
         baseUrl,
         fetcher
       });
     },
-    updateAssistantGoal(goalId: string, request: AssistantGoalUpdateRequest) {
-      return apiFetch<AssistantGoalTimeline>(`/assistant/goals/${encodeURIComponent(goalId)}`, {
+    updateAssistantGoal(
+      goalId: string,
+      request: AssistantGoalUpdateRequest,
+      options: AssistantGoalTimelineOptions = {}
+    ) {
+      return apiFetch<AssistantGoalTimeline>(`/assistant/goals/${encodeURIComponent(goalId)}${assistantGoalTimelineQuery(options)}`, {
         baseUrl,
         fetcher,
         method: 'PATCH',
@@ -312,10 +328,11 @@ export const createHomelabdClient = (
     updateAssistantGoalAutopilot(
       goalId: string,
       action: string,
-      request: AssistantGoalAutopilotRequest = {}
+      request: AssistantGoalAutopilotRequest = {},
+      options: AssistantGoalTimelineOptions = {}
     ) {
       return apiFetch<AssistantGoalAutopilotResponse>(
-        `/assistant/goals/${encodeURIComponent(goalId)}/autopilot/${encodeURIComponent(action)}`,
+        `/assistant/goals/${encodeURIComponent(goalId)}/autopilot/${encodeURIComponent(action)}${assistantGoalTimelineQuery(options)}`,
         {
           baseUrl,
           fetcher,
@@ -324,9 +341,13 @@ export const createHomelabdClient = (
         }
       );
     },
-    addAssistantGoalWatch(goalId: string, request: AssistantGoalWatchRequest) {
+    addAssistantGoalWatch(
+      goalId: string,
+      request: AssistantGoalWatchRequest,
+      options: AssistantGoalTimelineOptions = {}
+    ) {
       return apiFetch<AssistantGoalTimeline>(
-        `/assistant/goals/${encodeURIComponent(goalId)}/watches`,
+        `/assistant/goals/${encodeURIComponent(goalId)}/watches${assistantGoalTimelineQuery(options)}`,
         {
           baseUrl,
           fetcher,
@@ -335,9 +356,13 @@ export const createHomelabdClient = (
         }
       );
     },
-    addAssistantGoalNote(goalId: string, request: AssistantGoalNoteRequest) {
+    addAssistantGoalNote(
+      goalId: string,
+      request: AssistantGoalNoteRequest,
+      options: AssistantGoalTimelineOptions = {}
+    ) {
       return apiFetch<AssistantGoalTimeline>(
-        `/assistant/goals/${encodeURIComponent(goalId)}/notes`,
+        `/assistant/goals/${encodeURIComponent(goalId)}/notes${assistantGoalTimelineQuery(options)}`,
         {
           baseUrl,
           fetcher,

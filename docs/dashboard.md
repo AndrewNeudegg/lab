@@ -305,7 +305,7 @@ Remote task creation is deliberately explicit. The "New task target" panel shows
 
 The `Attention` tab shows tasks worth inspecting: operator decisions, failed work, timed-out workers, review gates, approval gates, verification, restart gates, or conflict resolution. Some items are system-owned and do not need a button press. Legacy task graph parent records or child phases blocked only by an earlier graph phase are hidden from this tab, but remain visible in `All` and search for auditability.
 
-Remote task detail pages repeat the execution context in an amber "Remote execution context" block. Verify that machine and path before asking for follow-up work.
+Remote task detail pages repeat the execution context in a themed warning "Remote execution context" block that stays readable in light and dark modes. Verify that machine and path before asking for follow-up work.
 
 Local tasks use isolated local worktrees. Remote tasks do not create local worktrees and do not compare their repository state against the control-plane repo.
 

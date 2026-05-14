@@ -109,6 +109,8 @@ describe('tasks page composition', () => {
 	    expect(pageSource).toContain('project_id: selectedWorkspace.project_id');
 	    expect(pageSource).toContain("mode: 'local'");
 	    expect(pageSource).toContain("mode: 'auto'");
+	    expect(pageSource).not.toContain('contextAcknowledged');
+	    expect(pageSource).not.toContain('class="context-confirm"');
 	  });
 
   test('preserves the operator-selected queue filter during background refresh', () => {

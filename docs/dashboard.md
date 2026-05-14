@@ -301,7 +301,7 @@ The Tasks page separates work by execution queue:
 - `Local homelabd` shows tasks that run in local homelabd worktrees.
 - Each remote agent gets its own queue, named by agent display name and machine.
 
-Remote task creation is deliberately explicit. The "New task target" panel shows the selected agent, machine, and full directory path, and the create button remains disabled until the context confirmation checkbox is checked. Treat that checkbox as the final guard against running an agent in the wrong checkout. The API rejects unknown workdir ids or paths for registered agents, so a stale UI selection should fail instead of silently falling back.
+Remote task creation is deliberately explicit. The `New task` panel lets operators choose `Auto route`, `Local homelabd`, or `Remote project`. Selecting `Remote project` shows the selected project, agent, machine, and full directory path, and the create button remains disabled until a registered remote workspace is selected and a task goal is entered. Treat the selected project row as the final guard against running an agent in the wrong checkout. The API rejects unknown workdir ids or paths for registered agents, so a stale UI selection should fail instead of silently falling back.
 
 The `Attention` tab shows tasks worth inspecting: operator decisions, failed work, timed-out workers, review gates, approval gates, verification, restart gates, or conflict resolution. Some items are system-owned and do not need a button press. Legacy task graph parent records or child phases blocked only by an earlier graph phase are hidden from this tab, but remain visible in `All` and search for auditability.
 

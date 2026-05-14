@@ -45,7 +45,7 @@ The task page separates queues by execution target:
 - `Local homelabd`
 - one queue per registered remote agent
 
-When creating a remote task, the dashboard requires an explicit context confirmation that names the project, agent, machine, and full working directory path. If the target looks wrong, do not check that box. The API also resolves the selected workdir against the agent's advertised workdirs; an unknown workdir id/path is rejected instead of falling back to another checkout.
+When creating a remote task, the dashboard shows the selected project, agent, machine, and full working directory path beside the project selector. If the target looks wrong, choose another project before creating the task. The API also resolves the selected workdir against the agent's advertised workdirs; an unknown workdir id/path is rejected instead of falling back to another checkout.
 
 ## Execution Targets
 

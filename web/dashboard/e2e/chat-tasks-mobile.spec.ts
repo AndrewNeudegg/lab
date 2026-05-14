@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
@@ -49,6 +50,7 @@ const mockTaskApi = async (
   options: {
     taskListDelayMs?: (requestCount: number) => number;
     diffByTaskId?: Record<string, any>;
+    workspaces?: any[];
   } = {}
 ) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
@@ -154,11 +156,11 @@ const mockTaskApi = async (
   await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
-  await page.route(/\/api\/agents$/, async (route) => {
+  await page.route(/\/api\/agents\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { agents: [] } });
   });
-  await page.route(/\/api\/workspaces$/, async (route) => {
-    await route.fulfill({ json: { workspaces: [] } });
+  await page.route(/\/api\/workspaces\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { workspaces: options.workspaces || [] } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
@@ -1413,6 +1415,97 @@ test('tasks mobile has no task chat composer and keeps new-task text stable', as
     viewport: window.innerWidth
   }));
   expect(overflow.bodyWidth, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.viewport + 2);
+});
+
+test('tasks mobile keeps remote new-task submission reachable without duplicate confirmation', async ({
+  page
+}, testInfo) => {
+  const remoteWorkspace = {
+    id: 'remote-ui:repo',
+    project_id: 'remote-ui',
+    label: 'Remote UI',
+    agent_id: 'agent-remote',
+    agent_name: 'Remote worker',
+    machine: 'remote-host',
+    workdir_id: 'repo',
+    workdir: '/srv/remote-ui',
+    repo_url: 'https://example.test/remote-ui.git',
+    branch: 'main',
+    labels: ['ui'],
+    backend: 'codex',
+    status: 'online'
+  };
+  const createdTasks: any[] = [];
+  await mockTaskApi(
+    page,
+    (body) => {
+      createdTasks.push(body);
+    },
+    [],
+    { workspaces: [remoteWorkspace] }
+  );
+
+  await page.goto('/tasks');
+  await page.waitForLoadState('networkidle');
+  await page.locator('.target-create summary').click();
+  await expect(page.locator('.target-create')).toContainText('1 remote online');
+  const taskType = page.locator('.target-create select').first();
+  await taskType.selectOption('remote');
+  await expect(taskType).toHaveValue('remote');
+  const projectSelect = page
+    .locator('.target-create label')
+    .filter({ has: page.locator('span', { hasText: /^Remote project$/ }) })
+    .locator('select');
+  await expect(projectSelect).toBeEnabled();
+  await projectSelect.selectOption(remoteWorkspace.id);
+  await expect(page.locator('.context-confirm')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: /Run on/ })).toHaveCount(0);
+
+  const goal = page.getByRole('textbox', { name: 'New task goal' });
+  await goal.fill('Fix the remote mobile task form');
+  const submit = page.getByRole('button', { name: 'Create remote task' });
+  await expect(submit).toBeEnabled();
+  await submit.focus();
+
+  const layout = await page.evaluate(() => {
+    const button = document.querySelector('.target-create button[type="submit"]') as HTMLElement | null;
+    const form = document.querySelector('.target-create') as HTMLElement | null;
+    const buttonRect = button?.getBoundingClientRect();
+    const formRect = form?.getBoundingClientRect();
+    return {
+      activeIsSubmit: document.activeElement === button,
+      bodyWidth: document.body.scrollWidth,
+      buttonBottom: buttonRect?.bottom ?? Number.POSITIVE_INFINITY,
+      buttonTop: buttonRect?.top ?? Number.NEGATIVE_INFINITY,
+      formBottom: formRect?.bottom ?? Number.POSITIVE_INFINITY,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  });
+  expect(layout.activeIsSubmit, JSON.stringify(layout)).toBe(true);
+  expect(layout.buttonTop, JSON.stringify(layout)).toBeGreaterThanOrEqual(0);
+  expect(layout.buttonBottom, JSON.stringify(layout)).toBeLessThanOrEqual(layout.viewportHeight + 1);
+  expect(layout.formBottom, JSON.stringify(layout)).toBeLessThanOrEqual(layout.viewportHeight + 1);
+  expect(layout.bodyWidth, JSON.stringify(layout)).toBeLessThanOrEqual(layout.viewportWidth + 2);
+
+  const accessibility = await new AxeBuilder({ page }).include('.target-create').analyze();
+  expect(accessibility.violations).toEqual([]);
+  await testInfo.attach('tasks-mobile-remote-new-task.png', {
+    body: await page.screenshot({ fullPage: false }),
+    contentType: 'image/png'
+  });
+
+  await submit.click();
+  expect(createdTasks).toHaveLength(1);
+  expect(createdTasks[0].goal).toBe('Fix the remote mobile task form');
+  expect(createdTasks[0].target).toMatchObject({
+    mode: 'remote',
+    project_id: 'remote-ui',
+    agent_id: 'agent-remote',
+    workdir_id: 'repo',
+    workdir: '/srv/remote-ui'
+  });
+  await expect(page.locator('.task-pane .queue-notice').getByText('Task created')).toBeVisible();
 });
 
 test('tasks mobile keeps page fixed and lets the task list own vertical scrolling', async ({ page }) => {

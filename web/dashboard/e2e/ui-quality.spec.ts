@@ -4,6 +4,7 @@ import type { Page } from '@playwright/test';
 
 const now = '2026-04-28T12:00:00.000Z';
 const taskID = 'task_20260428_120000_uiux1111';
+const themeStorageKey = 'homelabd.dashboard.theme';
 
 const task = {
   id: taskID,
@@ -112,6 +113,27 @@ const agentRepairTask = {
     questions: [],
     blockers: ['Open high gap ggap_scope prevents credible completion.'],
     follow_ups: ['Rerun the public-doc challenge after mapping the feature categories.']
+  }
+};
+
+const remoteRunningTaskID = 'task_20260428_121100_remote1';
+const remoteRunningTask = {
+  ...task,
+  id: remoteRunningTaskID,
+  title: 'Run remote browser UAT',
+  goal: 'Validate the selected remote task controls in dark mode.',
+  status: 'running',
+  assigned_to: 'remote:desk',
+  started_at: now,
+  result: 'Remote worker is still running.',
+  target: {
+    mode: 'remote',
+    project_id: 'dashboard',
+    agent_id: 'desk',
+    machine: 'desk-uat',
+    workdir_id: 'homelabd',
+    workdir: '/srv/desk/homelabd',
+    backend: 'codex'
   }
 };
 
@@ -224,6 +246,59 @@ const expectNoAxeViolations = async (page: Page) => {
   ).toEqual([]);
 };
 
+const collectReadableStyles = async (page: Page, selectors: string[]) =>
+  page.evaluate((surfaceSelectors) => {
+    const parseRuntimeColor = (value: string) => {
+      const parts = value.match(/[\d.]+/g)?.map(Number) ?? [0, 0, 0];
+      return {
+        r: parts[0] ?? 0,
+        g: parts[1] ?? 0,
+        b: parts[2] ?? 0
+      };
+    };
+    const luminance = ({ r, g, b }: ReturnType<typeof parseRuntimeColor>) => {
+      const channels = [r, g, b].map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.03928
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    const contrast = (left: number, right: number) => {
+      const [lighter, darker] = left >= right ? [left, right] : [right, left];
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+
+    return surfaceSelectors.map((selector) => {
+      const element = document.querySelector(selector) as HTMLElement | null;
+      if (!element) {
+        return {
+          selector,
+          found: false,
+          visible: false,
+          backgroundColor: '',
+          color: '',
+          backgroundLuminance: 1,
+          contrast: 0
+        };
+      }
+      const rect = element.getBoundingClientRect();
+      const styles = getComputedStyle(element);
+      const backgroundLuminance = luminance(parseRuntimeColor(styles.backgroundColor));
+      const textLuminance = luminance(parseRuntimeColor(styles.color));
+      return {
+        selector,
+        found: true,
+        visible: rect.width > 0 && rect.height > 0 && styles.visibility !== 'hidden',
+        backgroundColor: styles.backgroundColor,
+        color: styles.color,
+        backgroundLuminance,
+        contrast: contrast(backgroundLuminance, textLuminance)
+      };
+    });
+  }, selectors);
+
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 1000, mobile: false },
   { name: 'mobile', width: 390, height: 844, mobile: true }
@@ -253,6 +328,61 @@ for (const viewport of [
 
       await expectNoAxeViolations(page);
       await expect(page).toHaveScreenshot(`tasks-ui-quality-${viewport.name}.png`, {
+        fullPage: true,
+        animations: 'disabled'
+      });
+    });
+
+    test('remote execution context and stop action are dark themed', async ({ page }) => {
+      await page.addInitScript((key) => {
+        localStorage.setItem(key, 'dark');
+      }, themeStorageKey);
+      await mockTaskApis(page, [remoteRunningTask]);
+      await page.goto('/tasks');
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+      await expect(page.locator('.theme-toggle').first()).toHaveAttribute(
+        'data-theme-toggle-ready',
+        'true'
+      );
+
+      await page
+        .getByRole('region', { name: 'Task filters' })
+        .getByRole('button', { name: /Running/ })
+        .click();
+      await page.getByRole('link', { name: /Run remote browser UAT/ }).click();
+      await expect(page.getByRole('heading', { name: 'Run remote browser UAT' })).toBeVisible();
+
+      const actions = page.getByRole('region', { name: 'Task actions', exact: true });
+      const stopButton = actions.getByRole('button', { name: 'Stop worker' });
+      await expect(stopButton).toBeVisible();
+      await expect(stopButton).toBeEnabled();
+
+      const context = page.getByLabel('Execution context');
+      await expect(context).toContainText('Remote execution context');
+      await expect(context).toContainText('desk-uat');
+      await expect(context).toContainText('/srv/desk/homelabd');
+      await expect(context).toContainText('backend codex');
+
+      const styles = await collectReadableStyles(page, [
+        '.execution-context',
+        '.secondary-actions button.danger'
+      ]);
+      for (const style of styles) {
+        expect(style.found, `${style.selector} should exist`).toBe(true);
+        expect(style.visible, `${style.selector} should be visible`).toBe(true);
+        expect(
+          style.backgroundLuminance,
+          `${style.selector} should use a dark background: ${JSON.stringify(style)}`
+        ).toBeLessThan(0.12);
+        expect(
+          style.contrast,
+          `${style.selector} should keep readable text: ${JSON.stringify(style)}`
+        ).toBeGreaterThan(3);
+      }
+
+      await expectNoAxeViolations(page);
+      await context.scrollIntoViewIfNeeded();
+      await expect(page).toHaveScreenshot(`tasks-remote-dark-context-${viewport.name}.png`, {
         fullPage: true,
         animations: 'disabled'
       });

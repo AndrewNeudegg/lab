@@ -1373,7 +1373,7 @@ const exerciseRoute = async (page: Page, route: string, mobile: boolean) => {
     });
     await expect(queueMove).toBeVisible();
     const autoMerge = mergeQueue.getByRole('switch', {
-      name: 'Auto merge reviewed queue-head tasks'
+      name: 'Auto merge reviewed local queue-head tasks'
     });
     await expect(autoMerge).toHaveAttribute('aria-checked', 'false');
     await autoMerge.click();

@@ -217,6 +217,12 @@ export interface HomelabdTaskAttentionResponse {
 
 export interface HomelabdRuntimeSettings {
   auto_merge_enabled: boolean;
+  remote_agents?: Record<string, HomelabdRemoteAgentAutomation>;
+}
+
+export interface HomelabdRemoteAgentAutomation {
+  auto_review_enabled?: boolean;
+  auto_merge_enabled?: boolean;
 }
 
 export interface HomelabdSettingsResponse {
@@ -225,6 +231,7 @@ export interface HomelabdSettingsResponse {
 
 export interface HomelabdUpdateSettingsRequest {
   auto_merge_enabled?: boolean;
+  remote_agents?: Record<string, HomelabdRemoteAgentAutomation>;
 }
 
 export interface HomelabdCreateTaskRequest {

@@ -158,6 +158,24 @@ const freezeTime = async (page: Page) => {
 
 const mockTaskApis = async (page: Page, taskItems = [task]) => {
   await freezeTime(page);
+  const remoteAgents = Array.from(
+    new Map(
+      taskItems
+        .filter((item) => (item as any).target?.mode === 'remote' && (item as any).target?.agent_id)
+        .map((item) => {
+          const target = (item as any).target;
+          return [
+            target.agent_id,
+            {
+              id: target.agent_id,
+              name: `${target.agent_id} agent`,
+              machine: target.machine || target.agent_id,
+              status: 'online'
+            }
+          ];
+        })
+    ).values()
+  );
   await page.route(/\/api\/tasks\/attention\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { attention: { red: 0, amber: taskItems.length, total: taskItems.length } } });
   });
@@ -212,13 +230,13 @@ const mockTaskApis = async (page: Page, taskItems = [task]) => {
   await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { events: [] } });
   });
-	  await page.route(/\/api\/agents$/, async (route) => {
-	    await route.fulfill({ json: { agents: [] } });
-	  });
-	  await page.route(/\/api\/workspaces$/, async (route) => {
-	    await route.fulfill({ json: { workspaces: [] } });
-	  });
-	  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
+  await page.route(/\/api\/agents\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { agents: remoteAgents } });
+  });
+  await page.route(/\/api\/workspaces\/?(?:\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { workspaces: [] } });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/runs$/, async (route) => {
     await route.fulfill({ json: { runs: [] } });
   });
   await page.route(/\/api\/tasks\/[^/]+\/diff$/, async (route) => {

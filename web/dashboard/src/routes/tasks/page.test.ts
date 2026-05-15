@@ -57,20 +57,29 @@ describe('tasks page composition', () => {
     expect(pageSource).not.toContain('approval-list');
   });
 
-  test('renders a compact operator-adjustable merge queue', () => {
-    expect(pageSource).toContain('let mergeQueueItems: HomelabdTask[] = []');
-    expect(pageSource).toContain('merge_queue_position');
-    expect(pageSource).toContain('aria-label="Merge queue"');
-    expect(pageSource).toContain('aria-label="Auto merge reviewed queue-head tasks"');
-    expect(pageSource).toContain('let autoMergeVersion = 0');
-    expect(pageSource).toContain('settingsVersion === autoMergeVersion');
-    expect(pageSource).toContain('autoMergeVersion += 1');
-    expect(pageSource).toContain('client.updateSettings({ auto_merge_enabled: next })');
+	  test('renders a compact operator-adjustable merge queue', () => {
+	    expect(pageSource).toContain('let mergeQueueItems: HomelabdTask[] = []');
+	    expect(pageSource).toContain('merge_queue_position');
+	    expect(pageSource).toContain('aria-label="Merge queue"');
+	    expect(pageSource).toContain('aria-label="Auto merge reviewed local queue-head tasks"');
+	    expect(pageSource).toContain('let autoMergeVersion = 0');
+	    expect(pageSource).toContain('settingsVersion === autoMergeVersion');
+	    expect(pageSource).toContain('autoMergeVersion += 1');
+	    expect(pageSource).toContain('client.updateSettings({ auto_merge_enabled: next })');
     expect(pageSource).toContain('Move ${taskSummaryTitle(item, 40)} up in merge queue');
     expect(pageSource).toContain('Move ${taskSummaryTitle(item, 40)} down in merge queue');
     expect(pageSource).toContain('mergeQueueMoveKey');
-    expect(pageSource).toContain('max-height: min(13.5rem, 32vh);');
-  });
+	    expect(pageSource).toContain('max-height: min(13.5rem, 32vh);');
+	  });
+
+	  test('renders per-agent remote automation controls', () => {
+	    expect(pageSource).toContain('let remoteAgentAutomation: Record<string, HomelabdRemoteAgentAutomation> = {}');
+	    expect(pageSource).toContain('aria-label="Remote agent automation"');
+	    expect(pageSource).toContain('Auto review and merge passing tasks on');
+	    expect(pageSource).toContain('remote_agents: {');
+	    expect(pageSource).toContain('auto_review_enabled: next');
+	    expect(pageSource).toContain('auto_merge_enabled: next');
+	  });
 
   test('keeps automatic sync status responsive while selected details refresh separately', () => {
     expect(pageSource).toContain("let taskFilter: TaskFilter = 'attention'");

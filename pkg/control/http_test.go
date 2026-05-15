@@ -155,9 +155,16 @@ func TestSettingsEndpointPersistsAutoMerge(t *testing.T) {
 	if !strings.Contains(updated.Body.String(), `"auto_merge_enabled":true`) {
 		t.Fatalf("updated settings = %s", updated.Body.String())
 	}
+	remoteUpdated := requestJSON(t, mux, http.MethodPost, "/settings", `{"remote_agents":{"remote1":{"auto_review_enabled":true,"auto_merge_enabled":true}}}`, "", http.StatusOK)
+	if !strings.Contains(remoteUpdated.Body.String(), `"remote1"`) ||
+		!strings.Contains(remoteUpdated.Body.String(), `"auto_review_enabled":true`) ||
+		!strings.Contains(remoteUpdated.Body.String(), `"auto_merge_enabled":true`) {
+		t.Fatalf("remote updated settings = %s", remoteUpdated.Body.String())
+	}
 
 	reloaded := requestJSON(t, mux, http.MethodGet, "/settings", "", "", http.StatusOK)
-	if !strings.Contains(reloaded.Body.String(), `"auto_merge_enabled":true`) {
+	if !strings.Contains(reloaded.Body.String(), `"auto_merge_enabled":true`) ||
+		!strings.Contains(reloaded.Body.String(), `"remote1"`) {
 		t.Fatalf("reloaded settings = %s", reloaded.Body.String())
 	}
 }

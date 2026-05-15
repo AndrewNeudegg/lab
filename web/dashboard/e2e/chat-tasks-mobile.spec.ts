@@ -51,6 +51,9 @@ const mockTaskApi = async (
     taskListDelayMs?: (requestCount: number) => number;
     diffByTaskId?: Record<string, any>;
     workspaces?: any[];
+    agents?: any[];
+    remoteAgentAutomation?: Record<string, { auto_review_enabled?: boolean; auto_merge_enabled?: boolean }>;
+    onSettingsUpdate?: (body: any) => void;
   } = {}
 ) => {
   const now = new Date('2026-04-26T15:00:00Z').toISOString();
@@ -141,14 +144,40 @@ const mockTaskApi = async (
     await route.fulfill({ json: { tasks: taskRecords } });
   });
   let autoMergeEnabled = false;
+  let remoteAgentAutomation = options.remoteAgentAutomation || {};
   await page.route(/\/api\/settings$/, async (route) => {
     if (route.request().method() === 'POST') {
       const body = JSON.parse(route.request().postData() || '{}') as {
         auto_merge_enabled?: boolean;
+        remote_agents?: Record<string, { auto_review_enabled?: boolean; auto_merge_enabled?: boolean }>;
       };
-      autoMergeEnabled = Boolean(body.auto_merge_enabled);
+      options.onSettingsUpdate?.(body);
+      if (typeof body.auto_merge_enabled === 'boolean') {
+        autoMergeEnabled = body.auto_merge_enabled;
+      }
+      if (body.remote_agents) {
+        remoteAgentAutomation = {
+          ...remoteAgentAutomation,
+          ...Object.fromEntries(
+            Object.entries(body.remote_agents).map(([agentID, policy]) => [
+              agentID,
+              {
+                ...(remoteAgentAutomation[agentID] || {}),
+                ...policy
+              }
+            ])
+          )
+        };
+      }
     }
-    await route.fulfill({ json: { settings: { auto_merge_enabled: autoMergeEnabled } } });
+    await route.fulfill({
+      json: {
+        settings: {
+          auto_merge_enabled: autoMergeEnabled,
+          remote_agents: remoteAgentAutomation
+        }
+      }
+    });
   });
   await page.route(/\/api\/approvals$/, async (route) => {
     await route.fulfill({ json: { approvals: [approvalFor(tasks[0].id)] } });
@@ -157,7 +186,7 @@ const mockTaskApi = async (
     await route.fulfill({ json: { events: [] } });
   });
   await page.route(/\/api\/agents\/?(?:\?.*)?$/, async (route) => {
-    await route.fulfill({ json: { agents: [] } });
+    await route.fulfill({ json: { agents: options.agents || [] } });
   });
   await page.route(/\/api\/workspaces\/?(?:\?.*)?$/, async (route) => {
     await route.fulfill({ json: { workspaces: options.workspaces || [] } });
@@ -570,7 +599,7 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   await expect(queue).toBeVisible();
   await expect(detail).not.toBeVisible();
   await expect(page.locator('.task-row.selected')).toHaveCount(0);
-  const autoMerge = page.getByRole('switch', { name: 'Auto merge reviewed queue-head tasks' });
+  const autoMerge = page.getByRole('switch', { name: 'Auto merge reviewed local queue-head tasks' });
   await expect(autoMerge).toHaveAttribute('aria-checked', 'false');
   await autoMerge.click();
   await expect(autoMerge).toHaveAttribute('aria-checked', 'true');
@@ -672,6 +701,41 @@ test('tasks mobile switches between queue and selected task detail', async ({ pa
   expect(emptyQueueScroll.footerBottom, JSON.stringify(emptyQueueScroll)).toBeLessThanOrEqual(
     emptyQueueScroll.pageClientHeight + 1
   );
+});
+
+test('tasks mobile toggles per-agent remote review and merge automation', async ({ page }) => {
+  const settingsUpdates: any[] = [];
+  await mockTaskApi(page, undefined, [], {
+    agents: [
+      {
+        id: 'remote1',
+        name: 'Remote one',
+        machine: 'lab-vm',
+        status: 'online'
+      }
+    ],
+    onSettingsUpdate: (body) => settingsUpdates.push(body)
+  });
+  await page.goto('/tasks');
+
+  const remoteAutomation = page.getByRole('switch', {
+    name: 'Auto review and merge passing tasks on Remote one'
+  });
+  await expect(remoteAutomation).toHaveAttribute('aria-checked', 'false', {
+    timeout: taskLoadTimeoutMs
+  });
+  await remoteAutomation.scrollIntoViewIfNeeded();
+  await remoteAutomation.click();
+  await expect(remoteAutomation).toHaveAttribute('aria-checked', 'true');
+  expect(settingsUpdates.at(-1)).toEqual({
+    remote_agents: {
+      remote1: {
+        auto_review_enabled: true,
+        auto_merge_enabled: true
+      }
+    }
+  });
+  await expect(page.getByText('Reviews and merges passing Git-backed remote tasks')).toBeVisible();
 });
 
 test('tasks mobile returns to the queue when Accept empties the current filter', async ({ page }) => {

@@ -7,8 +7,8 @@ The design intentionally treats remote machines as worker nodes:
 - agent identity is stable and explicit (`agent_id`, machine, service instance)
 - heartbeats drive readiness and health
 - tasks are routed by target queue, not by a global repo
-- local `homelabd` worktrees are never created for remote tasks
-- remote review never compares the remote checkout to `homelabd`'s local `main`
+- Git-backed remote tasks use isolated task worktrees and merge approvals, matching local task mechanics
+- remote review compares against the advertised remote checkout, never against `homelabd`'s local `main`
 
 ## Control Plane
 
@@ -84,7 +84,9 @@ go run ./cmd/homelab-agent \
   -terminal-url http://workstation:18083
 ```
 
-The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. It executes in the selected working directory, sends stdout/stderr back as the task result, and captures the remote git working-tree patch after completion. The captured patch includes uncommitted tracked changes and untracked files, excluding ignored runtime state such as `.agent-*`. Before calling back to `homelabd`, the agent writes the completion payload to `data/remote-agent/pending-completions/<agent_id>/` under its configured `data_dir`. If `homelabd` is restarting, offline, or returns a transient network error, the remote agent keeps advertising that task as current and replays the saved completion before claiming new work. A successful callback deletes the pending completion file. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 3,600 seconds, or 1 hour. If the worker reaches that deadline, the remote task is recorded as `timed_out` rather than `blocked` so the operator can retry with clearer instructions or a longer timeout. The default Codex backend disables Codex's own sandbox because local tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
+The agent uses the `external_agents` command for the assigned backend, defaulting to `codex`. For an advertised Git checkout that is reachable by the control plane, `homelabd` first creates an isolated worktree under a sibling `.homelabd-worktrees/<agent>/<project>/` directory and sends that task worktree to the remote agent. The advertised checkout must be clean before task creation or claim; dirty checkouts are blocked so prior uncommitted work cannot disappear into the next task baseline. For non-Git or inaccessible paths, the agent uses the advertised directory and the older evidence-only review path.
+
+The agent executes in the selected task directory, sends stdout/stderr back as the task result, and captures the remote git working-tree patch after completion. The captured patch includes uncommitted tracked changes and untracked files, excluding ignored runtime state such as `.agent-*`. Before calling back to `homelabd`, the agent writes the completion payload to `data/remote-agent/pending-completions/<agent_id>/` under its configured `data_dir`. If `homelabd` is restarting, offline, or returns a transient network error, the remote agent keeps advertising that task as current and replays the saved completion before claiming new work. A successful callback deletes the pending completion file. While a remote task is `running`, the control plane must not recover it with a local worker simply because there is no in-memory local worker handle; the remote agent's heartbeat, timeout, and pending-completion replay own that lifecycle. The same backend `timeout_seconds` applies to remote task execution; omitted or zero values default to 3,600 seconds, or 1 hour. If the worker reaches that deadline, the remote task is recorded as `timed_out` rather than `blocked` so the operator can retry with clearer instructions or a longer timeout. The default Codex backend disables Codex's own sandbox because tasks already run in isolated worktrees and Codex otherwise may remount `.git` read-only, which prevents Git worktree metadata updates.
 
 For tasks completed by an older agent that lost the callback before writing a pending completion file, use `homelabctl task recover-remote <task_id>` only when the remote workdir is accessible from the control plane. Pass `--base-ref` with the previous remote task snapshot tree or commit whenever possible so the recovered diff is task-scoped instead of a broad live checkout fallback.
 
@@ -103,7 +105,19 @@ Use `external_agents.<backend>.wrapper_command` and `wrapper_args` on each remot
 }
 ```
 
-Remote agents do not need to run in this repository. Each advertised `workdir` can be a different checkout, a different project, or a non-git directory. `homelabd` stores the path as execution context only; it does not assume that remote path has the same HEAD, branch, or repository root as the control-plane checkout.
+Remote agents do not need to run in this repository. Each advertised `workdir` can be a different checkout, a different project, or a non-git directory. For Git checkouts that are reachable from the control plane, `homelabd` treats the advertised path as that project's merge target and uses the same worktree, branch, review, merge approval, and verification lifecycle as local tasks. It still does not assume that remote path has the same HEAD, branch, or repository root as the control-plane checkout.
+
+## Per-Agent Review Automation
+
+Remote tasks are controlled per agent. Configure each agent's policy from `/tasks` or with:
+
+```bash
+go run ./cmd/homelabctl settings remote-agent remote1 auto-review on
+go run ./cmd/homelabctl settings remote-agent remote1 auto-merge on
+go run ./cmd/homelabctl settings remote-agent remote1 auto-review-merge on
+```
+
+For Git-backed remote tasks, `auto-review` lets the supervisor run the normal merge-queue review when that agent's task reaches `ready_for_review`, and `auto-merge` grants the resulting merge approval after checks pass. The task still moves to `awaiting_verification` before final acceptance, matching local tasks. For legacy evidence-only remotes, `auto-review` runs the independent remote review and `auto-merge` accepts the reviewed result because there is no reachable Git target to merge.
 
 Set `remote_agent.workdirs` explicitly on each worker. If no workdirs are configured, `homelab-agent` falls back to the configured `repo.root`, which is useful for local development but too easy to point at the wrong tree on a real machine.
 
@@ -208,25 +222,24 @@ Keep `auto_start` false on the control-plane machine unless it should also act a
 - `POST /tasks` accepts an optional `target` object with `mode: "auto"`, `"local"`, or `"remote"`, plus `project_id`, `agent_id`, `workdir_id`, advertised `workdir`, `repo_url`, `branch`, labels, and `backend`.
 - `POST /tasks/{task_id}/assign` retargets a non-terminal task to a remote agent and advertised workdir.
 
-Remote tasks intentionally skip the local task supervisor. The selected remote agent owns execution until it reports completion or failure.
+Remote tasks intentionally skip the local worker supervisor. The selected remote agent owns execution until it reports completion or failure. Git-backed remote tasks still enter the shared review/merge queue after completion so their task branch is committed, checked, and merged like local work.
 
 ## Review Semantics
 
-Local tasks still use local worktrees, local checks, diff review, and merge approval.
+Local tasks use isolated worktrees, checks, diff review, and merge approval. Git-backed remote tasks use the same mechanism, but the merge target is the advertised remote checkout rather than the control-plane repository. For a Git-backed remote task:
 
-Remote tasks do not. For a remote task:
+1. `homelabd` refuses to start if the advertised checkout is dirty.
+2. `homelabd` creates `homelabd/<task_id>` in an isolated worktree outside the checkout.
+3. The remote agent runs the worker in that task worktree.
+4. The remote agent reports output, validation, and the task-scoped diff back to `homelabd`.
+5. `review <task>` commits the task worktree, reconciles it with the advertised checkout `HEAD`, runs configured checks, stores an immutable diff snapshot, and creates a merge approval.
+6. Approving the merge merges the task branch into the advertised checkout and moves the task to `awaiting_verification`.
+7. `accept <task>` closes it, or `reopen <task> <reason>` queues more remote work.
 
-1. The remote agent records a task baseline for the selected remote directory.
-2. The remote agent runs the worker in that directory.
-3. The remote agent reports output, validation, and an immutable task-scoped diff snapshot back to `homelabd`.
-4. `review <task>` runs a remote-result review and then moves the task to `awaiting_verification` only when there is independent evidence to inspect. For Goal-linked tasks, the reviewer compares the captured diff, changed files, validation evidence, and selected Goal phase before counting the work as progress. If the remote worker reports `No change required: <reason>` and no diff is available, `homelabd` records `no_change_required` instead so the operator can accept the no-change conclusion or reopen the task with corrected instructions. If there is no diff, missing validation, or a diff that does not align with the Goal, review blocks the task for rerun or reopening.
-5. Human verification happens against the named remote machine/directory.
-6. `accept <task>` closes it, or `reopen <task> <reason>` queues more remote work. Reopen reasons are operator instructions: the next remote assignment includes the latest `Reopen instruction from operator` block before the worker starts, matching `task retry` behaviour.
+Legacy remote tasks for non-Git or inaccessible directories keep the evidence-only path: the remote agent runs in the advertised directory, reports a captured diff when available, and `review <task>` can move the task to `awaiting_verification`, `no_change_required`, or `blocked` without a merge approval.
 
-No local merge approval is created for remote tasks because the control plane cannot prove that the remote checkout corresponds to its own repo.
+For Autopilot Goals, Git-backed remote tasks use the same review and merge queue as local tasks, then the Goal policy can accept the verified task after merge. Legacy evidence-only remote review still uses the independent-review transition. If a remote Goal task is already blocked by `ReviewerAgent could not verify remote Goal progress:`, Autopilot re-runs review before exposing the blocker to the operator; recovered validation or parser fixes let the Goal continue without a manual decision. If the blocked remote report produced actionable open gaps and no operator questions, the supervisor treats the task as agent-owned repair evidence, marks it consumed, clears it from the current Goal slot, and creates the next `gap_fix` task. The next `accept_task` gate can then close ordinary successful tasks or pause/block according to the Goal policy. A worker `GOAL_REPORT` is treated as a claim, not proof: the stored Goal task report includes a reviewer decision such as `verified_progress`, `needs_validation`, `misaligned`, `insufficient_evidence`, or `no_change`.
 
-For Autopilot Goals, remote review uses the same independent-review transition as manual remote review. When the remote task reaches `ready_for_review` and the Goal policy allows `review_task`, `homelabd` reviews the captured remote evidence without consulting the local merge queue. If a remote Goal task is already blocked by `ReviewerAgent could not verify remote Goal progress:`, Autopilot re-runs that independent review before exposing the blocker to the operator; recovered validation or parser fixes let the Goal continue without a manual decision. If the blocked remote report produced actionable open gaps and no operator questions, the supervisor treats the task as agent-owned repair evidence, marks it consumed, clears it from the current Goal slot, and creates the next `gap_fix` task. The next `accept_task` gate can then close ordinary successful tasks or pause/block according to the Goal policy. A worker `GOAL_REPORT` is treated as a claim, not proof: the stored Goal task report includes a reviewer decision such as `verified_progress`, `needs_validation`, `misaligned`, `insufficient_evidence`, or `no_change`.
-
-Use `homelabctl task diff <task_id>` or the dashboard `Changes vs main` panel to inspect the task diff snapshot. New remote agents diff the worktree tree recorded before the assignment against the tree recorded after the assignment, so the saved patch belongs to that task even when the remote checkout already contains older uncommitted Goal work. The structured diff response includes `source`, `snapshot`, `captured_at`, and `sha256` provenance. If a completion predates task-scoped snapshots and the workdir path is still accessible from the control plane, `GET /tasks/{task_id}/diff` may compute a live remote working-tree fallback and marks it with a warning. If neither source is available, the task still shows the remote result and validation, but the diff panel tells the operator that no remote diff is available.
+Use `homelabctl task diff <task_id>` or the dashboard `Changes vs main` panel to inspect the task diff snapshot. Reviewed Git-backed remote tasks store the same immutable branch-vs-target snapshot as local tasks, so the historical patch remains visible after merge. Legacy remote completions store the task-scoped snapshot reported by the agent when available. The structured diff response includes `source`, `snapshot`, `captured_at`, and `sha256` provenance. If a completion predates task-scoped snapshots and the workdir path is still accessible from the control plane, `GET /tasks/{task_id}/diff` may compute a live remote working-tree fallback and marks it with a warning. If neither source is available, the task still shows the remote result and validation, but the diff panel tells the operator that no remote diff is available.
 
 Build Goals should maintain a durable feature or parity matrix in the target repository. The worker prompt asks the agent to create or update that matrix, select one concrete slice, and report the files, validation, remaining gaps, blockers, and questions in the final `GOAL_REPORT:` line. This gives the supervisor a product scorecard instead of a stream of broad “continue building” tasks.

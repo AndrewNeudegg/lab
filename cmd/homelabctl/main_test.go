@@ -228,6 +228,20 @@ func TestTaskCommandsCoverCurrentHTTPAPI(t *testing.T) {
 			wantBody:   map[string]any{"auto_merge_enabled": true},
 		},
 		{
+			name:       "remote agent auto review merge on",
+			args:       []string{"settings", "remote-agent", "remote1", "auto-review-merge", "on"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/settings",
+			wantBody: map[string]any{
+				"remote_agents": map[string]any{
+					"remote1": map[string]any{
+						"auto_review_enabled": true,
+						"auto_merge_enabled":  true,
+					},
+				},
+			},
+		},
+		{
 			name:       "knowledge list",
 			args:       []string{"knowledge", "list"},
 			wantMethod: http.MethodGet,

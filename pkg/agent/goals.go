@@ -3294,7 +3294,15 @@ func (o *Orchestrator) reflectGoalTaskCompletion(ctx context.Context, t taskstor
 		return
 	}
 	now := time.Now().UTC()
+	existingReports, _ := store.ListTaskReports(goal.ID)
+	if previous, ok := goalTaskReportForTask(existingReports, t.ID); ok {
+		goal.OpenQuestions = removeGoalReportQuestions(goal.OpenQuestions, previous)
+		removeGoalPlanGapsFromTask(goal.Plan, t.ID)
+	}
 	report := o.goalTaskReportFromTask(ctx, goal, t)
+	if goalReportSupersedesCurrentTaskQuestions(goal, report) {
+		goal.OpenQuestions = nil
+	}
 	if err := store.SaveTaskReport(report); err != nil {
 		o.log().Warn("goal task report save failed", "error", err, "goal", goalID, "task", t.ID)
 	}
@@ -3376,6 +3384,10 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		AdvancedGoal:  true,
 		ResultExcerpt: truncateAssistantRunText(t.Result, 900),
 		CreatedAt:     now,
+	}
+	if goalTaskIsChallengeIntent(t) {
+		report.TaskType = assistantstore.GoalTaskTypeChallenge
+		report.AdvancedGoal = false
 	}
 	if structured, ok := parseStructuredGoalReport(t.Result); ok {
 		report.TaskType = firstNonEmptyString(structured.TaskType, report.TaskType)
@@ -3736,6 +3748,13 @@ func normalizeGoalReportStrings(values []string, limit int) []string {
 		}
 	}
 	return out
+}
+
+func goalTaskIsChallengeIntent(t taskstore.Task) bool {
+	goalText := strings.ToLower(t.Goal)
+	return strings.Contains(goalText, "autopilot challenge task") ||
+		strings.Contains(goalText, "goal challenge report contract") ||
+		strings.Contains(strings.ToUpper(t.Goal), "GOAL_CHALLENGE:")
 }
 
 func goalTaskResultSummary(result string) string {
@@ -4393,6 +4412,62 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func removeGoalReportQuestions(open []string, report assistantstore.GoalTaskReport) []string {
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	remove := map[string]bool{}
+	for _, question := range report.Questions {
+		question = strings.TrimSpace(question)
+		if question != "" {
+			remove[question] = true
+		}
+	}
+	if report.Challenge != nil && report.Challenge.Verdict == assistantstore.GoalChallengeVerdictNeedsUser {
+		summary := strings.TrimSpace(report.Challenge.Summary)
+		if summary != "" {
+			remove[summary] = true
+		}
+	}
+	if len(remove) == 0 {
+		return open
+	}
+	out := make([]string, 0, len(open))
+	for _, question := range open {
+		if !remove[strings.TrimSpace(question)] {
+			out = append(out, question)
+		}
+	}
+	return out
+}
+
+func removeGoalPlanGapsFromTask(plan *assistantstore.GoalPlan, taskID string) {
+	if plan == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	out := plan.Gaps[:0]
+	for _, gap := range plan.Gaps {
+		if gap.SourceTaskID == taskID {
+			continue
+		}
+		out = append(out, gap)
+	}
+	plan.Gaps = out
+}
+
+func goalReportSupersedesCurrentTaskQuestions(goal assistantstore.Goal, report assistantstore.GoalTaskReport) bool {
+	goal = assistantstore.NormalizeGoal(goal)
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	if len(goal.OpenQuestions) == 0 || len(report.Questions) > 0 {
+		return false
+	}
+	if goal.Autopilot == nil || strings.TrimSpace(goal.Autopilot.CurrentTaskID) == "" || goal.Autopilot.CurrentTaskID != report.TaskID {
+		return false
+	}
+	if report.TaskType != assistantstore.GoalTaskTypeChallenge || report.Challenge == nil {
+		return false
+	}
+	return report.Challenge.Verdict != assistantstore.GoalChallengeVerdictNeedsUser
 }
 
 func extractGoalWatchRecommendations(result string) []string {

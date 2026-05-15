@@ -61,7 +61,7 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 	if t.DiffSnapshot != nil {
 		return taskDiffFromSnapshot(taskID, *t.DiffSnapshot), nil
 	}
-	if remoteTask(t) {
+	if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
 		raw := strings.TrimSpace(t.RemoteDiff)
 		workspace := firstNonEmptyString(t.Workspace)
 		headLabel := "remote task"
@@ -222,7 +222,8 @@ func buildTaskDiffSnapshot(raw, source, baseRef, baseLabel, headRef, headLabel, 
 
 func (o *Orchestrator) taskDiffRaw(ctx context.Context, t task.Task) (raw, baseRef, baseLabel, headRef, headLabel string, err error) {
 	if workspaceHasGit(t.Workspace) {
-		baseRef, err = gitOutput(ctx, o.cfg.Repo.Root, "rev-parse", "HEAD")
+		repoRoot := o.taskReviewRepoRoot(t)
+		baseRef, err = gitOutput(ctx, repoRoot, "rev-parse", "HEAD")
 		if err != nil {
 			return "", "", "", "", "", fmt.Errorf("git rev-parse repo head: %w", err)
 		}
@@ -230,9 +231,9 @@ func (o *Orchestrator) taskDiffRaw(ctx context.Context, t task.Task) (raw, baseR
 		if err != nil {
 			return "", "", "", "", "", fmt.Errorf("git rev-parse task head: %w", err)
 		}
-		baseLabel = gitLabel(ctx, o.cfg.Repo.Root, baseRef)
+		baseLabel = gitLabel(ctx, repoRoot, baseRef)
 		headLabel = gitLabel(ctx, t.Workspace, headRef)
-		raw, err = o.taskBranchDiff(ctx, t.Workspace)
+		raw, err = taskBranchDiffAgainstRepo(ctx, repoRoot, t.Workspace)
 		return raw, baseRef, baseLabel, headRef, headLabel, err
 	}
 

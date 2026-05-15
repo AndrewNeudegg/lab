@@ -30,6 +30,7 @@ import (
 	"github.com/andrewneudegg/lab/pkg/tool"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
 	workflowstore "github.com/andrewneudegg/lab/pkg/workflow"
+	workspacepkg "github.com/andrewneudegg/lab/pkg/workspace"
 )
 
 type Orchestrator struct {
@@ -222,7 +223,13 @@ func elapsedMillisecondsSince(start time.Time) int64 {
 }
 
 type RuntimeSettings struct {
-	AutoMergeEnabled bool `json:"auto_merge_enabled"`
+	AutoMergeEnabled bool                             `json:"auto_merge_enabled"`
+	RemoteAgents     map[string]RemoteAgentAutomation `json:"remote_agents,omitempty"`
+}
+
+type RemoteAgentAutomation struct {
+	AutoReviewEnabled bool `json:"auto_review_enabled"`
+	AutoMergeEnabled  bool `json:"auto_merge_enabled"`
 }
 
 func NewOrchestrator(cfg config.Config, events *eventlog.Store, tasks *taskstore.Store, approvals *approvalstore.Store, registry *tool.Registry, policy tool.Policy, provider llm.Provider, model string) *Orchestrator {
@@ -327,6 +334,7 @@ func (o *Orchestrator) RuntimeSettings() (RuntimeSettings, error) {
 }
 
 func (o *Orchestrator) UpdateRuntimeSettings(ctx context.Context, settings RuntimeSettings) (RuntimeSettings, error) {
+	settings.RemoteAgents = normalizeRemoteAgentAutomation(settings.RemoteAgents)
 	o.settingsMu.Lock()
 	if err := o.saveRuntimeSettingsLocked(settings); err != nil {
 		o.settingsMu.Unlock()
@@ -335,10 +343,18 @@ func (o *Orchestrator) UpdateRuntimeSettings(ctx context.Context, settings Runti
 	o.settingsMu.Unlock()
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "settings.updated", Actor: "human", Payload: eventlog.Payload(map[string]any{
 		"auto_merge_enabled": settings.AutoMergeEnabled,
+		"remote_agents":      settings.RemoteAgents,
 	})})
 	if settings.AutoMergeEnabled {
 		_, _ = o.processAutoMergeApproval(ctx, "auto merge enabled")
 		_, _ = o.processMergeQueueHead(ctx, "auto merge enabled")
+	}
+	if o.remoteAutomationWorkPending(settings) {
+		go func() {
+			if _, err := o.ReconcileTasks(context.Background()); err != nil {
+				o.log().Error("remote automation reconcile failed", "error", err)
+			}
+		}()
 	}
 	return settings, nil
 }
@@ -356,6 +372,7 @@ func (o *Orchestrator) loadRuntimeSettingsLocked() (RuntimeSettings, error) {
 	if err := json.Unmarshal(b, &settings); err != nil {
 		return RuntimeSettings{}, err
 	}
+	settings.RemoteAgents = normalizeRemoteAgentAutomation(settings.RemoteAgents)
 	return settings, nil
 }
 
@@ -364,6 +381,7 @@ func (o *Orchestrator) saveRuntimeSettingsLocked(settings RuntimeSettings) error
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	settings.RemoteAgents = normalizeRemoteAgentAutomation(settings.RemoteAgents)
 	b, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return err
@@ -373,6 +391,97 @@ func (o *Orchestrator) saveRuntimeSettingsLocked(settings RuntimeSettings) error
 
 func (o *Orchestrator) runtimeSettingsPath() string {
 	return filepath.Join(o.cfg.DataDir, "settings", "runtime.json")
+}
+
+func normalizeRemoteAgentAutomation(values map[string]RemoteAgentAutomation) map[string]RemoteAgentAutomation {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make(map[string]RemoteAgentAutomation, len(values))
+	for agentID, policy := range values {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		normalized[agentID] = policy
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func runtimeSettingsHasRemoteAutomation(settings RuntimeSettings) bool {
+	for _, policy := range settings.RemoteAgents {
+		if policy.AutoReviewEnabled || policy.AutoMergeEnabled {
+			return true
+		}
+	}
+	return false
+}
+
+func (settings RuntimeSettings) remoteAgentAutomation(agentID string) RemoteAgentAutomation {
+	if settings.RemoteAgents == nil {
+		return RemoteAgentAutomation{}
+	}
+	return settings.RemoteAgents[strings.TrimSpace(agentID)]
+}
+
+func (o *Orchestrator) remoteTaskAutomation(t taskstore.Task) (RemoteAgentAutomation, error) {
+	if !remoteTask(t) || t.Target == nil {
+		return RemoteAgentAutomation{}, nil
+	}
+	settings, err := o.RuntimeSettings()
+	if err != nil {
+		return RemoteAgentAutomation{}, err
+	}
+	return settings.remoteAgentAutomation(t.Target.AgentID), nil
+}
+
+func (o *Orchestrator) taskAutoMergeEnabled(t taskstore.Task) (bool, error) {
+	settings, err := o.RuntimeSettings()
+	if err != nil {
+		return false, err
+	}
+	if settings.AutoMergeEnabled {
+		return true, nil
+	}
+	if remoteTaskUsesManagedGit(t) && t.Target != nil {
+		return settings.remoteAgentAutomation(t.Target.AgentID).AutoMergeEnabled, nil
+	}
+	return false, nil
+}
+
+func (o *Orchestrator) remoteAutomationWorkPending(settings RuntimeSettings) bool {
+	if !runtimeSettingsHasRemoteAutomation(settings) {
+		return false
+	}
+	tasks, err := o.tasks.List()
+	if err != nil {
+		o.log().Warn("remote automation pending check failed", "error", err)
+		return true
+	}
+	for _, t := range tasks {
+		if !remoteTask(t) || t.Target == nil || o.taskActive(t.ID) {
+			continue
+		}
+		policy := settings.remoteAgentAutomation(t.Target.AgentID)
+		switch t.Status {
+		case taskstore.StatusReadyForReview:
+			if policy.AutoReviewEnabled {
+				return true
+			}
+		case taskstore.StatusAwaitingApproval:
+			if remoteTaskUsesManagedGit(t) && policy.AutoMergeEnabled {
+				return true
+			}
+		case taskstore.StatusAwaitingVerification, taskstore.StatusNoChangeRequired:
+			if !remoteTaskUsesManagedGit(t) && policy.AutoMergeEnabled {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) Handle(ctx context.Context, from, message string) (string, error) {
@@ -1711,6 +1820,11 @@ func (o *Orchestrator) AssignTaskTarget(ctx context.Context, selector string, ta
 	t.Status = taskstore.StatusQueued
 	t.AssignedTo = "remote:" + target.AgentID
 	t.Result = "queued for remote agent " + target.AgentID
+	if err := o.ensureRemoteTaskWorkspace(ctx, &t); err != nil {
+		t.Status = taskstore.StatusBlocked
+		t.AssignedTo = "OrchestratorAgent"
+		t.Result = remoteWorkspacePreparationFailure(target.Workdir, err)
+	}
 	if err := o.tasks.Save(t); err != nil {
 		return "", err
 	}
@@ -1810,6 +1924,31 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			_ = o.tasks.Save(t)
 			return nil, fmt.Errorf("remote task %s target is invalid: %w", t.ID, err)
 		}
+		t.Target = &target
+		if err := o.ensureRemoteTaskWorkspace(ctx, &t); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = remoteWorkspacePreparationFailure(target.Workdir, err)
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.blocked", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+				"agent_id": agent.ID,
+				"workdir":  target.Workdir,
+				"reason":   t.Result,
+			})})
+			return nil, nil
+		}
+		if err := remoteTaskClaimPreflight(ctx, t); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = err.Error()
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.blocked", Actor: "OrchestratorAgent", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+				"agent_id": agent.ID,
+				"workdir":  target.Workdir,
+				"reason":   t.Result,
+			})})
+			return nil, nil
+		}
 		operatorInstruction := latestRemoteAssignmentInstruction(t.Result)
 		if backend == "" {
 			backend = firstNonEmptyString(target.Backend, "codex")
@@ -1840,7 +1979,7 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			Title:       t.Title,
 			Goal:        t.Goal,
 			ProjectID:   target.ProjectID,
-			Workdir:     target.Workdir,
+			Workdir:     firstNonEmptyString(t.Workspace, target.Workdir),
 			WorkdirID:   target.WorkdirID,
 			RepoURL:     target.RepoURL,
 			Branch:      target.Branch,
@@ -1956,7 +2095,7 @@ func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agent
 		if t.Result == "" {
 			t.Result = "remote agent reported failure"
 		}
-	} else if status == taskstore.StatusNoChangeRequired || workerReportedNoChangeRequired(t.Result) {
+	} else if (status == taskstore.StatusNoChangeRequired || workerReportedNoChangeRequired(t.Result)) && !goalTaskIsChallengeIntent(t) {
 		t.Status = taskstore.StatusNoChangeRequired
 		if t.Result == "" {
 			t.Result = "remote agent reported no change required"
@@ -2104,7 +2243,15 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		if taskTerminal(t.Status) || o.taskActive(t.ID) {
 			continue
 		}
-		if remoteTask(t) {
+		if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
+			changed, err := o.reconcileRemoteTaskAutomation(ctx, t)
+			if err != nil {
+				o.log().Error("remote task automation failed", "task_id", t.ID, "error", err)
+				continue
+			}
+			if changed {
+				recovered++
+			}
 			continue
 		}
 		if t.Status == taskstore.StatusAwaitingRestart {
@@ -2214,7 +2361,40 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 				}
 			}
 		}
+		if t.Status == taskstore.StatusNoChangeRequired && remoteTaskUsesManagedGit(t) {
+			policy, err := o.remoteTaskAutomation(t)
+			if err != nil {
+				o.log().Error("remote task automation failed", "task_id", t.ID, "error", err)
+				continue
+			}
+			if !policy.AutoMergeEnabled {
+				continue
+			}
+			reply, err := o.acceptTaskWithActor(ctx, t.ID, "homelabd")
+			if err != nil {
+				o.log().Error("remote task auto-accept failed", "task_id", t.ID, "error", err)
+				continue
+			}
+			recovered++
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.auto_merge.completed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+				"agent_id": t.Target.AgentID,
+				"reply":    reply,
+				"reason":   "remote agent policy auto-merge enabled for no-change result",
+			})})
+			o.log().Info("remote task auto-accept completed", "task_id", t.ID, "task_short_id", taskShortID(t.ID), "agent_id", t.Target.AgentID)
+			continue
+		}
 		if t.Status == taskstore.StatusReadyForReview {
+			if remoteTaskUsesManagedGit(t) {
+				policy, err := o.remoteTaskAutomation(t)
+				if err != nil {
+					o.log().Error("remote task automation failed", "task_id", t.ID, "error", err)
+					continue
+				}
+				if !policy.AutoReviewEnabled {
+					continue
+				}
+			}
 			if t.ID == mergeQueueHeadID {
 				recovered++
 				_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.queued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
@@ -2231,6 +2411,16 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			}
 			recovered++
 			continue
+		}
+		if remoteTaskUsesManagedGit(t) {
+			if ok, reason := automaticTaskRecoveryCandidate(t, now); ok {
+				recovered++
+				if err := o.queueAutomaticRemoteTaskRecovery(ctx, t, reason); err != nil {
+					o.log().Error("remote task automatic recovery failed to queue", "task_id", t.ID, "error", err)
+					o.markRecoveryBlocked(ctx, t.ID, err)
+				}
+				continue
+			}
 		}
 		if ok, reason := automaticTaskRecoveryCandidate(t, now); ok {
 			if !hasWorkerCapacity() {
@@ -2252,6 +2442,9 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			continue
 		}
 		if t.Status == taskstore.StatusQueued {
+			if remoteTaskUsesManagedGit(t) {
+				continue
+			}
 			if !hasWorkerCapacity() {
 				o.log().Info("task supervisor deferred queued task because worker capacity is full",
 					"task_id", t.ID,
@@ -2286,6 +2479,9 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			continue
 		}
 		if t.Status != taskstore.StatusRunning {
+			continue
+		}
+		if remoteTask(t) {
 			continue
 		}
 		if !recoverAllRunning && !o.runningTaskStale(t, now) {
@@ -2345,6 +2541,55 @@ func (o *Orchestrator) runSupervisorReview(taskID string) {
 		return
 	}
 	_ = o.events.Append(context.Background(), eventlog.Event{ID: id.New("evt"), Type: "task.review.completed", Actor: "homelabd", TaskID: taskID, Payload: eventlog.Payload(payload)})
+}
+
+func (o *Orchestrator) reconcileRemoteTaskAutomation(ctx context.Context, t taskstore.Task) (bool, error) {
+	if !remoteTask(t) || t.Target == nil || o.taskActive(t.ID) {
+		return false, nil
+	}
+	policy, err := o.remoteTaskAutomation(t)
+	if err != nil {
+		return false, err
+	}
+	shortID := taskShortID(t.ID)
+	switch t.Status {
+	case taskstore.StatusReadyForReview:
+		if !policy.AutoReviewEnabled {
+			return false, nil
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.auto_review.queued", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"agent_id": t.Target.AgentID,
+			"workdir":  t.Target.Workdir,
+			"reason":   "remote agent policy auto-review enabled",
+		})})
+		review, err := o.reviewTask(ctx, t.ID)
+		if err != nil {
+			return false, err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.auto_review.completed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"agent_id": t.Target.AgentID,
+			"review":   review,
+		})})
+		o.log().Info("remote task auto-review completed", "task_id", t.ID, "task_short_id", shortID, "agent_id", t.Target.AgentID)
+		return true, nil
+	case taskstore.StatusAwaitingVerification, taskstore.StatusNoChangeRequired:
+		if !policy.AutoMergeEnabled {
+			return false, nil
+		}
+		reply, err := o.acceptTaskWithActor(ctx, t.ID, "homelabd")
+		if err != nil {
+			return false, err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.auto_merge.completed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"agent_id": t.Target.AgentID,
+			"reply":    reply,
+			"reason":   "remote agent policy auto-merge enabled",
+		})})
+		o.log().Info("remote task auto-merge completed", "task_id", t.ID, "task_short_id", shortID, "agent_id", t.Target.AgentID)
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, string) {
@@ -2451,6 +2696,49 @@ func (o *Orchestrator) queueAutomaticTaskRecovery(ctx context.Context, t tasksto
 	return o.startDelegationForTask(ctx, latest.ID, backend, automaticRecoveryInstruction(latest, reason))
 }
 
+func (o *Orchestrator) queueAutomaticRemoteTaskRecovery(ctx context.Context, t taskstore.Task, reason string) error {
+	if !remoteTask(t) || t.Target == nil {
+		return fmt.Errorf("task %s is not assigned to a remote agent", taskShortID(t.ID))
+	}
+	latest, err := o.tasks.Load(t.ID)
+	if err != nil {
+		return err
+	}
+	if latest.Target == nil {
+		return fmt.Errorf("task %s has no remote target", taskShortID(t.ID))
+	}
+	if o.taskActive(latest.ID) {
+		return nil
+	}
+	if ok, _ := automaticTaskRecoveryCandidate(latest, time.Now().UTC()); !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	latest.AutoRecoveryAttempts++
+	latest.AutoRecoveryLastAt = &now
+	latest.Status = taskstore.StatusQueued
+	clearMergeQueueFields(&latest)
+	latest.AssignedTo = "remote:" + latest.Target.AgentID
+	instruction := automaticRecoveryInstruction(latest, reason)
+	latest.Result = appendResultLine(latest.Result, fmt.Sprintf("automatic remote recovery attempt %d/%d queued by task supervisor: %s", latest.AutoRecoveryAttempts, maxAutomaticTaskRecoveryAttempts, reason))
+	latest.Result = appendResultLine(latest.Result, remoteRetryQueuedPrefix+" "+instruction)
+	if err := o.stalePendingTaskApprovals(ctx, latest.ID, "automatic remote recovery queued"); err != nil {
+		return err
+	}
+	if err := o.tasks.Save(latest); err != nil {
+		return err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.auto_recovery.queued", Actor: "homelabd", TaskID: latest.ID, Payload: eventlog.Payload(map[string]any{
+		"agent_id":  latest.Target.AgentID,
+		"reason":    reason,
+		"attempt":   latest.AutoRecoveryAttempts,
+		"max":       maxAutomaticTaskRecoveryAttempts,
+		"workdir":   latest.Target.Workdir,
+		"workspace": latest.Workspace,
+	})})
+	return nil
+}
+
 func automaticRecoveryInstruction(t taskstore.Task, reason string) string {
 	shortID := taskShortID(t.ID)
 	return strings.Join([]string{
@@ -2465,7 +2753,7 @@ func automaticRecoveryInstruction(t taskstore.Task, reason string) string {
 }
 
 func mergeQueueCandidate(t taskstore.Task) bool {
-	if remoteTask(t) {
+	if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
 		return false
 	}
 	switch t.Status {
@@ -2598,13 +2886,6 @@ func (o *Orchestrator) processMergeQueueHead(ctx context.Context, reason string)
 }
 
 func (o *Orchestrator) processAutoMergeApproval(ctx context.Context, reason string) (bool, error) {
-	settings, err := o.RuntimeSettings()
-	if err != nil {
-		return false, err
-	}
-	if !settings.AutoMergeEnabled {
-		return false, nil
-	}
 	queue, err := o.ensureMergeQueue(ctx)
 	if err != nil {
 		return false, err
@@ -2614,6 +2895,13 @@ func (o *Orchestrator) processAutoMergeApproval(ctx context.Context, reason stri
 	}
 	head := queue[0]
 	if head.Status != taskstore.StatusAwaitingApproval || o.taskActive(head.ID) {
+		return false, nil
+	}
+	enabled, err := o.taskAutoMergeEnabled(head)
+	if err != nil {
+		return false, err
+	}
+	if !enabled {
 		return false, nil
 	}
 	approval, ok, err := o.latestApprovalForTask(head.ID, "git.merge_approved", approvalstore.StatusPending)
@@ -4616,6 +4904,11 @@ func (o *Orchestrator) createRemoteTaskRecordWithOptions(ctx context.Context, go
 		AcceptanceCriteria: remoteAcceptanceCriteria(goal, target, opts),
 	}
 	o.ensureTaskPlan(ctx, &task)
+	if err := o.ensureRemoteTaskWorkspace(ctx, &task); err != nil {
+		task.Status = taskstore.StatusBlocked
+		task.AssignedTo = "OrchestratorAgent"
+		task.Result = remoteWorkspacePreparationFailure(target.Workdir, err)
+	}
 	if err := o.tasks.Save(task); err != nil {
 		return taskstore.Task{}, err
 	}
@@ -4628,6 +4921,97 @@ func (o *Orchestrator) createRemoteTaskRecordWithOptions(ctx context.Context, go
 		"backend":  target.Backend,
 	})})
 	return task, nil
+}
+
+func (o *Orchestrator) ensureRemoteTaskWorkspace(ctx context.Context, t *taskstore.Task) error {
+	if t == nil || !remoteTask(*t) || t.Target == nil || strings.TrimSpace(t.Workspace) != "" {
+		return nil
+	}
+	repoRoot := strings.TrimSpace(t.Target.Workdir)
+	if !workspaceHasGit(repoRoot) {
+		return nil
+	}
+	if status, err := gitStatusPorcelain(ctx, repoRoot); err != nil {
+		return err
+	} else if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("remote workdir has uncommitted changes:\n%s", strings.TrimSpace(status))
+	}
+	manager := workspacepkg.Manager{
+		RepoRoot:      repoRoot,
+		WorkspaceRoot: remoteTaskWorkspaceRoot(*t.Target),
+	}
+	path, _, err := manager.Create(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	t.Workspace = path
+	return nil
+}
+
+func remoteTaskWorkspaceRoot(target taskstore.ExecutionTarget) string {
+	repoRoot := filepath.Clean(strings.TrimSpace(target.Workdir))
+	parent := filepath.Dir(repoRoot)
+	project := firstNonEmptyString(target.ProjectID, target.WorkdirID, filepath.Base(repoRoot), "repo")
+	agentID := firstNonEmptyString(target.AgentID, "remote")
+	return filepath.Join(parent, ".homelabd-worktrees", safePathToken(agentID), safePathToken(project))
+}
+
+func safePathToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "_"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+func remoteWorkspacePreparationFailure(workdir string, err error) string {
+	return strings.Join([]string{
+		"Remote task could not prepare an isolated git worktree for review: " + err.Error(),
+		"Remote tasks in Git repositories use the same branch, review, merge, and verification mechanism as local tasks.",
+		"Clean or commit the advertised remote checkout first, then reopen or retry this task.",
+		"Remote checkout: " + strings.TrimSpace(workdir),
+	}, "\n")
+}
+
+func remoteTaskClaimPreflight(ctx context.Context, t taskstore.Task) error {
+	if !remoteTask(t) || t.Target == nil {
+		return nil
+	}
+	repoRoot := strings.TrimSpace(t.Target.Workdir)
+	if !workspaceHasGit(repoRoot) {
+		return nil
+	}
+	status, err := gitStatusPorcelain(ctx, repoRoot)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil
+	}
+	return fmt.Errorf("remote checkout has uncommitted changes before task start; refusing to hide them under a new task baseline.\nRemote checkout: %s\nGit status:\n%s\nCommit, merge, or clean that checkout, then reopen or retry the task.", repoRoot, strings.TrimSpace(status))
+}
+
+func gitStatusPorcelain(ctx context.Context, dir string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git status %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
 }
 
 func (o *Orchestrator) summarizeTaskTitle(ctx context.Context, taskID, goal string) string {
@@ -5928,6 +6312,14 @@ func remoteTask(t taskstore.Task) bool {
 	return t.Target != nil && strings.EqualFold(t.Target.Mode, "remote")
 }
 
+func remoteTaskUsesManagedGit(t taskstore.Task) bool {
+	return remoteTask(t) &&
+		t.Target != nil &&
+		strings.TrimSpace(t.Workspace) != "" &&
+		workspaceHasGit(t.Workspace) &&
+		workspaceHasGit(t.Target.Workdir)
+}
+
 func remoteTaskForAgent(t taskstore.Task, agentID string) bool {
 	return remoteTask(t) && strings.EqualFold(strings.TrimSpace(t.Target.AgentID), strings.TrimSpace(agentID))
 }
@@ -6012,6 +6404,7 @@ func defaultRemoteAgentInstruction(t taskstore.Task, agent remoteagent.Agent) st
 	}
 	return strings.Join([]string{
 		"Work this task in the selected remote directory.",
+		"If the directory is an isolated homelabd task worktree, edit only that worktree; the reviewer will commit, check, and merge it back to the advertised remote checkout using the same flow as local tasks.",
 		"Agent: " + agent.ID + " on " + firstNonEmptyString(agent.Machine, "unknown machine") + ".",
 		project,
 		repo,
@@ -6258,6 +6651,15 @@ func (o *Orchestrator) retryTask(ctx context.Context, selector, backend, instruc
 		}
 		if err := o.stalePendingTaskApprovals(ctx, taskID, "remote task retried"); err != nil {
 			return "", err
+		}
+		if err := o.ensureRemoteTaskWorkspace(ctx, &t); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = remoteWorkspacePreparationFailure(t.Target.Workdir, err)
+			if saveErr := o.tasks.Save(t); saveErr != nil {
+				return "", saveErr
+			}
+			return fmt.Sprintf("Remote task %s could not be requeued because its Git worktree is not ready.\n%s", taskShortID(taskID), t.Result), nil
 		}
 		t.Status = taskstore.StatusQueued
 		t.AssignedTo = "remote:" + t.Target.AgentID
@@ -6669,6 +7071,17 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 	if err := o.stalePendingTaskApprovals(ctx, taskID, reason); err != nil {
 		return "", err
 	}
+	if remoteTask(t) && t.Target != nil {
+		if err := o.ensureRemoteTaskWorkspace(ctx, &t); err != nil {
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			t.Result = remoteWorkspacePreparationFailure(t.Target.Workdir, err)
+			if saveErr := o.tasks.Save(t); saveErr != nil {
+				return "", saveErr
+			}
+			return fmt.Sprintf("Remote task %s could not be reopened because its Git worktree is not ready.\n%s", taskShortID(taskID), t.Result), nil
+		}
+	}
 	t.Status = taskstore.StatusQueued
 	if remoteTask(t) && t.Target != nil {
 		t.AssignedTo = "remote:" + t.Target.AgentID
@@ -6706,10 +7119,15 @@ func (o *Orchestrator) refreshTaskWorkspace(ctx context.Context, selector string
 	if err != nil {
 		return "", err
 	}
-	if err := safeTaskWorkspace(o.cfg.Repo.WorkspaceRoot, t.Workspace); err != nil {
+	workspaceRoot := o.cfg.Repo.WorkspaceRoot
+	if remoteTaskUsesManagedGit(t) && t.Target != nil {
+		workspaceRoot = remoteTaskWorkspaceRoot(*t.Target)
+	}
+	if err := safeTaskWorkspace(workspaceRoot, t.Workspace); err != nil {
 		return "", err
 	}
-	headOut, err := exec.CommandContext(ctx, "git", "-C", o.cfg.Repo.Root, "rev-parse", "HEAD").CombinedOutput()
+	repoRoot := o.taskReviewRepoRoot(t)
+	headOut, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse repo head: %w: %s", err, strings.TrimSpace(string(headOut)))
 	}
@@ -7018,8 +7436,15 @@ func (o *Orchestrator) deleteTask(ctx context.Context, selector string) (string,
 	}
 	removedWorkspace := false
 	if t.Workspace != "" {
-		if _, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_remove", map[string]any{"workspace": t.Workspace, "force": true}, taskID); err != nil {
-			return "", err
+		if remoteTaskUsesManagedGit(t) {
+			manager := workspacepkg.Manager{RepoRoot: t.Target.Workdir, WorkspaceRoot: remoteTaskWorkspaceRoot(*t.Target)}
+			if err := manager.Remove(ctx, t.Workspace, true); err != nil {
+				return "", err
+			}
+		} else {
+			if _, err := o.runTool(ctx, "OrchestratorAgent", "git.worktree_remove", map[string]any{"workspace": t.Workspace, "force": true}, taskID); err != nil {
+				return "", err
+			}
 		}
 		removedWorkspace = true
 	}
@@ -8056,12 +8481,12 @@ func (o *Orchestrator) testTask(ctx context.Context, selector string) (string, e
 	if err != nil {
 		return "", err
 	}
-	if remoteTask(t) {
+	if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
 		return "Remote task checks run on the remote agent. Review the agent result and recorded validation instead of running local repo checks.", nil
 	}
 	browserUAT := ""
 	if workspaceHasGit(t.Workspace) {
-		diffOut, err := o.taskBranchDiff(ctx, t.Workspace)
+		diffOut, err := taskBranchDiffAgainstRepo(ctx, o.taskReviewRepoRoot(t), t.Workspace)
 		if err != nil {
 			return "", err
 		}
@@ -8083,7 +8508,7 @@ func (o *Orchestrator) diffTask(ctx context.Context, selector string) (string, e
 	if err != nil {
 		return "", err
 	}
-	if remoteTask(t) && strings.TrimSpace(diff.RawDiff) == "" {
+	if remoteTask(t) && !remoteTaskUsesManagedGit(t) && strings.TrimSpace(diff.RawDiff) == "" {
 		return "Remote task diff is not available. Inspect the remote agent result for changed files and validation.", nil
 	}
 	if strings.TrimSpace(diff.RawDiff) == "" {
@@ -8153,7 +8578,7 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 	if err != nil {
 		return "", err
 	}
-	if remoteTask(t) {
+	if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
 		return o.reviewRemoteTask(ctx, t)
 	}
 	if taskBlockedByReviewChecks(t) {
@@ -8177,6 +8602,7 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		return fmt.Sprintf("ReviewerAgent: task %s is queued for merge review at position %d. It will be reviewed when it reaches the head of the merge queue.", shortID, position), nil
 	}
 	diffOut := ""
+	repoRoot := o.taskReviewRepoRoot(t)
 	if workspaceHasGit(t.Workspace) {
 		if _, err := commitReviewWorkspaceChanges(ctx, t.Workspace, taskID); err != nil {
 			if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
@@ -8195,7 +8621,7 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed pre-review commit")
 			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nPre-review commit: fail\n%s\nNo approval created.\nNext: `delegate %s to codex fix the workspace git state`, `diff %s`, or `delete %s`.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, err.Error(), shortID, shortID, shortID), nil
 		}
-		if mergeOut, err := o.reconcileTaskWorkspaceWithMain(ctx, t.Workspace); err != nil {
+		if mergeOut, err := reconcileTaskWorkspaceWithRepoHead(ctx, repoRoot, t.Workspace); err != nil {
 			if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 				return "", currentErr
 			} else if !ok {
@@ -8214,7 +8640,7 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		} else if strings.TrimSpace(mergeOut) != "" {
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.workspace.reconciled", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"output": strings.TrimSpace(mergeOut)})})
 		}
-		diffOut, err = o.taskBranchDiff(ctx, t.Workspace)
+		diffOut, err = taskBranchDiffAgainstRepo(ctx, repoRoot, t.Workspace)
 		if err != nil {
 			return "", err
 		}
@@ -8233,6 +8659,14 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		} else {
 			t = latest
 		}
+		if remoteTask(t) && goalTaskIsChallengeIntent(t) {
+			reply, err := o.reviewRemoteTask(ctx, t)
+			if err != nil {
+				return "", err
+			}
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head reviewed no-diff Goal challenge")
+			return reply, nil
+		}
 		if workerReportedNoChangeRequired(t.Result) {
 			t.Status = taskstore.StatusNoChangeRequired
 			t.AssignedTo = "OrchestratorAgent"
@@ -8246,7 +8680,7 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
 		clearMergeQueueFields(&t)
-		t.Result = "ReviewerAgent found no diff to approve. If the task truly needs no patch, rerun with a final result that starts with `No change required:` and explains why."
+		t.Result = appendResultLine(t.Result, "ReviewerAgent found no diff to approve. If the task truly needs no patch, rerun with a final result that starts with `No change required:` and explains why.")
 		_ = o.tasks.Save(t)
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result})})
 		_, _ = o.processMergeQueueHead(ctx, "merge queue head produced no diff")
@@ -8256,9 +8690,9 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 	if strings.TrimSpace(diffOut) != "" {
 		baseRef, baseLabel, headRef, headLabel := "", "", "", ""
 		if workspaceHasGit(t.Workspace) {
-			if ref, err := gitOutput(ctx, o.cfg.Repo.Root, "rev-parse", "HEAD"); err == nil {
+			if ref, err := gitOutput(ctx, repoRoot, "rev-parse", "HEAD"); err == nil {
 				baseRef = ref
-				baseLabel = gitLabel(ctx, o.cfg.Repo.Root, ref)
+				baseLabel = gitLabel(ctx, repoRoot, ref)
 			}
 			if ref, err := gitOutput(ctx, t.Workspace, "rev-parse", "HEAD"); err == nil {
 				headRef = ref
@@ -8333,7 +8767,25 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		_, _ = o.processMergeQueueHead(ctx, "merge queue head failed checks")
 		return fmt.Sprintf("ReviewerAgent:\nChecks: %s\n%s\nDiff summary:\n%s\nNo approval created because checks failed.\nNext: `delegate %s to codex fix the failing tests`, `diff %s`, or `delete %s`.", status, strings.TrimSpace(testOut), summarizeDiffForChat(diffOut), shortID, shortID, shortID), nil
 	}
-	if _, ok := o.registry.Get("git.merge_check"); ok {
+	if remoteTaskUsesManagedGit(t) {
+		if err := checkMergeReadyAgainstRepo(ctx, repoRoot, "homelabd/"+taskID); err != nil {
+			if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
+				return "", currentErr
+			} else if !ok {
+				return reply, nil
+			} else {
+				t = latest
+			}
+			t.Status = taskstore.StatusBlocked
+			t.AssignedTo = "OrchestratorAgent"
+			clearMergeQueueFields(&t)
+			t.Result = "ReviewerAgent premerge check failed: " + err.Error()
+			_ = o.tasks.Save(t)
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"reason": t.Result, "from_status": taskstore.StatusReadyForReview, "to_status": taskstore.StatusBlocked})})
+			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed premerge check")
+			return fmt.Sprintf("ReviewerAgent:\nState: %s -> %s\nChecks: %s\n%s\nPremerge: fail\n%s\nNo approval created. The task supervisor will queue automatic recovery for this retryable merge failure; use `show %s` to follow it or `delete %s` to stop.", taskstore.StatusReadyForReview, taskstore.StatusBlocked, status, strings.TrimSpace(testOut), err.Error(), shortID, shortID), nil
+		}
+	} else if _, ok := o.registry.Get("git.merge_check"); ok {
 		if _, err := o.runTool(ctx, "ReviewerAgent", "git.merge_check", map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root}, taskID); err != nil {
 			if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 				return "", currentErr
@@ -8355,7 +8807,7 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 	restartRequired := restartComponentsForDiff(diffOut)
 	restartPlan := restartPlanForComponents(restartRequired)
 	approvalID := id.New("approval")
-	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": o.cfg.Repo.Root, "workspace": t.Workspace, "message": "Apply " + taskID, "restart_required": restartRequired})
+	args := eventlog.Payload(map[string]any{"branch": "homelabd/" + taskID, "target": repoRoot, "workspace": t.Workspace, "message": "Apply " + taskID, "restart_required": restartRequired})
 	req := approvalstore.Request{ID: approvalID, TaskID: taskID, Tool: "git.merge_approved", Args: args, Reason: "merge reviewed task branch into repo root", Status: approvalstore.StatusPending}
 	if latest, ok, reply, currentErr := o.currentReviewTask(ctx, taskID); currentErr != nil {
 		return "", currentErr
@@ -8405,7 +8857,7 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		restartLine = "Restart impact: " + restartPlan
 		afterMergeLine = fmt.Sprintf("After merge, homelabd will restart required components and wait for health before verification; then use `accept %s` or `reopen %s <reason>`.", shortID, shortID)
 	}
-	if settings, err := o.RuntimeSettings(); err == nil && settings.AutoMergeEnabled {
+	if autoMerge, err := o.taskAutoMergeEnabled(t); err == nil && autoMerge {
 		mergeReply, mergeErr := o.resolveApprovalWithActor(ctx, approvalID, true, "homelabd")
 		if mergeErr != nil {
 			return "", mergeErr
@@ -8539,7 +8991,13 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 			"workdir":  t.Target.Workdir,
 			"review":   review,
 		})})
-		return fmt.Sprintf("ReviewerAgent:\nRemote task %s produced no independently visible diff and has a no-change conclusion.\nNext: verify the conclusion, then use `accept %s` or `reopen %s <reason>`.", shortID, shortID, shortID), nil
+		reply := fmt.Sprintf("ReviewerAgent:\nRemote task %s produced no independently visible diff and has a no-change conclusion.\nNext: verify the conclusion, then use `accept %s` or `reopen %s <reason>`.", shortID, shortID, shortID)
+		if autoReply, ok, err := o.autoAcceptRemoteTaskAfterReview(ctx, t); err != nil {
+			return "", err
+		} else if ok {
+			reply += "\nAuto merge is on for this remote agent. " + autoReply
+		}
+		return reply, nil
 	case goalTaskReviewNeedsValidation, goalTaskReviewMisaligned, goalTaskReviewInsufficientEvidence:
 		t.Status = taskstore.StatusBlocked
 		t.AssignedTo = "OrchestratorAgent"
@@ -8568,7 +9026,33 @@ func (o *Orchestrator) reviewRemoteTask(ctx context.Context, t taskstore.Task) (
 		"workdir":  t.Target.Workdir,
 		"review":   review,
 	})})
-	return fmt.Sprintf("ReviewerAgent:\nRemote result reviewed for %s.\nIndependent review: %s\nNo local workspace, main-branch comparison, or merge approval was attempted.\nExecution context: %s on %s in %s.\nNext: verify that remote checkout, then use `accept %s` or `reopen %s <reason>`.", shortID, review.Summary, t.Target.AgentID, t.Target.Machine, t.Target.Workdir, shortID, shortID), nil
+	reply := fmt.Sprintf("ReviewerAgent:\nRemote result reviewed for %s.\nIndependent review: %s\nNo local workspace, main-branch comparison, or merge approval was attempted.\nExecution context: %s on %s in %s.\nNext: verify that remote checkout, then use `accept %s` or `reopen %s <reason>`.", shortID, review.Summary, t.Target.AgentID, t.Target.Machine, t.Target.Workdir, shortID, shortID)
+	if autoReply, ok, err := o.autoAcceptRemoteTaskAfterReview(ctx, t); err != nil {
+		return "", err
+	} else if ok {
+		reply += "\nAuto merge is on for this remote agent. " + autoReply
+	}
+	return reply, nil
+}
+
+func (o *Orchestrator) autoAcceptRemoteTaskAfterReview(ctx context.Context, t taskstore.Task) (string, bool, error) {
+	policy, err := o.remoteTaskAutomation(t)
+	if err != nil {
+		return "", false, err
+	}
+	if !policy.AutoMergeEnabled {
+		return "", false, nil
+	}
+	reply, err := o.acceptTaskWithActor(ctx, t.ID, "homelabd")
+	if err != nil {
+		return "", false, err
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.auto_merge.completed", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"agent_id": t.Target.AgentID,
+		"reply":    reply,
+		"reason":   "remote agent policy auto-merge enabled after review",
+	})})
+	return reply, true, nil
 }
 
 func (o *Orchestrator) remoteTaskReview(ctx context.Context, t taskstore.Task) (goalTaskProgressReview, error) {
@@ -8611,7 +9095,11 @@ func (o *Orchestrator) remoteTaskReview(ctx context.Context, t taskstore.Task) (
 }
 
 func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, workspace string) (string, error) {
-	headOut, err := exec.CommandContext(ctx, "git", "-C", o.cfg.Repo.Root, "rev-parse", "HEAD").CombinedOutput()
+	return reconcileTaskWorkspaceWithRepoHead(ctx, o.cfg.Repo.Root, workspace)
+}
+
+func reconcileTaskWorkspaceWithRepoHead(ctx context.Context, repoRoot, workspace string) (string, error) {
+	headOut, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse repo head: %w: %s", err, strings.TrimSpace(string(headOut)))
 	}
@@ -8631,6 +9119,13 @@ func (o *Orchestrator) reconcileTaskWorkspaceWithMain(ctx context.Context, works
 	return string(mergeOut), nil
 }
 
+func (o *Orchestrator) taskReviewRepoRoot(t taskstore.Task) string {
+	if remoteTaskUsesManagedGit(t) && t.Target != nil {
+		return t.Target.Workdir
+	}
+	return o.cfg.Repo.Root
+}
+
 func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, actor string, browserUAT string) (string, error) {
 	var outputs []string
 	var failedOutputs []string
@@ -8641,34 +9136,40 @@ func (o *Orchestrator) runProjectChecks(ctx context.Context, taskID, workspace, 
 		outputs = append(outputs, output)
 		firstErr = recordProjectCheckFailure("go.test", output, err, firstErr, &failedOutputs)
 	}
-	webDir := filepath.Join(workspace, "web")
-	if exists(filepath.Join(webDir, "package.json")) {
-		out, err := o.runCheckTool(ctx, actor, "bun.check", webDir, taskID)
-		output := "bun.check:\n" + strings.TrimSpace(out)
-		outputs = append(outputs, output)
-		firstErr = recordProjectCheckFailure("bun.check", output, err, firstErr, &failedOutputs)
-		out, err = o.runCheckTool(ctx, actor, "bun.build", webDir, taskID)
-		output = "bun.build:\n" + strings.TrimSpace(out)
-		outputs = append(outputs, output)
-		firstErr = recordProjectCheckFailure("bun.build", output, err, firstErr, &failedOutputs)
-		out, err = o.runCheckTool(ctx, actor, "bun.test", webDir, taskID)
-		output = "bun.test:\n" + strings.TrimSpace(out)
-		outputs = append(outputs, output)
-		firstErr = recordProjectCheckFailure("bun.test", output, err, firstErr, &failedOutputs)
+	for _, packageDir := range projectPackageDirs(workspace) {
+		for _, check := range []struct {
+			script string
+			tool   string
+		}{
+			{script: "check", tool: "bun.check"},
+			{script: "build", tool: "bun.build"},
+			{script: "test", tool: "bun.test"},
+		} {
+			if !packageJSONHasScript(packageDir, check.script) {
+				continue
+			}
+			out, err := o.runCheckTool(ctx, actor, check.tool, packageDir, taskID)
+			output := fmt.Sprintf("%s (%s):\n%s", check.tool, packageDir, strings.TrimSpace(out))
+			outputs = append(outputs, output)
+			firstErr = recordProjectCheckFailure(check.tool, output, err, firstErr, &failedOutputs)
+		}
+		if packageDir != filepath.Join(workspace, "web") {
+			continue
+		}
 		switch browserUAT {
 		case "site":
-			out, err = o.runCheckTool(ctx, actor, "bun.uat.site", webDir, taskID)
-			output = "bun.uat.site:\n" + strings.TrimSpace(out)
+			out, err := o.runCheckTool(ctx, actor, "bun.uat.site", packageDir, taskID)
+			output := "bun.uat.site:\n" + strings.TrimSpace(out)
 			outputs = append(outputs, output)
 			firstErr = recordProjectCheckFailure("bun.uat.site", output, err, firstErr, &failedOutputs)
 		case "tasks":
-			out, err = o.runCheckTool(ctx, actor, "bun.uat.tasks", webDir, taskID)
-			output = "bun.uat.tasks:\n" + strings.TrimSpace(out)
+			out, err := o.runCheckTool(ctx, actor, "bun.uat.tasks", packageDir, taskID)
+			output := "bun.uat.tasks:\n" + strings.TrimSpace(out)
 			outputs = append(outputs, output)
 			firstErr = recordProjectCheckFailure("bun.uat.tasks", output, err, firstErr, &failedOutputs)
 		case "ui":
-			out, err = o.runCheckTool(ctx, actor, "bun.uat.ui", webDir, taskID)
-			output = "bun.uat.ui:\n" + strings.TrimSpace(out)
+			out, err := o.runCheckTool(ctx, actor, "bun.uat.ui", packageDir, taskID)
+			output := "bun.uat.ui:\n" + strings.TrimSpace(out)
 			outputs = append(outputs, output)
 			firstErr = recordProjectCheckFailure("bun.uat.ui", output, err, firstErr, &failedOutputs)
 		}
@@ -8691,6 +9192,33 @@ func recordProjectCheckFailure(name, output string, err error, firstErr error, f
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return firstErr
+}
+
+func projectPackageDirs(workspace string) []string {
+	var dirs []string
+	rootPackage := filepath.Join(workspace, "package.json")
+	if exists(rootPackage) {
+		dirs = append(dirs, workspace)
+	}
+	webDir := filepath.Join(workspace, "web")
+	if exists(filepath.Join(webDir, "package.json")) && filepath.Clean(webDir) != filepath.Clean(workspace) {
+		dirs = append(dirs, webDir)
+	}
+	return dirs
+}
+
+func packageJSONHasScript(dir, script string) bool {
+	body, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(body, &pkg); err != nil {
+		return false
+	}
+	return strings.TrimSpace(pkg.Scripts[script]) != ""
 }
 
 func truncateFailureForChat(s string) string {
@@ -8822,7 +9350,11 @@ func commitReviewWorkspaceChanges(ctx context.Context, workspace, taskID string)
 }
 
 func (o *Orchestrator) taskBranchDiff(ctx context.Context, workspace string) (string, error) {
-	baseOut, err := exec.CommandContext(ctx, "git", "-C", o.cfg.Repo.Root, "rev-parse", "HEAD").CombinedOutput()
+	return taskBranchDiffAgainstRepo(ctx, o.cfg.Repo.Root, workspace)
+}
+
+func taskBranchDiffAgainstRepo(ctx context.Context, repoRoot, workspace string) (string, error) {
+	baseOut, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse repo head: %w: %s", err, strings.TrimSpace(string(baseOut)))
 	}
@@ -8835,6 +9367,32 @@ func (o *Orchestrator) taskBranchDiff(ctx context.Context, workspace string) (st
 		return "no diff", nil
 	}
 	return string(diffOut), nil
+}
+
+func checkMergeReadyAgainstRepo(ctx context.Context, repoRoot, branch string) error {
+	if strings.TrimSpace(branch) == "" {
+		return fmt.Errorf("branch is required")
+	}
+	verifyOut, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--verify", branch+"^{commit}").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("premerge check failed: branch %q does not resolve to a commit: %w: %s", branch, err, strings.TrimSpace(string(verifyOut)))
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "merge-tree", "--write-tree", "HEAD", branch).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("premerge check failed: branch %q must be rebased or conflict-resolved before merge: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func ensureCleanGitWorktree(ctx context.Context, repoRoot string) error {
+	status, err := gitStatusPorcelain(ctx, repoRoot)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("merge target has uncommitted or conflicted changes; refusing merge: %s", strings.TrimSpace(status))
+	}
+	return nil
 }
 
 func (o *Orchestrator) runCheckTool(ctx context.Context, actor, name, dir, taskID string) (string, error) {
@@ -9423,9 +9981,15 @@ func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID 
 	if req.Tool == "task.create" {
 		return o.resolveTaskCreateApproval(ctx, req, actor)
 	}
-	if _, err := o.runApprovedTool(ctx, req.Tool, req.Args, req.TaskID); err != nil {
+	var runErr error
+	if req.Tool == "git.merge_approved" && hasTask && remoteTaskUsesManagedGit(task) {
+		_, runErr = o.runManagedGitMergeApproved(ctx, req.Args, task, actor)
+	} else {
+		_, runErr = o.runApprovedTool(ctx, req.Tool, req.Args, req.TaskID)
+	}
+	if runErr != nil {
 		req.Status = approvalstore.StatusFailed
-		req.Reason = appendApprovalReason(req.Reason, "failed: "+err.Error())
+		req.Reason = appendApprovalReason(req.Reason, "failed: "+runErr.Error())
 		if saveErr := o.approvals.Save(req); saveErr != nil {
 			return "", saveErr
 		}
@@ -9433,13 +9997,13 @@ func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID 
 			task.Status = taskstore.StatusBlocked
 			task.AssignedTo = "OrchestratorAgent"
 			clearMergeQueueFields(&task)
-			task.Result = "Approved merge failed: " + err.Error()
+			task.Result = "Approved merge failed: " + runErr.Error()
 			if saveErr := o.tasks.Save(task); saveErr != nil {
 				return "", saveErr
 			}
 			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.blocked", Actor: "OrchestratorAgent", TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": approvalID, "reason": task.Result})})
 		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": err.Error()})})
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "approval.failed", Actor: actor, TaskID: req.TaskID, Payload: eventlog.Payload(map[string]any{"approval": req, "error": runErr.Error()})})
 		if req.Tool == "git.merge_approved" && req.TaskID != "" {
 			recoveryLine := "Automatic recovery will be queued for retryable merge failures."
 			if hasTask {
@@ -9450,9 +10014,9 @@ func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID 
 				}
 			}
 			_, _ = o.processMergeQueueHead(ctx, "merge queue head failed approved merge")
-			return fmt.Sprintf("Approval %s failed while merging task %s.\nReason: %s\nTask moved to blocked; no merge was applied. %s Use `show %s` to follow it or `delete %s` to stop.", approvalID, taskShortID(req.TaskID), err.Error(), recoveryLine, taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
+			return fmt.Sprintf("Approval %s failed while merging task %s.\nReason: %s\nTask moved to blocked; no merge was applied. %s Use `show %s` to follow it or `delete %s` to stop.", approvalID, taskShortID(req.TaskID), runErr.Error(), recoveryLine, taskShortID(req.TaskID), taskShortID(req.TaskID)), nil
 		}
-		return fmt.Sprintf("Approval %s failed while executing %s.\nReason: %s", approvalID, req.Tool, err.Error()), nil
+		return fmt.Sprintf("Approval %s failed while executing %s.\nReason: %s", approvalID, req.Tool, runErr.Error()), nil
 	}
 	req.Status = approvalstore.StatusGranted
 	if err := o.approvals.Save(req); err != nil {
@@ -9593,7 +10157,7 @@ func (o *Orchestrator) recoverFailedMergeApproval(ctx context.Context, req appro
 	if !hasTask {
 		return fmt.Sprintf("Approval %s is already failed and task record %q is missing. No recovery could be queued.", req.ID, req.TaskID), nil
 	}
-	if remoteTask(t) {
+	if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
 		return fmt.Sprintf("Approval %s is already failed for remote task %s. Inspect the remote workdir and run review again after the remote branch is repaired.", req.ID, shortID), nil
 	}
 	if taskTerminal(t.Status) {
@@ -9752,11 +10316,12 @@ func (o *Orchestrator) reconcileApprovedTaskBranch(ctx context.Context, task tas
 	if !workspaceHasGit(task.Workspace) {
 		return "", nil
 	}
+	repoRoot := o.taskReviewRepoRoot(task)
 	commitOut, err := commitReviewWorkspaceChanges(ctx, task.Workspace, task.ID)
 	if err != nil {
 		return "", err
 	}
-	mergeOut, err := o.reconcileTaskWorkspaceWithMain(ctx, task.Workspace)
+	mergeOut, err := reconcileTaskWorkspaceWithRepoHead(ctx, repoRoot, task.Workspace)
 	if err != nil {
 		return "", err
 	}
@@ -10006,6 +10571,65 @@ func (o *Orchestrator) runApprovedTool(ctx context.Context, name string, raw jso
 		payload["error"] = err.Error()
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: "human", TaskID: taskID, Payload: eventlog.Payload(payload)})
+	return rawResult, err
+}
+
+func (o *Orchestrator) runManagedGitMergeApproved(ctx context.Context, raw json.RawMessage, t taskstore.Task, actor string) (json.RawMessage, error) {
+	var req struct {
+		Branch    string `json:"branch"`
+		Target    string `json:"target"`
+		Workspace string `json:"workspace"`
+		Message   string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	repoRoot := o.taskReviewRepoRoot(t)
+	if strings.TrimSpace(req.Branch) == "" || strings.TrimSpace(req.Target) == "" {
+		return nil, fmt.Errorf("branch and target are required")
+	}
+	if filepath.Clean(req.Target) != filepath.Clean(repoRoot) {
+		return nil, fmt.Errorf("merge target does not match task repository root")
+	}
+	if strings.TrimSpace(req.Workspace) == "" {
+		req.Workspace = t.Workspace
+	}
+	actor = firstNonEmptyString(actor, "human")
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.call.allowed", Actor: actor, TaskID: t.ID, Payload: eventlog.Payload(map[string]any{"tool": "git.merge_approved", "reason": actor + " approval", "target": repoRoot})})
+	commitOutput := ""
+	if strings.TrimSpace(req.Workspace) != "" {
+		out, err := commitReviewWorkspaceChanges(ctx, req.Workspace, t.ID)
+		commitOutput = out
+		if err != nil {
+			payload := map[string]any{"tool": "git.merge_approved", "error": err.Error()}
+			_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: actor, TaskID: t.ID, Payload: eventlog.Payload(payload)})
+			return nil, err
+		}
+	}
+	if err := checkMergeReadyAgainstRepo(ctx, repoRoot, req.Branch); err != nil {
+		payload := map[string]any{"tool": "git.merge_approved", "error": err.Error()}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: actor, TaskID: t.ID, Payload: eventlog.Payload(payload)})
+		return nil, err
+	}
+	if err := ensureCleanGitWorktree(ctx, repoRoot); err != nil {
+		payload := map[string]any{"tool": "git.merge_approved", "error": err.Error()}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: actor, TaskID: t.ID, Payload: eventlog.Payload(payload)})
+		return nil, err
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "merge", "--no-ff", req.Branch).CombinedOutput()
+	if err != nil {
+		_ = exec.CommandContext(context.Background(), "git", "-C", repoRoot, "merge", "--abort").Run()
+		err = fmt.Errorf("git merge: %w: %s", err, strings.TrimSpace(string(out)))
+		payload := map[string]any{"tool": "git.merge_approved", "error": err.Error()}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: actor, TaskID: t.ID, Payload: eventlog.Payload(payload)})
+		return nil, err
+	}
+	rawResult, err := json.Marshal(map[string]any{"merged": req.Branch, "target": repoRoot, "commit_output": commitOutput, "output": string(out)})
+	payload := map[string]any{"tool": "git.merge_approved", "result": json.RawMessage(rawResult)}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "tool.result", Actor: actor, TaskID: t.ID, Payload: eventlog.Payload(payload)})
 	return rawResult, err
 }
 

@@ -20,6 +20,7 @@
     type HomelabdApproval,
 	    type HomelabdEvent,
 	    type HomelabdRemoteAgent,
+	    type HomelabdRemoteAgentAutomation,
 	    type HomelabdRemoteWorkspace,
 	    type HomelabdRunArtifact,
 	    type HomelabdTask,
@@ -102,9 +103,11 @@
   let actionLoading = '';
   let approvalLoading = '';
   let mergeQueueLoading = '';
-  let autoMergeSaving = false;
-  let autoMergeEnabled = false;
-  let autoMergeIssue = '';
+	  let autoMergeSaving = false;
+	  let autoMergeEnabled = false;
+	  let remoteAgentAutomation: Record<string, HomelabdRemoteAgentAutomation> = {};
+	  let remoteAutomationSaving = '';
+	  let autoMergeIssue = '';
   let autoMergeVersion = 0;
   let taskDetailLoadingId = '';
   let taskDetailIssue = '';
@@ -546,11 +549,30 @@
   ) {
     selectedWorkspaceId = onlineWorkspaceItems[0]?.id || workspaces[0].id;
   }
-  $: selectedWorkspace =
-    workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ||
-    onlineWorkspaceItems[0] ||
-    workspaces[0];
-  $: queueOptions = [
+	  $: selectedWorkspace =
+	    workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ||
+	    onlineWorkspaceItems[0] ||
+	    workspaces[0];
+	  const remoteAgentPolicy = (agentID: string): HomelabdRemoteAgentAutomation =>
+	    remoteAgentAutomation[agentID] || {};
+	  const remoteAgentAutomationEnabled = (agentID: string) => {
+	    const policy = remoteAgentPolicy(agentID);
+	    return Boolean(policy.auto_review_enabled && policy.auto_merge_enabled);
+	  };
+	  const remoteAgentAutomationDetail = (agentID: string) => {
+	    const policy = remoteAgentPolicy(agentID);
+	    if (policy.auto_review_enabled && policy.auto_merge_enabled) {
+	      return 'Reviews and merges passing Git-backed remote tasks';
+	    }
+	    if (policy.auto_review_enabled) {
+	      return 'Reviews passing remote tasks';
+	    }
+	    if (policy.auto_merge_enabled) {
+	      return 'Merges reviewed Git-backed remote tasks';
+	    }
+	    return 'Manual review and merge';
+	  };
+	  $: queueOptions = [
     { id: 'all', label: 'All queues', count: tasks.length, detail: 'Local and remote targets' },
     {
       id: 'local',
@@ -996,8 +1018,14 @@
 
 	    if (settingsResult.status === 'fulfilled') {
       if (settingsVersion === autoMergeVersion) {
-        const response = settingsResult.value as { settings?: { auto_merge_enabled?: boolean } };
+        const response = settingsResult.value as {
+          settings?: {
+            auto_merge_enabled?: boolean;
+            remote_agents?: Record<string, HomelabdRemoteAgentAutomation>;
+          };
+        };
         autoMergeEnabled = Boolean(response.settings?.auto_merge_enabled);
+        remoteAgentAutomation = response.settings?.remote_agents || {};
       }
       autoMergeIssue = '';
     } else {
@@ -1248,11 +1276,58 @@
     }
   };
 
-  const handleAutoMergeChange = (event: Event) => {
-    void setAutoMerge((event.currentTarget as HTMLInputElement).checked);
-  };
+	  const handleAutoMergeChange = (event: Event) => {
+	    void setAutoMerge((event.currentTarget as HTMLInputElement).checked);
+	  };
 
-  const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
+	  const setRemoteAgentAutomation = async (agentID: string, next: boolean) => {
+	    if (remoteAutomationSaving) {
+	      return;
+	    }
+	    const previous = remoteAgentAutomation;
+	    remoteAutomationSaving = agentID;
+	    autoMergeIssue = '';
+	    clearNotice();
+	    remoteAgentAutomation = {
+	      ...remoteAgentAutomation,
+	      [agentID]: {
+	        ...remoteAgentPolicy(agentID),
+	        auto_review_enabled: next,
+	        auto_merge_enabled: next
+	      }
+	    };
+	    try {
+	      const response = await client.updateSettings({
+	        remote_agents: {
+	          [agentID]: {
+	            auto_review_enabled: next,
+	            auto_merge_enabled: next
+	          }
+	        }
+	      });
+	      remoteAgentAutomation = response.settings.remote_agents || {};
+	      setNotice(
+	        'success',
+	        'Remote automation updated',
+	        next
+	          ? `${agentID} will review and merge passing Git-backed remote tasks automatically.`
+	          : `${agentID} will wait for manual remote review and merge approval.`
+	      );
+	      await refreshState();
+	    } catch (err) {
+	      remoteAgentAutomation = previous;
+	      autoMergeIssue = errorMessage(err, 'Unable to update remote automation.');
+	      setNotice('error', 'Remote automation failed', autoMergeIssue);
+	    } finally {
+	      remoteAutomationSaving = '';
+	    }
+	  };
+
+	  const handleRemoteAgentAutomationChange = (agentID: string, event: Event) => {
+	    void setRemoteAgentAutomation(agentID, (event.currentTarget as HTMLInputElement).checked);
+	  };
+
+	  const moveMergeQueueTask = async (task: HomelabdTask, direction: MergeQueueDirection) => {
     if (mergeQueueLoading) {
       return;
     }
@@ -1589,23 +1664,23 @@
           <strong>{mergeQueueItems.length}</strong>
           <small>{mergeQueueItems[0] ? `Head ${shortID(mergeQueueItems[0].id)}` : 'Idle'}</small>
         </summary>
-        <label
-          class:active={autoMergeEnabled}
-          class:busy={autoMergeSaving}
-          class="auto-merge-toggle"
-          title="Automatically merge reviewed queue-head tasks"
-        >
+	        <label
+	          class:active={autoMergeEnabled}
+	          class:busy={autoMergeSaving}
+	          class="auto-merge-toggle"
+	          title="Automatically merge reviewed local queue-head tasks"
+	        >
           <input
             class="auto-merge-input"
             type="checkbox"
             role="switch"
             checked={autoMergeEnabled}
             aria-checked={autoMergeEnabled}
-            aria-label="Auto merge reviewed queue-head tasks"
+	            aria-label="Auto merge reviewed local queue-head tasks"
             disabled={autoMergeSaving}
             on:change={handleAutoMergeChange}
           />
-          <span>Auto</span>
+	          <span>Local</span>
           <i aria-hidden="true"></i>
         </label>
         {#if autoMergeIssue}
@@ -1708,19 +1783,49 @@
         </section>
       {/if}
 
-      <section class="queue-groups" aria-label="Execution queues">
-        <h2>Execution queues</h2>
-        {#each queueOptions as option}
-          <button
-            type="button"
+	      <section class="queue-groups" aria-label="Execution queues">
+	        <h2>Execution queues</h2>
+	        {#each queueOptions as option}
+	          <button
+	            type="button"
             class:active={queueFilter === option.id}
             on:click={() => setQueueFilter(option.id)}
           >
             <strong>{option.label}</strong>
-            <span>{option.count} task{option.count === 1 ? '' : 's'} / {option.detail}</span>
-          </button>
-        {/each}
-      </section>
+	            <span>{option.count} task{option.count === 1 ? '' : 's'} / {option.detail}</span>
+	          </button>
+	        {/each}
+	        {#if agents.length}
+	          <div class="remote-automation" aria-label="Remote agent automation">
+	            <h3>Remote automation</h3>
+	            {#each agents as agent}
+	              <label
+	                class:active={remoteAgentAutomationEnabled(agent.id)}
+	                class:busy={remoteAutomationSaving === agent.id}
+	                class="remote-automation-row"
+	              >
+	                <span class="remote-automation-copy">
+	                  <strong>{agent.name || agent.id}</strong>
+	                  <small>{remoteAgentAutomationDetail(agent.id)}</small>
+	                </span>
+	                <span class="remote-automation-toggle">
+	                  <input
+	                    class="auto-merge-input"
+	                    type="checkbox"
+	                    role="switch"
+	                    checked={remoteAgentAutomationEnabled(agent.id)}
+	                    aria-checked={remoteAgentAutomationEnabled(agent.id)}
+	                    aria-label={`Auto review and merge passing tasks on ${agent.name || agent.id}`}
+	                    disabled={remoteAutomationSaving !== ''}
+	                    on:change={(event) => handleRemoteAgentAutomationChange(agent.id, event)}
+	                  />
+	                  <i aria-hidden="true"></i>
+	                </span>
+	              </label>
+	            {/each}
+	          </div>
+	        {/if}
+	      </section>
 
       <details
         class="target-create"
@@ -3501,13 +3606,115 @@
     font-size: 0.84rem;
   }
 
-  .queue-groups span {
-    color: var(--muted, #64748b);
-    font-size: 0.72rem;
-    line-height: 1.25;
-  }
+	  .queue-groups span {
+	    color: var(--muted, #64748b);
+	    font-size: 0.72rem;
+	    line-height: 1.25;
+	  }
 
-  .target-create {
+	  .remote-automation {
+	    display: grid;
+	    gap: 0.45rem;
+	    min-width: 0;
+	    padding-top: 0.25rem;
+	  }
+
+	  .remote-automation h3 {
+	    margin: 0;
+	    color: var(--text, #374151);
+	    font-size: 0.78rem;
+	  }
+
+	  .remote-automation-row {
+	    display: grid;
+	    grid-template-columns: minmax(0, 1fr) auto;
+	    align-items: center;
+	    gap: 0.55rem;
+	    min-width: 0;
+	    padding: 0.55rem 0.65rem;
+	    border: 1px solid var(--border-soft, #dbe7f5);
+	    border-radius: 0.6rem;
+	    background: var(--surface, #ffffff);
+	  }
+
+	  .remote-automation-row.busy {
+	    cursor: progress;
+	    opacity: 0.72;
+	  }
+
+	  .remote-automation-copy {
+	    display: grid;
+	    gap: 0.12rem;
+	    min-width: 0;
+	  }
+
+	  .remote-automation-copy strong,
+	  .remote-automation-copy small {
+	    overflow: hidden;
+	    text-overflow: ellipsis;
+	    white-space: nowrap;
+	  }
+
+	  .remote-automation-copy strong {
+	    color: var(--text-strong, #111827);
+	    font-size: 0.82rem;
+	  }
+
+	  .remote-automation-copy small {
+	    color: var(--muted, #64748b);
+	    font-size: 0.68rem;
+	    line-height: 1.25;
+	  }
+
+	  .remote-automation-toggle {
+	    position: relative;
+	    display: block;
+	    width: 2rem;
+	    height: 1.12rem;
+	    color: var(--muted, #64748b);
+	  }
+
+	  .remote-automation-toggle i {
+	    display: block;
+	    position: relative;
+	    width: 2rem;
+	    height: 1.12rem;
+	    border: 1px solid #cbd5e1;
+	    border-radius: 999px;
+	    background: #e2e8f0;
+	    transition:
+	      background 140ms ease,
+	      border-color 140ms ease,
+	      box-shadow 140ms ease;
+	  }
+
+	  .remote-automation-toggle i::after {
+	    content: '';
+	    position: absolute;
+	    top: 0.12rem;
+	    left: 0.12rem;
+	    width: 0.78rem;
+	    height: 0.78rem;
+	    border-radius: 999px;
+	    background: #ffffff;
+	    box-shadow: 0 1px 2px rgb(15 23 42 / 0.22);
+	    transition: transform 140ms ease;
+	  }
+
+	  .remote-automation-row.active .remote-automation-toggle i {
+	    border-color: #16a34a;
+	    background: #22c55e;
+	  }
+
+	  .remote-automation-row.active .remote-automation-toggle i::after {
+	    transform: translateX(0.86rem);
+	  }
+
+	  .remote-automation-toggle:focus-within i {
+	    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.18);
+	  }
+
+	  .target-create {
     grid-area: create;
     border: 1px solid var(--border-soft, #dbe7f5);
     border-radius: 0.8rem;

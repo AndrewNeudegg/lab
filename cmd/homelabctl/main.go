@@ -608,9 +608,42 @@ func (c cli) settings(args []string) error {
 			return err
 		}
 		return c.do(http.MethodPost, "/settings", map[string]any{"auto_merge_enabled": enabled})
+	case "remote-agent", "remote":
+		return c.remoteAgentSettings(args[1:])
 	default:
 		return fmt.Errorf("unknown settings command %q", args[0])
 	}
+}
+
+func (c cli) remoteAgentSettings(args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: homelabctl settings remote-agent <agent_id> <auto-review|auto-merge|auto-review-merge> <on|off>")
+	}
+	agentID := strings.TrimSpace(args[0])
+	if agentID == "" {
+		return fmt.Errorf("remote agent id is required")
+	}
+	enabled, err := parseOnOff(args[2])
+	if err != nil {
+		return err
+	}
+	policy := map[string]any{}
+	switch commandWord(args[1]) {
+	case "auto-review", "autoreview":
+		policy["auto_review_enabled"] = enabled
+	case "auto-merge", "automerge":
+		policy["auto_merge_enabled"] = enabled
+	case "auto-review-merge", "autoreviewmerge", "auto", "automation":
+		policy["auto_review_enabled"] = enabled
+		policy["auto_merge_enabled"] = enabled
+	default:
+		return fmt.Errorf("usage: homelabctl settings remote-agent <agent_id> <auto-review|auto-merge|auto-review-merge> <on|off>")
+	}
+	return c.do(http.MethodPost, "/settings", map[string]any{
+		"remote_agents": map[string]any{
+			agentID: policy,
+		},
+	})
 }
 
 func parseOnOff(value string) (bool, error) {
@@ -1831,6 +1864,7 @@ func usage(out io.Writer) {
 
   homelabctl [-addr http://127.0.0.1:18080] settings
   homelabctl [-addr http://127.0.0.1:18080] settings auto-merge <on|off>
+  homelabctl [-addr http://127.0.0.1:18080] settings remote-agent <agent_id> <auto-review|auto-merge|auto-review-merge> <on|off>
 
   homelabctl [-addr http://127.0.0.1:18080] assistant list [--all|--archived]
   homelabctl [-addr http://127.0.0.1:18080] assistant show <run_id>

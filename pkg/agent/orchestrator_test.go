@@ -2012,6 +2012,463 @@ func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
 	}
 }
 
+func TestRemoteTaskAutomationReviewsAndAcceptsAgentTask(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Name:    "Workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:    "repo",
+			Path:  "/home/me/project",
+			Label: "Project",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := orch.UpdateRuntimeSettings(ctx, RuntimeSettings{
+		RemoteAgents: map[string]RemoteAgentAutomation{
+			"workstation": {AutoReviewEnabled: true, AutoMergeEnabled: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(ctx, "fix the remote service", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	assignment, err := orch.ClaimRemoteTask(ctx, agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil {
+		t.Fatal("assignment is nil, want remote task")
+	}
+	if _, err := orch.CompleteRemoteTask(ctx, "workstation", assignment.TaskID, "changed files; validation passed", "completed", "diff --git a/service.go b/service.go\nnew file mode 100644\n"); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != taskstore.StatusReadyForReview {
+		t.Fatalf("status after completion = %q, want ready_for_review", ready.Status)
+	}
+
+	changed, err := orch.ReconcileTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want one automated review/merge", changed)
+	}
+	done, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != taskstore.StatusDone {
+		t.Fatalf("status = %q, want done", done.Status)
+	}
+	if !strings.Contains(done.Result, "ReviewerAgent independently reviewed remote result") ||
+		!strings.Contains(done.Result, "accepted by homelabd") {
+		t.Fatalf("result = %q, want remote review and homelabd acceptance", done.Result)
+	}
+}
+
+func TestRemoteGitTaskUsesManagedWorktreeReviewAndMerge(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	repo := setupTestGitRepo(t)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "repo",
+			Path:      repo,
+			ProjectID: "remote-grid",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "add remote feature", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := tasks[0]
+	if task.Workspace == "" || task.Workspace == repo || !strings.Contains(task.Workspace, ".homelabd-worktrees") {
+		t.Fatalf("workspace = %q, want isolated remote task worktree outside repo root %q", task.Workspace, repo)
+	}
+
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil || assignment.Workdir != task.Workspace {
+		t.Fatalf("assignment = %#v, want remote task worktree %q", assignment, task.Workspace)
+	}
+	writeTestRepoFile(t, assignment.Workdir, "feature.txt", "remote feature\n")
+	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", assignment.TaskID, "changed feature.txt", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := orch.ReviewTask(context.Background(), assignment.TaskID); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(reply, "Merge approval requested") {
+		t.Fatalf("review = %q, want merge approval for managed remote task", reply)
+	}
+	reviewed, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.Status != taskstore.StatusAwaitingApproval || reviewed.DiffSnapshot == nil || reviewed.DiffSnapshot.Summary.Files != 1 {
+		t.Fatalf("reviewed task = %#v, want awaiting approval with one-file snapshot", reviewed)
+	}
+	approvals, err := orch.approvals.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("approvals = %#v, want one merge approval", approvals)
+	}
+	if _, err := orch.ResolveApproval(context.Background(), approvals[0].ID, true); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Status != taskstore.StatusAwaitingVerification {
+		t.Fatalf("status = %q, want awaiting_verification after remote merge", merged.Status)
+	}
+	if got := readTestFile(t, filepath.Join(repo, "feature.txt")); got != "remote feature\n" {
+		t.Fatalf("merged feature = %q", got)
+	}
+	if status := strings.TrimSpace(gitTestOutput(t, repo, "status", "--short")); status != "" {
+		t.Fatalf("remote repo status = %q, want clean after managed merge", status)
+	}
+}
+
+func TestRemoteGitNoChangeUsesRemoteAutoMergePolicy(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	repo := setupTestGitRepo(t)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "repo",
+			Path:      repo,
+			ProjectID: "remote-grid",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := orch.UpdateRuntimeSettings(ctx, RuntimeSettings{
+		RemoteAgents: map[string]RemoteAgentAutomation{
+			"workstation": {AutoReviewEnabled: true, AutoMergeEnabled: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(ctx, "read-only challenge", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := orch.ClaimRemoteTask(ctx, agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil {
+		t.Fatal("assignment is nil, want remote task")
+	}
+	if _, err := orch.CompleteRemoteTask(ctx, "workstation", assignment.TaskID, "No change required: read-only challenge recorded gaps.", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	noChange, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noChange.Status != taskstore.StatusNoChangeRequired {
+		t.Fatalf("status after completion = %q, want no_change_required", noChange.Status)
+	}
+
+	changed, err := orch.ReconcileTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want no-change auto-accept", changed)
+	}
+	done, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != taskstore.StatusDone {
+		t.Fatalf("status = %q, want done", done.Status)
+	}
+	if !strings.Contains(done.Result, "accepted by homelabd") {
+		t.Fatalf("result = %q, want homelabd acceptance", done.Result)
+	}
+}
+
+func TestRemoteGitGoalChallengeNoDiffUsesChallengeReview(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	repo := setupTestGitRepo(t)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "workstation",
+		Machine: "desk",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "repo",
+			Path:      repo,
+			ProjectID: "remote-grid",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := orch.UpdateRuntimeSettings(ctx, RuntimeSettings{
+		RemoteAgents: map[string]RemoteAgentAutomation{
+			"workstation": {AutoReviewEnabled: true, AutoMergeEnabled: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build grid",
+		Objective:     "Build a reusable grid.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phaseID := timeline.Goal.Plan.Phases[0].ID
+	milestoneID := timeline.Goal.Plan.Phases[0].Milestones[0].ID
+	if _, err := orch.CreateTaskWithTarget(ctx, "challenge milestone", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %d, want one challenge task", len(tasks))
+	}
+	task := tasks[0]
+	task.GoalID = timeline.Goal.ID
+	task.GoalPhaseID = phaseID
+	task.Goal = "Autopilot challenge task for build Goal `" + timeline.Goal.ID + "`: Build grid\n\nGoal challenge report contract:\nGOAL_CHALLENGE:"
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := orch.ClaimRemoteTask(ctx, agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil {
+		t.Fatal("assignment is nil, want remote task")
+	}
+	result := fmt.Sprintf(`No change required: read-only challenge produced a report instead of a patch.
+GOAL_CHALLENGE: {"milestone_id":%q,"verdict":"failed","summary":"Milestone evidence is still missing.","evidence":["docs are missing"],"claims_challenged":["The grid foundation is documented"],"gaps":[{"area":"documentation","claim":"The grid foundation is documented","severity":"high","evidence":"No durable documentation exists.","suggested_task":"Add durable grid foundation documentation."}],"goal_complete":false}`, milestoneID)
+	if _, err := orch.CompleteRemoteTask(ctx, "workstation", assignment.TaskID, result, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != taskstore.StatusReadyForReview {
+		t.Fatalf("status after no-change challenge completion = %q, want ready_for_review", ready.Status)
+	}
+	if reply, err := orch.ReviewTask(ctx, assignment.TaskID); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(reply, "no diff to approve") || !strings.Contains(reply, "Auto merge is on") {
+		t.Fatalf("review = %q, want no-diff challenge to use Goal review and auto-accept", reply)
+	}
+	done, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != taskstore.StatusDone {
+		t.Fatalf("status = %q, want done after remote challenge auto-accept", done.Status)
+	}
+	if strings.Contains(done.Result, "found no diff to approve") {
+		t.Fatalf("result = %q, generic no-diff blocker leaked into challenge task", done.Result)
+	}
+	loaded, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Goal.Plan == nil || len(loaded.Goal.Plan.Gaps) != 1 {
+		t.Fatalf("goal gaps = %#v, want challenge gap reflected", loaded.Goal.Plan)
+	}
+	if loaded.Goal.Plan.Gaps[0].Area != "documentation" {
+		t.Fatalf("gap = %#v, want challenge documentation gap", loaded.Goal.Plan.Gaps[0])
+	}
+}
+
+func TestRemoteGitTaskBlocksDirtyAdvertisedCheckout(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	repo := setupTestGitRepo(t)
+	writeTestRepoFile(t, repo, "README.md", "dirty\n")
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID: "workstation",
+		Workdirs: []remoteagent.Workdir{{
+			ID:   "repo",
+			Path: repo,
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "change dirty repo", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := orch.tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %#v, want one blocked remote task", tasks)
+	}
+	if tasks[0].Status != taskstore.StatusBlocked || !strings.Contains(tasks[0].Result, "uncommitted changes") {
+		t.Fatalf("task = %#v, want dirty-checkout blocker", tasks[0])
+	}
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment != nil {
+		t.Fatalf("assignment = %#v, want dirty remote task not claimed", assignment)
+	}
+}
+
+func TestRemoteGitRetryAndReopenPrepareManagedWorktree(t *testing.T) {
+	for _, action := range []string{"retry", "reopen"} {
+		t.Run(action, func(t *testing.T) {
+			orch := newTestOrchestrator(t, nil)
+			store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+			orch.WithRemoteAgents(store)
+			repo := setupTestGitRepo(t)
+			agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+				ID:      "workstation",
+				Machine: "desk",
+				Workdirs: []remoteagent.Workdir{{
+					ID:        "repo",
+					Path:      repo,
+					ProjectID: "remote-grid",
+					Branch:    "main",
+				}},
+			}, time.Now().UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskID := "task_remote_recovery_" + action
+			if err := orch.tasks.Save(taskstore.Task{
+				ID:         taskID,
+				Title:      "recover legacy remote task",
+				Goal:       "recover legacy remote task",
+				Status:     taskstore.StatusBlocked,
+				AssignedTo: "OrchestratorAgent",
+				Target: &taskstore.ExecutionTarget{
+					Mode:      "remote",
+					AgentID:   "workstation",
+					WorkdirID: "repo",
+					Workdir:   repo,
+					ProjectID: "remote-grid",
+					Branch:    "main",
+					Backend:   "codex",
+				},
+				CreatedAt: time.Now().UTC(),
+				UpdatedAt: time.Now().UTC(),
+				Result:    "legacy remote blocker",
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			switch action {
+			case "retry":
+				if _, err := orch.RetryTask(context.Background(), taskID, "", "try again under managed Git"); err != nil {
+					t.Fatal(err)
+				}
+			case "reopen":
+				if _, err := orch.ReopenTask(context.Background(), taskID, "try again under managed Git"); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			requeued, err := orch.tasks.Load(taskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if requeued.Status != taskstore.StatusQueued {
+				t.Fatalf("status = %q, want queued", requeued.Status)
+			}
+			if requeued.Workspace == "" || requeued.Workspace == repo || !strings.Contains(requeued.Workspace, ".homelabd-worktrees") {
+				t.Fatalf("workspace = %q, want managed remote worktree outside %q", requeued.Workspace, repo)
+			}
+			assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if assignment == nil || assignment.Workdir != requeued.Workspace {
+				t.Fatalf("assignment = %#v, want managed worktree %q", assignment, requeued.Workspace)
+			}
+		})
+	}
+}
+
 func TestRemoteTaskCanCompleteWithNoChangeRequired(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
@@ -2202,13 +2659,14 @@ func TestAutoTaskRoutesToOnlyRegisteredRemoteWorkspace(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
 	orch.WithRemoteAgents(store)
+	remotePath := filepath.Join(t.TempDir(), "remote1")
 	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
 		ID:      "remote1-agent",
 		Name:    "Remote 1",
 		Machine: "vm-remote1",
 		Workdirs: []remoteagent.Workdir{{
 			ID:        "remote1",
-			Path:      "/home/lab/remote1",
+			Path:      remotePath,
 			Label:     "Remote 1",
 			ProjectID: "remote1",
 			RepoURL:   "git@example.com:remote1.git",
@@ -2259,7 +2717,7 @@ func TestAutoTaskKeepsSelfImprovementLocalWithRemoteWorkspace(t *testing.T) {
 		ID: "remote1-agent",
 		Workdirs: []remoteagent.Workdir{{
 			ID:        "remote1",
-			Path:      "/home/lab/remote1",
+			Path:      filepath.Join(t.TempDir(), "remote1"),
 			ProjectID: "remote1",
 		}},
 	}, time.Now().UTC()); err != nil {
@@ -3017,7 +3475,7 @@ func TestReviewUIForcesFocusedUATForNonBrowserDiff(t *testing.T) {
 		}
 	}
 	workspace := filepath.Join(t.TempDir(), "workspace")
-	writeTestRepoFile(t, workspace, "web/package.json", "{}")
+	writeTestRepoFile(t, workspace, "web/package.json", `{"scripts":{"check":"check","build":"build","test":"test"}}`)
 	now := time.Now().UTC()
 	reviewedAt := now
 	task := taskstore.Task{
@@ -6318,6 +6776,66 @@ func TestRecoverRunningTasksRestartsExternalWorker(t *testing.T) {
 	t.Fatal("recovered delegate did not finish cleanly")
 }
 
+func TestRecoverRunningTasksDoesNotHijackRemoteManagedGitTask(t *testing.T) {
+	delegateStarted := make(chan struct{}, 1)
+	orch := newTestOrchestrator(t, &delegateStub{
+		started: delegateStarted,
+		release: make(chan struct{}),
+	})
+	orch.cfg.Limits.TaskStaleSeconds = 1
+	repo := setupTestGitRepo(t)
+	target := taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "remote2",
+		WorkdirID: "webframework",
+		ProjectID: "webframework",
+		Workdir:   repo,
+		Branch:    "main",
+		Backend:   "codex",
+	}
+	workspace := filepath.Join(remoteTaskWorkspaceRoot(target), "task_remote_running")
+	if err := os.MkdirAll(filepath.Dir(workspace), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, repo, "worktree", "add", "-b", "homelabd/task_remote_running", workspace, "main")
+	taskID := "task_20260515_140000_remote2a"
+	now := time.Now().UTC()
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:         taskID,
+		Title:      "remote task should stay remote",
+		Goal:       "remote task should stay remote",
+		Status:     taskstore.StatusRunning,
+		AssignedTo: "remote2",
+		Workspace:  workspace,
+		Target:     &target,
+		Result:     "claimed by remote agent remote2",
+		CreatedAt:  now.Add(-time.Hour),
+		UpdatedAt:  now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := orch.RecoverRunningTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("recovered count = %d, want remote running task left alone", count)
+	}
+	select {
+	case <-delegateStarted:
+		t.Fatal("local delegate started for running remote task")
+	default:
+	}
+	updated, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != taskstore.StatusRunning || updated.AssignedTo != "remote2" {
+		t.Fatalf("task = %#v, want still running on remote2", updated)
+	}
+}
+
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -7063,12 +7581,13 @@ func TestGoalAutopilotStartCreatesRemoteTaskWithoutLocalWorker(t *testing.T) {
 	orch := newTestOrchestrator(t, delegate)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
 	orch.WithRemoteAgents(store)
+	remotePath := filepath.Join(t.TempDir(), "remote1")
 	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
 		ID:      "remote1-agent",
 		Machine: "vm-remote1",
 		Workdirs: []remoteagent.Workdir{{
 			ID:        "remote1",
-			Path:      "/home/lab/remote1",
+			Path:      remotePath,
 			ProjectID: "remote1",
 			RepoURL:   "git@example.com:remote1.git",
 			Branch:    "main",
@@ -7127,12 +7646,13 @@ func TestGoalUpdateUnlimitedTaskLimitResumesBudgetExhaustedAutopilot(t *testing.
 	orch := newTestOrchestrator(t, delegate)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
 	orch.WithRemoteAgents(store)
+	remotePath := filepath.Join(t.TempDir(), "remote1")
 	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
 		ID:      "remote1-agent",
 		Machine: "vm-remote1",
 		Workdirs: []remoteagent.Workdir{{
 			ID:        "remote1",
-			Path:      "/home/lab/remote1",
+			Path:      remotePath,
 			ProjectID: "remote1",
 			RepoURL:   "git@example.com:remote1.git",
 			Branch:    "main",
@@ -7224,12 +7744,13 @@ func TestGoalAutopilotReviewsReadyRemoteTaskWithoutMergeQueue(t *testing.T) {
 	orch := newTestOrchestrator(t, delegate)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
 	orch.WithRemoteAgents(store)
+	remotePath := filepath.Join(t.TempDir(), "remote1")
 	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
 		ID:      "remote1-agent",
 		Machine: "vm-remote1",
 		Workdirs: []remoteagent.Workdir{{
 			ID:        "remote1",
-			Path:      "/home/lab/remote1",
+			Path:      remotePath,
 			ProjectID: "remote1",
 			RepoURL:   "git@example.com:remote1.git",
 			Branch:    "main",
@@ -7857,6 +8378,76 @@ GOAL_REPORT: {"summary":"Blocked on editing semantics","advanced_goal":true,"pha
 	}
 	if resumed.Goal.Autopilot.CurrentTaskID == "" || resumed.Goal.Autopilot.CurrentTaskID == taskID {
 		t.Fatalf("current task = %q, want a new task after clearing questions", resumed.Goal.Autopilot.CurrentTaskID)
+	}
+}
+
+func TestGoalTaskReportRerunClearsStaleQuestionsAndGaps(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build web framework",
+		Objective:     "Build a web framework.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phaseID := timeline.Goal.Plan.Phases[0].ID
+	milestoneID := timeline.Goal.Plan.Phases[0].Milestones[0].ID
+	taskID := "task_goal_challenge_rerun"
+	task := taskstore.Task{
+		ID:          taskID,
+		Title:       "challenge milestone",
+		Goal:        "challenge milestone",
+		Status:      taskstore.StatusDone,
+		AssignedTo:  "OrchestratorAgent",
+		GoalID:      timeline.Goal.ID,
+		GoalPhaseID: phaseID,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+		Result: fmt.Sprintf(`No change required: could not inspect.
+GOAL_CHALLENGE: {"milestone_id":%q,"verdict":"needs_user","summary":"Could not inspect remote evidence.","evidence":["old tool failure"],"claims_challenged":["old claim"],"gaps":[{"area":"infrastructure","claim":"remote evidence can be inspected","severity":"high","evidence":"old tool failure","suggested_task":"fix tool access"}],"goal_complete":false}`, milestoneID),
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	orch.reflectGoalTaskCompletion(ctx, task)
+	blocked, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(blocked.Goal.OpenQuestions, "Could not inspect remote evidence.") {
+		t.Fatalf("open questions = %#v, want first challenge question", blocked.Goal.OpenQuestions)
+	}
+	if blocked.Goal.Plan == nil || len(blocked.Goal.Plan.Gaps) != 1 || blocked.Goal.Plan.Gaps[0].Area != "infrastructure" {
+		t.Fatalf("gaps = %#v, want first infrastructure gap", blocked.Goal.Plan)
+	}
+
+	task.Result = fmt.Sprintf(`No change required: challenge rerun produced concrete gaps.
+GOAL_CHALLENGE: {"milestone_id":%q,"verdict":"failed","summary":"Planning evidence is missing.","evidence":["new planning gap"],"claims_challenged":["new claim"],"gaps":[{"area":"planning artifact","claim":"form scope doc exists","severity":"high","evidence":"file missing","suggested_task":"add the form scope doc"}],"goal_complete":false}`, milestoneID)
+	task.UpdatedAt = time.Now().UTC()
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	orch.reflectGoalTaskCompletion(ctx, task)
+	rerun, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringSliceContains(rerun.Goal.OpenQuestions, "Could not inspect remote evidence.") {
+		t.Fatalf("open questions = %#v, want stale question cleared after rerun", rerun.Goal.OpenQuestions)
+	}
+	if rerun.Goal.Plan == nil || len(rerun.Goal.Plan.Gaps) != 1 {
+		t.Fatalf("gaps = %#v, want only latest rerun gap", rerun.Goal.Plan)
+	}
+	if rerun.Goal.Plan.Gaps[0].Area != "planning artifact" {
+		t.Fatalf("gap = %#v, want latest planning gap", rerun.Goal.Plan.Gaps[0])
+	}
+	reports := rerun.TaskReports
+	if len(reports) != 1 || reports[0].Summary != "Planning evidence is missing." {
+		t.Fatalf("reports = %#v, want task report overwritten by rerun", reports)
 	}
 }
 
@@ -9114,12 +9705,13 @@ func registerRemote1Agent(t *testing.T, orch *Orchestrator) {
 	t.Helper()
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
 	orch.WithRemoteAgents(store)
+	remotePath := filepath.Join(t.TempDir(), "remote1")
 	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
 		ID:      "remote1-agent",
 		Machine: "vm-remote1",
 		Workdirs: []remoteagent.Workdir{{
 			ID:        "remote1",
-			Path:      "/home/lab/remote1",
+			Path:      remotePath,
 			ProjectID: "remote1",
 			RepoURL:   "git@example.com:remote1.git",
 			Branch:    "main",
@@ -9153,6 +9745,21 @@ func gitTestOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return string(out)
+}
+
+func setupTestGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, repo, "init", "--initial-branch=main")
+	gitTestRun(t, repo, "config", "user.email", "test@example.com")
+	gitTestRun(t, repo, "config", "user.name", "Test User")
+	writeTestRepoFile(t, repo, "README.md", "base\n")
+	gitTestRun(t, repo, "add", "README.md")
+	gitTestRun(t, repo, "commit", "-m", "base")
+	return repo
 }
 
 func readTestFile(t *testing.T, path string) string {

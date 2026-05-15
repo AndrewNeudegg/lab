@@ -560,8 +560,13 @@ func (s *Server) handleSettings(rw http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(rw, http.StatusOK, map[string]any{"settings": settings})
 	case http.MethodPost:
+		type remoteAgentAutomationPatch struct {
+			AutoReviewEnabled *bool `json:"auto_review_enabled"`
+			AutoMergeEnabled  *bool `json:"auto_merge_enabled"`
+		}
 		var in struct {
-			AutoMergeEnabled *bool `json:"auto_merge_enabled"`
+			AutoMergeEnabled *bool                                 `json:"auto_merge_enabled"`
+			RemoteAgents     map[string]remoteAgentAutomationPatch `json:"remote_agents"`
 		}
 		if req.Body != nil {
 			_ = json.NewDecoder(req.Body).Decode(&in)
@@ -573,6 +578,25 @@ func (s *Server) handleSettings(rw http.ResponseWriter, req *http.Request) {
 		}
 		if in.AutoMergeEnabled != nil {
 			current.AutoMergeEnabled = *in.AutoMergeEnabled
+		}
+		if len(in.RemoteAgents) > 0 {
+			if current.RemoteAgents == nil {
+				current.RemoteAgents = map[string]agent.RemoteAgentAutomation{}
+			}
+			for agentID, patch := range in.RemoteAgents {
+				agentID = strings.TrimSpace(agentID)
+				if agentID == "" {
+					continue
+				}
+				policy := current.RemoteAgents[agentID]
+				if patch.AutoReviewEnabled != nil {
+					policy.AutoReviewEnabled = *patch.AutoReviewEnabled
+				}
+				if patch.AutoMergeEnabled != nil {
+					policy.AutoMergeEnabled = *patch.AutoMergeEnabled
+				}
+				current.RemoteAgents[agentID] = policy
+			}
 		}
 		settings, err := s.Orchestrator.UpdateRuntimeSettings(req.Context(), current)
 		if err != nil {

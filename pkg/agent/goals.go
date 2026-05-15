@@ -1637,6 +1637,12 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 	if err != nil {
 		return assistantstore.GoalSupervisorDecision{}, err
 	}
+	if o.reopenStalledGoalGaps(&goal, reports, now) {
+		goal.UpdatedAt = now
+		if err := store.SaveGoal(goal); err != nil {
+			return assistantstore.GoalSupervisorDecision{}, err
+		}
+	}
 	if len(reports) > 0 && goal.Plan != nil && goalTaskReportCompletesGoal(reports[0]) {
 		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
 		if closeGoalGapsAfterCompletingFinalAudit(&plan, reports[0], now) || plan.Status == assistantstore.GoalPlanStatusBlocked {
@@ -3898,6 +3904,8 @@ func applyGoalTaskReportToPlan(goal *assistantstore.Goal, report assistantstore.
 					plan.Gaps[index].Status = assistantstore.GoalGapStatusDisproven
 				} else if report.AdvancedGoal {
 					plan.Gaps[index].Status = assistantstore.GoalGapStatusFixed
+				} else {
+					plan.Gaps[index].Status = assistantstore.GoalGapStatusOpen
 				}
 				break
 			}
@@ -4591,6 +4599,86 @@ func goalReportSupersedesCurrentTaskQuestions(goal assistantstore.Goal, report a
 		return false
 	}
 	return report.Challenge.Verdict != assistantstore.GoalChallengeVerdictNeedsUser
+}
+
+func (o *Orchestrator) reopenStalledGoalGaps(goal *assistantstore.Goal, reports []assistantstore.GoalTaskReport, now time.Time) bool {
+	if goal == nil || goal.Plan == nil {
+		return false
+	}
+	plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+	reportsByTask := map[string]assistantstore.GoalTaskReport{}
+	for _, report := range reports {
+		report = assistantstore.NormalizeGoalTaskReport(report)
+		if strings.TrimSpace(report.TaskID) == "" {
+			continue
+		}
+		existing, ok := reportsByTask[report.TaskID]
+		if !ok || report.CreatedAt.After(existing.CreatedAt) {
+			reportsByTask[report.TaskID] = report
+		}
+	}
+	changed := false
+	for index := range plan.Gaps {
+		gap := &plan.Gaps[index]
+		if gap.Status != assistantstore.GoalGapStatusInProgress {
+			continue
+		}
+		if len(gap.TaskIDs) == 0 {
+			gap.Status = assistantstore.GoalGapStatusOpen
+			gap.UpdatedAt = now
+			changed = true
+			continue
+		}
+		activeTask := false
+		var latestReport assistantstore.GoalTaskReport
+		for _, taskID := range gap.TaskIDs {
+			taskID = strings.TrimSpace(taskID)
+			if taskID == "" {
+				continue
+			}
+			if task, err := o.tasks.Load(taskID); err == nil && !taskTerminal(task.Status) {
+				activeTask = true
+				break
+			}
+			if report, ok := reportsByTask[taskID]; ok {
+				if latestReport.TaskID == "" || report.CreatedAt.After(latestReport.CreatedAt) {
+					latestReport = report
+				}
+			}
+		}
+		if activeTask {
+			continue
+		}
+		nextStatus := assistantstore.GoalGapStatusOpen
+		if latestReport.TaskID != "" {
+			latestReport = assistantstore.NormalizeGoalTaskReport(latestReport)
+			switch {
+			case latestReport.NoChange:
+				nextStatus = assistantstore.GoalGapStatusDisproven
+			case latestReport.AdvancedGoal && (latestReport.ReviewDecision == "" || latestReport.ReviewDecision == goalTaskReviewVerifiedProgress || latestReport.ReviewDecision == goalTaskReviewBlockedWithProgress):
+				nextStatus = assistantstore.GoalGapStatusFixed
+			}
+		}
+		if gap.Status != nextStatus {
+			gap.Status = nextStatus
+			gap.UpdatedAt = now
+			changed = true
+		}
+	}
+	if !changed {
+		return false
+	}
+	updateGoalPlanProgress(&plan, now)
+	goal.Plan = &plan
+	if len(goal.OpenQuestions) == 0 && goal.Status == assistantstore.GoalStatusBlocked {
+		goal.Status = assistantstore.GoalStatusActive
+	}
+	if goal.Autopilot != nil && len(goal.OpenQuestions) == 0 && goal.Autopilot.Status == assistantstore.GoalAutopilotStatusBlocked {
+		goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
+		goal.Autopilot.StopReasons = nil
+		goal.Autopilot.LastStepAt = &now
+	}
+	return true
 }
 
 func extractGoalWatchRecommendations(result string) []string {

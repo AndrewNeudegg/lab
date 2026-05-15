@@ -10046,13 +10046,13 @@ func (o *Orchestrator) resolveApprovalWithActor(ctx context.Context, approvalID 
 				if len(restartRequired) > 0 {
 					t.Status = taskstore.StatusAwaitingRestart
 					t.RestartStatus = taskstore.RestartStatusPending
-					t.Result = "merged after approval " + approvalID + "; post-merge restart pending"
+					t.Result = appendResultLine(t.Result, "merged after approval "+approvalID+"; post-merge restart pending")
 					postMergeRestartQueued = true
 				} else {
 					t.Status = taskstore.StatusAwaitingVerification
 					t.RestartStatus = ""
 					clearMergeQueueFields(&t)
-					t.Result = "merged after approval " + approvalID + "; awaiting human verification"
+					t.Result = appendResultLine(t.Result, "merged after approval "+approvalID+"; awaiting human verification")
 				}
 				if postMergeRestartPlan != "" {
 					t.Result += "\nRestart plan: " + postMergeRestartPlan

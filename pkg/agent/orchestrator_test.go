@@ -2169,6 +2169,9 @@ func TestRemoteGitTaskUsesManagedWorktreeReviewAndMerge(t *testing.T) {
 	if merged.Status != taskstore.StatusAwaitingVerification {
 		t.Fatalf("status = %q, want awaiting_verification after remote merge", merged.Status)
 	}
+	if !strings.Contains(merged.Result, "changed feature.txt") || !strings.Contains(merged.Result, "ReviewerAgent test status: pass") {
+		t.Fatalf("merged result = %q, want worker and review evidence preserved", merged.Result)
+	}
 	if got := readTestFile(t, filepath.Join(repo, "feature.txt")); got != "remote feature\n" {
 		t.Fatalf("merged feature = %q", got)
 	}
@@ -9431,6 +9434,136 @@ func TestGoalAutopilotContinuesBlockedTaskWhenReportHasAutonomousRepairGap(t *te
 	}
 	if !strings.Contains(nextTask.Goal, "ggap_scope") || !strings.Contains(nextTask.Goal, "gap_fix") {
 		t.Fatalf("next task goal did not target autonomous repair gap:\n%s", nextTask.Goal)
+	}
+}
+
+func TestGoalAutopilotReopensStalledInProgressGapAfterUnverifiedRepair(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	oldTaskID := "task_old_unverified_gap_fix"
+	autopilot := assistantstore.NormalizeGoalAutopilot(&assistantstore.GoalAutopilot{
+		Status:       assistantstore.GoalAutopilotStatusRunning,
+		BudgetTasks:  5,
+		TasksStarted: 1,
+		StartedAt:    &now,
+		LastStepAt:   &now,
+	})
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:            "goal_stalled_gap_reopen",
+		Title:         "Build grid",
+		Objective:     "Build a credible grid.",
+		Status:        assistantstore.GoalStatusActive,
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Target:        remote1ExecutionTarget(),
+		Autopilot:     &autopilot,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusBlocked,
+			CurrentPhaseID: "phase_01_foundation",
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:     "phase_01_foundation",
+				Title:  "Foundation",
+				Status: assistantstore.GoalPlanPhaseStatusInProgress,
+				Milestones: []assistantstore.GoalMilestone{{
+					ID:      "phase_01_foundation_milestone_03_prove",
+					PhaseID: "phase_01_foundation",
+					Title:   "Prove the slice",
+					Status:  assistantstore.GoalMilestoneStatusChallenged,
+					TaskIDs: []string{oldTaskID},
+				}},
+				TaskIDs: []string{oldTaskID},
+			}},
+			Gaps: []assistantstore.GoalGap{{
+				ID:            "ggap_stalled_proof",
+				PhaseID:       "phase_01_foundation",
+				MilestoneID:   "phase_01_foundation_milestone_03_prove",
+				Area:          "proof evidence",
+				Claim:         "Proof evidence is durable.",
+				Severity:      assistantstore.GoalGapSeverityHigh,
+				Status:        assistantstore.GoalGapStatusInProgress,
+				SuggestedTask: "Repair durable proof evidence and planning guardrails.",
+				TaskIDs:       []string{oldTaskID},
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		LinkedTasks: []string{oldTaskID},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.tasks.Save(taskstore.Task{
+		ID:            oldTaskID,
+		GoalID:        goal.ID,
+		GoalPhaseID:   "phase_01_foundation",
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		GoalKind:      assistantstore.GoalKindBuild,
+		Title:         "Repair durable proof evidence",
+		Goal:          "Repair durable proof evidence",
+		Status:        taskstore.StatusDone,
+		AssignedTo:    "OrchestratorAgent",
+		Target:        remote1ExecutionTarget(),
+		Result:        "merged after approval approval_old; awaiting human verification\naccepted by Assistant Autopilot",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveTaskReport(assistantstore.GoalTaskReport{
+		ID:             "greport_old_unverified_gap_fix",
+		GoalID:         goal.ID,
+		TaskID:         oldTaskID,
+		PhaseID:        "phase_01_foundation",
+		MilestoneID:    "phase_01_foundation_milestone_03_prove",
+		TaskType:       assistantstore.GoalTaskTypeGapFix,
+		Status:         taskstore.StatusDone,
+		Summary:        "Merged repair task lacked durable validation evidence.",
+		ChangedFiles:   []string{"docs/proof.md"},
+		DiffFiles:      1,
+		GapIDs:         []string{"ggap_stalled_proof"},
+		ReviewDecision: goalTaskReviewNeedsValidation,
+		CreatedAt:      now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, reply, err := orch.reconcileGoalAutopilot(ctx, store, goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatalf("changed = false, reply = %q", reply)
+	}
+	continued, err := orch.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Goal.Status != assistantstore.GoalStatusActive || continued.Goal.Autopilot == nil || continued.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning {
+		t.Fatalf("goal = %#v, want active running after reopening stalled gap", continued.Goal)
+	}
+	newTaskID := continued.Goal.Autopilot.CurrentTaskID
+	if newTaskID == "" || newTaskID == oldTaskID {
+		t.Fatalf("current task = %q, want new repair task", newTaskID)
+	}
+	nextTask, err := orch.tasks.Load(newTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(nextTask.Goal, "ggap_stalled_proof") || !strings.Contains(nextTask.Goal, "gap_fix") {
+		t.Fatalf("next task goal did not target reopened gap:\n%s", nextTask.Goal)
+	}
+	if len(continued.Goal.Plan.Gaps) != 1 || continued.Goal.Plan.Gaps[0].Status != assistantstore.GoalGapStatusInProgress || !stringSliceContains(continued.Goal.Plan.Gaps[0].TaskIDs, newTaskID) {
+		t.Fatalf("gaps = %#v, want reopened gap claimed by new task", continued.Goal.Plan.Gaps)
 	}
 }
 

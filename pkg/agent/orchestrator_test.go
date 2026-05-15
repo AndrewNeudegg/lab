@@ -8451,6 +8451,47 @@ GOAL_CHALLENGE: {"milestone_id":%q,"verdict":"failed","summary":"Planning eviden
 	}
 }
 
+func TestReviewGoalTaskProgressCountsKnownGapFixAsAligned(t *testing.T) {
+	goal := assistantstore.Goal{
+		ID:        "goal_gap_fix_alignment",
+		Title:     "One UI, One Product",
+		Objective: "Build a reusable design system.",
+		Plan: &assistantstore.GoalPlan{
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:        "phase_01_foundation",
+				Title:     "Establish architecture",
+				Objective: "Create a usable foundation.",
+			}},
+			Gaps: []assistantstore.GoalGap{{
+				ID:            "ggap_planning_tests",
+				PhaseID:       "phase_01_foundation",
+				Area:          "planning regression tests",
+				Severity:      assistantstore.GoalGapSeverityHigh,
+				Claim:         "Planning tests reject stale next-work language.",
+				Evidence:      "The current matrix can regress without test failure.",
+				Status:        assistantstore.GoalGapStatusOpen,
+				SuggestedTask: "Add negative assertions to the planning tests.",
+			}},
+		},
+	}
+	report := assistantstore.GoalTaskReport{
+		GoalID:       goal.ID,
+		TaskID:       "task_gap_fix",
+		PhaseID:      "phase_01_foundation",
+		TaskType:     assistantstore.GoalTaskTypeGapFix,
+		Summary:      "Added durable negative assertions.",
+		ChangedFiles: []string{"tests/planning-artifact.test.js"},
+		Validation:   []string{"bun test tests/planning-artifact.test.js", "bun test tests"},
+		GapIDs:       []string{"ggap_planning_tests"},
+		DiffFiles:    1,
+		Additions:    7,
+	}
+	review := reviewGoalTaskProgress(goal, report)
+	if review.Decision != goalTaskReviewVerifiedProgress {
+		t.Fatalf("decision = %q, summary = %q, want verified progress for known gap fix", review.Decision, review.Summary)
+	}
+}
+
 func TestGoalAutopilotRequiresChallengeForGoalCompletionReport(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),

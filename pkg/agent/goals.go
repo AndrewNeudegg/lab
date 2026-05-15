@@ -4124,9 +4124,10 @@ func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.Goal
 	}
 
 	score := goalAlignmentScore(goal, phase, report)
+	aligned := score > 0 || goalReportReferencesKnownGap(goal.Plan, report)
 	hasProductFile := goalReportHasProductFile(report)
 	if goalTaskReportRequiresPlanBlock(report) {
-		if score > 0 {
+		if aligned {
 			return goalTaskProgressReview{
 				Decision: goalTaskReviewBlockedWithProgress,
 				Summary:  "The task changed files that appear relevant to the Goal, but reported blockers or questions that must be handled before completion.",
@@ -4139,14 +4140,14 @@ func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.Goal
 			Evidence: evidence,
 		}
 	}
-	if score > 0 && hasValidation {
+	if aligned && hasValidation {
 		return goalTaskProgressReview{
 			Decision: goalTaskReviewVerifiedProgress,
-			Summary:  "Changed files, validation evidence, and Goal/phase terms line up, so the task is counted as verified progress.",
+			Summary:  "Changed files, validation evidence, and Goal/phase or gap links line up, so the task is counted as verified progress.",
 			Evidence: evidence,
 		}
 	}
-	if score > 0 && !hasValidation {
+	if aligned && !hasValidation {
 		return goalTaskProgressReview{
 			Decision: goalTaskReviewNeedsValidation,
 			Summary:  "Changed files appear relevant to the Goal, but no validation evidence was reported; Autopilot should verify or rerun before treating it as progress.",
@@ -4185,6 +4186,28 @@ func goalReportHasProductFile(report assistantstore.GoalTaskReport) bool {
 			strings.HasSuffix(path, ".css"),
 			strings.HasSuffix(path, ".html"),
 			strings.HasSuffix(path, ".md"):
+			return true
+		}
+	}
+	return false
+}
+
+func goalReportReferencesKnownGap(plan *assistantstore.GoalPlan, report assistantstore.GoalTaskReport) bool {
+	if plan == nil || len(report.GapIDs) == 0 {
+		return false
+	}
+	ids := map[string]bool{}
+	for _, gapID := range report.GapIDs {
+		gapID = strings.TrimSpace(gapID)
+		if gapID != "" {
+			ids[gapID] = true
+		}
+	}
+	if len(ids) == 0 {
+		return false
+	}
+	for _, gap := range plan.Gaps {
+		if ids[strings.TrimSpace(gap.ID)] {
 			return true
 		}
 	}

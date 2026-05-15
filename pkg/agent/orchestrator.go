@@ -8590,6 +8590,15 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 		}
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.requeued", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"previous_result": previousResult})})
 	}
+	if taskBlockedByRemoteGoalReview(t) {
+		previousResult := t.Result
+		t.Status = taskstore.StatusReadyForReview
+		t.AssignedTo = "OrchestratorAgent"
+		if err := o.tasks.Save(t); err != nil {
+			return "", err
+		}
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.review.requeued", Actor: "ReviewerAgent", TaskID: taskID, Payload: eventlog.Payload(map[string]any{"previous_result": previousResult, "reason": "remote Goal review blocker re-evaluated"})})
+	}
 	if t.Status != taskstore.StatusReadyForReview {
 		return reviewNotReadyReply(t), nil
 	}

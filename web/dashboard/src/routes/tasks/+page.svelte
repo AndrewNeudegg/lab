@@ -3829,9 +3829,14 @@
   }
 
   .secondary-actions button.danger {
-    border-color: #fecaca;
-    color: #991b1b;
-    background: #fff7f7;
+    border-color: color-mix(in srgb, var(--danger-text, #991b1b) 34%, var(--danger-bg, #fef2f2));
+    color: var(--danger-text, #991b1b);
+    background: var(--danger-bg, #fef2f2);
+  }
+
+  .secondary-actions button.danger:hover:not(:disabled) {
+    border-color: var(--danger-text, #991b1b);
+    background: color-mix(in srgb, var(--danger-bg, #fef2f2) 86%, var(--surface-hover, #eef5ff));
   }
 
   .record-summary {
@@ -4191,12 +4196,13 @@
     display: grid;
     gap: 0.25rem;
     padding: 0.85rem;
-    border-color: #f59e0b;
-    background: #fffbeb;
+    border-color: var(--warning-border, #f59e0b);
+    color: var(--warning-text, #92400e);
+    background: var(--warning-bg, #fffbeb);
   }
 
   .execution-context span {
-    color: #92400e;
+    color: var(--warning-text, #92400e);
     font-size: 0.72rem;
     font-weight: 900;
     letter-spacing: 0.08em;

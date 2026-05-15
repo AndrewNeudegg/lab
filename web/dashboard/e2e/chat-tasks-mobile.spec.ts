@@ -1116,14 +1116,14 @@ test('chat marks failed sends inline and retries the original message', async ({
 
 test('chat times out stalled sends and re-enables composer actions', async ({ page }) => {
   await page.addInitScript(() => {
-    (window as Window & { __homelabdChatSendTimeoutMs?: number }).__homelabdChatSendTimeoutMs = 750;
+    (window as Window & { __homelabdChatSendTimeoutMs?: number }).__homelabdChatSendTimeoutMs = 1000;
   });
 
   let attempts = 0;
   await page.route('**/api/message', async (route) => {
     attempts += 1;
     if (attempts === 1) {
-      await sleep(1000);
+      await sleep(1250);
       await route.abort('timedout').catch(() => undefined);
       return;
     }

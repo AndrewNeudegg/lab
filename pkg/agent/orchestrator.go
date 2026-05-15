@@ -8833,11 +8833,11 @@ func (o *Orchestrator) reviewTaskWithOptions(ctx context.Context, selector strin
 	}
 	t.Status = taskstore.StatusAwaitingApproval
 	t.AssignedTo = "OrchestratorAgent"
-	t.Result = "ReviewerAgent test status: " + status
+	t.Result = appendResultLine(t.Result, "ReviewerAgent test status: "+status)
 	uiUXLine := ""
 	if uiUXRequired {
 		uiUXLine = "UI/UX checks: reviewed brief present; desktop and mobile accessibility plus visual checks enforced by " + uiUXUATLabel(browserUAT) + "."
-		t.Result += "\n" + uiUXLine
+		t.Result = appendResultLine(t.Result, uiUXLine)
 	}
 	replyUIUXLine := ""
 	if uiUXLine != "" {

@@ -2149,6 +2149,9 @@ func TestRemoteGitTaskUsesManagedWorktreeReviewAndMerge(t *testing.T) {
 	if reviewed.Status != taskstore.StatusAwaitingApproval || reviewed.DiffSnapshot == nil || reviewed.DiffSnapshot.Summary.Files != 1 {
 		t.Fatalf("reviewed task = %#v, want awaiting approval with one-file snapshot", reviewed)
 	}
+	if !strings.Contains(reviewed.Result, "changed feature.txt") || !strings.Contains(reviewed.Result, "ReviewerAgent test status: pass") {
+		t.Fatalf("reviewed result = %q, want worker result preserved with review status", reviewed.Result)
+	}
 	approvals, err := orch.approvals.List()
 	if err != nil {
 		t.Fatal(err)

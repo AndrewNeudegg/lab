@@ -3440,6 +3440,13 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 			}
 		}
 	}
+	inferredGapIDs := inferGoalReportGapIDsFromPlan(goal.Plan, report)
+	if len(inferredGapIDs) > 0 {
+		report.GapIDs = appendUniqueStrings(report.GapIDs, inferredGapIDs...)
+		if report.TaskType == assistantstore.GoalTaskTypeBuild && goalReportTaskLinkedToGap(goal.Plan, report.TaskID) {
+			report.TaskType = assistantstore.GoalTaskTypeGapFix
+		}
+	}
 	explicitNoChange := t.Status == taskstore.StatusNoChangeRequired || workerReportedNoChangeRequired(t.Result)
 	hasDiffEvidence := report.DiffFiles > 0 || len(report.ChangedFiles) > 0
 	if explicitNoChange && !hasDiffEvidence {
@@ -4125,6 +4132,10 @@ func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.Goal
 
 	score := goalAlignmentScore(goal, phase, report)
 	aligned := score > 0 || goalReportReferencesKnownGap(goal.Plan, report)
+	hasReviewerPass := goalReportHasReviewerPass(report)
+	if aligned && hasReviewerPass && !hasValidation {
+		evidence = append(evidence, "ReviewerAgent recorded a passing independent review.")
+	}
 	hasProductFile := goalReportHasProductFile(report)
 	if goalTaskReportRequiresPlanBlock(report) {
 		if aligned {
@@ -4140,10 +4151,10 @@ func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.Goal
 			Evidence: evidence,
 		}
 	}
-	if aligned && hasValidation {
+	if aligned && (hasValidation || hasReviewerPass) {
 		return goalTaskProgressReview{
 			Decision: goalTaskReviewVerifiedProgress,
-			Summary:  "Changed files, validation evidence, and Goal/phase or gap links line up, so the task is counted as verified progress.",
+			Summary:  "Changed files, review or validation evidence, and Goal/phase or gap links line up, so the task is counted as verified progress.",
 			Evidence: evidence,
 		}
 	}
@@ -4192,6 +4203,17 @@ func goalReportHasProductFile(report assistantstore.GoalTaskReport) bool {
 	return false
 }
 
+func goalReportHasReviewerPass(report assistantstore.GoalTaskReport) bool {
+	text := strings.ToLower(strings.Join([]string{
+		report.Summary,
+		report.ResultExcerpt,
+		strings.Join(report.ReviewEvidence, " "),
+	}, "\n"))
+	return strings.Contains(text, "revieweragent test status: pass") ||
+		strings.Contains(text, "revieweragent recorded a passing") ||
+		strings.Contains(text, "revieweragent: pass")
+}
+
 func goalReportReferencesKnownGap(plan *assistantstore.GoalPlan, report assistantstore.GoalTaskReport) bool {
 	if plan == nil || len(report.GapIDs) == 0 {
 		return false
@@ -4209,6 +4231,84 @@ func goalReportReferencesKnownGap(plan *assistantstore.GoalPlan, report assistan
 	for _, gap := range plan.Gaps {
 		if ids[strings.TrimSpace(gap.ID)] {
 			return true
+		}
+	}
+	return false
+}
+
+func inferGoalReportGapIDsFromPlan(plan *assistantstore.GoalPlan, report assistantstore.GoalTaskReport) []string {
+	if plan == nil {
+		return nil
+	}
+	report = assistantstore.NormalizeGoalTaskReport(report)
+	if report.TaskID == "" || (report.DiffFiles == 0 && len(report.ChangedFiles) == 0) {
+		return nil
+	}
+	planValue := assistantstore.NormalizeGoalPlan(*plan)
+	var out []string
+	for _, gap := range planValue.Gaps {
+		switch gap.Status {
+		case assistantstore.GoalGapStatusFixed, assistantstore.GoalGapStatusAcceptedRisk, assistantstore.GoalGapStatusDisproven:
+			continue
+		}
+		if gap.ID == "" || !stringSliceContains(gap.TaskIDs, report.TaskID) {
+			continue
+		}
+		if goalReportMatchesGapEvidence(gap, report) {
+			out = appendUniqueStrings(out, gap.ID)
+		}
+	}
+	return out
+}
+
+func goalReportTaskLinkedToGap(plan *assistantstore.GoalPlan, taskID string) bool {
+	if plan == nil || strings.TrimSpace(taskID) == "" {
+		return false
+	}
+	for _, gap := range assistantstore.NormalizeGoalPlan(*plan).Gaps {
+		if stringSliceContains(gap.TaskIDs, taskID) {
+			return true
+		}
+	}
+	return false
+}
+
+func goalReportMatchesGapEvidence(gap assistantstore.GoalGap, report assistantstore.GoalTaskReport) bool {
+	gapText := strings.ToLower(filepath.ToSlash(strings.Join([]string{
+		gap.Area,
+		gap.Claim,
+		gap.Evidence,
+		gap.SuggestedTask,
+	}, " ")))
+	for _, path := range report.ChangedFiles {
+		path = strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+		if path == "" {
+			continue
+		}
+		if strings.Contains(gapText, path) {
+			return true
+		}
+		base := strings.TrimSpace(filepath.Base(path))
+		if len(base) >= 6 && strings.Contains(gapText, base) {
+			return true
+		}
+	}
+	gapTerms := significantGoalTerms(gapText)
+	if len(gapTerms) == 0 {
+		return false
+	}
+	evidenceTerms := significantGoalTerms(strings.Join([]string{
+		strings.Join(report.ChangedFiles, " "),
+		strings.Join(report.Validation, " "),
+		report.Summary,
+	}, " "))
+	overlap := 0
+	for term := range evidenceTerms {
+		if gapTerms[term] {
+			overlap++
+			if overlap >= 2 {
+				return true
+			}
 		}
 	}
 	return false

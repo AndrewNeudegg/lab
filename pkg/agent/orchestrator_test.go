@@ -8495,6 +8495,77 @@ func TestReviewGoalTaskProgressCountsKnownGapFixAsAligned(t *testing.T) {
 	}
 }
 
+func TestGoalTaskReportRecoversAssignedGapFixFromDiffSnapshot(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	now := time.Now().UTC()
+	goal := assistantstore.Goal{
+		ID:        "goal_gap_recovery",
+		Title:     "One UI, One Product",
+		Objective: "Build a reusable design system.",
+		Plan: &assistantstore.GoalPlan{
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:        "phase_01_foundation",
+				Title:     "Establish architecture",
+				Objective: "Create a usable foundation.",
+			}},
+			Gaps: []assistantstore.GoalGap{{
+				ID:            "ggap_planning_tests",
+				PhaseID:       "phase_01_foundation",
+				Area:          "planning regression tests",
+				Severity:      assistantstore.GoalGapSeverityHigh,
+				Claim:         "Planning tests reject stale next-work language.",
+				Evidence:      "tests/planning-artifact.test.js does not reject stale form-field planning language.",
+				Status:        assistantstore.GoalGapStatusInProgress,
+				SuggestedTask: "Add negative assertions to tests/planning-artifact.test.js rejecting stale form-field next-work language.",
+				TaskIDs:       []string{"task_gap_fix"},
+			}},
+		},
+	}
+	task := taskstore.Task{
+		ID:          "task_gap_fix",
+		GoalID:      goal.ID,
+		GoalPhaseID: "phase_01_foundation",
+		Title:       "One UI, One Product",
+		Goal:        "repair the planning regression test gap",
+		Status:      taskstore.StatusAwaitingVerification,
+		AssignedTo:  "OrchestratorAgent",
+		Result:      "ReviewerAgent test status: pass\nawaiting approval had no pending merge approval; task supervisor requeued review",
+		DiffSnapshot: &taskstore.TaskDiffSnapshot{
+			Source:     "local_review_snapshot",
+			BaseLabel:  "main",
+			HeadLabel:  "homelabd/task_gap_fix",
+			CapturedAt: now,
+			RawDiff:    "diff --git a/tests/planning-artifact.test.js b/tests/planning-artifact.test.js\n+++ b/tests/planning-artifact.test.js\n+expect(matrix).not.toMatch(/form components are not started/i);\n",
+			Summary: taskstore.TaskDiffSnapshotSummary{
+				Files:     1,
+				Additions: 1,
+			},
+			Files: []taskstore.TaskDiffSnapshotFile{{
+				Path:      "tests/planning-artifact.test.js",
+				Status:    "modified",
+				Additions: 1,
+			}},
+		},
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	report := orch.goalTaskReportFromTask(context.Background(), goal, task)
+	if report.TaskType != assistantstore.GoalTaskTypeGapFix {
+		t.Fatalf("task type = %q, want gap_fix", report.TaskType)
+	}
+	if !stringSliceContains(report.GapIDs, "ggap_planning_tests") {
+		t.Fatalf("gap ids = %#v, want inferred planning gap", report.GapIDs)
+	}
+	if report.ReviewDecision != goalTaskReviewVerifiedProgress {
+		t.Fatalf("review decision = %q, summary = %q, evidence = %#v", report.ReviewDecision, report.ReviewSummary, report.ReviewEvidence)
+	}
+	if !report.AdvancedGoal {
+		t.Fatal("expected recovered gap-fix report to advance the goal")
+	}
+}
+
 func TestGoalAutopilotRequiresChallengeForGoalCompletionReport(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),

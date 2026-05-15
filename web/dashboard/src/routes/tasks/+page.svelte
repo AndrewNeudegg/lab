@@ -95,7 +95,7 @@
 
   let newTaskDraft = '';
   let creatingTask = false;
-  let contextAcknowledged = false;
+  let targetCreateOpen = false;
   let refreshing = false;
   let taskLoadError = '';
   let diffError = '';
@@ -174,7 +174,6 @@
 	  let onlineWorkspaceItems: HomelabdRemoteWorkspace[] = [];
 	  let selectedWorkspace: HomelabdRemoteWorkspace | undefined;
 	  let queueOptions: { id: TaskQueueFilter; label: string; count: number; detail: string }[] = [];
-	  let selectedContextLabel = 'Local homelabd workspace';
   let emptyTaskListMessage = '';
   let currentPrimaryAction: PrimaryTaskAction = primaryTaskAction(undefined, []);
   let currentSecondaryOperations: TaskOperation[] = [];
@@ -567,14 +566,6 @@
       detail: `${agent.machine || 'unknown'} / ${agent.status}`
     }))
   ];
-  $: selectedContextLabel =
-    taskTargetMode === 'remote'
-      ? workspaceDetail(selectedWorkspace)
-      : taskTargetMode === 'local'
-        ? 'Local homelabd workspace'
-        : workspaces.length
-          ? 'Coordinator auto-route'
-          : 'Local homelabd workspace';
   $: currentPendingApproval = pendingApprovalForTask(currentTask, approvals);
   $: currentPrimaryAction = primaryTaskAction(currentTask, approvals);
   $: currentSecondaryOperations = secondaryTaskOperations(currentTask, approvals);
@@ -1153,7 +1144,6 @@
 	            : { mode: 'auto' };
       const response = await client.createTask({ goal, target });
       newTaskDraft = '';
-      contextAcknowledged = false;
       setNotice('success', 'Task created', response.reply || 'Task created.');
       await refreshState();
       showMobilePanel('queue');
@@ -1219,10 +1209,6 @@
     showMobilePanel('queue');
     syncSelectionForCurrentFilters();
   };
-
-	  const handleTargetChange = () => {
-	    contextAcknowledged = false;
-	  };
 
   const actionLoadingKey = (operation: TaskOperation, taskId: string) => `${operation}:${taskId}`;
 
@@ -1535,7 +1521,11 @@
   {/if}
 
   <div class="shell">
-    <aside class="task-pane" data-mobile-hidden={mobilePanel !== 'queue'} aria-label="Task queue">
+    <aside
+      class={`task-pane ${targetCreateOpen ? 'target-create-open' : ''}`}
+      data-mobile-hidden={mobilePanel !== 'queue'}
+      aria-label="Task queue"
+    >
       <header class="task-header">
         <div>
           <p>Task queue</p>
@@ -1732,7 +1722,12 @@
         {/each}
       </section>
 
-      <details class="target-create">
+      <details
+        class="target-create"
+        on:toggle={(event) => {
+          targetCreateOpen = (event.currentTarget as HTMLDetailsElement).open;
+        }}
+      >
         <summary>New task</summary>
         <div class="target-create-body" aria-label="Create targeted task">
           <header>
@@ -1750,7 +1745,7 @@
           </header>
           <label>
             <span>Task type</span>
-            <select bind:value={taskTargetMode} on:change={handleTargetChange}>
+            <select bind:value={taskTargetMode}>
               <option value="auto">Auto route</option>
               <option value="remote">Remote project</option>
               <option value="local">Local homelabd</option>
@@ -1762,7 +1757,6 @@
               <select
                 bind:value={selectedWorkspaceId}
                 disabled={!workspaces.length}
-                on:change={handleTargetChange}
               >
                 {#each workspaces as workspace}
                   <option value={workspace.id}>
@@ -1790,17 +1784,11 @@
                   : 'Describe work; the coordinator chooses the context'}
               disabled={creatingTask}
             ></textarea>
-            {#if taskTargetMode === 'remote'}
-              <label class="context-confirm">
-                <input type="checkbox" bind:checked={contextAcknowledged} disabled={!selectedWorkspace} />
-                <span>Run on <strong>{selectedContextLabel}</strong></span>
-              </label>
-            {/if}
             <button
               type="submit"
               disabled={creatingTask ||
                 !newTaskDraft.trim() ||
-                Boolean(taskTargetMode === 'remote' && (!selectedWorkspace || !contextAcknowledged))}
+                Boolean(taskTargetMode === 'remote' && !selectedWorkspace)}
             >
               {creatingTask
                 ? 'Creating'
@@ -3597,32 +3585,29 @@
 	    line-height: 1.35;
 	  }
 
-	  .target-create button[type='submit'],
+  .target-create button[type='submit'] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 2.65rem;
+    padding: 0 0.85rem;
+    border: 1px solid var(--accent, #2563eb);
+    border-radius: 0.65rem;
+    font-size: 0.84rem;
+    font-weight: 800;
+  }
+
+  .target-create button[type='submit']:hover:not(:disabled) {
+    border-color: #1d4ed8;
+    background: #1d4ed8;
+  }
+
+  .target-create button[type='submit'],
   .primary-action {
     border-color: var(--accent, #2563eb);
     color: #ffffff;
     background: var(--accent, #2563eb);
-  }
-
-  .context-confirm {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: start;
-    gap: 0.5rem;
-    padding: 0.55rem;
-    border: 1px solid #f59e0b;
-    border-radius: 0.55rem;
-    color: #713f12;
-    background: #fffbeb;
-    font-size: 0.78rem;
-    line-height: 1.35;
-  }
-
-  .context-confirm input {
-    width: 1rem;
-    min-height: 1rem;
-    margin: 0.1rem 0 0;
-    accent-color: #b45309;
   }
 
   footer {
@@ -4980,6 +4965,27 @@
     .task-list {
       overflow-y: auto;
       padding-right: 0.15rem;
+    }
+
+    .task-pane.target-create-open .merge-queue,
+    .task-pane.target-create-open .queue-groups {
+      display: none;
+    }
+
+    .target-create[open] {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .target-create[open] .target-create-body {
+      max-height: clamp(12rem, calc(100dvh - 18rem), 21rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    }
+
+    .target-create button[type='submit'] {
+      min-height: 2.85rem;
     }
 
     .task-row {

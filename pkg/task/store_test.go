@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -164,5 +165,39 @@ func TestStoreListSummariesBackfillsMissingIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(store.summaryPath(task.ID)); err != nil {
 		t.Fatalf("summary index was not regenerated: %v", err)
+	}
+}
+
+func TestStoreListSummariesDoesNotWaitBehindConcurrentReaders(t *testing.T) {
+	store := NewStore(t.TempDir())
+	task := Task{ID: "task_fresh", Title: "fresh summary", RemoteDiff: strings.Repeat("diff", 1000)}
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	done := make(chan error, 1)
+	go func() {
+		summaries, err := store.ListSummaries()
+		if err != nil {
+			done <- err
+			return
+		}
+		if len(summaries) != 1 || summaries[0].ID != task.ID || !summaries[0].SummaryOnly {
+			done <- errors.New("fresh summaries were not returned while another reader held the store")
+			return
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("ListSummaries waited behind another reader")
 	}
 }

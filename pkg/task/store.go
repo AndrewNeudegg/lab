@@ -11,7 +11,7 @@ import (
 
 type Store struct {
 	dir string
-	mu  sync.Mutex
+	mu  sync.RWMutex
 }
 
 func NewStore(dir string) *Store {
@@ -49,8 +49,8 @@ func (s *Store) Save(t Task) error {
 }
 
 func (s *Store) Load(id string) (Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.loadLocked(id)
 }
 
@@ -144,8 +144,8 @@ func (s *Store) Delete(id string) error {
 }
 
 func (s *Store) List() ([]Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -168,54 +168,108 @@ func (s *Store) List() ([]Task, error) {
 }
 
 func (s *Store) ListSummaries() ([]Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	tasks, staleIDs, err := s.listSummariesFast()
+	if err != nil {
+		return nil, err
+	}
+	if len(staleIDs) == 0 {
+		return tasks, nil
+	}
+	if err := s.backfillSummaries(staleIDs); err != nil {
+		return nil, err
+	}
+	tasks, staleIDs, err = s.listSummariesFast()
+	if err != nil {
+		return nil, err
+	}
+	if len(staleIDs) > 0 {
+		return nil, errors.New("task summary index remained stale after backfill")
+	}
+	return tasks, nil
+}
+
+func (s *Store) listSummariesFast() ([]Task, []string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	var tasks []Task
+	var staleIDs []string
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
 		id := entry.Name()[:len(entry.Name())-len(".json")]
-		t, err := s.loadSummaryForTaskLocked(id)
+		fresh, err := s.summaryFreshLocked(id)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		if !fresh {
+			staleIDs = append(staleIDs, id)
+			continue
+		}
+		t, err := s.loadSummaryLocked(id)
+		if err != nil {
+			staleIDs = append(staleIDs, id)
+			continue
+		}
+		t.SummaryOnly = true
 		tasks = append(tasks, t)
 	}
-	return tasks, nil
+	if len(staleIDs) > 0 {
+		return nil, staleIDs, nil
+	}
+	return tasks, nil, nil
 }
 
-func (s *Store) loadSummaryForTaskLocked(id string) (Task, error) {
-	fullInfo, err := os.Stat(s.taskPath(id))
-	if err != nil {
-		return Task{}, err
-	}
-	summaryInfo, err := os.Stat(s.summaryPath(id))
-	if err == nil && !summaryInfo.ModTime().Before(fullInfo.ModTime()) {
-		summary, loadErr := s.loadSummaryLocked(id)
-		if loadErr == nil {
-			summary.SummaryOnly = true
-			return summary, nil
+func (s *Store) backfillSummaries(ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		fresh, err := s.summaryFreshLocked(id)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if fresh {
+			if _, err := s.loadSummaryLocked(id); err == nil {
+				continue
+			}
+		}
+		full, err := s.loadLocked(id)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if err := s.writeSummaryLocked(full); err != nil {
+			return err
 		}
 	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Task{}, err
-	}
-	full, err := s.loadLocked(id)
+	return nil
+}
+
+func (s *Store) summaryFreshLocked(id string) (bool, error) {
+	fullInfo, err := os.Stat(s.taskPath(id))
 	if err != nil {
-		return Task{}, err
+		return false, err
 	}
-	if err := s.writeSummaryLocked(full); err != nil {
-		return Task{}, err
+	summaryInfo, err := os.Stat(s.summaryPath(id))
+	if err == nil {
+		return !summaryInfo.ModTime().Before(fullInfo.ModTime()), nil
 	}
-	return SummarizeForList(full), nil
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return false, nil
 }
 
 func (s *Store) loadSummaryLocked(id string) (Task, error) {

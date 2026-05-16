@@ -8098,6 +8098,7 @@ func TestGoalAutopilotCreatesPlanAndPhaseTaskContext(t *testing.T) {
 		firstPhase.Title,
 		"Goal plan:",
 		"Goal supervisor report contract",
+		`"claims":{"type":"array","items":{"type":"object"`,
 		"GOAL_REPORT:",
 	} {
 		if !strings.Contains(task.Goal, want) {
@@ -8192,6 +8193,7 @@ GOAL_REPORT: {"summary":"Foundation complete","advanced_goal":true,"phase_comple
 		"Recent structured Goal task reports",
 		"Foundation complete",
 		"Challenge mode",
+		`"claims_challenged":{"type":"array","items":{"type":"string"}}`,
 		"GOAL_CHALLENGE:",
 	} {
 		if !strings.Contains(nextTask.Goal, want) {
@@ -8303,6 +8305,123 @@ func TestGoalTaskReportParsesInlineRecoveredGoalReport(t *testing.T) {
 	report := orch.goalTaskReportFromTask(ctx, goal, task)
 	if report.ReviewDecision != goalTaskReviewVerifiedProgress || len(report.Validation) == 0 || len(report.Claims) == 0 || len(report.Claims[0].Evidence) == 0 {
 		t.Fatalf("report = %#v, want inline GOAL_REPORT validation to verify progress", report)
+	}
+}
+
+func TestGoalChallengeReportNormalizesObjectClaimsChallenged(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:        "goal_schema_repair",
+		Title:     "Build replacement data grid",
+		Objective: "Build a replacement for AG Grid.",
+		Kind:      assistantstore.GoalKindBuild,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusActive,
+			CurrentPhaseID: "phase_final_audit",
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:     "phase_final_audit",
+				Title:  "Final whole-goal audit",
+				Status: assistantstore.GoalPlanPhaseStatusInProgress,
+				Milestones: []assistantstore.GoalMilestone{{
+					ID:     "phase_final_audit_milestone_01",
+					Title:  "Final whole-goal audit",
+					Status: assistantstore.GoalMilestoneStatusChallenged,
+				}},
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	task := taskstore.Task{
+		ID:          "task_goal_challenge_object_claims",
+		GoalID:      goal.ID,
+		GoalPhaseID: "phase_final_audit",
+		Title:       "Final whole-goal audit",
+		Goal:        "Autopilot challenge task\nGOAL_CHALLENGE:",
+		Status:      taskstore.StatusReadyForReview,
+		Target:      remote1ExecutionTarget(),
+		Result: `Audit failed usefully.
+GOAL_CHALLENGE: {"milestone_id":"phase_final_audit_milestone_01","verdict":"failed","summary":"Whole goal remains incomplete.","evidence":["checked current repo"],"claims_challenged":[{"claim":"Whole goal is complete","result":"disproved"}],"gaps":[{"area":"component parity","claim":"Remaining components are implemented","severity":"high","evidence":"Overlay exports are absent.","suggested_task":"Implement overlay components."}],"goal_complete":false}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	report := orch.goalTaskReportFromTask(ctx, goal, task)
+	if report.Challenge == nil || report.ReviewDecision != goalTaskReviewVerifiedProgress {
+		t.Fatalf("report = %#v, want repaired failed challenge counted as actionable progress", report)
+	}
+	if got := report.Challenge.ClaimsChallenged; len(got) != 1 || !strings.Contains(got[0], "Whole goal is complete") || !strings.Contains(got[0], "disproved") {
+		t.Fatalf("claims challenged = %#v, want object claim normalized to a string", got)
+	}
+	if len(report.Challenge.Gaps) != 1 || report.Challenge.Gaps[0].Area != "component parity" {
+		t.Fatalf("gaps = %#v, want challenge gap preserved", report.Challenge.Gaps)
+	}
+	if !strings.Contains(strings.Join(report.Challenge.Evidence, "\n"), "Report schema repair") {
+		t.Fatalf("evidence = %#v, want schema repair note", report.Challenge.Evidence)
+	}
+}
+
+func TestGoalChallengeReportSchemaErrorIsExplicit(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:        "goal_schema_error",
+		Title:     "Build replacement data grid",
+		Objective: "Build a replacement for AG Grid.",
+		Kind:      assistantstore.GoalKindBuild,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusActive,
+			CurrentPhaseID: "phase_final_audit",
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:     "phase_final_audit",
+				Title:  "Final whole-goal audit",
+				Status: assistantstore.GoalPlanPhaseStatusInProgress,
+				Milestones: []assistantstore.GoalMilestone{{
+					ID:     "phase_final_audit_milestone_01",
+					Title:  "Final whole-goal audit",
+					Status: assistantstore.GoalMilestoneStatusChallenged,
+				}},
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	task := taskstore.Task{
+		ID:          "task_goal_challenge_schema_error",
+		GoalID:      goal.ID,
+		GoalPhaseID: "phase_final_audit",
+		Title:       "Final whole-goal audit",
+		Goal:        "Autopilot challenge task\nGOAL_CHALLENGE:",
+		Status:      taskstore.StatusReadyForReview,
+		Target:      remote1ExecutionTarget(),
+		Result: `Audit returned malformed structured output.
+GOAL_CHALLENGE: {"milestone_id":"phase_final_audit_milestone_01","verdict":"failed","summary":"Malformed gaps field.","evidence":["checked current repo"],"claims_challenged":["Whole goal"],"gaps":"not an array","goal_complete":false}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	report := orch.goalTaskReportFromTask(ctx, goal, task)
+	if report.ReviewDecision != goalTaskReviewInsufficientEvidence {
+		t.Fatalf("review decision = %q, want insufficient evidence", report.ReviewDecision)
+	}
+	if !strings.Contains(report.ReviewSummary, "failed schema validation") {
+		t.Fatalf("review summary = %q, want explicit schema failure", report.ReviewSummary)
+	}
+	if !strings.Contains(strings.Join(report.ReviewEvidence, "\n"), "GOAL_CHALLENGE.gaps must be array") {
+		t.Fatalf("review evidence = %#v, want concrete mismatch", report.ReviewEvidence)
 	}
 }
 

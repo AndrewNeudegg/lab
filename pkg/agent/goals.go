@@ -11,6 +11,7 @@ import (
 	assistantstore "github.com/andrewneudegg/lab/pkg/assistant"
 	"github.com/andrewneudegg/lab/pkg/eventlog"
 	"github.com/andrewneudegg/lab/pkg/id"
+	"github.com/andrewneudegg/lab/pkg/llm"
 	taskstore "github.com/andrewneudegg/lab/pkg/task"
 	approvalstore "github.com/andrewneudegg/lab/pkg/tools/approval"
 )
@@ -20,6 +21,10 @@ const (
 	goalFinalAuditMilestoneID = goalFinalAuditPhaseID + "_milestone_01"
 	goalFinalAuditMarker      = "Final whole-goal audit"
 )
+
+const goalReportJSONSchema = `{"type":"object","additionalProperties":false,"required":["task_type","phase_id","milestone_id","summary","advanced_goal","phase_complete","goal_complete","changed_files","validation","follow_ups","blockers","questions","claims"],"properties":{"task_type":{"type":"string","enum":["build","gap_fix"]},"phase_id":{"type":"string"},"milestone_id":{"type":"string"},"summary":{"type":"string"},"advanced_goal":{"type":"boolean"},"phase_complete":{"type":"boolean"},"goal_complete":{"type":"boolean"},"changed_files":{"type":"array","items":{"type":"string"}},"validation":{"type":"array","items":{"type":"string"}},"follow_ups":{"type":"array","items":{"type":"string"}},"blockers":{"type":"array","items":{"type":"string"}},"blocker_resolver":{"type":"string","enum":["human","agent","external"]},"next_action":{"type":"string"},"questions":{"type":"array","items":{"type":"string"}},"claims":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["claim","evidence"],"properties":{"claim":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}}}}},"gap_ids":{"type":"array","items":{"type":"string"}}}}`
+
+const goalChallengeJSONSchema = `{"type":"object","additionalProperties":false,"required":["milestone_id","verdict","summary","evidence","claims_challenged","gaps","goal_complete"],"properties":{"milestone_id":{"type":"string"},"verdict":{"type":"string","enum":["passed","failed","needs_user"]},"summary":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"claims_challenged":{"type":"array","items":{"type":"string"}},"gaps":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["area","claim","severity","evidence","suggested_task"],"properties":{"area":{"type":"string"},"claim":{"type":"string"},"severity":{"type":"string","enum":["critical","high","medium","low"]},"evidence":{"type":"string"},"suggested_task":{"type":"string"}}}},"goal_complete":{"type":"boolean"}}}`
 
 func (o *Orchestrator) assistantGoalStore() (*assistantstore.GoalStore, error) {
 	if strings.TrimSpace(o.cfg.DataDir) == "" {
@@ -1121,6 +1126,12 @@ func (o *Orchestrator) recheckBlockedRemoteGoalTask(ctx context.Context, store *
 	if refreshed.Status == taskstore.StatusBlocked {
 		if continued, continueReply, err := o.continueGoalAutopilotFromAgentRepairBlock(ctx, store, goal.ID, refreshed.ID, reply); err != nil || continued {
 			return continued, continueReply, err
+		}
+		if ok, reason := automaticTaskRecoveryCandidate(refreshed, time.Now().UTC()); ok {
+			if queueErr := o.queueAutomaticRemoteTaskRecovery(ctx, refreshed, reason); queueErr != nil {
+				return false, "", queueErr
+			}
+			return true, fmt.Sprintf("Autopilot rechecked blocked remote Goal task %s.\n%s\nThe task supervisor queued an automatic remote retry because %s.", shortID, reply, reason), nil
 		}
 		reason := fmt.Sprintf("Linked remote task %s is still blocked after automatic validation review.", shortID)
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, reason)
@@ -2605,6 +2616,9 @@ func goalAutopilotTaskGoalForDecision(goal assistantstore.Goal, decision assista
 	b.WriteString("\n\nGoal supervisor report contract:")
 	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_REPORT:`.")
 	b.WriteString("\nThe object must include: task_type, phase_id, milestone_id, summary, advanced_goal, phase_complete, goal_complete, changed_files, validation, follow_ups, blockers, questions, claims.")
+	b.WriteString("\nThe JSON object must validate against this schema:")
+	fmt.Fprintf(&b, "\n```json\n%s\n```", goalReportJSONSchema)
+	b.WriteString("\nExample: `GOAL_REPORT: {\"task_type\":\"build\",\"phase_id\":\"phase_01_foundation\",\"milestone_id\":\"phase_01_foundation_milestone_02_build\",\"summary\":\"Implemented the bounded slice.\",\"advanced_goal\":true,\"phase_complete\":false,\"goal_complete\":false,\"changed_files\":[\"src/example.js\"],\"validation\":[\"bun test\"],\"follow_ups\":[],\"blockers\":[],\"questions\":[],\"claims\":[{\"claim\":\"The slice is implemented\",\"evidence\":[\"src/example.js\",\"bun test passed\"]}]}`")
 	b.WriteString("\nUse task_type `build` for normal milestone work and `gap_fix` when this task is repairing a selected challenge gap. Include gap_ids for gap-fix work.")
 	b.WriteString("\nUse blockers only for conditions that genuinely stop autonomous work, such as missing credentials, unsafe/destructive action, external outage, or a product decision. Do not put ordinary open repair gaps in blockers; record them as follow_ups and gap_ids so Autopilot can continue.")
 	b.WriteString("\nIf a blocker is unavoidable, include blocker_resolver as `human`, `agent`, or `external`, plus next_action. Use `human` only when the operator must decide or provide something; use `agent` when the next step is another autonomous repair task.")
@@ -2710,6 +2724,9 @@ func goalAutopilotChallengeTaskGoal(goal assistantstore.Goal, decision assistant
 	b.WriteString("\n\nGoal challenge report contract:")
 	b.WriteString("\nAt the end of the task result, include a single-line JSON object prefixed with `GOAL_CHALLENGE:`.")
 	b.WriteString("\nThe object must include: milestone_id, verdict, summary, evidence, claims_challenged, gaps, goal_complete.")
+	b.WriteString("\nThe JSON object must validate against this schema:")
+	fmt.Fprintf(&b, "\n```json\n%s\n```", goalChallengeJSONSchema)
+	b.WriteString("\nExample: `GOAL_CHALLENGE: {\"milestone_id\":\"phase_01_foundation_milestone_01_scope\",\"verdict\":\"failed\",\"summary\":\"The evidence is not sufficient yet.\",\"evidence\":[\"docs/example.md is missing\"],\"claims_challenged\":[\"The slice is documented\"],\"gaps\":[{\"area\":\"documentation\",\"claim\":\"The slice is documented\",\"severity\":\"high\",\"evidence\":\"No durable documentation exists.\",\"suggested_task\":\"Add the missing documentation and tests.\"}],\"goal_complete\":false}`")
 	b.WriteString("\nUse verdict `passed`, `failed`, or `needs_user`. Gaps must be an array of objects with area, claim, severity, evidence, and suggested_task.")
 	b.WriteString("\nSet goal_complete true only if this is the final milestone, all success criteria are credibly satisfied, and no open critical/high gaps remain.")
 	return b.String()
@@ -3419,7 +3436,9 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 			report.TaskType = assistantstore.GoalTaskTypeChallenge
 		}
 	}
-	if challenge, ok := parseStructuredGoalChallenge(t.Result); ok {
+	challengeParse := parseStructuredGoalChallengeWithDiagnostics(t.Result)
+	if challengeParse.Found {
+		challenge := challengeParse.Challenge
 		report.TaskType = assistantstore.GoalTaskTypeChallenge
 		report.MilestoneID = firstNonEmptyString(challenge.MilestoneID, report.MilestoneID)
 		report.Summary = firstNonEmptyString(challenge.Summary, report.Summary)
@@ -3427,6 +3446,19 @@ func (o *Orchestrator) goalTaskReportFromTask(ctx context.Context, goal assistan
 		report.GoalComplete = challenge.GoalComplete
 		report.Challenge = &challenge
 		report.Validation = appendUniqueStrings(report.Validation, challenge.Evidence...)
+	} else if challengeParse.Candidate {
+		if repairedChallenge, repairDiagnostics, ok := o.repairStructuredGoalChallenge(ctx, t.Result, challengeParse.Diagnostics); ok {
+			report.TaskType = assistantstore.GoalTaskTypeChallenge
+			report.MilestoneID = firstNonEmptyString(repairedChallenge.MilestoneID, report.MilestoneID)
+			report.Summary = firstNonEmptyString(repairedChallenge.Summary, report.Summary)
+			report.AdvancedGoal = true
+			report.GoalComplete = repairedChallenge.GoalComplete
+			report.Challenge = &repairedChallenge
+			report.Validation = appendUniqueStrings(report.Validation, repairedChallenge.Evidence...)
+			report.Validation = appendUniqueStrings(report.Validation, repairDiagnostics...)
+		} else {
+			report.Validation = appendUniqueStrings(report.Validation, goalChallengeSchemaDiagnosticLines(challengeParse.Diagnostics)...)
+		}
 	}
 	if report.MilestoneID == "" {
 		if milestone, ok := inferReportMilestone(goal, report.PhaseID); ok {
@@ -3567,8 +3599,8 @@ type structuredGoalChallenge struct {
 	MilestoneID      string                   `json:"milestone_id"`
 	Verdict          string                   `json:"verdict"`
 	Summary          string                   `json:"summary"`
-	Evidence         []string                 `json:"evidence"`
-	ClaimsChallenged []string                 `json:"claims_challenged"`
+	Evidence         goalReportStrings        `json:"evidence"`
+	ClaimsChallenged goalReportStrings        `json:"claims_challenged"`
 	Gaps             []assistantstore.GoalGap `json:"gaps"`
 	GoalComplete     bool                     `json:"goal_complete"`
 }
@@ -3604,7 +3636,7 @@ func (values *goalReportStrings) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &mixed); err == nil {
 		out := make([]string, 0, len(mixed))
 		for _, item := range mixed {
-			if text, ok := item.(string); ok {
+			if text, ok := goalReportStringFromAny(item); ok {
 				out = append(out, text)
 			}
 		}
@@ -3613,6 +3645,43 @@ func (values *goalReportStrings) UnmarshalJSON(data []byte) error {
 	}
 	*values = nil
 	return nil
+}
+
+func goalReportStringFromAny(item any) (string, bool) {
+	switch value := item.(type) {
+	case string:
+		value = strings.TrimSpace(value)
+		return value, value != ""
+	case map[string]any:
+		claim := goalReportMapString(value, "claim")
+		result := goalReportMapString(value, "result")
+		if claim != "" && result != "" {
+			return claim + " (result: " + result + ")", true
+		}
+		if claim != "" {
+			return claim, true
+		}
+		summary := goalReportMapString(value, "summary")
+		if summary != "" {
+			return summary, true
+		}
+		raw, err := json.Marshal(value)
+		if err == nil && len(raw) > 0 {
+			return string(raw), true
+		}
+	}
+	return "", false
+}
+
+func goalReportMapString(values map[string]any, key string) string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
@@ -3677,9 +3746,25 @@ func parseStructuredGoalReport(result string) (structuredGoalReport, bool) {
 	return latest, found
 }
 
+type structuredGoalChallengeParse struct {
+	Challenge   assistantstore.GoalChallenge
+	Found       bool
+	Candidate   bool
+	Repaired    bool
+	Diagnostics []string
+}
+
 func parseStructuredGoalChallenge(result string) (assistantstore.GoalChallenge, bool) {
+	parsed := parseStructuredGoalChallengeWithDiagnostics(result)
+	return parsed.Challenge, parsed.Found
+}
+
+func parseStructuredGoalChallengeWithDiagnostics(result string) structuredGoalChallengeParse {
 	var latest assistantstore.GoalChallenge
+	var latestDiagnostics []string
 	found := false
+	candidate := false
+	repaired := false
 	for _, line := range strings.Split(result, "\n") {
 		trimmed := strings.TrimSpace(line)
 		index := strings.Index(strings.ToUpper(trimmed), "GOAL_CHALLENGE:")
@@ -3687,24 +3772,191 @@ func parseStructuredGoalChallenge(result string) (assistantstore.GoalChallenge, 
 			continue
 		}
 		raw := goalReportJSONPayload(strings.TrimSpace(trimmed[index+len("GOAL_CHALLENGE:"):]))
+		if !strings.HasPrefix(strings.TrimSpace(raw), "{") {
+			continue
+		}
+		candidate = true
+		parseRaw := raw
+		diagnostics := validateJSONAgainstSchema("GOAL_CHALLENGE", json.RawMessage(raw), json.RawMessage(goalChallengeJSONSchema))
+		rawWasRepaired := false
+		if len(diagnostics) > 0 {
+			if normalized, repairNotes, ok := normalizeGoalChallengePayload(raw); ok {
+				repairDiagnostics := validateJSONAgainstSchema("GOAL_CHALLENGE", json.RawMessage(normalized), json.RawMessage(goalChallengeJSONSchema))
+				if len(repairDiagnostics) == 0 {
+					parseRaw = normalized
+					rawWasRepaired = true
+					diagnostics = append(diagnostics, repairNotes...)
+				} else {
+					diagnostics = append(diagnostics, repairDiagnostics...)
+				}
+			}
+		}
 		var structured structuredGoalChallenge
-		if err := json.Unmarshal([]byte(raw), &structured); err == nil {
+		if err := json.Unmarshal([]byte(parseRaw), &structured); err == nil && (len(validateJSONAgainstSchema("GOAL_CHALLENGE", json.RawMessage(parseRaw), json.RawMessage(goalChallengeJSONSchema))) == 0 || rawWasRepaired) {
 			challenge := assistantstore.GoalChallenge{
 				MilestoneID:      strings.TrimSpace(structured.MilestoneID),
 				Verdict:          structured.Verdict,
 				Summary:          strings.TrimSpace(structured.Summary),
-				Evidence:         normalizeGoalReportStrings(structured.Evidence, 24),
-				ClaimsChallenged: normalizeGoalReportStrings(structured.ClaimsChallenged, 24),
+				Evidence:         normalizeGoalReportStrings([]string(structured.Evidence), 24),
+				ClaimsChallenged: normalizeGoalReportStrings([]string(structured.ClaimsChallenged), 24),
 				Gaps:             structured.Gaps,
 				GoalComplete:     structured.GoalComplete,
 				CreatedAt:        time.Now().UTC(),
 			}
+			if rawWasRepaired {
+				challenge.Evidence = appendUniqueStrings(challenge.Evidence, "Report schema repair: "+strings.Join(diagnostics, "; "))
+			}
 			challenge = assistantstore.NormalizeGoalChallenge(challenge, 0)
 			latest = challenge
 			found = true
+			repaired = repaired || rawWasRepaired
+			latestDiagnostics = diagnostics
+		} else if len(diagnostics) > 0 {
+			latestDiagnostics = diagnostics
 		}
 	}
-	return latest, found
+	return structuredGoalChallengeParse{
+		Challenge:   latest,
+		Found:       found,
+		Candidate:   candidate,
+		Repaired:    repaired,
+		Diagnostics: compactGoalSchemaDiagnostics(latestDiagnostics),
+	}
+}
+
+func normalizeGoalChallengePayload(raw string) (string, []string, bool) {
+	var object map[string]any
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&object); err != nil {
+		return "", nil, false
+	}
+	values, ok := object["claims_challenged"].([]any)
+	if !ok {
+		return "", nil, false
+	}
+	out := make([]string, 0, len(values))
+	changed := false
+	for _, value := range values {
+		text, textOK := goalReportStringFromAny(value)
+		if !textOK {
+			return "", nil, false
+		}
+		if _, ok := value.(string); !ok {
+			changed = true
+		}
+		out = append(out, text)
+	}
+	if !changed {
+		return "", nil, false
+	}
+	object["claims_challenged"] = out
+	normalized, err := json.Marshal(object)
+	if err != nil {
+		return "", nil, false
+	}
+	return string(normalized), []string{"Automatically normalised GOAL_CHALLENGE.claims_challenged object items to strings."}, true
+}
+
+func compactGoalSchemaDiagnostics(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return out
+}
+
+func (o *Orchestrator) repairStructuredGoalChallenge(ctx context.Context, result string, diagnostics []string) (assistantstore.GoalChallenge, []string, bool) {
+	if o == nil || o.provider == nil || strings.TrimSpace(o.model) == "" {
+		return assistantstore.GoalChallenge{}, goalChallengeSchemaDiagnosticLines(diagnostics), false
+	}
+	userContent := strings.Join([]string{
+		"Repair the malformed GOAL_CHALLENGE report from this task result.",
+		"Use only the supplied task result. Do not invent evidence, gaps, or claims.",
+		"If a claims_challenged item is an object, convert it into one concise string that preserves the claim and result.",
+		"Schema validation errors:",
+		strings.Join(goalChallengeSchemaDiagnosticLines(diagnostics), "\n"),
+		"",
+		"Task result:",
+		truncateAssistantRunText(result, 12000),
+	}, "\n")
+	resp, err := o.provider.Complete(ctx, llm.CompletionRequest{
+		Model:       o.model,
+		Temperature: 0,
+		MaxTokens:   2500,
+		ResponseFormat: &llm.ResponseFormat{
+			Name:        "goal_challenge_report_repair",
+			Description: "Repaired GOAL_CHALLENGE report extracted from a task result.",
+			Schema:      json.RawMessage(goalChallengeJSONSchema),
+			Strict:      true,
+		},
+		Messages: []llm.Message{
+			{
+				Role: "system",
+				Content: strings.Join([]string{
+					"You repair malformed structured Goal challenge reports for homelabd.",
+					"Return exactly one JSON object matching the supplied schema and no prose.",
+					"Preserve the worker's meaning. Only reformat or normalise field shapes.",
+				}, "\n"),
+			},
+			{Role: "user", Content: userContent},
+		},
+	})
+	if err != nil {
+		repairDiagnostics := append(goalChallengeSchemaDiagnosticLines(diagnostics), "GOAL_CHALLENGE automatic schema repair failed: "+err.Error())
+		return assistantstore.GoalChallenge{}, compactGoalSchemaDiagnostics(repairDiagnostics), false
+	}
+	raw := strings.TrimSpace(extractJSON(resp.Message.Content))
+	if raw == "" {
+		raw = strings.TrimSpace(resp.Message.Content)
+	}
+	if issues := validateJSONAgainstSchema("GOAL_CHALLENGE", json.RawMessage(raw), json.RawMessage(goalChallengeJSONSchema)); len(issues) > 0 {
+		repairDiagnostics := append(goalChallengeSchemaDiagnosticLines(diagnostics), append([]string{"GOAL_CHALLENGE automatic schema repair returned invalid JSON."}, issues...)...)
+		return assistantstore.GoalChallenge{}, compactGoalSchemaDiagnostics(repairDiagnostics), false
+	}
+	var structured structuredGoalChallenge
+	if err := json.Unmarshal([]byte(raw), &structured); err != nil {
+		repairDiagnostics := append(goalChallengeSchemaDiagnosticLines(diagnostics), "GOAL_CHALLENGE automatic schema repair could not be decoded: "+err.Error())
+		return assistantstore.GoalChallenge{}, compactGoalSchemaDiagnostics(repairDiagnostics), false
+	}
+	challenge := assistantstore.NormalizeGoalChallenge(assistantstore.GoalChallenge{
+		MilestoneID:      strings.TrimSpace(structured.MilestoneID),
+		Verdict:          structured.Verdict,
+		Summary:          strings.TrimSpace(structured.Summary),
+		Evidence:         appendUniqueStrings(normalizeGoalReportStrings([]string(structured.Evidence), 24), "Report schema repair: automatic LLM reformat accepted after schema validation."),
+		ClaimsChallenged: normalizeGoalReportStrings([]string(structured.ClaimsChallenged), 24),
+		Gaps:             structured.Gaps,
+		GoalComplete:     structured.GoalComplete,
+		CreatedAt:        time.Now().UTC(),
+	}, 0)
+	repairDiagnostics := []string{"GOAL_CHALLENGE automatic schema repair accepted."}
+	if resp.Provider != "" || resp.Model != "" {
+		repairDiagnostics = append(repairDiagnostics, "Repair model: "+firstNonEmptyString(resp.Provider, o.provider.Name())+"/"+firstNonEmptyString(resp.Model, o.model)+".")
+	}
+	return challenge, repairDiagnostics, true
+}
+
+func goalChallengeSchemaDiagnosticLines(diagnostics []string) []string {
+	if len(diagnostics) == 0 {
+		return []string{"GOAL_CHALLENGE report was present but could not be parsed against the required schema."}
+	}
+	out := make([]string, 0, len(diagnostics)+1)
+	out = append(out, "GOAL_CHALLENGE schema validation failed:")
+	out = append(out, compactGoalSchemaDiagnostics(diagnostics)...)
+	return out
 }
 
 func goalReportJSONPayload(raw string) string {
@@ -4067,10 +4319,16 @@ func reviewGoalTaskProgress(goal assistantstore.Goal, report assistantstore.Goal
 	report = assistantstore.NormalizeGoalTaskReport(report)
 	if report.TaskType == assistantstore.GoalTaskTypeChallenge {
 		if report.Challenge == nil {
+			summary := "Challenge task did not include a GOAL_CHALLENGE report, so the supervisor cannot accept or reject the milestone."
+			evidence := nonEmptyStringSlice(firstNonEmptyString(report.Summary, "No GOAL_CHALLENGE report was found."))
+			if len(report.Validation) > 0 {
+				summary = "GOAL_CHALLENGE report was present but failed schema validation, so the supervisor cannot accept or reject the milestone."
+				evidence = append(evidence, report.Validation...)
+			}
 			return goalTaskProgressReview{
 				Decision: goalTaskReviewInsufficientEvidence,
-				Summary:  "Challenge task did not include a GOAL_CHALLENGE report, so the supervisor cannot accept or reject the milestone.",
-				Evidence: nonEmptyStringSlice(firstNonEmptyString(report.Summary, "No GOAL_CHALLENGE report was found.")),
+				Summary:  summary,
+				Evidence: evidence,
 			}
 		}
 		challenge := assistantstore.NormalizeGoalChallenge(*report.Challenge, 0)

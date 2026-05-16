@@ -2617,6 +2617,8 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 		return true, "review checks failed"
 	case strings.Contains(result, "revieweragent could not commit workspace changes"):
 		return true, "workspace git state blocked review"
+	case strings.Contains(result, "goal_challenge schema validation failed"):
+		return true, "structured Goal challenge report failed schema validation"
 	case strings.Contains(result, "automatic recovery failed"):
 		return true, "automatic recovery was interrupted or failed before worker start"
 	case strings.Contains(result, "revieweragent premerge check failed"),
@@ -2741,6 +2743,16 @@ func (o *Orchestrator) queueAutomaticRemoteTaskRecovery(ctx context.Context, t t
 
 func automaticRecoveryInstruction(t taskstore.Task, reason string) string {
 	shortID := taskShortID(t.ID)
+	if strings.Contains(strings.ToLower(reason), "structured goal challenge report failed schema validation") {
+		return strings.Join([]string{
+			fmt.Sprintf("Automatically recover task %s from malformed structured Goal challenge output.", shortID),
+			"Do not change implementation files for this format-only recovery unless the original task explicitly required a diagnostic artefact.",
+			"Inspect the latest task result and preserve its evidence, verdict, and gaps.",
+			"Finish with exactly one single-line GOAL_CHALLENGE JSON object that validates against the schema in the original task instructions.",
+			"claims_challenged must be an array of strings. Do not use objects for claims_challenged.",
+			"The system will review the task again when you complete.",
+		}, "\n")
+	}
 	return strings.Join([]string{
 		fmt.Sprintf("Automatically recover task %s from %s.", shortID, reason),
 		"Do not wait for the operator to click through the rebase queue.",

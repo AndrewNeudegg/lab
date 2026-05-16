@@ -2482,6 +2482,14 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 			continue
 		}
 		if remoteTask(t) {
+			changed, err := o.reconcileRemoteRunningTask(ctx, t, now, recoverAllRunning)
+			if err != nil {
+				o.log().Error("remote running task reconciliation failed", "task_id", t.ID, "error", err)
+				continue
+			}
+			if changed {
+				recovered++
+			}
 			continue
 		}
 		if !recoverAllRunning && !o.runningTaskStale(t, now) {
@@ -2529,6 +2537,42 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		o.log().Info("task recovery queued persisted running tasks", "count", recovered, "max_concurrent", maxConcurrent)
 	}
 	return recovered, nil
+}
+
+func (o *Orchestrator) reconcileRemoteRunningTask(ctx context.Context, t taskstore.Task, now time.Time, recoverAllRunning bool) (bool, error) {
+	if !remoteTask(t) || t.Target == nil || t.Status != taskstore.StatusRunning {
+		return false, nil
+	}
+	reason, ok, err := o.remoteRunningTaskLostReason(t, now, recoverAllRunning)
+	if err != nil || !ok {
+		return false, err
+	}
+	t.Status = taskstore.StatusTimedOut
+	t.AssignedTo = "OrchestratorAgent"
+	t.Result = appendResultLine(t.Result, reason)
+	if err := o.tasks.Save(t); err != nil {
+		return false, err
+	}
+	if o.remoteAgents != nil {
+		_ = o.remoteAgents.ClearCurrentTask(t.Target.AgentID, t.ID)
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.orphaned", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"agent_id": t.Target.AgentID,
+		"workdir":  t.Target.Workdir,
+		"reason":   reason,
+	})})
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.timed_out", Actor: "homelabd", TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"agent_id": t.Target.AgentID,
+		"workdir":  t.Target.Workdir,
+		"backend":  t.Target.Backend,
+		"reason":   reason,
+	})})
+	if remoteTaskUsesManagedGit(t) {
+		if err := o.queueAutomaticRemoteTaskRecovery(ctx, t, reason); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
 }
 
 func (o *Orchestrator) runSupervisorReview(taskID string) {
@@ -3032,6 +3076,59 @@ func (o *Orchestrator) runningTaskStale(t taskstore.Task, now time.Time) bool {
 		return true
 	}
 	return now.Sub(t.UpdatedAt) >= threshold
+}
+
+func (o *Orchestrator) remoteRunningTaskLostReason(t taskstore.Task, now time.Time, recoverAllRunning bool) (string, bool, error) {
+	if !remoteTask(t) || t.Target == nil || t.Status != taskstore.StatusRunning || o.remoteAgents == nil {
+		return "", false, nil
+	}
+	if !recoverAllRunning && !o.runningTaskStale(t, now) {
+		return "", false, nil
+	}
+	agentID := strings.TrimSpace(t.Target.AgentID)
+	if agentID == "" {
+		return "", false, nil
+	}
+	agent, err := o.remoteAgents.Load(agentID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Sprintf("remote task timed out because remote agent %s is no longer registered", agentID), true, nil
+		}
+		return "", false, err
+	}
+	started := taskRunStartedAt(t)
+	if !agent.StartedAt.IsZero() && !started.IsZero() && agent.StartedAt.After(started) {
+		return fmt.Sprintf("remote task timed out because remote agent %s restarted at %s after claiming the task at %s", agentID, agent.StartedAt.Format(time.RFC3339), started.Format(time.RFC3339)), true, nil
+	}
+	if current := strings.TrimSpace(agent.CurrentTaskID); current != "" && current != t.ID {
+		return fmt.Sprintf("remote task timed out because remote agent %s reports current task %s instead of %s", agentID, taskShortID(current), taskShortID(t.ID)), true, nil
+	}
+	if o.remoteAgentHeartbeatStale(agent, now) {
+		lastSeen := "never"
+		if !agent.LastSeen.IsZero() {
+			lastSeen = agent.LastSeen.Format(time.RFC3339)
+		}
+		return fmt.Sprintf("remote task timed out because remote agent %s has not sent a heartbeat since %s", agentID, lastSeen), true, nil
+	}
+	return "", false, nil
+}
+
+func taskRunStartedAt(t taskstore.Task) time.Time {
+	if t.StartedAt != nil && !t.StartedAt.IsZero() {
+		return t.StartedAt.UTC()
+	}
+	return t.UpdatedAt.UTC()
+}
+
+func (o *Orchestrator) remoteAgentHeartbeatStale(agent remoteagent.Agent, now time.Time) bool {
+	if agent.LastSeen.IsZero() {
+		return false
+	}
+	staleAfter := time.Duration(o.cfg.ControlPlane.AgentStaleSeconds) * time.Second
+	if staleAfter <= 0 {
+		staleAfter = 30 * time.Second
+	}
+	return now.Sub(agent.LastSeen) >= staleAfter
 }
 
 func (o *Orchestrator) unresolvedDependencies(t taskstore.Task) ([]string, error) {

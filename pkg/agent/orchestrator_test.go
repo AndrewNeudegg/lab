@@ -2180,6 +2180,81 @@ func TestRemoteGitTaskUsesManagedWorktreeReviewAndMerge(t *testing.T) {
 	}
 }
 
+func TestRemoteGitRunningTaskOrphanedByAgentRestartQueuesRecovery(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	repo := setupTestGitRepo(t)
+	startedAt := time.Now().UTC().Add(-time.Minute)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:        "workstation",
+		Machine:   "desk",
+		StartedAt: startedAt,
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "repo",
+			Path:      repo,
+			ProjectID: "remote-grid",
+			Branch:    "main",
+		}},
+	}, startedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if _, err := orch.CreateTaskWithTarget(ctx, "add remote feature", &taskstore.ExecutionTarget{
+		Mode:      "remote",
+		AgentID:   "workstation",
+		WorkdirID: "repo",
+		Backend:   "codex",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := orch.ClaimRemoteTask(ctx, agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment == nil {
+		t.Fatal("assignment is nil, want remote task")
+	}
+	restartedAt := time.Now().UTC().Add(time.Second)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:        "workstation",
+		Machine:   "desk",
+		StartedAt: restartedAt,
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "repo",
+			Path:      repo,
+			ProjectID: "remote-grid",
+			Branch:    "main",
+		}},
+	}, restartedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.RecoverRunningTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want orphaned remote task recovery", changed)
+	}
+	requeued, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requeued.Status != taskstore.StatusQueued || requeued.AssignedTo != "remote:workstation" {
+		t.Fatalf("task = %#v, want queued automatic remote recovery", requeued)
+	}
+	if requeued.AutoRecoveryAttempts != 1 {
+		t.Fatalf("auto recovery attempts = %d, want 1", requeued.AutoRecoveryAttempts)
+	}
+	if !strings.Contains(requeued.Result, "remote task timed out because remote agent workstation restarted") ||
+		!strings.Contains(requeued.Result, "automatic remote recovery attempt 1/3 queued") {
+		t.Fatalf("result = %q, want timeout and automatic recovery notes", requeued.Result)
+	}
+}
+
 func TestRemoteGitNoChangeUsesRemoteAutoMergePolicy(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))

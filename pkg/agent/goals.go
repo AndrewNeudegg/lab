@@ -1120,7 +1120,23 @@ func (o *Orchestrator) reconcileGoalAutopilotTask(ctx context.Context, store *as
 			return false, fmt.Sprintf("Autopilot is waiting for task supervisor timeout recovery on task %s.", taskShortID(t.ID)), nil
 		}
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Linked task "+taskShortID(t.ID)+" timed out and automatic recovery is exhausted.")
-	case taskstore.StatusFailed, taskstore.StatusCancelled:
+	case taskstore.StatusCancelled:
+		if !goalAutopilotAllows(goal, "create_task") {
+			return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Autopilot policy does not allow replacing cancelled tasks.")
+		}
+		if err := o.clearGoalAutopilotCurrentTask(store, goal.ID, t.ID, "Autopilot discarded cancelled linked task "+taskShortID(t.ID)+" and is checking the next Goal step."); err != nil {
+			return false, "", err
+		}
+		latest, loadErr := store.LoadGoal(goal.ID)
+		if loadErr != nil {
+			return false, "", loadErr
+		}
+		_, reconcileReply, err := o.reconcileGoalAutopilot(ctx, store, latest)
+		if strings.TrimSpace(reconcileReply) == "" {
+			reconcileReply = "Autopilot discarded cancelled task " + taskShortID(t.ID) + " and will select the next Goal step."
+		}
+		return true, reconcileReply, err
+	case taskstore.StatusFailed:
 		return o.blockOrStopGoalAutopilot(ctx, store, goal, assistantstore.GoalAutopilotStatusBlocked, "Linked task "+taskShortID(t.ID)+" is "+t.Status+".")
 	default:
 		return false, fmt.Sprintf("Autopilot is waiting for task %s (%s).", taskShortID(t.ID), firstNonEmptyString(t.Status, "unknown")), nil
@@ -1350,11 +1366,17 @@ func (o *Orchestrator) clearGoalAutopilotCurrentTask(store *assistantstore.GoalS
 	if err := store.SaveGoal(goal); err != nil {
 		return err
 	}
+	noteTitle := "Autopilot task accepted"
+	if strings.Contains(strings.ToLower(noteBody), "cancel") {
+		noteTitle = "Autopilot task cancelled"
+	} else if !strings.Contains(strings.ToLower(noteBody), "accept") {
+		noteTitle = "Autopilot task cleared"
+	}
 	_ = store.SaveNote(assistantstore.GoalNote{
 		ID:        id.New("gnote"),
 		GoalID:    goal.ID,
 		Kind:      "autopilot",
-		Title:     "Autopilot task accepted",
+		Title:     noteTitle,
 		Body:      strings.TrimSpace(noteBody),
 		TaskID:    strings.TrimSpace(taskID),
 		CreatedBy: "assistant",

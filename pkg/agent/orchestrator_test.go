@@ -7746,6 +7746,71 @@ func TestGoalAutopilotQueuesAutomaticRemoteTimeoutRecovery(t *testing.T) {
 	}
 }
 
+func TestGoalAutopilotResumeReplacesCancelledCurrentTask(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build remote cancelled-task recovery",
+		Objective:     "Keep building after a bad task attempt is cancelled.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 3},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelledTaskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(cancelledTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusCancelled
+	task.AssignedTo = "OrchestratorAgent"
+	task.Result = "cancelled by human"
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, reply, err := orch.ResumeGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reply, "is cancelled") {
+		t.Fatalf("reply = %q, want cancelled task replaced instead of blocking", reply)
+	}
+	if resumed.Goal.Autopilot == nil || resumed.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning || resumed.Goal.Status == assistantstore.GoalStatusBlocked {
+		t.Fatalf("goal = %#v, want running Autopilot", resumed.Goal)
+	}
+	nextTaskID := resumed.Goal.Autopilot.CurrentTaskID
+	if nextTaskID == "" || nextTaskID == cancelledTaskID {
+		t.Fatalf("current task = %q, want new task after cancelled %q", nextTaskID, cancelledTaskID)
+	}
+	nextTask, err := orch.tasks.Load(nextTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextTask.Status != taskstore.StatusQueued || nextTask.Target == nil || nextTask.Target.Mode != "remote" || nextTask.Target.AgentID != "remote1-agent" {
+		t.Fatalf("next task = %#v, want queued remote replacement", nextTask)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started for remote cancelled-task replacement")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestGoalUpdateUnlimitedTaskLimitResumesBudgetExhaustedAutopilot(t *testing.T) {
 	delegate := &delegateStub{
 		started:  make(chan struct{}, 1),

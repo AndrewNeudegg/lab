@@ -1687,7 +1687,14 @@ func (o *Orchestrator) goalSupervisorDecision(ctx context.Context, store *assist
 	if err != nil {
 		return assistantstore.GoalSupervisorDecision{}, err
 	}
+	planChanged := false
 	if o.reopenStalledGoalGaps(&goal, reports, now) {
+		planChanged = true
+	}
+	if reconcileGoalPlanStateFromReports(&goal, reports, now) {
+		planChanged = true
+	}
+	if planChanged {
 		goal.UpdatedAt = now
 		if err := store.SaveGoal(goal); err != nil {
 			return assistantstore.GoalSupervisorDecision{}, err
@@ -2097,6 +2104,270 @@ func closeIncompleteGoalGaps(plan *assistantstore.GoalPlan, taskID string, now t
 		}
 	}
 	return changed
+}
+
+type goalLatestChallenge struct {
+	challenge assistantstore.GoalChallenge
+	report    assistantstore.GoalTaskReport
+	createdAt time.Time
+}
+
+func reconcileGoalPlanStateFromReports(goal *assistantstore.Goal, reports []assistantstore.GoalTaskReport, now time.Time) bool {
+	if goal == nil || goal.Plan == nil {
+		return false
+	}
+	plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+	latest := latestGoalChallengesByMilestone(plan, reports)
+	changed := false
+	for phaseIndex := range plan.Phases {
+		phase := &plan.Phases[phaseIndex]
+		if phase.Status == assistantstore.GoalPlanPhaseStatusSkipped {
+			continue
+		}
+		for milestoneIndex := range phase.Milestones {
+			milestone := &phase.Milestones[milestoneIndex]
+			if milestone.ID == "" || milestone.Status == assistantstore.GoalMilestoneStatusAccepted || milestone.Status == assistantstore.GoalMilestoneStatusBlocked {
+				continue
+			}
+			challengeState, hasChallenge := latest[milestone.ID]
+			if hasChallenge {
+				if reconcileGoalMilestoneFromChallenge(&plan, phase.ID, milestone, challengeState, now) {
+					changed = true
+				}
+				continue
+			}
+			if milestone.Status == assistantstore.GoalMilestoneStatusChallenged && !goalMilestoneHasOpenGap(plan, *milestone) && goalMilestoneHasEvidence(*milestone) {
+				milestone.Status = assistantstore.GoalMilestoneStatusClaimed
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return false
+	}
+	updateGoalPlanProgress(&plan, now)
+	goal.Plan = &plan
+	if goal.Autopilot != nil {
+		goal.Autopilot.CurrentPhaseID = plan.CurrentPhaseID
+	}
+	if len(goal.OpenQuestions) == 0 && goal.Status == assistantstore.GoalStatusBlocked && plan.Status != assistantstore.GoalPlanStatusBlocked {
+		goal.Status = assistantstore.GoalStatusActive
+	}
+	if goal.Autopilot != nil && len(goal.OpenQuestions) == 0 && goal.Autopilot.Status == assistantstore.GoalAutopilotStatusBlocked && plan.Status != assistantstore.GoalPlanStatusBlocked {
+		goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
+		goal.Autopilot.StopReasons = nil
+		goal.Autopilot.LastStepAt = &now
+	}
+	return true
+}
+
+func latestGoalChallengesByMilestone(plan assistantstore.GoalPlan, reports []assistantstore.GoalTaskReport) map[string]goalLatestChallenge {
+	latest := map[string]goalLatestChallenge{}
+	for _, challenge := range plan.Challenges {
+		challenge = assistantstore.NormalizeGoalChallenge(challenge, 0)
+		milestoneID := strings.TrimSpace(challenge.MilestoneID)
+		if milestoneID == "" {
+			continue
+		}
+		createdAt := challenge.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Time{}
+		}
+		next := goalLatestChallenge{challenge: challenge, createdAt: createdAt}
+		if shouldReplaceGoalChallenge(latest[milestoneID], next) {
+			latest[milestoneID] = next
+		}
+	}
+	for _, report := range reports {
+		report = assistantstore.NormalizeGoalTaskReport(report)
+		if report.TaskType != assistantstore.GoalTaskTypeChallenge || report.Challenge == nil {
+			continue
+		}
+		challenge := assistantstore.NormalizeGoalChallenge(*report.Challenge, 0)
+		challenge.TaskID = firstNonEmptyString(challenge.TaskID, report.TaskID)
+		challenge.MilestoneID = firstNonEmptyString(challenge.MilestoneID, report.MilestoneID)
+		milestoneID := strings.TrimSpace(challenge.MilestoneID)
+		if milestoneID == "" {
+			continue
+		}
+		createdAt := challenge.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = report.CreatedAt
+		}
+		next := goalLatestChallenge{challenge: challenge, report: report, createdAt: createdAt}
+		if shouldReplaceGoalChallenge(latest[milestoneID], next) {
+			latest[milestoneID] = next
+		}
+	}
+	return latest
+}
+
+func shouldReplaceGoalChallenge(current, next goalLatestChallenge) bool {
+	if next.challenge.MilestoneID == "" {
+		return false
+	}
+	if current.challenge.MilestoneID == "" {
+		return true
+	}
+	if next.createdAt.IsZero() {
+		return !current.createdAt.IsZero()
+	}
+	if current.createdAt.IsZero() {
+		return true
+	}
+	if next.createdAt.Equal(current.createdAt) {
+		return next.challenge.TaskID > current.challenge.TaskID
+	}
+	return next.createdAt.After(current.createdAt)
+}
+
+func reconcileGoalMilestoneFromChallenge(plan *assistantstore.GoalPlan, phaseID string, milestone *assistantstore.GoalMilestone, state goalLatestChallenge, now time.Time) bool {
+	if plan == nil || milestone == nil {
+		return false
+	}
+	changed := false
+	challenge := assistantstore.NormalizeGoalChallenge(state.challenge, 0)
+	challenge.TaskID = firstNonEmptyString(challenge.TaskID, state.report.TaskID)
+	challenge.MilestoneID = firstNonEmptyString(challenge.MilestoneID, milestone.ID)
+	if challenge.TaskID != "" && !stringSliceContains(milestone.ChallengeTaskIDs, challenge.TaskID) {
+		milestone.ChallengeTaskIDs = append(milestone.ChallengeTaskIDs, challenge.TaskID)
+		changed = true
+	}
+	if challenge.ID != "" && milestone.LatestChallengeID != challenge.ID {
+		milestone.LatestChallengeID = challenge.ID
+		changed = true
+	}
+	switch challenge.Verdict {
+	case assistantstore.GoalChallengeVerdictPassed:
+		if closeGoalMilestoneGaps(plan, milestone.ID, challenge.TaskID, now) {
+			changed = true
+		}
+		if milestone.Status != assistantstore.GoalMilestoneStatusAccepted {
+			milestone.Status = assistantstore.GoalMilestoneStatusAccepted
+			changed = true
+		}
+	case assistantstore.GoalChallengeVerdictNeedsUser:
+		if milestone.Status != assistantstore.GoalMilestoneStatusBlocked {
+			milestone.Status = assistantstore.GoalMilestoneStatusBlocked
+			changed = true
+		}
+	default:
+		gapsChanged, openGap := ensureChallengeGapsForMilestone(plan, phaseID, milestone, state.report, now)
+		if gapsChanged {
+			changed = true
+		}
+		if !openGap && !goalMilestoneHasOpenGap(*plan, *milestone) && goalMilestoneHasEvidence(*milestone) {
+			if milestone.Status != assistantstore.GoalMilestoneStatusClaimed {
+				milestone.Status = assistantstore.GoalMilestoneStatusClaimed
+				changed = true
+			}
+		} else if milestone.Status != assistantstore.GoalMilestoneStatusChallenged {
+			milestone.Status = assistantstore.GoalMilestoneStatusChallenged
+			changed = true
+		}
+	}
+	return changed
+}
+
+func ensureChallengeGapsForMilestone(plan *assistantstore.GoalPlan, phaseID string, milestone *assistantstore.GoalMilestone, report assistantstore.GoalTaskReport, now time.Time) (bool, bool) {
+	if plan == nil || milestone == nil || report.Challenge == nil {
+		return false, false
+	}
+	changed := false
+	openGap := false
+	challenge := assistantstore.NormalizeGoalChallenge(*report.Challenge, 0)
+	for _, gap := range challenge.Gaps {
+		gap.PhaseID = firstNonEmptyString(gap.PhaseID, phaseID)
+		gap.MilestoneID = firstNonEmptyString(gap.MilestoneID, milestone.ID)
+		gap.Source = firstNonEmptyString(gap.Source, "challenge")
+		gap.SourceTaskID = firstNonEmptyString(gap.SourceTaskID, report.TaskID)
+		gap.Status = assistantstore.GoalGapStatusOpen
+		if gap.CreatedAt.IsZero() {
+			gap.CreatedAt = now
+		}
+		gap.UpdatedAt = now
+		gap = assistantstore.NormalizeGoalGap(gap, len(plan.Gaps))
+		if gap.ID == "" || strings.HasPrefix(gap.ID, "gap_") {
+			gap.ID = id.New("ggap")
+		}
+		if index := findGoalGapIndex(plan.Gaps, gap); index >= 0 {
+			existing := plan.Gaps[index]
+			if existing.ID != "" {
+				milestone.GapIDs = appendUniqueStrings(milestone.GapIDs, existing.ID)
+			}
+			if goalGapOpen(existing.Status) {
+				openGap = true
+			}
+			continue
+		}
+		plan.Gaps = append(plan.Gaps, gap)
+		milestone.GapIDs = appendUniqueStrings(milestone.GapIDs, gap.ID)
+		openGap = true
+		changed = true
+	}
+	return changed, openGap
+}
+
+func findGoalGapIndex(gaps []assistantstore.GoalGap, gap assistantstore.GoalGap) int {
+	key := goalGapKey(gap)
+	for index, existing := range gaps {
+		if gap.ID != "" && existing.ID == gap.ID {
+			return index
+		}
+		if key != "" && goalGapKey(existing) == key {
+			return index
+		}
+	}
+	return -1
+}
+
+func closeGoalMilestoneGaps(plan *assistantstore.GoalPlan, milestoneID, taskID string, now time.Time) bool {
+	if plan == nil || strings.TrimSpace(milestoneID) == "" {
+		return false
+	}
+	changed := false
+	for index := range plan.Gaps {
+		if plan.Gaps[index].MilestoneID != milestoneID || !goalGapOpen(plan.Gaps[index].Status) {
+			continue
+		}
+		plan.Gaps[index].Status = assistantstore.GoalGapStatusFixed
+		plan.Gaps[index].TaskIDs = appendUniqueStrings(plan.Gaps[index].TaskIDs, taskID)
+		plan.Gaps[index].UpdatedAt = now
+		changed = true
+	}
+	return changed
+}
+
+func goalMilestoneHasOpenGap(plan assistantstore.GoalPlan, milestone assistantstore.GoalMilestone) bool {
+	gapIDs := map[string]bool{}
+	for _, gapID := range milestone.GapIDs {
+		gapID = strings.TrimSpace(gapID)
+		if gapID != "" {
+			gapIDs[gapID] = true
+		}
+	}
+	for _, gap := range plan.Gaps {
+		if gap.MilestoneID != milestone.ID && !gapIDs[gap.ID] {
+			continue
+		}
+		if goalGapOpen(gap.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+func goalGapOpen(status string) bool {
+	switch strings.TrimSpace(status) {
+	case assistantstore.GoalGapStatusFixed, assistantstore.GoalGapStatusAcceptedRisk, assistantstore.GoalGapStatusDisproven:
+		return false
+	default:
+		return true
+	}
+}
+
+func goalMilestoneHasEvidence(milestone assistantstore.GoalMilestone) bool {
+	return len(milestone.TaskIDs) > 0 || len(milestone.ChallengeTaskIDs) > 0 || len(milestone.Claims) > 0 || len(milestone.Evidence) > 0
 }
 
 func goalPhaseMilestonesAccepted(phase assistantstore.GoalPlanPhase) bool {

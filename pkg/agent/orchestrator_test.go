@@ -9800,6 +9800,233 @@ func TestGoalAutopilotContinuesBlockedTaskWhenReportHasAutonomousRepairGap(t *te
 	}
 }
 
+func TestGoalAutopilotReconcilesStrandedChallengedMilestone(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	autopilot := assistantstore.NormalizeGoalAutopilot(&assistantstore.GoalAutopilot{
+		Status:       assistantstore.GoalAutopilotStatusRunning,
+		BudgetTasks:  assistantstore.GoalAutopilotUnlimitedBudget,
+		TasksStarted: 32,
+		StartedAt:    &now,
+		LastStepAt:   &now,
+	})
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:            "goal_stranded_challenge",
+		Title:         "OneUI, Charting",
+		Objective:     "Build an enterprise charting library.",
+		Status:        assistantstore.GoalStatusActive,
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Target:        remote1ExecutionTarget(),
+		Autopilot:     &autopilot,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusActive,
+			CurrentPhaseID: "phase_02_core",
+			Phases: []assistantstore.GoalPlanPhase{
+				{
+					ID:     "phase_01_foundation",
+					Title:  "Foundation",
+					Status: assistantstore.GoalPlanPhaseStatusCompleted,
+					Milestones: []assistantstore.GoalMilestone{{
+						ID:      "phase_01_foundation_milestone_01_scope",
+						PhaseID: "phase_01_foundation",
+						Title:   "Scope",
+						Status:  assistantstore.GoalMilestoneStatusAccepted,
+					}},
+				},
+				{
+					ID:        "phase_02_core",
+					Title:     "Build the core capability",
+					Status:    assistantstore.GoalPlanPhaseStatusInProgress,
+					DependsOn: []string{"phase_01_foundation"},
+					Milestones: []assistantstore.GoalMilestone{
+						{
+							ID:               "phase_02_core_milestone_01_scope",
+							PhaseID:          "phase_02_core",
+							Title:            "Scope the slice",
+							Status:           assistantstore.GoalMilestoneStatusChallenged,
+							TaskIDs:          []string{"task_scope_fix"},
+							ChallengeTaskIDs: []string{"task_failed_scope_challenge"},
+							GapIDs:           []string{"ggap_scope"},
+							Evidence:         []string{"Scope evidence repaired."},
+						},
+						{
+							ID:      "phase_02_core_milestone_02_build",
+							PhaseID: "phase_02_core",
+							Title:   "Deliver a usable slice",
+							Status:  assistantstore.GoalMilestoneStatusAccepted,
+						},
+						{
+							ID:      "phase_02_core_milestone_03_prove",
+							PhaseID: "phase_02_core",
+							Title:   "Prove the slice",
+							Status:  assistantstore.GoalMilestoneStatusAccepted,
+						},
+					},
+				},
+				{
+					ID:        "phase_03_parity",
+					Title:     "Expand feature parity",
+					Status:    assistantstore.GoalPlanPhaseStatusPending,
+					DependsOn: []string{"phase_02_core"},
+					Milestones: []assistantstore.GoalMilestone{{
+						ID:      "phase_03_parity_milestone_01_scope",
+						PhaseID: "phase_03_parity",
+						Title:   "Scope the slice",
+						Status:  assistantstore.GoalMilestoneStatusPending,
+					}},
+				},
+			},
+			Gaps: []assistantstore.GoalGap{{
+				ID:          "ggap_scope",
+				PhaseID:     "phase_02_core",
+				MilestoneID: "phase_02_core_milestone_01_scope",
+				Area:        "scope evidence",
+				Severity:    assistantstore.GoalGapSeverityHigh,
+				Status:      assistantstore.GoalGapStatusFixed,
+				TaskIDs:     []string{"task_scope_fix"},
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		LinkedTasks: []string{"task_failed_scope_challenge", "task_scope_fix", "task_passed_scope_challenge"},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveTaskReport(assistantstore.GoalTaskReport{
+		ID:             "greport_passed_scope_challenge",
+		GoalID:         goal.ID,
+		TaskID:         "task_passed_scope_challenge",
+		PhaseID:        "phase_02_core",
+		MilestoneID:    "phase_02_core_milestone_01_scope",
+		TaskType:       assistantstore.GoalTaskTypeChallenge,
+		Status:         taskstore.StatusDone,
+		Summary:        "The repaired scope evidence is credible.",
+		AdvancedGoal:   true,
+		ReviewDecision: goalTaskReviewVerifiedProgress,
+		Challenge: &assistantstore.GoalChallenge{
+			ID:          "challenge_1",
+			TaskID:      "task_passed_scope_challenge",
+			MilestoneID: "phase_02_core_milestone_01_scope",
+			Verdict:     assistantstore.GoalChallengeVerdictPassed,
+			Summary:     "The repaired scope evidence is credible.",
+			Evidence:    []string{"Focused scope guard passed."},
+			CreatedAt:   now.Add(time.Minute),
+		},
+		CreatedAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := orch.goalSupervisorDecision(ctx, store, goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Decision != assistantstore.GoalSupervisorDecisionCreateTask || decision.PhaseID != "phase_03_parity" || decision.MilestoneID != "phase_03_parity_milestone_01_scope" {
+		t.Fatalf("decision = %#v, want next phase task instead of blocked stranded milestone", decision)
+	}
+	loaded, err := store.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Plan.Phases[1].Milestones[0].Status != assistantstore.GoalMilestoneStatusAccepted {
+		t.Fatalf("scope milestone status = %q, want accepted", loaded.Plan.Phases[1].Milestones[0].Status)
+	}
+	if loaded.Plan.Phases[1].Status != assistantstore.GoalPlanPhaseStatusCompleted || loaded.Plan.CurrentPhaseID != "phase_03_parity" {
+		t.Fatalf("plan phase/current = %s/%s, want completed phase_02 and current phase_03", loaded.Plan.Phases[1].Status, loaded.Plan.CurrentPhaseID)
+	}
+}
+
+func TestGoalAutopilotRechallengesChallengedMilestoneAfterGapsClose(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	store, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	autopilot := assistantstore.NormalizeGoalAutopilot(&assistantstore.GoalAutopilot{
+		Status:      assistantstore.GoalAutopilotStatusRunning,
+		BudgetTasks: 10,
+		StartedAt:   &now,
+		LastStepAt:  &now,
+	})
+	goal := assistantstore.NormalizeGoal(assistantstore.Goal{
+		ID:            "goal_rechallenge_closed_gap",
+		Title:         "Build grid",
+		Objective:     "Build a credible grid.",
+		Status:        assistantstore.GoalStatusActive,
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Target:        remote1ExecutionTarget(),
+		Autopilot:     &autopilot,
+		Plan: &assistantstore.GoalPlan{
+			Status:         assistantstore.GoalPlanStatusActive,
+			CurrentPhaseID: "phase_01_foundation",
+			Phases: []assistantstore.GoalPlanPhase{{
+				ID:     "phase_01_foundation",
+				Title:  "Foundation",
+				Status: assistantstore.GoalPlanPhaseStatusInProgress,
+				Milestones: []assistantstore.GoalMilestone{{
+					ID:               "phase_01_foundation_milestone_01_scope",
+					PhaseID:          "phase_01_foundation",
+					Title:            "Scope",
+					Status:           assistantstore.GoalMilestoneStatusChallenged,
+					TaskIDs:          []string{"task_scope_fix"},
+					ChallengeTaskIDs: []string{"task_failed_scope_challenge"},
+					GapIDs:           []string{"ggap_scope"},
+					Evidence:         []string{"Scope gap was repaired."},
+				}},
+			}},
+			Gaps: []assistantstore.GoalGap{{
+				ID:          "ggap_scope",
+				PhaseID:     "phase_01_foundation",
+				MilestoneID: "phase_01_foundation_milestone_01_scope",
+				Area:        "scope evidence",
+				Severity:    assistantstore.GoalGapSeverityHigh,
+				Status:      assistantstore.GoalGapStatusDisproven,
+				TaskIDs:     []string{"task_scope_fix"},
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err := store.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := orch.goalSupervisorDecision(ctx, store, goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Decision != assistantstore.GoalSupervisorDecisionCreateTask || decision.TaskType != assistantstore.GoalTaskTypeChallenge || decision.MilestoneID != "phase_01_foundation_milestone_01_scope" {
+		t.Fatalf("decision = %#v, want re-challenge of repaired milestone", decision)
+	}
+	loaded, err := store.LoadGoal(goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Plan.Phases[0].Milestones[0].Status != assistantstore.GoalMilestoneStatusClaimed {
+		t.Fatalf("milestone status = %q, want claimed for re-challenge", loaded.Plan.Phases[0].Milestones[0].Status)
+	}
+}
+
 func TestGoalAutopilotReopensStalledInProgressGapAfterUnverifiedRepair(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	registerRemote1Agent(t, orch)

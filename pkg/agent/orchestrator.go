@@ -2593,7 +2593,7 @@ func (o *Orchestrator) reconcileRemoteTaskAutomation(ctx context.Context, t task
 }
 
 func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, string) {
-	if t.Status != taskstore.StatusConflictResolution && t.Status != taskstore.StatusBlocked {
+	if t.Status != taskstore.StatusConflictResolution && t.Status != taskstore.StatusBlocked && t.Status != taskstore.StatusTimedOut {
 		return false, ""
 	}
 	if len(t.BlockedBy) > 0 {
@@ -2607,6 +2607,9 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 	}
 	if t.Status == taskstore.StatusConflictResolution {
 		return true, "main-branch conflict"
+	}
+	if t.Status == taskstore.StatusTimedOut {
+		return true, "task timed out before the worker produced a complete result"
 	}
 	if t.AutoRecoveryAttempts > 0 {
 		return true, "previous automatic recovery attempt ended blocked"
@@ -2635,7 +2638,7 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 }
 
 func automaticTaskRecoveryExhausted(t taskstore.Task) bool {
-	if t.Status != taskstore.StatusConflictResolution && t.Status != taskstore.StatusBlocked {
+	if t.Status != taskstore.StatusConflictResolution && t.Status != taskstore.StatusBlocked && t.Status != taskstore.StatusTimedOut {
 		return false
 	}
 	if len(t.BlockedBy) > 0 {
@@ -2752,6 +2755,22 @@ func automaticRecoveryInstruction(t taskstore.Task, reason string) string {
 			"claims_challenged must be an array of strings. Do not use objects for claims_challenged.",
 			"The system will review the task again when you complete.",
 		}, "\n")
+	}
+	if strings.Contains(strings.ToLower(reason), "timed out") {
+		lines := []string{
+			fmt.Sprintf("Automatically recover task %s after the worker timed out.", shortID),
+			"Inspect the latest task result, worker trace, and git diff before editing.",
+			"Choose a smaller coherent slice that can finish inside the worker timeout; do not broaden scope.",
+			"Preserve any useful partial work already present in the task workspace.",
+			"Run the most relevant validation for the completed slice.",
+		}
+		if strings.TrimSpace(t.GoalID) != "" {
+			lines = append(lines, "Finish with a valid single-line GOAL_REPORT JSON block that states whether the Goal moved forward, remaining blockers, and follow-ups.")
+		} else {
+			lines = append(lines, "Finish with a concise summary of changed files, validation, and remaining risk.")
+		}
+		lines = append(lines, "The system will review the task again when you complete.")
+		return strings.Join(lines, "\n")
 	}
 	return strings.Join([]string{
 		fmt.Sprintf("Automatically recover task %s from %s.", shortID, reason),

@@ -110,6 +110,52 @@ func TestAssistantRunActionCreateTaskUsesRemoteTarget(t *testing.T) {
 	}
 }
 
+func TestAssistantRunActionCreateTaskKeepsGoalRemoteTargetForLocalSurface(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	registerRemote1Agent(t, orch)
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build remote Goal",
+		Objective:     "Build the remote feature.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 3},
+		Target:        remote1ExecutionTarget(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := assistantstore.Run{
+		Autonomy: assistantstore.RunAutonomyCreateTasks,
+		Decision: assistantstore.RunDecisionRecommend,
+		RecommendedActions: []assistantstore.RunAction{{
+			ID:            "action_1",
+			Kind:          "task",
+			GoalID:        timeline.Goal.ID,
+			Title:         "Retry remote Goal task",
+			TaskGoal:      "Retry the linked remote Goal task through the normal harness.",
+			Rationale:     "The task surfaced in the dashboard attention feed.",
+			TargetSurface: "tasks",
+		}},
+	}
+
+	orch.applyAssistantRunActions(ctx, &run)
+
+	if run.Decision != assistantstore.RunDecisionCreated || run.RecommendedActions[0].CreatedTaskID == "" {
+		t.Fatalf("run = %#v, want created remote Goal task", run)
+	}
+	created, err := orch.tasks.Load(run.RecommendedActions[0].CreatedTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Target == nil || created.Target.Mode != "remote" || created.Target.AgentID != "remote1-agent" || created.Target.ProjectID != "remote1" {
+		t.Fatalf("target = %#v, want Goal remote target preserved despite local dashboard surface", created.Target)
+	}
+	if created.GoalID != timeline.Goal.ID {
+		t.Fatalf("goal_id = %q, want %q", created.GoalID, timeline.Goal.ID)
+	}
+}
+
 func TestAssistantRunCreateTaskBudgetCapsExecuteSafeActions(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	orch.cfg.Assistant.CreateTasksMaxPerRun = 1
@@ -264,10 +310,16 @@ func TestAssistantWatchlistSignalsScoreAndRespectFeedback(t *testing.T) {
 		AttentionTasks: []assistantstore.RunObjectRef{
 			{
 				ID:      "task_blocked",
+				GoalID:  "goal_remote",
 				Title:   "Deploy dashboard",
 				Status:  "blocked",
 				Summary: "Waiting on operator decision.",
 				URL:     "/tasks?task=task_blocked",
+				Target: &taskstore.ExecutionTarget{
+					Mode:      "remote",
+					AgentID:   "remote1-agent",
+					ProjectID: "remote1",
+				},
 			},
 		},
 		PendingApprovals: 1,
@@ -289,6 +341,9 @@ func TestAssistantWatchlistSignalsScoreAndRespectFeedback(t *testing.T) {
 	}
 	if blocked.WhyNow == "" || len(blocked.Evidence) == 0 || len(blocked.SafeActions) == 0 || blocked.SuggestedNextStep == "" {
 		t.Fatalf("blocked task signal = %#v, want generic evidence packet", blocked)
+	}
+	if blocked.GoalID != "goal_remote" || blocked.Target == nil || blocked.Target.AgentID != "remote1-agent" {
+		t.Fatalf("blocked task signal target = goal %q target %#v, want source Goal and remote target", blocked.GoalID, blocked.Target)
 	}
 	if blocked.Evidence[0].Source != "tasks" || blocked.Evidence[0].Kind == "" {
 		t.Fatalf("blocked task evidence = %#v, want source-neutral evidence", blocked.Evidence)

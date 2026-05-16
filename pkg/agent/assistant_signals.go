@@ -160,6 +160,8 @@ func assistantSignalCandidatesFromSnapshot(snapshot assistantstore.RunSnapshot) 
 		}, "\n"))
 		signals = append(signals, newAssistantRunSignal(assistantstore.RunSignal{
 			Kind:              "task_" + strings.ToLower(strings.TrimSpace(task.Status)),
+			GoalID:            task.GoalID,
+			Target:            task.Target,
 			Title:             title,
 			Detail:            detail,
 			WhyNow:            whyNow,
@@ -815,6 +817,9 @@ func assistantAlignDecisionActionsWithSignals(actions []assistantstore.RunAction
 			}
 			actions[index].Fingerprint = signal.Fingerprint
 			actions[index].GoalID = firstNonEmptyString(actions[index].GoalID, signal.GoalID)
+			if actions[index].Target == nil && signal.Target != nil {
+				actions[index].Target = signal.Target
+			}
 			actions[index].TargetSurface = firstNonEmptyString(actions[index].TargetSurface, signal.Surface)
 			actions[index].Priority = firstNonEmptyString(actions[index].Priority, signal.Priority)
 			actions[index].Risk = firstNonEmptyString(actions[index].Risk, "low")
@@ -908,6 +913,7 @@ func assistantActionFromSignal(signal assistantstore.RunSignal, index int) assis
 		Fingerprint:   signal.Fingerprint,
 		Kind:          firstNonEmptyString(signal.ActionKind, "task"),
 		GoalID:        signal.GoalID,
+		Target:        signal.Target,
 		Title:         signal.Title,
 		Rationale:     firstNonEmptyString(signal.Rationale, signal.WhyNow, signal.Detail),
 		Priority:      signal.Priority,

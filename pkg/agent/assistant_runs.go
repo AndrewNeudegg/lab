@@ -686,19 +686,21 @@ func (o *Orchestrator) applyAssistantRunActions(ctx context.Context, run *assist
 		}
 		var created createdTask
 		var err error
-		target := assistantActionTaskTarget(*action)
 		if action.GoalID != "" {
 			goalTimeline, loadErr := o.LoadGoal(action.GoalID)
 			if loadErr == nil {
 				goalRecord := goalTimeline.Goal
-				if target != nil {
-					goalRecord.Target = target
+				if action.Target != nil {
+					goalRecord.Target = action.Target
+				} else if goalRecord.Target == nil {
+					goalRecord.Target = assistantActionTaskTarget(*action)
 				}
 				created, err = o.createTaskRecordForGoal(ctx, goal, goalRecord)
 			} else {
 				err = loadErr
 			}
 		} else {
+			target := assistantActionTaskTarget(*action)
 			created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, target, nil, taskCreateOptions{})
 		}
 		if err != nil {
@@ -1460,19 +1462,21 @@ func (o *Orchestrator) createTaskFromAssistantAction(ctx context.Context, action
 	}
 	var created createdTask
 	var err error
-	target := assistantActionTaskTarget(action)
 	if action.GoalID != "" {
 		timeline, loadErr := o.LoadGoal(action.GoalID)
 		if loadErr == nil {
 			goalRecord := timeline.Goal
-			if target != nil {
-				goalRecord.Target = target
+			if action.Target != nil {
+				goalRecord.Target = action.Target
+			} else if goalRecord.Target == nil {
+				goalRecord.Target = assistantActionTaskTarget(action)
 			}
 			created, err = o.createTaskRecordForGoal(ctx, goal, goalRecord)
 		} else {
 			err = loadErr
 		}
 	} else {
+		target := assistantActionTaskTarget(action)
 		created, _, err = o.createTaskRecordWithRoutedTarget(ctx, goal, target, nil, taskCreateOptions{})
 	}
 	if err != nil {
@@ -1984,10 +1988,12 @@ func (o *Orchestrator) assistantRunSnapshot(ctx context.Context, now time.Time, 
 			if assistantTaskNeedsAttention(task.Status) && len(snapshot.AttentionTasks) < 8 {
 				snapshot.AttentionTasks = append(snapshot.AttentionTasks, assistantstore.RunObjectRef{
 					ID:      task.ID,
+					GoalID:  task.GoalID,
 					Title:   friendlyTaskTitle(task),
 					Status:  task.Status,
 					Summary: strings.TrimSpace(task.Result),
 					URL:     dashboardTaskURL(task.ID),
+					Target:  task.Target,
 				})
 			}
 		}

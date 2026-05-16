@@ -249,35 +249,36 @@ type RunSnapshot struct {
 }
 
 type RunSignal struct {
-	ID                string              `json:"id"`
-	Fingerprint       string              `json:"fingerprint"`
-	Kind              string              `json:"kind"`
-	GoalID            string              `json:"goal_id,omitempty"`
-	Title             string              `json:"title"`
-	Detail            string              `json:"detail,omitempty"`
-	WhyNow            string              `json:"why_now,omitempty"`
-	Severity          string              `json:"severity,omitempty"`
-	Surface           string              `json:"surface,omitempty"`
-	ObjectID          string              `json:"object_id,omitempty"`
-	ObjectURL         string              `json:"object_url,omitempty"`
-	Score             int                 `json:"score"`
-	Confidence        string              `json:"confidence,omitempty"`
-	Priority          string              `json:"priority,omitempty"`
-	ActionKind        string              `json:"action_kind,omitempty"`
-	Rationale         string              `json:"rationale,omitempty"`
-	TaskGoal          string              `json:"task_goal,omitempty"`
-	Evidence          []RunSignalEvidence `json:"evidence,omitempty"`
-	SafeActions       []string            `json:"safe_actions,omitempty"`
-	SuggestedNextStep string              `json:"suggested_next_step,omitempty"`
-	Suppressed        bool                `json:"suppressed,omitempty"`
-	SuppressionReason string              `json:"suppression_reason,omitempty"`
-	FeedbackHint      string              `json:"feedback_hint,omitempty"`
-	DismissedCount    int                 `json:"dismissed_count,omitempty"`
-	SnoozedCount      int                 `json:"snoozed_count,omitempty"`
-	SeenCount         int                 `json:"seen_count,omitempty"`
-	UsefulCount       int                 `json:"useful_count,omitempty"`
-	CreatedTaskID     string              `json:"created_task_id,omitempty"`
-	SnoozedUntil      time.Time           `json:"snoozed_until,omitempty"`
+	ID                string                     `json:"id"`
+	Fingerprint       string                     `json:"fingerprint"`
+	Kind              string                     `json:"kind"`
+	GoalID            string                     `json:"goal_id,omitempty"`
+	Target            *taskstore.ExecutionTarget `json:"target,omitempty"`
+	Title             string                     `json:"title"`
+	Detail            string                     `json:"detail,omitempty"`
+	WhyNow            string                     `json:"why_now,omitempty"`
+	Severity          string                     `json:"severity,omitempty"`
+	Surface           string                     `json:"surface,omitempty"`
+	ObjectID          string                     `json:"object_id,omitempty"`
+	ObjectURL         string                     `json:"object_url,omitempty"`
+	Score             int                        `json:"score"`
+	Confidence        string                     `json:"confidence,omitempty"`
+	Priority          string                     `json:"priority,omitempty"`
+	ActionKind        string                     `json:"action_kind,omitempty"`
+	Rationale         string                     `json:"rationale,omitempty"`
+	TaskGoal          string                     `json:"task_goal,omitempty"`
+	Evidence          []RunSignalEvidence        `json:"evidence,omitempty"`
+	SafeActions       []string                   `json:"safe_actions,omitempty"`
+	SuggestedNextStep string                     `json:"suggested_next_step,omitempty"`
+	Suppressed        bool                       `json:"suppressed,omitempty"`
+	SuppressionReason string                     `json:"suppression_reason,omitempty"`
+	FeedbackHint      string                     `json:"feedback_hint,omitempty"`
+	DismissedCount    int                        `json:"dismissed_count,omitempty"`
+	SnoozedCount      int                        `json:"snoozed_count,omitempty"`
+	SeenCount         int                        `json:"seen_count,omitempty"`
+	UsefulCount       int                        `json:"useful_count,omitempty"`
+	CreatedTaskID     string                     `json:"created_task_id,omitempty"`
+	SnoozedUntil      time.Time                  `json:"snoozed_until,omitempty"`
 }
 
 type RunSignalEvidence struct {
@@ -292,11 +293,13 @@ type RunSignalEvidence struct {
 }
 
 type RunObjectRef struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Status  string `json:"status,omitempty"`
-	Summary string `json:"summary,omitempty"`
-	URL     string `json:"url,omitempty"`
+	ID      string                     `json:"id"`
+	GoalID  string                     `json:"goal_id,omitempty"`
+	Title   string                     `json:"title"`
+	Status  string                     `json:"status,omitempty"`
+	Summary string                     `json:"summary,omitempty"`
+	URL     string                     `json:"url,omitempty"`
+	Target  *taskstore.ExecutionTarget `json:"target,omitempty"`
 }
 
 type RunSystemSnapshot struct {
@@ -657,6 +660,7 @@ func normalizeRunSignal(value RunSignal, index int) RunSignal {
 		value.Kind = "watchlist"
 	}
 	value.GoalID = strings.TrimSpace(value.GoalID)
+	value.Target = normalizeExecutionTarget(value.Target)
 	value.Title = strings.TrimSpace(value.Title)
 	if value.Title == "" {
 		value.Title = "Assistant signal"

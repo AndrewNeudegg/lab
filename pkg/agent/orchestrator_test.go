@@ -4455,6 +4455,17 @@ func TestAutomaticRecoveryFailureRemainsRetryableAfterCooldown(t *testing.T) {
 	}
 }
 
+func TestTimedOutTaskIsAutomaticRecoveryCandidate(t *testing.T) {
+	ok, reason := automaticTaskRecoveryCandidate(taskstore.Task{
+		ID:     "task_timed_out",
+		Status: taskstore.StatusTimedOut,
+		Result: "external agent timed out before producing a final result",
+	}, time.Now().UTC())
+	if !ok || !strings.Contains(reason, "timed out") {
+		t.Fatalf("candidate = %v, %q; want timed-out task to be retryable by the harness", ok, reason)
+	}
+}
+
 func TestMarkRecoveryBlockedPreservesRetryContext(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	task := taskstore.Task{
@@ -7638,6 +7649,99 @@ func TestGoalAutopilotStartCreatesRemoteTaskWithoutLocalWorker(t *testing.T) {
 	select {
 	case <-delegate.started:
 		t.Fatal("local worker started for remote Autopilot task")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGoalAutopilotQueuesAutomaticRemoteTimeoutRecovery(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	remotePath := setupTestGitRepo(t)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "remote1-agent",
+		Machine: "vm-remote1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      remotePath,
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build remote timeout recovery",
+		Objective:     "Build a remote feature even when one worker times out.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 3},
+		Target: &taskstore.ExecutionTarget{
+			Mode:      "remote",
+			AgentID:   "remote1-agent",
+			WorkdirID: "remote1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusTimedOut
+	task.AssignedTo = "remote:remote1-agent"
+	task.Workspace = remotePath
+	task.Result = "external agent timed out before returning a GOAL_REPORT"
+	stopped := time.Now().Add(-time.Minute).UTC()
+	task.StoppedAt = &stopped
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileGoalAutopilots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want timeout recovery queued", changed)
+	}
+	requeued, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requeued.Status != taskstore.StatusQueued || requeued.AssignedTo != "remote:remote1-agent" || requeued.AutoRecoveryAttempts != 1 {
+		t.Fatalf("task = %#v, want queued remote automatic recovery attempt", requeued)
+	}
+	if requeued.Target == nil || requeued.Target.Workdir != remotePath || requeued.Target.ProjectID != "remote1" {
+		t.Fatalf("target = %#v, want original remote workdir", requeued.Target)
+	}
+	if !strings.Contains(requeued.Result, "automatic remote recovery attempt 1/3") || !strings.Contains(requeued.Result, "Automatically recover task") || !strings.Contains(requeued.Result, "timed out") {
+		t.Fatalf("result = %q, want timeout-specific retry context", requeued.Result)
+	}
+	latest, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Goal.Autopilot == nil || latest.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning || latest.Goal.Status == assistantstore.GoalStatusBlocked {
+		t.Fatalf("goal = %#v, want Autopilot still running without a human blocker", latest.Goal)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started for remote timeout recovery")
 	case <-time.After(50 * time.Millisecond):
 	}
 }

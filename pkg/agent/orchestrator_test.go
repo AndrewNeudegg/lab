@@ -9950,6 +9950,31 @@ func TestGoalAutopilotDoesNotTreatDiffReportsAsNoProgress(t *testing.T) {
 	}
 }
 
+func TestGoalAutopilotDoesNotTreatGapFixNoChangeAsNoProgress(t *testing.T) {
+	reports := []assistantstore.GoalTaskReport{
+		{
+			TaskID:         "task_no_change_build",
+			TaskType:       assistantstore.GoalTaskTypeBuild,
+			Summary:        "No change required.",
+			NoChange:       true,
+			ReviewDecision: goalTaskReviewNoChange,
+			CreatedAt:      time.Now().UTC(),
+		},
+		{
+			TaskID:         "task_gap_already_fixed",
+			TaskType:       assistantstore.GoalTaskTypeGapFix,
+			Summary:        "Disproved the selected challenge gap: the evidence already exists.",
+			NoChange:       true,
+			ReviewDecision: goalTaskReviewNoChange,
+			CreatedAt:      time.Now().UTC().Add(-time.Minute),
+		},
+	}
+	blocked, reason := recentGoalReportsShowNoProgress(reports)
+	if blocked {
+		t.Fatalf("blocked = true, reason %q; gap-fix no-change should not count as repeated build no-progress", reason)
+	}
+}
+
 func TestKnowledgeResearchRunDiscoversAndImportsOnlineSources(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	provider := &scriptedProvider{contents: []string{

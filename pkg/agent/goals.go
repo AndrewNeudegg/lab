@@ -2005,6 +2005,10 @@ func recentGoalReportsShowNoProgress(reports []assistantstore.GoalTaskReport) (b
 
 func goalReportShowsNoProgress(report assistantstore.GoalTaskReport) bool {
 	report = assistantstore.NormalizeGoalTaskReport(report)
+	switch report.TaskType {
+	case assistantstore.GoalTaskTypeChallenge, assistantstore.GoalTaskTypeGapFix:
+		return report.ReviewDecision == goalTaskReviewMisaligned
+	}
 	hasDiff := report.DiffFiles > 0 || len(report.ChangedFiles) > 0
 	switch report.ReviewDecision {
 	case goalTaskReviewVerifiedProgress, goalTaskReviewBlockedWithProgress:

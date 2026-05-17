@@ -1919,6 +1919,21 @@ func TestRemoteTaskUsesSummarizedTitle(t *testing.T) {
 	}
 }
 
+func acknowledgeRemoteAssignmentForTest(t *testing.T, orch *Orchestrator, agentID string, assignment *remoteagent.Assignment) *remoteagent.Assignment {
+	t.Helper()
+	if assignment == nil {
+		t.Fatal("assignment is nil")
+	}
+	acknowledged, err := orch.AcknowledgeRemoteTask(context.Background(), agentID, assignment.TaskID, assignment.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acknowledged == nil {
+		t.Fatal("acknowledged assignment is nil")
+	}
+	return acknowledged
+}
+
 func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
@@ -1971,6 +1986,14 @@ func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
 	if assignment.TaskID != task.ID || assignment.Workdir != "/home/me/project" {
 		t.Fatalf("assignment = %#v, want task in remote workdir", assignment)
 	}
+	offered, err := orch.tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offered.Status != taskstore.StatusQueued || offered.RemoteAttempt == nil || offered.RemoteAttempt.State != taskstore.RemoteAttemptStateOffered {
+		t.Fatalf("offered task = %#v, want queued task with offered remote attempt", offered)
+	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 	running, err := orch.tasks.Load(task.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -2009,6 +2032,174 @@ func TestRemoteTaskLifecycleUsesAgentClaimAndCompletion(t *testing.T) {
 	}
 	if verified.Status != taskstore.StatusAwaitingVerification {
 		t.Fatalf("status = %q, want awaiting_verification", verified.Status)
+	}
+}
+
+func TestRemoteClaimOfferIsRedeliveredUntilAcknowledged(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "desk",
+		Machine: "desk.local",
+		Workdirs: []remoteagent.Workdir{{
+			ID:   "repo",
+			Path: "/srv/desk/repo",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "remote claim retry", &taskstore.ExecutionTarget{Mode: "remote", AgentID: "desk", WorkdirID: "repo"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || second == nil || first.AttemptID == "" || second.AttemptID != first.AttemptID {
+		t.Fatalf("assignments = %#v / %#v, want same offered attempt redelivered", first, second)
+	}
+	offered, err := orch.tasks.Load(first.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offered.Status != taskstore.StatusQueued || offered.RemoteAttempt == nil || offered.RemoteAttempt.State != taskstore.RemoteAttemptStateOffered {
+		t.Fatalf("offered task = %#v, want queued offered attempt", offered)
+	}
+	if stored, err := store.Load("desk"); err != nil {
+		t.Fatal(err)
+	} else if stored.CurrentTaskID != "" || stored.CurrentAttemptID != "" {
+		t.Fatalf("agent current assignment = %#v, want empty before acknowledgement", stored)
+	}
+	acknowledged := acknowledgeRemoteAssignmentForTest(t, orch, "desk", first)
+	running, err := orch.tasks.Load(first.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acknowledged.AttemptID != first.AttemptID || running.Status != taskstore.StatusRunning || running.RemoteAttempt == nil || running.RemoteAttempt.State != taskstore.RemoteAttemptStateRunning {
+		t.Fatalf("acknowledged=%#v running=%#v, want running acknowledged attempt", acknowledged, running)
+	}
+	if stored, err := store.Load("desk"); err != nil {
+		t.Fatal(err)
+	} else if stored.CurrentTaskID != first.TaskID || stored.CurrentAttemptID != first.AttemptID {
+		t.Fatalf("agent current assignment = %#v, want task and attempt", stored)
+	}
+}
+
+func TestRemoteRunningAttemptDeadlineTimesOutEvenWhenHeartbeatCurrent(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "desk",
+		Machine: "desk.local",
+		Workdirs: []remoteagent.Workdir{{
+			ID:   "repo",
+			Path: "/srv/desk/repo",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "remote timeout", &taskstore.ExecutionTarget{Mode: "remote", AgentID: "desk", WorkdirID: "repo"}); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "desk", assignment)
+	running, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := time.Now().UTC().Add(-time.Second)
+	running.RemoteAttempt.DeadlineAt = &expired
+	if err := orch.tasks.Save(running); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:               "desk",
+		Machine:          "desk.local",
+		Workdirs:         agent.Workdirs,
+		CurrentTaskID:    assignment.TaskID,
+		CurrentAttemptID: assignment.AttemptID,
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := orch.ReconcileTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want timed out remote attempt", changed)
+	}
+	timedOut, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timedOut.Status != taskstore.StatusTimedOut || timedOut.RemoteAttempt == nil || timedOut.RemoteAttempt.State != taskstore.RemoteAttemptStateTimedOut {
+		t.Fatalf("task = %#v, want timed_out attempt despite fresh heartbeat", timedOut)
+	}
+}
+
+func TestRemoteTaskReopenArchivesPreviousAttemptDiff(t *testing.T) {
+	orch := newTestOrchestrator(t, nil)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	agent, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "desk",
+		Machine: "desk.local",
+		Workdirs: []remoteagent.Workdir{{
+			ID:   "repo",
+			Path: "/srv/desk/repo",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.CreateTaskWithTarget(context.Background(), "remote reopen", &taskstore.ExecutionTarget{Mode: "remote", AgentID: "desk", WorkdirID: "repo"}); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "desk", assignment)
+	if _, err := orch.CompleteRemoteTask(context.Background(), "desk", assignment.TaskID, "changed first attempt", "completed", "diff --git a/app.txt b/app.txt\nnew file mode 100644\n"); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.DiffSnapshot == nil || completed.RemoteAttempt == nil || completed.RemoteAttempt.DiffSnapshot == nil {
+		t.Fatalf("completed = %#v, want current attempt diff snapshot", completed)
+	}
+	if _, err := orch.ReopenTask(context.Background(), assignment.TaskID, "try again with stricter validation"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := orch.tasks.Load(assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Status != taskstore.StatusQueued || reopened.DiffSnapshot != nil || reopened.RemoteDiff != "" || reopened.RemoteAttempt != nil {
+		t.Fatalf("reopened = %#v, want clean current attempt state", reopened)
+	}
+	if len(reopened.RemoteAttemptHistory) != 1 || reopened.RemoteAttemptHistory[0].DiffSnapshot == nil || reopened.RemoteAttemptHistory[0].State != taskstore.RemoteAttemptStateReopened {
+		t.Fatalf("history = %#v, want archived previous attempt diff", reopened.RemoteAttemptHistory)
+	}
+	diff, err := orch.TaskDiff(context.Background(), assignment.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Source != "remote_current_attempt_pending" || diff.RawDiff != "" || !strings.Contains(diff.Warning, "previous attempt diffs are preserved") {
+		t.Fatalf("diff = %#v, want pending current attempt rather than stale previous diff", diff)
 	}
 }
 
@@ -2059,6 +2250,7 @@ func TestRemoteTaskAutomationReviewsAndAcceptsAgentTask(t *testing.T) {
 	if assignment == nil {
 		t.Fatal("assignment is nil, want remote task")
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 	if _, err := orch.CompleteRemoteTask(ctx, "workstation", assignment.TaskID, "changed files; validation passed", "completed", "diff --git a/service.go b/service.go\nnew file mode 100644\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -2133,6 +2325,7 @@ func TestRemoteGitTaskUsesManagedWorktreeReviewAndMerge(t *testing.T) {
 	if assignment == nil || assignment.Workdir != task.Workspace {
 		t.Fatalf("assignment = %#v, want remote task worktree %q", assignment, task.Workspace)
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 	writeTestRepoFile(t, assignment.Workdir, "feature.txt", "remote feature\n")
 	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", assignment.TaskID, "changed feature.txt", "completed"); err != nil {
 		t.Fatal(err)
@@ -2217,6 +2410,7 @@ func TestRemoteGitRunningTaskOrphanedByAgentRestartQueuesRecovery(t *testing.T) 
 	if assignment == nil {
 		t.Fatal("assignment is nil, want remote task")
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 	restartedAt := time.Now().UTC().Add(time.Second)
 	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
 		ID:        "workstation",
@@ -2296,6 +2490,7 @@ func TestRemoteGitNoChangeUsesRemoteAutoMergePolicy(t *testing.T) {
 	if assignment == nil {
 		t.Fatal("assignment is nil, want remote task")
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 	if _, err := orch.CompleteRemoteTask(ctx, "workstation", assignment.TaskID, "No change required: read-only challenge recorded gaps.", "completed"); err != nil {
 		t.Fatal(err)
 	}
@@ -2393,6 +2588,7 @@ func TestRemoteGitGoalChallengeNoDiffUsesChallengeReview(t *testing.T) {
 	if assignment == nil {
 		t.Fatal("assignment is nil, want remote task")
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 	result := fmt.Sprintf(`No change required: read-only challenge produced a report instead of a patch.
 GOAL_CHALLENGE: {"milestone_id":%q,"verdict":"failed","summary":"Milestone evidence is still missing.","evidence":["docs are missing"],"claims_challenged":["The grid foundation is documented"],"gaps":[{"area":"documentation","claim":"The grid foundation is documented","severity":"high","evidence":"No durable documentation exists.","suggested_task":"Add durable grid foundation documentation."}],"goal_complete":false}`, milestoneID)
 	if _, err := orch.CompleteRemoteTask(ctx, "workstation", assignment.TaskID, result, "completed"); err != nil {
@@ -2583,11 +2779,13 @@ func TestRemoteTaskCanCompleteWithNoChangeRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := tasks[0]
-	if _, err := orch.ClaimRemoteTask(context.Background(), agent, "codex"); err != nil {
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
 		t.Fatal(err)
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 
-	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", task.ID, "No change required: duplicate report", taskstore.StatusNoChangeRequired); err != nil {
+	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", assignment.TaskID, "No change required: duplicate report", taskstore.StatusNoChangeRequired); err != nil {
 		t.Fatal(err)
 	}
 	completed, err := orch.tasks.Load(task.ID)
@@ -2916,11 +3114,13 @@ func TestRemoteTaskCanCompleteWithTimedOutStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := tasks[0]
-	if _, err := orch.ClaimRemoteTask(context.Background(), agent, "codex"); err != nil {
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
 		t.Fatal(err)
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "workstation", assignment)
 
-	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", task.ID, "", taskstore.StatusTimedOut); err != nil {
+	if _, err := orch.CompleteRemoteTask(context.Background(), "workstation", assignment.TaskID, "", taskstore.StatusTimedOut); err != nil {
 		t.Fatal(err)
 	}
 	completed, err := orch.tasks.Load(task.ID)
@@ -2966,9 +3166,11 @@ func TestRemoteTaskRetryAndReopenKeepSameRemoteTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskID := tasks[0].ID
-	if _, err := orch.ClaimRemoteTask(context.Background(), agent, "codex"); err != nil {
+	assignment, err := orch.ClaimRemoteTask(context.Background(), agent, "codex")
+	if err != nil {
 		t.Fatal(err)
 	}
+	assignment = acknowledgeRemoteAssignmentForTest(t, orch, "desk", assignment)
 	if _, err := orch.CompleteRemoteTask(context.Background(), "desk", taskID, "needs another pass", "failed"); err != nil {
 		t.Fatal(err)
 	}

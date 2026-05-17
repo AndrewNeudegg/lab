@@ -22,6 +22,15 @@ const (
 )
 
 const (
+	RemoteAttemptStateOffered   = "offered"
+	RemoteAttemptStateRunning   = "running"
+	RemoteAttemptStateCompleted = "completed"
+	RemoteAttemptStateTimedOut  = "timed_out"
+	RemoteAttemptStateReopened  = "reopened"
+	RemoteAttemptStateRetried   = "retried"
+)
+
+const (
 	RestartStatusPending  = "pending"
 	RestartStatusRunning  = "running"
 	RestartStatusComplete = "complete"
@@ -66,8 +75,28 @@ type Task struct {
 	DiffSnapshot         *TaskDiffSnapshot     `json:"diff_snapshot,omitempty"`
 	RemoteDiff           string                `json:"remote_diff,omitempty"`
 	RemoteDiffCapturedAt *time.Time            `json:"remote_diff_captured_at,omitempty"`
+	RemoteAttempt        *RemoteTaskAttempt    `json:"remote_attempt,omitempty"`
+	RemoteAttemptHistory []RemoteTaskAttempt   `json:"remote_attempt_history,omitempty"`
 	Plan                 *TaskPlan             `json:"plan,omitempty"`
 	SummaryOnly          bool                  `json:"summary_only,omitempty"`
+}
+
+type RemoteTaskAttempt struct {
+	ID             string            `json:"id"`
+	AgentID        string            `json:"agent_id,omitempty"`
+	Machine        string            `json:"machine,omitempty"`
+	Backend        string            `json:"backend,omitempty"`
+	Workdir        string            `json:"workdir,omitempty"`
+	WorkdirID      string            `json:"workdir_id,omitempty"`
+	State          string            `json:"state"`
+	Status         string            `json:"status,omitempty"`
+	OfferedAt      *time.Time        `json:"offered_at,omitempty"`
+	AcknowledgedAt *time.Time        `json:"acknowledged_at,omitempty"`
+	StartedAt      *time.Time        `json:"started_at,omitempty"`
+	DeadlineAt     *time.Time        `json:"deadline_at,omitempty"`
+	CompletedAt    *time.Time        `json:"completed_at,omitempty"`
+	ResultSummary  string            `json:"result_summary,omitempty"`
+	DiffSnapshot   *TaskDiffSnapshot `json:"diff_snapshot,omitempty"`
 }
 
 type TaskDiffSnapshot struct {
@@ -171,12 +200,20 @@ func SummarizeForList(value Task) Task {
 	value.RemoteDiff = ""
 	value.Attachments = summarizeTaskAttachmentsForList(value.Attachments)
 	if value.DiffSnapshot != nil {
-		snapshot := *value.DiffSnapshot
-		snapshot.RawDiff = ""
-		if len(snapshot.Files) > 80 {
-			snapshot.Files = snapshot.Files[:80]
-		}
-		value.DiffSnapshot = &snapshot
+		value.DiffSnapshot = summarizeTaskDiffSnapshot(value.DiffSnapshot)
+	}
+	if value.RemoteAttempt != nil {
+		attempt := *value.RemoteAttempt
+		attempt.ResultSummary = truncateTaskListText(attempt.ResultSummary, taskListShortTextLimit)
+		attempt.DiffSnapshot = summarizeTaskDiffSnapshot(attempt.DiffSnapshot)
+		value.RemoteAttempt = &attempt
+	}
+	if len(value.RemoteAttemptHistory) > taskListCollectionLimit {
+		value.RemoteAttemptHistory = value.RemoteAttemptHistory[:taskListCollectionLimit]
+	}
+	for index := range value.RemoteAttemptHistory {
+		value.RemoteAttemptHistory[index].ResultSummary = truncateTaskListText(value.RemoteAttemptHistory[index].ResultSummary, taskListShortTextLimit)
+		value.RemoteAttemptHistory[index].DiffSnapshot = summarizeTaskDiffSnapshot(value.RemoteAttemptHistory[index].DiffSnapshot)
 	}
 	if value.Plan != nil {
 		plan := *value.Plan
@@ -192,6 +229,18 @@ func SummarizeForList(value Task) Task {
 		value.Plan = &plan
 	}
 	return value
+}
+
+func summarizeTaskDiffSnapshot(value *TaskDiffSnapshot) *TaskDiffSnapshot {
+	if value == nil {
+		return nil
+	}
+	snapshot := *value
+	snapshot.RawDiff = ""
+	if len(snapshot.Files) > 80 {
+		snapshot.Files = snapshot.Files[:80]
+	}
+	return &snapshot
 }
 
 func summarizeTaskAttachmentsForList(values []Attachment) []Attachment {

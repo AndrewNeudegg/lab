@@ -405,6 +405,49 @@
 
   const isRemoteTask = (task?: HomelabdTask) => task?.target?.mode === 'remote';
 
+  const remoteAttemptLabel = (state?: string) => {
+    switch ((state || '').toLowerCase()) {
+      case 'offered':
+        return 'Offered to agent';
+      case 'running':
+        return 'Running remotely';
+      case 'completed':
+        return 'Completed attempt';
+      case 'timed_out':
+        return 'Timed out';
+      case 'reopened':
+        return 'Archived on reopen';
+      case 'retried':
+        return 'Archived on retry';
+      default:
+        return state ? taskStatusLabel(state) : 'No current attempt';
+    }
+  };
+
+  const remoteAttemptGuidance = (task?: HomelabdTask) => {
+    const attempt = task?.remote_attempt;
+    if (!attempt) {
+      if (task?.remote_attempt_history?.length) {
+        return 'No current remote attempt is active. Previous attempt evidence is preserved for history.';
+      }
+      return 'This task is waiting for the selected remote project queue.';
+    }
+    switch ((attempt.state || '').toLowerCase()) {
+      case 'offered':
+        return 'Waiting for the remote process to acknowledge this exact attempt before work starts.';
+      case 'running':
+        return 'The remote process has acknowledged this attempt and owns execution until it completes or reaches its deadline.';
+      case 'timed_out':
+        return 'The coordinator marked this attempt timed out because the remote process did not complete within its deadline.';
+      case 'completed':
+        return 'The latest remote attempt reported completion evidence for review.';
+      default:
+        return 'Remote attempt state is recorded by the coordinator and remote process.';
+    }
+  };
+
+  const remoteAttemptShortID = (id?: string) => shortID(id || '');
+
   const compactTime = (value?: string) => {
     if (!value) {
       return 'unknown';
@@ -669,6 +712,8 @@
         return 'Legacy remote snapshot';
       case 'remote_live_worktree_fallback':
         return 'Live remote fallback';
+      case 'remote_current_attempt_pending':
+        return 'Current remote attempt';
       case 'local_live_branch_diff':
         return 'Live branch diff';
       default:
@@ -2323,6 +2368,45 @@
                   <code>{currentTask.target.workdir}</code>
                   <small>Agent {currentTask.target.agent_id} / backend {currentTask.target.backend || 'default'}</small>
                 </section>
+                <section class="remote-attempt" aria-label="Remote attempt">
+                  <div class="remote-attempt-heading">
+                    <span>Remote attempt</span>
+                    <strong>{remoteAttemptLabel(currentTask.remote_attempt?.state)}</strong>
+                  </div>
+                  <p>{remoteAttemptGuidance(currentTask)}</p>
+                  <dl>
+                    {#if currentTask.remote_attempt?.id}
+                      <div>
+                        <dt>Attempt</dt>
+                        <dd>{remoteAttemptShortID(currentTask.remote_attempt.id)}</dd>
+                      </div>
+                    {/if}
+                    {#if currentTask.remote_attempt?.offered_at}
+                      <div>
+                        <dt>Offered</dt>
+                        <dd>{compactTime(currentTask.remote_attempt.offered_at)}</dd>
+                      </div>
+                    {/if}
+                    {#if currentTask.remote_attempt?.started_at}
+                      <div>
+                        <dt>Started</dt>
+                        <dd>{compactTime(currentTask.remote_attempt.started_at)}</dd>
+                      </div>
+                    {/if}
+                    {#if currentTask.remote_attempt?.deadline_at}
+                      <div>
+                        <dt>Deadline</dt>
+                        <dd>{compactTime(currentTask.remote_attempt.deadline_at)}</dd>
+                      </div>
+                    {/if}
+                    {#if currentTask.remote_attempt_history?.length}
+                      <div>
+                        <dt>Previous attempts</dt>
+                        <dd>{currentTask.remote_attempt_history.length}</dd>
+                      </div>
+                    {/if}
+                  </dl>
+                </section>
               {/if}
 
               {#if currentTask.attachments?.length}
@@ -2404,7 +2488,7 @@
             {#if diffLoadingTaskId === currentTask.id && !currentTaskDiff}
               <p class="empty">Loading task diff...</p>
             {:else if isRemoteTask(currentTask) && currentTaskDiff && !currentTaskDiff.raw_diff.trim()}
-              <p class="empty">Remote diff is not available. Review the remote result and target checkout before accepting.</p>
+              <p class="empty">{currentTaskDiff.warning || 'Remote diff is not available. Review the remote result and target checkout before accepting.'}</p>
             {:else if currentTaskDiff && !currentTaskDiff.raw_diff.trim()}
               <p class="empty">
                 {currentTask.status === 'no_change_required'
@@ -2800,6 +2884,8 @@
   .record-summary dt,
   .detail-section > summary > span,
   .workspace-path span,
+  .remote-attempt span,
+  .remote-attempt dt,
   .secondary-actions p,
   .diff-review header p,
   .plan-risks > strong,
@@ -3947,6 +4033,7 @@
   .state-machine,
   .workspace-path,
   .execution-context,
+  .remote-attempt,
   .task-attachments,
   .task-result {
     margin: 1rem 1.25rem 0;
@@ -4201,6 +4288,7 @@
   .detail-body .state-machine,
   .detail-body .workspace-path,
   .detail-body .execution-context,
+  .detail-body .remote-attempt,
   .detail-body .task-result {
     margin: 0.85rem 0 0;
   }
@@ -4487,6 +4575,60 @@
 
   .execution-context code {
     overflow-wrap: anywhere;
+  }
+
+  .remote-attempt {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.85rem;
+  }
+
+  .remote-attempt-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .remote-attempt-heading strong {
+    color: var(--text-strong, #111827);
+    font-size: 0.9rem;
+    text-align: right;
+  }
+
+  .remote-attempt p {
+    margin: 0;
+    color: var(--text, #334155);
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+
+  .remote-attempt dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+    gap: 0.45rem;
+    margin: 0;
+  }
+
+  .remote-attempt dl div {
+    min-width: 0;
+    padding: 0.55rem;
+    border: 1px solid var(--border-soft, #e2e8f0);
+    border-radius: 0.55rem;
+    background: var(--surface-muted, #f8fafc);
+  }
+
+  .remote-attempt dt,
+  .remote-attempt dd {
+    margin: 0;
+  }
+
+  .remote-attempt dd {
+    margin-top: 0.18rem;
+    overflow-wrap: anywhere;
+    color: var(--text, #334155);
+    font-size: 0.82rem;
+    font-weight: 800;
   }
 
   .task-result {
@@ -5296,6 +5438,7 @@
     .state-machine,
     .workspace-path,
     .execution-context,
+    .remote-attempt,
     .task-attachments,
     .task-result {
       margin: 0.75rem;
@@ -5358,6 +5501,16 @@
       align-items: flex-start;
       flex-direction: column;
       gap: 0.2rem;
+    }
+
+    .remote-attempt-heading {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .remote-attempt-heading strong {
+      text-align: left;
     }
 
     .goal-blocker-heading strong {

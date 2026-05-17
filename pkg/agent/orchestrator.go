@@ -1901,11 +1901,34 @@ func isChatTranscriptEvent(event eventlog.Event) bool {
 	return event.Type == "user.message" || event.Type == "chat.reply"
 }
 
+const (
+	remoteTaskOfferTTL             = 2 * time.Minute
+	remoteTaskCompletionGrace      = 2 * time.Minute
+	remoteTaskAttemptHistoryLimit  = 20
+	remoteTaskResultSummaryMaxRune = 700
+)
+
+func (o *Orchestrator) remoteTaskExecutionTimeout(backend string) time.Duration {
+	backend = strings.TrimSpace(backend)
+	if backend != "" {
+		if cfg, ok := o.cfg.ExternalAgents[backend]; ok && cfg.TimeoutSeconds > 0 {
+			return time.Duration(cfg.TimeoutSeconds) * time.Second
+		}
+	}
+	return time.Duration(config.DefaultExternalAgentTimeoutSeconds) * time.Second
+}
+
+func (o *Orchestrator) remoteTaskExecutionDeadline(backend string, now time.Time) time.Time {
+	return now.UTC().Add(o.remoteTaskExecutionTimeout(backend) + remoteTaskCompletionGrace)
+}
+
 func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Agent, backend string) (*remoteagent.Assignment, error) {
 	tasks, err := o.tasks.List()
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
+	backend = strings.TrimSpace(backend)
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].Priority != tasks[j].Priority {
 			return tasks[i].Priority < tasks[j].Priority
@@ -1917,6 +1940,12 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			continue
 		}
 		target := *t.Target
+		if t.RemoteAttempt != nil && strings.EqualFold(t.RemoteAttempt.State, taskstore.RemoteAttemptStateOffered) && t.RemoteAttempt.AgentID == agent.ID {
+			if t.RemoteAttempt.DeadlineAt == nil || !now.After(t.RemoteAttempt.DeadlineAt.UTC()) {
+				return o.remoteAssignmentFromTask(t, agent, firstNonEmptyString(backend, t.RemoteAttempt.Backend, target.Backend, "codex")), nil
+			}
+			o.archiveRemoteAttemptForNewRun(&t, taskstore.RemoteAttemptStateTimedOut, "remote offer expired before the agent acknowledged it", now)
+		}
 		if err := resolveAdvertisedWorkdir(agent, &target); err != nil {
 			t.Status = taskstore.StatusBlocked
 			t.AssignedTo = "OrchestratorAgent"
@@ -1949,45 +1978,155 @@ func (o *Orchestrator) ClaimRemoteTask(ctx context.Context, agent remoteagent.Ag
 			})})
 			return nil, nil
 		}
-		operatorInstruction := latestRemoteAssignmentInstruction(t.Result)
 		if backend == "" {
 			backend = firstNonEmptyString(target.Backend, "codex")
 		}
-		t.Status = taskstore.StatusRunning
-		t.AssignedTo = agent.ID
 		target.Backend = backend
 		t.Target = &target
-		t.Result = "claimed by remote agent " + agent.ID
+		offeredAt := now
+		deadlineAt := now.Add(remoteTaskOfferTTL)
+		t.RemoteAttempt = &taskstore.RemoteTaskAttempt{
+			ID:         id.New("attempt"),
+			AgentID:    agent.ID,
+			Machine:    agent.Machine,
+			Backend:    backend,
+			Workdir:    firstNonEmptyString(t.Workspace, target.Workdir),
+			WorkdirID:  target.WorkdirID,
+			State:      taskstore.RemoteAttemptStateOffered,
+			Status:     taskstore.StatusQueued,
+			OfferedAt:  &offeredAt,
+			DeadlineAt: &deadlineAt,
+		}
 		if err := o.tasks.Save(t); err != nil {
 			return nil, err
 		}
-		if o.remoteAgents != nil {
-			_ = o.remoteAgents.SetCurrentTask(agent.ID, t.ID)
-		}
-		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.claimed", Actor: agent.ID, TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
-			"agent_id": agent.ID,
-			"machine":  agent.Machine,
-			"workdir":  target.Workdir,
-			"backend":  backend,
+		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.offered", Actor: agent.ID, TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+			"agent_id":   agent.ID,
+			"attempt_id": t.RemoteAttempt.ID,
+			"machine":    agent.Machine,
+			"workdir":    target.Workdir,
+			"backend":    backend,
 		})})
-		instruction := defaultRemoteAgentInstruction(t, agent)
-		if operatorInstruction.Text != "" {
-			instruction = appendRemoteOperatorInstruction(instruction, operatorInstruction.Heading, operatorInstruction.Text)
-		}
-		return &remoteagent.Assignment{
-			TaskID:      t.ID,
-			Title:       t.Title,
-			Goal:        t.Goal,
-			ProjectID:   target.ProjectID,
-			Workdir:     firstNonEmptyString(t.Workspace, target.Workdir),
-			WorkdirID:   target.WorkdirID,
-			RepoURL:     target.RepoURL,
-			Branch:      target.Branch,
-			Backend:     backend,
-			Instruction: instruction,
-		}, nil
+		return o.remoteAssignmentFromTask(t, agent, backend), nil
 	}
 	return nil, nil
+}
+
+func (o *Orchestrator) remoteAssignmentFromTask(t taskstore.Task, agent remoteagent.Agent, backend string) *remoteagent.Assignment {
+	if t.Target == nil {
+		return nil
+	}
+	target := *t.Target
+	backend = firstNonEmptyString(backend, target.Backend, "codex")
+	instruction := defaultRemoteAgentInstruction(t, agent)
+	if operatorInstruction := latestRemoteAssignmentInstruction(t.Result); operatorInstruction.Text != "" {
+		instruction = appendRemoteOperatorInstruction(instruction, operatorInstruction.Heading, operatorInstruction.Text)
+	}
+	attemptID := ""
+	var offeredAt, deadlineAt *time.Time
+	if t.RemoteAttempt != nil {
+		attemptID = t.RemoteAttempt.ID
+		offeredAt = t.RemoteAttempt.OfferedAt
+		deadlineAt = t.RemoteAttempt.DeadlineAt
+	}
+	return &remoteagent.Assignment{
+		TaskID:      t.ID,
+		AttemptID:   attemptID,
+		Title:       t.Title,
+		Goal:        t.Goal,
+		ProjectID:   target.ProjectID,
+		Workdir:     firstNonEmptyString(t.Workspace, target.Workdir),
+		WorkdirID:   target.WorkdirID,
+		RepoURL:     target.RepoURL,
+		Branch:      target.Branch,
+		Backend:     backend,
+		Instruction: instruction,
+		OfferedAt:   offeredAt,
+		DeadlineAt:  deadlineAt,
+	}
+}
+
+func (o *Orchestrator) AcknowledgeRemoteTask(ctx context.Context, agentID, taskID, attemptID string) (*remoteagent.Assignment, error) {
+	agentID = strings.TrimSpace(agentID)
+	attemptID = strings.TrimSpace(attemptID)
+	t, err := o.tasks.Load(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !remoteTaskForAgent(t, agentID) {
+		return nil, fmt.Errorf("task %s is not assigned to remote agent %s", taskID, agentID)
+	}
+	if t.RemoteAttempt == nil || strings.TrimSpace(t.RemoteAttempt.ID) == "" {
+		return nil, fmt.Errorf("task %s has no remote attempt to acknowledge", taskID)
+	}
+	if attemptID == "" {
+		return nil, fmt.Errorf("remote attempt id is required")
+	}
+	if t.RemoteAttempt.ID != attemptID {
+		return nil, fmt.Errorf("task %s remote attempt mismatch: got %s, want %s", taskShortID(taskID), attemptID, t.RemoteAttempt.ID)
+	}
+	if t.Target == nil {
+		return nil, fmt.Errorf("task %s has no remote target", taskID)
+	}
+	agent := remoteagent.Agent{ID: agentID, Machine: t.Target.Machine}
+	if o.remoteAgents != nil {
+		if loaded, loadErr := o.remoteAgents.Load(agentID); loadErr == nil {
+			agent = loaded
+		}
+	}
+	now := time.Now().UTC()
+	if strings.EqualFold(t.RemoteAttempt.State, taskstore.RemoteAttemptStateRunning) && t.Status == taskstore.StatusRunning {
+		if o.remoteAgents != nil {
+			_ = o.remoteAgents.SetCurrentAssignment(agentID, t.ID, attemptID)
+		}
+		return o.remoteAssignmentFromTask(t, agent, firstNonEmptyString(t.RemoteAttempt.Backend, t.Target.Backend, "codex")), nil
+	}
+	if t.Status != taskstore.StatusQueued {
+		return nil, fmt.Errorf("task %s cannot acknowledge remote attempt while status is %s", taskShortID(taskID), t.Status)
+	}
+	if !strings.EqualFold(t.RemoteAttempt.State, taskstore.RemoteAttemptStateOffered) {
+		return nil, fmt.Errorf("task %s remote attempt is %s, not offered", taskShortID(taskID), t.RemoteAttempt.State)
+	}
+	if t.RemoteAttempt.DeadlineAt != nil && now.After(t.RemoteAttempt.DeadlineAt.UTC()) {
+		o.archiveRemoteAttemptForNewRun(&t, taskstore.RemoteAttemptStateTimedOut, "remote offer expired before acknowledgement", now)
+		if saveErr := o.tasks.Save(t); saveErr != nil {
+			return nil, saveErr
+		}
+		return nil, fmt.Errorf("task %s remote attempt offer expired before acknowledgement", taskShortID(taskID))
+	}
+	target := *t.Target
+	backend := firstNonEmptyString(t.RemoteAttempt.Backend, target.Backend, "codex")
+	target.Backend = backend
+	t.Target = &target
+	t.Status = taskstore.StatusRunning
+	t.AssignedTo = agentID
+	t.Result = appendResultLine(t.Result, "claimed by remote agent "+agentID)
+	ackAt := now
+	startedAt := now
+	deadlineAt := o.remoteTaskExecutionDeadline(backend, now)
+	t.RemoteAttempt.State = taskstore.RemoteAttemptStateRunning
+	t.RemoteAttempt.Status = taskstore.StatusRunning
+	t.RemoteAttempt.AcknowledgedAt = &ackAt
+	t.RemoteAttempt.StartedAt = &startedAt
+	t.RemoteAttempt.DeadlineAt = &deadlineAt
+	t.RemoteAttempt.Machine = firstNonEmptyString(agent.Machine, t.RemoteAttempt.Machine)
+	t.RemoteAttempt.Backend = backend
+	t.RemoteAttempt.Workdir = firstNonEmptyString(t.RemoteAttempt.Workdir, t.Workspace, target.Workdir)
+	if err := o.tasks.Save(t); err != nil {
+		return nil, err
+	}
+	if o.remoteAgents != nil {
+		_ = o.remoteAgents.SetCurrentAssignment(agentID, t.ID, attemptID)
+	}
+	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.claimed", Actor: agentID, TaskID: t.ID, Payload: eventlog.Payload(map[string]any{
+		"agent_id":    agentID,
+		"attempt_id":  attemptID,
+		"machine":     agent.Machine,
+		"workdir":     target.Workdir,
+		"backend":     backend,
+		"deadline_at": deadlineAt,
+	})})
+	return o.remoteAssignmentFromTask(t, agent, backend), nil
 }
 
 func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, result, status string, remoteDiff ...string) (string, error) {
@@ -1995,7 +2134,11 @@ func (o *Orchestrator) CompleteRemoteTask(ctx context.Context, agentID, taskID, 
 	if len(remoteDiff) > 0 {
 		snapshot = buildTaskDiffSnapshot(remoteDiff[0], "remote_completion_snapshot_legacy", "", "remote base", "", agentID, "", "This legacy remote diff was captured before task-scoped baselines were available; it may include earlier uncommitted remote work.", time.Now().UTC())
 	}
-	return o.CompleteRemoteTaskWithSnapshot(ctx, agentID, taskID, result, status, snapshot)
+	attemptID := ""
+	if t, err := o.tasks.Load(taskID); err == nil && t.RemoteAttempt != nil {
+		attemptID = t.RemoteAttempt.ID
+	}
+	return o.CompleteRemoteTaskWithSnapshot(ctx, agentID, taskID, attemptID, result, status, snapshot)
 }
 
 func (o *Orchestrator) RecoverRemoteTaskCompletion(ctx context.Context, taskID, result, status, baseRef string) (string, error) {
@@ -2040,16 +2183,25 @@ func (o *Orchestrator) RecoverRemoteTaskCompletion(ctx context.Context, taskID, 
 		result = "remote task completion recovered from accessible remote worktree snapshot"
 	}
 	snapshot := buildTaskDiffSnapshot(raw, source, baseRef, baseLabel, "", agentID, workdir, warning, time.Now().UTC())
-	return o.CompleteRemoteTaskWithSnapshot(ctx, agentID, taskID, result, status, snapshot)
+	return o.CompleteRemoteTaskWithSnapshot(ctx, agentID, taskID, "", result, status, snapshot)
 }
 
-func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agentID, taskID, result, status string, snapshot taskstore.TaskDiffSnapshot) (string, error) {
+func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agentID, taskID, attemptID, result, status string, snapshot taskstore.TaskDiffSnapshot) (string, error) {
 	t, err := o.tasks.Load(taskID)
 	if err != nil {
 		return "", err
 	}
 	if !remoteTaskForAgent(t, agentID) {
 		return "", fmt.Errorf("task %s is not assigned to remote agent %s", taskID, agentID)
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	if t.RemoteAttempt != nil {
+		if attemptID == "" {
+			return "", fmt.Errorf("remote attempt id is required for task %s", taskShortID(taskID))
+		}
+		if t.RemoteAttempt.ID != attemptID {
+			return fmt.Sprintf("ignored stale remote completion for %s attempt %s; current attempt is %s", taskShortID(taskID), attemptID, t.RemoteAttempt.ID), nil
+		}
 	}
 	if t.Status != taskstore.StatusRunning {
 		if o.remoteAgents != nil {
@@ -2085,6 +2237,7 @@ func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agent
 			t.RemoteDiffCapturedAt = &capturedAt
 		}
 	}
+	completedAt := time.Now().UTC()
 	if status == taskstore.StatusTimedOut {
 		t.Status = taskstore.StatusTimedOut
 		if t.Result == "" {
@@ -2110,6 +2263,17 @@ func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agent
 			t.Result = "remote agent finished; ready for review.\n" + t.Result
 		}
 	}
+	if t.RemoteAttempt != nil {
+		t.RemoteAttempt.CompletedAt = &completedAt
+		t.RemoteAttempt.Status = t.Status
+		t.RemoteAttempt.ResultSummary = remoteAttemptResultSummary(t.Result)
+		t.RemoteAttempt.DiffSnapshot = cloneTaskDiffSnapshot(t.DiffSnapshot)
+		if t.Status == taskstore.StatusTimedOut {
+			t.RemoteAttempt.State = taskstore.RemoteAttemptStateTimedOut
+		} else {
+			t.RemoteAttempt.State = taskstore.RemoteAttemptStateCompleted
+		}
+	}
 	if err := o.tasks.Save(t); err != nil {
 		return "", err
 	}
@@ -2117,8 +2281,9 @@ func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agent
 		_ = o.remoteAgents.ClearCurrentTask(agentID, taskID)
 	}
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.completed", Actor: agentID, TaskID: taskID, Payload: eventlog.Payload(map[string]any{
-		"agent_id": agentID,
-		"status":   t.Status,
+		"agent_id":   agentID,
+		"attempt_id": attemptID,
+		"status":     t.Status,
 	})})
 	if t.Status == taskstore.StatusTimedOut {
 		_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.timed_out", Actor: agentID, TaskID: taskID, Payload: eventlog.Payload(map[string]any{
@@ -2129,6 +2294,104 @@ func (o *Orchestrator) CompleteRemoteTaskWithSnapshot(ctx context.Context, agent
 		})})
 	}
 	return fmt.Sprintf("Recorded remote result for %s.", taskShortID(taskID)), nil
+}
+
+func (o *Orchestrator) archiveRemoteAttemptForNewRun(t *taskstore.Task, state, result string, now time.Time) {
+	if t == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	attempt := taskstore.RemoteTaskAttempt{}
+	if t.RemoteAttempt != nil {
+		attempt = *t.RemoteAttempt
+		attempt.DiffSnapshot = cloneTaskDiffSnapshot(t.RemoteAttempt.DiffSnapshot)
+	} else if t.DiffSnapshot != nil || strings.TrimSpace(t.RemoteDiff) != "" {
+		attempt.ID = id.New("attempt")
+		attempt.AgentID = remoteTaskAgentID(*t)
+		attempt.State = state
+		attempt.Status = t.Status
+		if t.Target != nil {
+			attempt.Machine = t.Target.Machine
+			attempt.Backend = t.Target.Backend
+			attempt.Workdir = firstNonEmptyString(t.Workspace, t.Target.Workdir)
+			attempt.WorkdirID = t.Target.WorkdirID
+		}
+		attempt.DiffSnapshot = cloneTaskDiffSnapshot(t.DiffSnapshot)
+		if attempt.DiffSnapshot == nil && strings.TrimSpace(t.RemoteDiff) != "" {
+			snapshot := buildTaskDiffSnapshot(t.RemoteDiff, "remote_completion_snapshot_legacy", "", "remote base", "", attempt.AgentID, attempt.Workdir, "This legacy remote diff was archived when the remote task was requeued.", firstNonEmptyTime(t.RemoteDiffCapturedAt, now))
+			attempt.DiffSnapshot = &snapshot
+		}
+	}
+	if attempt.ID != "" {
+		if strings.TrimSpace(state) != "" {
+			attempt.State = state
+		}
+		if attempt.Status == "" {
+			attempt.Status = t.Status
+		}
+		if strings.TrimSpace(result) != "" {
+			attempt.ResultSummary = remoteAttemptResultSummary(result)
+		} else if attempt.ResultSummary == "" {
+			attempt.ResultSummary = remoteAttemptResultSummary(t.Result)
+		}
+		completedAt := now
+		if attempt.CompletedAt == nil {
+			attempt.CompletedAt = &completedAt
+		}
+		t.RemoteAttemptHistory = append([]taskstore.RemoteTaskAttempt{attempt}, t.RemoteAttemptHistory...)
+		if len(t.RemoteAttemptHistory) > remoteTaskAttemptHistoryLimit {
+			t.RemoteAttemptHistory = t.RemoteAttemptHistory[:remoteTaskAttemptHistoryLimit]
+		}
+	}
+	t.RemoteAttempt = nil
+	t.DiffSnapshot = nil
+	t.RemoteDiff = ""
+	t.RemoteDiffCapturedAt = nil
+	t.MergeQueuePosition = 0
+	t.MergeQueueEnteredAt = nil
+}
+
+func cloneTaskDiffSnapshot(value *taskstore.TaskDiffSnapshot) *taskstore.TaskDiffSnapshot {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	if len(value.Files) > 0 {
+		clone.Files = append([]taskstore.TaskDiffSnapshotFile(nil), value.Files...)
+	}
+	return &clone
+}
+
+func remoteAttemptResultSummary(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= remoteTaskResultSummaryMaxRune {
+		return value
+	}
+	return string(runes[:remoteTaskResultSummaryMaxRune]) + "..."
+}
+
+func remoteTaskAgentID(t taskstore.Task) string {
+	if t.Target != nil && strings.TrimSpace(t.Target.AgentID) != "" {
+		return strings.TrimSpace(t.Target.AgentID)
+	}
+	assigned := strings.TrimSpace(t.AssignedTo)
+	if strings.HasPrefix(assigned, "remote:") {
+		return strings.TrimSpace(strings.TrimPrefix(assigned, "remote:"))
+	}
+	return assigned
+}
+
+func firstNonEmptyTime(value *time.Time, fallback time.Time) time.Time {
+	if value != nil && !value.IsZero() {
+		return value.UTC()
+	}
+	return fallback.UTC()
 }
 
 func (o *Orchestrator) ListTaskRuns(taskID string) ([]ExternalRunArtifact, error) {
@@ -2241,6 +2504,17 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 	}
 	for _, t := range tasks {
 		if taskTerminal(t.Status) || o.taskActive(t.ID) {
+			continue
+		}
+		if t.Status == taskstore.StatusRunning && remoteTask(t) {
+			changed, err := o.reconcileRemoteRunningTask(ctx, t, now, recoverAllRunning)
+			if err != nil {
+				o.log().Error("remote running task reconciliation failed", "task_id", t.ID, "error", err)
+				continue
+			}
+			if changed {
+				recovered++
+			}
 			continue
 		}
 		if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
@@ -2481,17 +2755,6 @@ func (o *Orchestrator) reconcileTasks(ctx context.Context, recoverAllRunning boo
 		if t.Status != taskstore.StatusRunning {
 			continue
 		}
-		if remoteTask(t) {
-			changed, err := o.reconcileRemoteRunningTask(ctx, t, now, recoverAllRunning)
-			if err != nil {
-				o.log().Error("remote running task reconciliation failed", "task_id", t.ID, "error", err)
-				continue
-			}
-			if changed {
-				recovered++
-			}
-			continue
-		}
 		if !recoverAllRunning && !o.runningTaskStale(t, now) {
 			continue
 		}
@@ -2550,6 +2813,13 @@ func (o *Orchestrator) reconcileRemoteRunningTask(ctx context.Context, t tasksto
 	t.Status = taskstore.StatusTimedOut
 	t.AssignedTo = "OrchestratorAgent"
 	t.Result = appendResultLine(t.Result, reason)
+	if t.RemoteAttempt != nil {
+		completedAt := now.UTC()
+		t.RemoteAttempt.State = taskstore.RemoteAttemptStateTimedOut
+		t.RemoteAttempt.Status = taskstore.StatusTimedOut
+		t.RemoteAttempt.CompletedAt = &completedAt
+		t.RemoteAttempt.ResultSummary = remoteAttemptResultSummary(reason)
+	}
 	if err := o.tasks.Save(t); err != nil {
 		return false, err
 	}
@@ -3082,6 +3352,19 @@ func (o *Orchestrator) remoteRunningTaskLostReason(t taskstore.Task, now time.Ti
 	if !remoteTask(t) || t.Target == nil || t.Status != taskstore.StatusRunning || o.remoteAgents == nil {
 		return "", false, nil
 	}
+	if t.RemoteAttempt != nil && strings.EqualFold(t.RemoteAttempt.State, taskstore.RemoteAttemptStateRunning) && t.RemoteAttempt.DeadlineAt != nil && now.After(t.RemoteAttempt.DeadlineAt.UTC()) {
+		return fmt.Sprintf("remote task timed out because remote attempt %s exceeded its coordinator deadline at %s", t.RemoteAttempt.ID, t.RemoteAttempt.DeadlineAt.UTC().Format(time.RFC3339)), true, nil
+	}
+	if t.RemoteAttempt == nil {
+		started := taskRunStartedAt(t)
+		backend := ""
+		if t.Target != nil {
+			backend = t.Target.Backend
+		}
+		if !started.IsZero() && now.After(o.remoteTaskExecutionDeadline(backend, started)) {
+			return fmt.Sprintf("remote task timed out because a legacy remote claim has been running since %s without an acknowledged attempt record", started.Format(time.RFC3339)), true, nil
+		}
+	}
 	if !recoverAllRunning && !o.runningTaskStale(t, now) {
 		return "", false, nil
 	}
@@ -3102,6 +3385,11 @@ func (o *Orchestrator) remoteRunningTaskLostReason(t taskstore.Task, now time.Ti
 	}
 	if current := strings.TrimSpace(agent.CurrentTaskID); current != "" && current != t.ID {
 		return fmt.Sprintf("remote task timed out because remote agent %s reports current task %s instead of %s", agentID, taskShortID(current), taskShortID(t.ID)), true, nil
+	}
+	if t.RemoteAttempt != nil {
+		if currentAttempt := strings.TrimSpace(agent.CurrentAttemptID); currentAttempt != "" && currentAttempt != t.RemoteAttempt.ID {
+			return fmt.Sprintf("remote task timed out because remote agent %s reports current attempt %s instead of %s", agentID, currentAttempt, t.RemoteAttempt.ID), true, nil
+		}
 	}
 	if o.remoteAgentHeartbeatStale(agent, now) {
 		lastSeen := "never"
@@ -6789,6 +7077,10 @@ func (o *Orchestrator) retryTask(ctx context.Context, selector, backend, instruc
 			}
 			return fmt.Sprintf("Remote task %s could not be requeued because its Git worktree is not ready.\n%s", taskShortID(taskID), t.Result), nil
 		}
+		o.archiveRemoteAttemptForNewRun(&t, taskstore.RemoteAttemptStateRetried, "remote task retried: "+strings.TrimSpace(instruction), time.Now().UTC())
+		if o.remoteAgents != nil {
+			_ = o.remoteAgents.ClearCurrentTask(t.Target.AgentID, t.ID)
+		}
 		t.Status = taskstore.StatusQueued
 		t.AssignedTo = "remote:" + t.Target.AgentID
 		t.Result = appendResultLine(t.Result, "remote retry queued: "+strings.TrimSpace(instruction))
@@ -7208,6 +7500,10 @@ func (o *Orchestrator) reopenTask(ctx context.Context, selector, reason string) 
 				return "", saveErr
 			}
 			return fmt.Sprintf("Remote task %s could not be reopened because its Git worktree is not ready.\n%s", taskShortID(taskID), t.Result), nil
+		}
+		o.archiveRemoteAttemptForNewRun(&t, taskstore.RemoteAttemptStateReopened, reason, time.Now().UTC())
+		if o.remoteAgents != nil {
+			_ = o.remoteAgents.ClearCurrentTask(t.Target.AgentID, t.ID)
 		}
 	}
 	t.Status = taskstore.StatusQueued

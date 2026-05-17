@@ -1162,8 +1162,22 @@ func (s *Server) handleAgent(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 		writeJSON(rw, http.StatusOK, map[string]any{"assignment": assignment})
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "ack" && req.Method == http.MethodPost:
+		var in struct {
+			AttemptID string `json:"attempt_id"`
+		}
+		if req.Body != nil {
+			_ = json.NewDecoder(req.Body).Decode(&in)
+		}
+		assignment, err := s.Orchestrator.AcknowledgeRemoteTask(req.Context(), agentID, parts[2], in.AttemptID)
+		if err != nil {
+			writeError(rw, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"assignment": assignment})
 	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "complete" && req.Method == http.MethodPost:
 		var in struct {
+			AttemptID   string `json:"attempt_id"`
 			Status      string `json:"status"`
 			Result      string `json:"result"`
 			Error       string `json:"error"`
@@ -1194,7 +1208,7 @@ func (s *Server) handleAgent(rw http.ResponseWriter, req *http.Request) {
 			snapshot.Source = "remote_completion_snapshot_legacy"
 			snapshot.Warning = "This legacy remote diff was captured before task-scoped baselines were available; it may include earlier uncommitted remote work."
 		}
-		reply, err := s.Orchestrator.CompleteRemoteTaskWithSnapshot(req.Context(), agentID, parts[2], result, in.Status, snapshot)
+		reply, err := s.Orchestrator.CompleteRemoteTaskWithSnapshot(req.Context(), agentID, parts[2], in.AttemptID, result, in.Status, snapshot)
 		if err != nil {
 			writeError(rw, http.StatusConflict, err.Error())
 			return
@@ -1222,6 +1236,9 @@ func (s *Server) forwardAgentHeartbeat(ctx context.Context, agent remoteagent.Ag
 	}
 	if agent.CurrentTaskID != "" {
 		metadata["current_task_id"] = agent.CurrentTaskID
+	}
+	if agent.CurrentAttemptID != "" {
+		metadata["current_attempt_id"] = agent.CurrentAttemptID
 	}
 	if len(agent.Capabilities) > 0 {
 		metadata["capabilities"] = strings.Join(agent.Capabilities, ",")

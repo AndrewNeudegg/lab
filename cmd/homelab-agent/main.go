@@ -180,15 +180,16 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 	capabilities, metadata := remoteAgentMetadata(agentCfg.Backend, terminalBaseURL)
 	sendHeartbeat := func() {
 		err := client.heartbeat(ctx, remoteagent.Heartbeat{
-			ID:            agentCfg.ID,
-			Name:          agentCfg.Name,
-			Machine:       agentCfg.Machine,
-			Version:       version,
-			StartedAt:     startedAt,
-			Capabilities:  capabilities,
-			Workdirs:      workdirs,
-			CurrentTaskID: state.currentTask(),
-			Metadata:      metadata,
+			ID:               agentCfg.ID,
+			Name:             agentCfg.Name,
+			Machine:          agentCfg.Machine,
+			Version:          version,
+			StartedAt:        startedAt,
+			Capabilities:     capabilities,
+			Workdirs:         workdirs,
+			CurrentTaskID:    state.currentTask(),
+			CurrentAttemptID: state.currentAttempt(),
+			Metadata:         metadata,
 		})
 		if err != nil {
 			slog.Warn("remote heartbeat failed", "error", err)
@@ -225,9 +226,14 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 			if assignment == nil {
 				continue
 			}
-			state.setCurrentTask(assignment.TaskID)
+			assignment, err = acknowledgeRemoteAssignment(ctx, client, agentCfg.ID, assignment, pollEvery)
+			if err != nil {
+				slog.Warn("remote assignment acknowledgement failed", "task_id", assignment.TaskID, "attempt_id", assignment.AttemptID, "error", err)
+				continue
+			}
+			state.setCurrentAssignment(assignment.TaskID, assignment.AttemptID)
 			sendHeartbeat()
-			slog.Info("remote assignment claimed", "task_id", assignment.TaskID, "workdir", assignment.Workdir, "backend", assignment.Backend)
+			slog.Info("remote assignment claimed", "task_id", assignment.TaskID, "attempt_id", assignment.AttemptID, "workdir", assignment.Workdir, "backend", assignment.Backend)
 			if err := executeAssignmentDurably(ctx, client, runner, completions, state, sendHeartbeat, agentCfg.ID, agentCfg.Backend, assignment); err != nil {
 				slog.Warn("remote completion failed", "task_id", assignment.TaskID, "error", err)
 			}
@@ -236,21 +242,33 @@ func run(ctx context.Context, cfg config.Config, agentCfg config.RemoteAgentConf
 }
 
 type remoteAgentRuntimeState struct {
-	currentTaskID atomic.Value
+	currentTaskID    atomic.Value
+	currentAttemptID atomic.Value
 }
 
 func newRemoteAgentRuntimeState() *remoteAgentRuntimeState {
 	state := &remoteAgentRuntimeState{}
 	state.currentTaskID.Store("")
+	state.currentAttemptID.Store("")
 	return state
 }
 
 func (s *remoteAgentRuntimeState) setCurrentTask(taskID string) {
+	s.setCurrentAssignment(taskID, "")
+}
+
+func (s *remoteAgentRuntimeState) setCurrentAssignment(taskID, attemptID string) {
 	s.currentTaskID.Store(strings.TrimSpace(taskID))
+	s.currentAttemptID.Store(strings.TrimSpace(attemptID))
 }
 
 func (s *remoteAgentRuntimeState) currentTask() string {
 	value, _ := s.currentTaskID.Load().(string)
+	return value
+}
+
+func (s *remoteAgentRuntimeState) currentAttempt() string {
+	value, _ := s.currentAttemptID.Load().(string)
 	return value
 }
 
@@ -274,11 +292,45 @@ func startRemoteHeartbeatLoop(ctx context.Context, every time.Duration, send fun
 }
 
 type agentControl interface {
-	complete(ctx context.Context, agentID, taskID, status, result, errorText string, diff gitDiffSnapshot) error
+	ack(ctx context.Context, agentID, taskID, attemptID string) (*remoteagent.Assignment, error)
+	complete(ctx context.Context, agentID, taskID, attemptID, status, result, errorText string, diff gitDiffSnapshot) error
 }
 
 type assignmentRunner interface {
 	Run(ctx context.Context, req agentrunner.RunRequest) (agentrunner.RunResult, error)
+}
+
+func acknowledgeRemoteAssignment(ctx context.Context, client agentControl, agentID string, assignment *remoteagent.Assignment, retryEvery time.Duration) (*remoteagent.Assignment, error) {
+	if assignment == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(assignment.AttemptID) == "" {
+		return nil, fmt.Errorf("assignment %s did not include a remote attempt id", assignment.TaskID)
+	}
+	if retryEvery <= 0 {
+		retryEvery = 5 * time.Second
+	}
+	deadline := time.Time{}
+	if assignment.DeadlineAt != nil && !assignment.DeadlineAt.IsZero() {
+		deadline = assignment.DeadlineAt.UTC().Add(10 * time.Second)
+	}
+	for {
+		acknowledged, err := client.ack(ctx, agentID, assignment.TaskID, assignment.AttemptID)
+		if err == nil {
+			if acknowledged == nil {
+				return assignment, nil
+			}
+			return acknowledged, nil
+		}
+		if !deadline.IsZero() && time.Now().UTC().After(deadline) {
+			return assignment, err
+		}
+		select {
+		case <-ctx.Done():
+			return assignment, ctx.Err()
+		case <-time.After(retryEvery):
+		}
+	}
 }
 
 func executeAssignment(ctx context.Context, client agentControl, runner assignmentRunner, agentID, fallbackBackend string, assignment *remoteagent.Assignment) error {
@@ -298,19 +350,19 @@ func executeAssignmentDurably(ctx context.Context, client agentControl, runner a
 		if sendErr := sendRemoteCompletion(ctx, client, completion); sendErr != nil {
 			return fmt.Errorf("persist remote completion: %v; direct completion: %w", err, sendErr)
 		}
-		state.setCurrentTask("")
+		state.setCurrentAssignment("", "")
 		sendHeartbeat()
 		return nil
 	}
 	if err := sendRemoteCompletion(ctx, client, completion); err != nil {
-		state.setCurrentTask(completion.TaskID)
+		state.setCurrentAssignment(completion.TaskID, completion.AttemptID)
 		sendHeartbeat()
 		return err
 	}
 	if err := completions.delete(completion.TaskID); err != nil {
 		return err
 	}
-	state.setCurrentTask("")
+	state.setCurrentAssignment("", "")
 	sendHeartbeat()
 	return nil
 }
@@ -351,6 +403,7 @@ func prepareAssignmentCompletion(ctx context.Context, runner assignmentRunner, a
 	return remoteCompletionPayload{
 		AgentID:   agentID,
 		TaskID:    assignment.TaskID,
+		AttemptID: assignment.AttemptID,
 		Status:    status,
 		Result:    body,
 		ErrorText: errorText,
@@ -360,7 +413,7 @@ func prepareAssignmentCompletion(ctx context.Context, runner assignmentRunner, a
 }
 
 func sendRemoteCompletion(ctx context.Context, client agentControl, completion remoteCompletionPayload) error {
-	return client.complete(ctx, completion.AgentID, completion.TaskID, completion.Status, completion.Result, completion.ErrorText, completion.Diff)
+	return client.complete(ctx, completion.AgentID, completion.TaskID, completion.AttemptID, completion.Status, completion.Result, completion.ErrorText, completion.Diff)
 }
 
 func flushPendingCompletions(ctx context.Context, client agentControl, completions pendingCompletionStore, state *remoteAgentRuntimeState, sendHeartbeat func()) (bool, error) {
@@ -372,7 +425,7 @@ func flushPendingCompletions(ctx context.Context, client agentControl, completio
 		return false, nil
 	}
 	for _, completion := range pending {
-		state.setCurrentTask(completion.TaskID)
+		state.setCurrentAssignment(completion.TaskID, completion.AttemptID)
 		sendHeartbeat()
 		if err := sendRemoteCompletion(ctx, client, completion); err != nil {
 			return true, err
@@ -381,7 +434,7 @@ func flushPendingCompletions(ctx context.Context, client agentControl, completio
 			return true, err
 		}
 	}
-	state.setCurrentTask("")
+	state.setCurrentAssignment("", "")
 	sendHeartbeat()
 	return true, nil
 }
@@ -401,6 +454,7 @@ type gitDiffSnapshot struct {
 type remoteCompletionPayload struct {
 	AgentID   string          `json:"agent_id"`
 	TaskID    string          `json:"task_id"`
+	AttemptID string          `json:"attempt_id,omitempty"`
 	Status    string          `json:"status"`
 	Result    string          `json:"result,omitempty"`
 	ErrorText string          `json:"error,omitempty"`
@@ -728,8 +782,19 @@ func (c controlClient) claim(ctx context.Context, agentID, backend string) (*rem
 	return out.Assignment, nil
 }
 
-func (c controlClient) complete(ctx context.Context, agentID, taskID, status, result, errorText string, diff gitDiffSnapshot) error {
+func (c controlClient) ack(ctx context.Context, agentID, taskID, attemptID string) (*remoteagent.Assignment, error) {
+	var out struct {
+		Assignment *remoteagent.Assignment `json:"assignment"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/agents/"+agentID+"/tasks/"+taskID+"/ack", map[string]any{"attempt_id": attemptID}, &out); err != nil {
+		return nil, err
+	}
+	return out.Assignment, nil
+}
+
+func (c controlClient) complete(ctx context.Context, agentID, taskID, attemptID, status, result, errorText string, diff gitDiffSnapshot) error {
 	return c.do(ctx, http.MethodPost, "/agents/"+agentID+"/tasks/"+taskID+"/complete", map[string]any{
+		"attempt_id":    attemptID,
 		"status":        status,
 		"result":        result,
 		"error":         errorText,

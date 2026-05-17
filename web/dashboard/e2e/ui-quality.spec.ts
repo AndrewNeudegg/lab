@@ -151,6 +151,20 @@ const remoteRunningTask = {
   assigned_to: 'remote:desk',
   started_at: now,
   result: 'Remote worker is still running.',
+  remote_attempt: {
+    id: 'attempt_20260428_121100_remote1',
+    agent_id: 'desk',
+    machine: 'desk-uat',
+    backend: 'codex',
+    workdir: '/srv/desk/homelabd',
+    workdir_id: 'homelabd',
+    state: 'running',
+    status: 'running',
+    offered_at: now,
+    acknowledged_at: now,
+    started_at: now,
+    deadline_at: '2026-04-28T13:02:00Z'
+  },
   target: {
     mode: 'remote',
     project_id: 'dashboard',
@@ -424,8 +438,14 @@ for (const viewport of [
       await expect(context).toContainText('/srv/desk/homelabd');
       await expect(context).toContainText('backend codex');
 
+      const attempt = page.getByLabel('Remote attempt');
+      await expect(attempt).toContainText('Running remotely');
+      await expect(attempt).toContainText('acknowledged this attempt');
+      await expect(attempt).toContainText('Deadline');
+
       const styles = await collectReadableStyles(page, [
         '.execution-context',
+        '.remote-attempt',
         '.secondary-actions button.danger'
       ]);
       for (const style of styles) {

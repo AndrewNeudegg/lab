@@ -81,6 +81,15 @@ describe('tasks page composition', () => {
 	    expect(pageSource).toContain('auto_merge_enabled: next');
 	  });
 
+  test('renders remote attempt acknowledgement state in task detail', () => {
+    expect(pageSource).toContain('remoteAttemptLabel');
+    expect(pageSource).toContain('remoteAttemptGuidance');
+    expect(pageSource).toContain('aria-label="Remote attempt"');
+    expect(pageSource).toContain('Waiting for the remote process to acknowledge this exact attempt');
+    expect(pageSource).toContain('Previous attempts');
+    expect(pageSource).toContain("case 'remote_current_attempt_pending':");
+  });
+
   test('keeps automatic sync status responsive while selected details refresh separately', () => {
     expect(pageSource).toContain("let taskFilter: TaskFilter = 'attention'");
     expect(pageSource).toContain('let refreshStateSequence = 0');

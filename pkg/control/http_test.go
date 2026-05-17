@@ -2281,6 +2281,15 @@ func TestRemoteAgentHTTPTaskLifecycle(t *testing.T) {
 	if claimBody.Assignment == nil || claimBody.Assignment.TaskID != task.ID || claimBody.Assignment.Workdir != "/srv/desk/repo" {
 		t.Fatalf("assignment = %#v", claimBody.Assignment)
 	}
+	offered, err := tasks.Load(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offered.Status != taskstore.StatusQueued || offered.RemoteAttempt == nil || offered.RemoteAttempt.State != taskstore.RemoteAttemptStateOffered {
+		t.Fatalf("offered task = %#v, want queued task with offered remote attempt", offered)
+	}
+	ackBody := fmt.Sprintf(`{"attempt_id":%q}`, claimBody.Assignment.AttemptID)
+	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/ack", ackBody, "secret", http.StatusOK)
 	running, err := tasks.Load(task.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -2290,8 +2299,10 @@ func TestRemoteAgentHTTPTaskLifecycle(t *testing.T) {
 	}
 
 	requestJSON(t, mux, http.MethodPost, "/agents/nuc/tasks/"+task.ID+"/complete", `{"status":"completed","result":"bad"}`, "secret", http.StatusConflict)
-	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", `{"status":"completed","result":"changed remote files; validation passed","diff":"diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -0,0 +1 @@\n+remote\n"}`, "secret", http.StatusOK)
-	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", `{"status":"completed","result":"duplicate replay"}`, "secret", http.StatusOK)
+	completeBody := fmt.Sprintf(`{"attempt_id":%q,"status":"completed","result":"changed remote files; validation passed","diff":"diff --git a/app.txt b/app.txt\n--- a/app.txt\n+++ b/app.txt\n@@ -0,0 +1 @@\n+remote\n"}`, claimBody.Assignment.AttemptID)
+	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", completeBody, "secret", http.StatusOK)
+	duplicateBody := fmt.Sprintf(`{"attempt_id":%q,"status":"completed","result":"duplicate replay"}`, claimBody.Assignment.AttemptID)
+	requestJSON(t, mux, http.MethodPost, "/agents/desk/tasks/"+task.ID+"/complete", duplicateBody, "secret", http.StatusOK)
 
 	ready, err := tasks.Load(task.ID)
 	if err != nil {

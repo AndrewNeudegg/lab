@@ -123,9 +123,29 @@ export interface HomelabdTask {
   diff_snapshot?: HomelabdTaskDiffSnapshot;
   remote_diff?: string;
   remote_diff_captured_at?: string;
+  remote_attempt?: HomelabdRemoteTaskAttempt;
+  remote_attempt_history?: HomelabdRemoteTaskAttempt[];
   plan?: HomelabdTaskPlan;
   goal_blocker_trace?: AssistantGoalBlockerTrace;
   summary_only?: boolean;
+}
+
+export interface HomelabdRemoteTaskAttempt {
+  id: string;
+  agent_id?: string;
+  machine?: string;
+  backend?: string;
+  workdir?: string;
+  workdir_id?: string;
+  state: string;
+  status?: string;
+  offered_at?: string;
+  acknowledged_at?: string;
+  started_at?: string;
+  deadline_at?: string;
+  completed_at?: string;
+  result_summary?: string;
+  diff_snapshot?: HomelabdTaskDiffSnapshot;
 }
 
 export interface HomelabdTaskDiffSnapshot {

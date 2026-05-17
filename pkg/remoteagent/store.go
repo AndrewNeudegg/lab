@@ -28,42 +28,47 @@ type Workdir struct {
 }
 
 type Agent struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Machine       string            `json:"machine"`
-	Version       string            `json:"version,omitempty"`
-	Status        string            `json:"status"`
-	LastSeen      time.Time         `json:"last_seen"`
-	StartedAt     time.Time         `json:"started_at,omitempty"`
-	Capabilities  []string          `json:"capabilities,omitempty"`
-	Workdirs      []Workdir         `json:"workdirs,omitempty"`
-	CurrentTaskID string            `json:"current_task_id,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Machine          string            `json:"machine"`
+	Version          string            `json:"version,omitempty"`
+	Status           string            `json:"status"`
+	LastSeen         time.Time         `json:"last_seen"`
+	StartedAt        time.Time         `json:"started_at,omitempty"`
+	Capabilities     []string          `json:"capabilities,omitempty"`
+	Workdirs         []Workdir         `json:"workdirs,omitempty"`
+	CurrentTaskID    string            `json:"current_task_id,omitempty"`
+	CurrentAttemptID string            `json:"current_attempt_id,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 type Heartbeat struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Machine       string            `json:"machine"`
-	Version       string            `json:"version,omitempty"`
-	StartedAt     time.Time         `json:"started_at,omitempty"`
-	Capabilities  []string          `json:"capabilities,omitempty"`
-	Workdirs      []Workdir         `json:"workdirs,omitempty"`
-	CurrentTaskID string            `json:"current_task_id,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Machine          string            `json:"machine"`
+	Version          string            `json:"version,omitempty"`
+	StartedAt        time.Time         `json:"started_at,omitempty"`
+	Capabilities     []string          `json:"capabilities,omitempty"`
+	Workdirs         []Workdir         `json:"workdirs,omitempty"`
+	CurrentTaskID    string            `json:"current_task_id,omitempty"`
+	CurrentAttemptID string            `json:"current_attempt_id,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 type Assignment struct {
-	TaskID      string `json:"task_id"`
-	Title       string `json:"title"`
-	Goal        string `json:"goal"`
-	ProjectID   string `json:"project_id,omitempty"`
-	Workdir     string `json:"workdir"`
-	WorkdirID   string `json:"workdir_id,omitempty"`
-	RepoURL     string `json:"repo_url,omitempty"`
-	Branch      string `json:"branch,omitempty"`
-	Backend     string `json:"backend"`
-	Instruction string `json:"instruction"`
+	TaskID      string     `json:"task_id"`
+	AttemptID   string     `json:"attempt_id"`
+	Title       string     `json:"title"`
+	Goal        string     `json:"goal"`
+	ProjectID   string     `json:"project_id,omitempty"`
+	Workdir     string     `json:"workdir"`
+	WorkdirID   string     `json:"workdir_id,omitempty"`
+	RepoURL     string     `json:"repo_url,omitempty"`
+	Branch      string     `json:"branch,omitempty"`
+	Backend     string     `json:"backend"`
+	Instruction string     `json:"instruction"`
+	OfferedAt   *time.Time `json:"offered_at,omitempty"`
+	DeadlineAt  *time.Time `json:"deadline_at,omitempty"`
 }
 
 type Store struct {
@@ -101,6 +106,7 @@ func (s *Store) UpsertHeartbeat(h Heartbeat, now time.Time) (Agent, error) {
 	agent.Capabilities = compactStrings(h.Capabilities)
 	agent.Workdirs = compactWorkdirs(h.Workdirs)
 	agent.CurrentTaskID = strings.TrimSpace(h.CurrentTaskID)
+	agent.CurrentAttemptID = strings.TrimSpace(h.CurrentAttemptID)
 	agent.Metadata = h.Metadata
 	if err := s.saveLocked(agent); err != nil {
 		return Agent{}, err
@@ -109,6 +115,10 @@ func (s *Store) UpsertHeartbeat(h Heartbeat, now time.Time) (Agent, error) {
 }
 
 func (s *Store) SetCurrentTask(id, taskID string) error {
+	return s.SetCurrentAssignment(id, taskID, "")
+}
+
+func (s *Store) SetCurrentAssignment(id, taskID, attemptID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	agent, _, err := s.loadIfExistsLocked(id)
@@ -119,6 +129,7 @@ func (s *Store) SetCurrentTask(id, taskID string) error {
 		return os.ErrNotExist
 	}
 	agent.CurrentTaskID = taskID
+	agent.CurrentAttemptID = attemptID
 	return s.saveLocked(agent)
 }
 
@@ -134,6 +145,7 @@ func (s *Store) ClearCurrentTask(id, taskID string) error {
 	}
 	if taskID == "" || agent.CurrentTaskID == taskID {
 		agent.CurrentTaskID = ""
+		agent.CurrentAttemptID = ""
 	}
 	return s.saveLocked(agent)
 }

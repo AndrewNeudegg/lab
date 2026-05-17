@@ -61,6 +61,30 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 	if t.DiffSnapshot != nil {
 		return taskDiffFromSnapshot(taskID, *t.DiffSnapshot), nil
 	}
+	if remoteTask(t) && remoteTaskCurrentAttemptPending(t) {
+		workspace := firstNonEmptyString(t.Workspace)
+		headLabel := "remote task"
+		if t.Target != nil {
+			workspace = firstNonEmptyString(t.Target.Workdir, t.Workspace)
+			headLabel = firstNonEmptyString(t.Target.AgentID, t.Target.Machine, "remote task")
+		}
+		warning := "Current remote attempt has not reported a task-scoped diff yet."
+		if len(t.RemoteAttemptHistory) > 0 {
+			warning = "Current remote attempt has not reported a task-scoped diff yet; previous attempt diffs are preserved in task history."
+		}
+		return TaskDiff{
+			TaskID:      taskID,
+			Source:      "remote_current_attempt_pending",
+			BaseLabel:   "remote attempt",
+			HeadLabel:   headLabel,
+			Workspace:   workspace,
+			RawDiff:     "",
+			Summary:     TaskDiffSummary{},
+			Files:       []TaskDiffFile{},
+			Warning:     warning,
+			GeneratedAt: time.Now().UTC(),
+		}, nil
+	}
 	if remoteTask(t) && !remoteTaskUsesManagedGit(t) {
 		raw := strings.TrimSpace(t.RemoteDiff)
 		workspace := firstNonEmptyString(t.Workspace)
@@ -134,6 +158,20 @@ func (o *Orchestrator) TaskDiff(ctx context.Context, selector string) (TaskDiff,
 		Warning:     "This diff was generated live from the current task workspace; store a review snapshot before merging to preserve history.",
 		GeneratedAt: time.Now().UTC(),
 	}, nil
+}
+
+func remoteTaskCurrentAttemptPending(t task.Task) bool {
+	if t.DiffSnapshot != nil || strings.TrimSpace(t.RemoteDiff) != "" {
+		return false
+	}
+	if t.RemoteAttempt != nil {
+		state := strings.ToLower(strings.TrimSpace(t.RemoteAttempt.State))
+		return state == task.RemoteAttemptStateOffered || state == task.RemoteAttemptStateRunning
+	}
+	if t.Status == task.StatusQueued || t.Status == task.StatusRunning {
+		return true
+	}
+	return false
 }
 
 func taskDiffFromSnapshot(taskID string, snapshot task.TaskDiffSnapshot) TaskDiff {

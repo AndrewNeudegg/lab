@@ -410,6 +410,7 @@ func (r *fakeAssignmentRunner) Run(ctx context.Context, req agentrunner.RunReque
 type fakeAgentControl struct {
 	agentID       string
 	taskID        string
+	attemptID     string
 	status        string
 	result        string
 	errorText     string
@@ -421,10 +422,18 @@ type fakeAgentControl struct {
 	err           error
 }
 
-func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, status, result, errorText string, diff gitDiffSnapshot) error {
+func (c *fakeAgentControl) ack(ctx context.Context, agentID, taskID, attemptID string) (*remoteagent.Assignment, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &remoteagent.Assignment{TaskID: taskID, AttemptID: attemptID}, nil
+}
+
+func (c *fakeAgentControl) complete(ctx context.Context, agentID, taskID, attemptID, status, result, errorText string, diff gitDiffSnapshot) error {
 	c.completeCalls++
 	c.agentID = agentID
 	c.taskID = taskID
+	c.attemptID = attemptID
 	c.status = status
 	c.result = result
 	c.errorText = errorText

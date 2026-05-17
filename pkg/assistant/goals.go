@@ -81,6 +81,7 @@ const (
 	GoalSupervisorDecisionPauseBlocked = "pause_blocked"
 	GoalSupervisorDecisionWait         = "wait"
 	GoalSupervisorDecisionRevisePlan   = "revise_plan"
+	GoalSupervisorDecisionAnswer       = "answer_question"
 
 	GoalSignalStatusActive    = "active"
 	GoalSignalStatusResolved  = "resolved"
@@ -178,6 +179,8 @@ type GoalBlockerTrace struct {
 	Resolver        string     `json:"resolver,omitempty"`
 	SourceType      string     `json:"source_type,omitempty"`
 	SourceID        string     `json:"source_id,omitempty"`
+	SourceTaskID    string     `json:"source_task_id,omitempty"`
+	SourceTaskURL   string     `json:"source_task_url,omitempty"`
 	DecisionID      string     `json:"decision_id,omitempty"`
 	Decision        string     `json:"decision,omitempty"`
 	GoalID          string     `json:"goal_id,omitempty"`
@@ -334,6 +337,18 @@ type GoalAutopilotRequest struct {
 	BudgetTasks       int      `json:"budget_tasks,omitempty"`
 	MaxRuntimeMinutes int      `json:"max_runtime_minutes,omitempty"`
 	AllowedActions    []string `json:"allowed_actions,omitempty"`
+}
+
+type GoalQuestionAnswerRequest struct {
+	Question        string               `json:"question,omitempty"`
+	Answer          string               `json:"answer"`
+	ResumeAutopilot bool                 `json:"resume_autopilot,omitempty"`
+	Autopilot       GoalAutopilotRequest `json:"autopilot,omitempty"`
+}
+
+type GoalQuestionAnswerResponse struct {
+	Timeline GoalTimeline `json:"timeline"`
+	Reply    string       `json:"reply,omitempty"`
 }
 
 type GoalWatch struct {
@@ -1739,6 +1754,8 @@ func normalizeGoalSupervisorDecision(value string) string {
 		return GoalSupervisorDecisionWait
 	case GoalSupervisorDecisionRevisePlan:
 		return GoalSupervisorDecisionRevisePlan
+	case GoalSupervisorDecisionAnswer:
+		return GoalSupervisorDecisionAnswer
 	default:
 		return GoalSupervisorDecisionCreateTask
 	}

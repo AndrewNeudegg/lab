@@ -90,6 +90,31 @@ const waitingGoalTask = {
   }
 };
 
+const openQuestionTaskID = 'task_20260428_121000_goalq111';
+const openQuestionTask = {
+  ...blockerTask,
+  id: openQuestionTaskID,
+  status: 'done',
+  title: 'Audit One UI accessibility evidence',
+  result: 'Task closed after reporting a Goal-level product decision.',
+  goal_blocker_trace: {
+    ...blockerTask.goal_blocker_trace,
+    source_type: 'open_questions',
+    source_id: 'goal_ui_quality',
+    source_task_id: openQuestionTaskID,
+    source_task_url: `/tasks?task=${openQuestionTaskID}`,
+    blocking_task_id: undefined,
+    blocking_task_url: undefined,
+    reason:
+      'Goal has an unanswered operator question: Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded?',
+    operator_action: 'Answer the Goal question, then resume Autopilot.',
+    questions: [
+      'Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded?'
+    ],
+    blockers: ['Manual assistive-technology UAT is not available from this Linux worktree.']
+  }
+};
+
 const agentRepairTaskID = 'task_20260428_120900_repair1';
 const agentRepairTask = {
   ...blockerTask,
@@ -216,6 +241,24 @@ const mockTaskApis = async (page: Page, taskItems = [task]) => {
       json: {
         reply: 'Autopilot resumed for goal_ui_quality.',
         timeline: { goal: { id: 'goal_ui_quality' }, events: [] }
+      }
+    });
+  });
+  await page.route(/\/api\/assistant\/goals\/[^/]+\/questions\/answer(?:\?.*)?$/, async (route) => {
+    const body = route.request().postDataJSON() as { answer?: string };
+    await route.fulfill({
+      json: {
+        reply: 'Goal question answered and Autopilot resumed.',
+        timeline: {
+          goal: {
+            id: 'goal_ui_quality',
+            status: 'active',
+            open_questions: [],
+            progress_summary: `Latest operator answer: ${body.answer || ''}`,
+            autopilot: { status: 'running', tasks_started: 12, budget_tasks: 50 }
+          },
+          events: []
+        }
       }
     });
   });
@@ -451,7 +494,7 @@ for (const viewport of [
       await expect(blockerTrace.getByLabel('Goal blocker answer')).toContainText('Accept current evidence');
       await blockerTrace.getByRole('button', { name: 'Accept and resume' }).click();
       await expect(
-        page.getByLabel('Selected task record').getByText('Goal resume requested')
+        page.getByLabel('Selected task record').getByText('Goal resumed')
       ).toBeVisible();
     });
 
@@ -475,6 +518,22 @@ for (const viewport of [
         .getByLabel('Instruction for the next run')
         .fill('Compare against the licensed AG Grid reference fixture before closing Phase 04.');
       await expect(blockerTrace.getByRole('button', { name: 'Reopen with custom answer' })).toBeEnabled();
+    });
+
+    test('open Goal questions are answered on the Goal instead of reopening a closed task', async ({ page }) => {
+      await mockTaskApis(page, [openQuestionTask]);
+      await page.goto(`/tasks?task=${openQuestionTaskID}`);
+      const blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(page.getByRole('heading', { name: 'Audit One UI accessibility evidence' })).toBeVisible();
+      await expect(blockerTrace).toContainText('Goal is blocked by an open question');
+      await expect(blockerTrace).toContainText('Answer the Goal question');
+      await expect(blockerTrace.getByRole('link', { name: 'Open blocking task' })).toHaveCount(0);
+      await blockerTrace.getByRole('button', { name: /Record a waiver or deferment/ }).click();
+      await expect(blockerTrace.getByLabel('Answer for Autopilot')).toHaveValue(/product-owner waiver/);
+      await blockerTrace.getByRole('button', { name: 'Record waiver and resume' }).click();
+      await expect(
+        page.getByLabel('Selected task record').getByText('Goal question answered', { exact: true })
+      ).toBeVisible();
     });
 
     test('agent-resolvable Goal blockers say Autopilot owns the next step', async ({ page }) => {

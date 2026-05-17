@@ -52,6 +52,12 @@
     selectAssistantRun,
     type AssistantRunView
   } from './assistant-model';
+  import {
+    firstGoalQuestion,
+    goalQuestionChoices,
+    type GoalQuestionChoice,
+    type GoalQuestionChoiceID
+  } from '../../lib/goal-question';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
 	  const client = createHomelabdClient({ baseUrl: apiBase });
@@ -100,7 +106,15 @@
   let runNotice = '';
   let signalNotice = '';
   let goalNotice = '';
+  let goalNoticeTone: 'success' | 'warning' = 'success';
   let goalError = '';
+  let goalQuestionAnswering = false;
+  let goalQuestionChoiceId: GoalQuestionChoiceID | '' = '';
+  let goalQuestionAnswer = '';
+  let goalQuestionContextKey = '';
+  let selectedGoalQuestion = '';
+  let selectedGoalQuestionChoices: GoalQuestionChoice[] = [];
+  let selectedGoalQuestionChoice: GoalQuestionChoice | undefined;
   let lastSynced = '';
   let detailEl: HTMLElement | undefined;
   let mobilePanel: MobilePanel = 'runs';
@@ -162,6 +176,21 @@
   $: selectedGoalPlanChallenges = selectedGoalPlan?.challenges || [];
   $: selectedGoalBlockerTrace =
     selectedGoalTimeline?.blocker_trace || selectedGoalTimeline?.goal.blocker_trace || selectedGoal?.blocker_trace;
+  $: selectedGoalQuestion =
+    firstGoalQuestion(selectedGoalTimeline?.goal.open_questions) ||
+    firstGoalQuestion(selectedGoal?.open_questions) ||
+    firstGoalQuestion(selectedGoalBlockerTrace?.questions);
+  $: if (`${selectedGoalId}:${selectedGoalQuestion}` !== goalQuestionContextKey) {
+    goalQuestionContextKey = `${selectedGoalId}:${selectedGoalQuestion}`;
+    goalQuestionChoiceId = '';
+    goalQuestionAnswer = '';
+  }
+  $: selectedGoalQuestionChoices = selectedGoalQuestion ? goalQuestionChoices(selectedGoalQuestion) : [];
+  $: selectedGoalQuestionChoice = selectedGoalQuestionChoices.find((choice) => choice.id === goalQuestionChoiceId);
+  $: if (goalQuestionChoiceId && !selectedGoalQuestionChoices.some((choice) => choice.id === goalQuestionChoiceId)) {
+    goalQuestionChoiceId = '';
+    goalQuestionAnswer = '';
+  }
   $: selectedRunGoalBlockerTrace = goalBlockerTraceForRun(selectedRun);
   $: latestGoalDecision = selectedGoalTimeline?.decisions?.[0];
   $: latestGoalReports = selectedGoalTimeline?.task_reports?.slice(0, 4) || [];
@@ -792,6 +821,11 @@
       .map(labelFromSlug)
       .join(' / ');
 
+  const setGoalNotice = (tone: 'success' | 'warning', message: string) => {
+    goalNoticeTone = tone;
+    goalNotice = message;
+  };
+
   const signalMeta = (signal: AssistantSignalCandidate) =>
     [
       signal.source || signal.surface,
@@ -838,6 +872,9 @@
 
   const goalTimelineCount = (kind: GoalTimelineCountKind) =>
     selectedGoalTimeline?.counts?.[kind] ?? selectedGoalTimeline?.[kind]?.length ?? 0;
+
+  const assistantGoalStillBlocked = (goal: AssistantGoal | undefined) =>
+    Boolean(goal?.status === 'blocked' || goal?.autopilot?.status === 'blocked' || goal?.open_questions?.length);
 
   const goalBlockerSourceLabel = (trace: AssistantGoalBlockerTrace | undefined) => {
     switch (trace?.source_type) {
@@ -1246,7 +1283,7 @@
 	      goalExecutionMode = 'guided';
 	      goalAutopilotBudget = 4;
 	      goalTargetMode = 'auto';
-	      goalNotice = `${assistantGoalKindLabel(timeline.goal.kind)} created in ${assistantGoalExecutionLabel(timeline.goal.execution_mode)} mode.`;
+	      setGoalNotice('success', `${assistantGoalKindLabel(timeline.goal.kind)} created in ${assistantGoalExecutionLabel(timeline.goal.execution_mode)} mode.`);
       mobilePanel = 'detail';
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to create Goal.';
@@ -1315,7 +1352,7 @@
       selectedGoalTimeline = timeline;
       selectedGoalId = timeline.goal.id;
       goalEditing = false;
-      goalNotice = `Goal saved.`;
+      setGoalNotice('success', 'Goal saved.');
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to save Goal.';
     } finally {
@@ -1335,7 +1372,7 @@
       upsertAssistantRun(response.run);
       await refreshGoalTimeline(selectedGoalId);
       selectRun(response.run.id, false, 'active');
-      goalNotice = response.reply || 'Goal check completed.';
+      setGoalNotice('success', response.reply || 'Goal check completed.');
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to check Goal.';
     } finally {
@@ -1354,7 +1391,7 @@
       const timeline = await client.updateAssistantGoal(selectedGoalId, { status }, { limit: goalTimelineLimit });
       goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
       selectedGoalTimeline = timeline;
-      goalNotice = `Goal ${assistantGoalStatusLabel(status).toLowerCase()}.`;
+      setGoalNotice('success', `Goal ${assistantGoalStatusLabel(status).toLowerCase()}.`);
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to update Goal.';
     } finally {
@@ -1380,13 +1417,63 @@
       const timeline = response.timeline;
       goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
       selectedGoalTimeline = timeline;
-      goalNotice =
+      setGoalNotice(
+        assistantGoalStillBlocked(timeline.goal) ? 'warning' : 'success',
         response.reply ||
-        `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(timeline.goal)).toLowerCase()}.`;
+          `Autopilot ${assistantGoalAutopilotStatusLabel(goalAutopilotStatus(timeline.goal)).toLowerCase()}.`
+      );
     } catch (err) {
       goalError = err instanceof Error ? err.message : 'Unable to update Autopilot.';
     } finally {
       goalAutopilotUpdating = false;
+    }
+  };
+
+  const selectGoalQuestionChoice = (choice: GoalQuestionChoice) => {
+    goalQuestionChoiceId = choice.id;
+    goalQuestionAnswer = choice.defaultAnswer;
+  };
+
+  const answerSelectedGoalQuestion = async () => {
+    if (!selectedGoalId || !selectedGoalQuestion) {
+      goalError = 'No open Goal question is available to answer.';
+      return;
+    }
+    const answer = goalQuestionAnswer.trim();
+    if (!answer) {
+      goalError = 'Type the product decision before recording the Goal answer.';
+      return;
+    }
+    goalQuestionAnswering = true;
+    goalError = '';
+    goalNotice = '';
+    try {
+      const response = await client.answerAssistantGoalQuestion(
+        selectedGoalId,
+        {
+          question: selectedGoalQuestion,
+          answer,
+          resume_autopilot: selectedGoal?.execution_mode === 'autopilot',
+          autopilot:
+            selectedGoal?.execution_mode === 'autopilot'
+              ? { budget_tasks: selectedGoal?.autopilot?.budget_tasks ?? normaliseGoalAutopilotTaskBudget(goalAutopilotBudget) }
+              : undefined
+        },
+        { limit: goalTimelineLimit }
+      );
+      const timeline = response.timeline;
+      goals = goals.map((goal) => (goal.id === timeline.goal.id ? timeline.goal : goal));
+      selectedGoalTimeline = timeline;
+      goalQuestionChoiceId = '';
+      goalQuestionAnswer = '';
+      setGoalNotice(
+        assistantGoalStillBlocked(timeline.goal) ? 'warning' : 'success',
+        response.reply || 'Goal question answered.'
+      );
+    } catch (err) {
+      goalError = err instanceof Error ? err.message : 'Unable to answer Goal question.';
+    } finally {
+      goalQuestionAnswering = false;
     }
   };
 
@@ -1669,9 +1756,9 @@
         </header>
 
         {#if goalNotice}
-          <section class="notice success compact-notice" role="status" aria-live="polite">
+          <section class={`notice ${goalNoticeTone} compact-notice`} role="status" aria-live="polite">
             <div>
-              <strong>Goal updated</strong>
+              <strong>{goalNoticeTone === 'warning' ? 'Goal still blocked' : 'Goal updated'}</strong>
               <p>{goalNotice}</p>
             </div>
             <button type="button" class="notice-dismiss" aria-label="Clear Goal notice" on:click={() => (goalNotice = '')}>
@@ -2103,6 +2190,34 @@
             </div>
           </header>
 
+          {#if goalNotice}
+            <section class={`notice ${goalNoticeTone} compact-notice detail-goal-notice`} role="status" aria-live="polite">
+              <div>
+                <strong>{goalNoticeTone === 'warning' ? 'Goal still blocked' : 'Goal updated'}</strong>
+                <p>{goalNotice}</p>
+              </div>
+              <button type="button" class="notice-dismiss" aria-label="Clear Goal notice" on:click={() => (goalNotice = '')}>
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <path d="M6 6l8 8M14 6l-8 8" />
+                </svg>
+              </button>
+            </section>
+          {/if}
+
+          {#if goalError}
+            <section class="notice error compact-notice detail-goal-notice" role="alert">
+              <div>
+                <strong>Goal action failed</strong>
+                <p>{goalError}</p>
+              </div>
+              <button type="button" class="notice-dismiss" aria-label="Clear Goal error" on:click={() => (goalError = '')}>
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <path d="M6 6l8 8M14 6l-8 8" />
+                </svg>
+              </button>
+            </section>
+          {/if}
+
           {#if goalEditing}
             <form class="goal-form goal-edit-form" aria-label="Edit Assistant Goal" on:submit|preventDefault={() => void saveSelectedGoal()}>
               <label>
@@ -2216,6 +2331,47 @@
                 {#if selectedGoalBlockerTrace.operator_action}
                   <p>{selectedGoalBlockerTrace.operator_action}</p>
                 {/if}
+                {#if selectedGoalQuestion}
+                  <div class="goal-question-panel" aria-label="Goal question answer">
+                    <div>
+                      <span>Decision needed</span>
+                      <strong>{selectedGoalQuestion}</strong>
+                    </div>
+                    <div class="goal-question-choice-grid" aria-label="Goal question choices">
+                      {#each selectedGoalQuestionChoices as choice}
+                        <button
+                          type="button"
+                          class:selected={goalQuestionChoiceId === choice.id}
+                          aria-pressed={goalQuestionChoiceId === choice.id}
+                          disabled={goalQuestionAnswering}
+                          on:click={() => selectGoalQuestionChoice(choice)}
+                        >
+                          <span>{choice.title}</span>
+                          <small>{choice.detail}</small>
+                        </button>
+                      {/each}
+                    </div>
+                    <label>
+                      <span>Answer for Autopilot</span>
+                      <textarea
+                        rows="4"
+                        bind:value={goalQuestionAnswer}
+                        disabled={goalQuestionAnswering}
+                        placeholder="Record the product decision that should unblock this Goal"
+                      ></textarea>
+                    </label>
+                    <button
+                      type="button"
+                      class="primary-action notice-action"
+                      disabled={goalQuestionAnswering || !goalQuestionAnswer.trim()}
+                      on:click={() => void answerSelectedGoalQuestion()}
+                    >
+                      {goalQuestionAnswering
+                        ? 'Recording answer'
+                        : selectedGoalQuestionChoice?.actionLabel || 'Record answer and resume'}
+                    </button>
+                  </div>
+                {/if}
                 {#if goalBlockerEvidence(selectedGoalBlockerTrace).length}
                   <ul class="compact-list blocker-evidence-list" aria-label="Blocker evidence">
                     {#each goalBlockerEvidence(selectedGoalBlockerTrace) as item}
@@ -2230,6 +2386,11 @@
                     {goalBlockerTaskLinkLabel(selectedGoalBlockerTrace)}
                   </a>
                 {/if}
+                {#if selectedGoalBlockerTrace.source_task_url}
+                  <a class="text-action notice-action" href={selectedGoalBlockerTrace.source_task_url}>
+                    View source task
+                  </a>
+                {/if}
                 <button
                   type="button"
                   class="text-action notice-action"
@@ -2238,7 +2399,7 @@
                 >
                   {goalChecking ? 'Checking' : 'Check Goal now'}
                 </button>
-                {#if selectedGoal.execution_mode === 'autopilot'}
+                {#if selectedGoal.execution_mode === 'autopilot' && !selectedGoalQuestion}
                   <button
                     type="button"
                     class="primary-action notice-action"
@@ -2834,6 +2995,11 @@
                 {#if selectedRunGoalBlockerTrace.blocking_task_url}
                   <a class="text-action notice-action" href={selectedRunGoalBlockerTrace.blocking_task_url}>
                     {goalBlockerTaskLinkLabel(selectedRunGoalBlockerTrace)}
+                  </a>
+                {/if}
+                {#if selectedRunGoalBlockerTrace.source_task_url}
+                  <a class="text-action notice-action" href={selectedRunGoalBlockerTrace.source_task_url}>
+                    View source task
                   </a>
                 {/if}
               </div>
@@ -3962,6 +4128,10 @@
     padding: 0.55rem;
   }
 
+  .detail-goal-notice {
+    display: none;
+  }
+
   .compiler-list {
     display: grid;
     gap: 0.12rem;
@@ -4211,6 +4381,66 @@
 
   .goal-blocker-owner {
     font-weight: 800;
+  }
+
+  .goal-question-panel {
+    display: grid;
+    gap: 0.55rem;
+    margin-top: 0.25rem;
+    padding: 0.65rem;
+    border: 1px solid rgb(217 119 6 / 0.32);
+    border-radius: 8px;
+    background: rgb(255 251 235 / 0.74);
+  }
+
+  .goal-question-panel > div:first-child,
+  .goal-question-panel label {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
+  .goal-question-panel span,
+  .goal-question-panel strong,
+  .goal-question-panel small {
+    overflow-wrap: anywhere;
+  }
+
+  .goal-question-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.45rem;
+  }
+
+  .goal-question-choice-grid button {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+    min-height: 4.75rem;
+    padding: 0.55rem;
+    border: 1px solid rgb(217 119 6 / 0.28);
+    border-radius: 8px;
+    color: currentColor;
+    text-align: left;
+    background: rgb(255 255 255 / 0.72);
+  }
+
+  .goal-question-choice-grid button.selected,
+  .goal-question-choice-grid button:focus-visible {
+    border-color: #2563eb;
+    outline: 2px solid rgb(37 99 235 / 0.24);
+    outline-offset: 2px;
+    background: #ffffff;
+  }
+
+  .goal-question-choice-grid span {
+    font-weight: 850;
+  }
+
+  .goal-question-panel textarea {
+    width: 100%;
+    min-height: 6rem;
+    resize: vertical;
   }
 
   .blocker-actions {
@@ -4699,6 +4929,23 @@
     background: #431407 !important;
   }
 
+  :global(html[data-theme='dark'] .goal-question-panel) {
+    border-color: rgb(251 191 36 / 0.36);
+    background: rgb(67 20 7 / 0.72);
+  }
+
+  :global(html[data-theme='dark'] .goal-question-choice-grid button) {
+    border-color: rgb(251 191 36 / 0.32);
+    background: rgb(15 23 42 / 0.56);
+  }
+
+  :global(html[data-theme='dark'] .goal-question-choice-grid button.selected),
+  :global(html[data-theme='dark'] .goal-question-choice-grid button:focus-visible) {
+    border-color: #60a5fa;
+    outline-color: rgb(96 165 250 / 0.32);
+    background: rgb(30 41 59 / 0.84);
+  }
+
   @media (max-width: 760px) {
     .assistant-page {
       display: block;
@@ -4747,6 +4994,10 @@
 
     .back-to-runs {
       display: inline-flex;
+    }
+
+    .detail-goal-notice {
+      display: flex;
     }
 
     .record-summary,
@@ -4836,6 +5087,18 @@
     }
 
     .goal-blocker-panel .notice-action {
+      width: 100%;
+    }
+
+    .goal-question-choice-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .goal-question-choice-grid button {
+      min-height: 0;
+    }
+
+    .goal-question-panel .notice-action {
       width: 100%;
     }
 

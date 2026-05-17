@@ -196,6 +196,9 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('Open blocking task');
     expect(pageSource).toContain('goalBlockerDecisionChoiceId');
     expect(pageSource).toContain('Instruction for the next run');
+    expect(pageSource).toContain('Answer for Autopilot');
+    expect(pageSource).toContain('client.answerAssistantGoalQuestion');
+    expect(pageSource).toContain('Goal still blocked');
     expect(pageSource).toContain('Check Goal now');
     expect(pageSource).toContain(
       'Review is queued automatically. You can wait for the merge queue or run Review now from manual controls.'

@@ -244,6 +244,29 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 		writeJSON(rw, http.StatusOK, map[string]any{"timeline": timeline, "reply": reply})
 		return
 	}
+	if len(parts) == 3 && parts[1] == "questions" && parts[2] == "answer" && req.Method == http.MethodPost {
+		var in assistant.GoalQuestionAnswerRequest
+		if req.Body != nil {
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				writeError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		timeline, reply, err := s.Orchestrator.AnswerGoalQuestion(req.Context(), goalID, in)
+		if err != nil {
+			writeError(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if limit := assistantGoalTimelineLimit(req); limit > 0 {
+			timeline, err = s.Orchestrator.LoadGoalWithOptions(goalID, agent.GoalTimelineOptions{Limit: limit})
+			if err != nil {
+				writeError(rw, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		writeJSON(rw, http.StatusOK, assistant.GoalQuestionAnswerResponse{Timeline: timeline, Reply: reply})
+		return
+	}
 	if len(parts) != 2 || req.Method != http.MethodPost {
 		writeError(rw, http.StatusNotFound, "assistant goal action not found")
 		return

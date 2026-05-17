@@ -1,12 +1,14 @@
 import type { HomelabdTask } from '@homelab/shared';
+import { firstGoalQuestion, goalQuestionChoices } from '../../lib/goal-question';
 
 export type GoalBlockerFlowRole =
   | 'waiting_on_blocking_task'
   | 'blocking_task'
   | 'agent_repair'
+  | 'goal_question'
   | 'goal_blocked';
-export type GoalBlockerDecisionChoiceID = 'accept_current' | 'require_more' | 'custom';
-export type GoalBlockerDecisionKind = 'resume' | 'reopen' | 'custom';
+export type GoalBlockerDecisionChoiceID = 'accept_current' | 'require_more' | 'custom' | 'require_full' | 'record_waiver';
+export type GoalBlockerDecisionKind = 'resume' | 'reopen' | 'custom' | 'answer';
 
 export interface GoalBlockerDecisionChoice {
   id: GoalBlockerDecisionChoiceID;
@@ -101,6 +103,28 @@ export const goalBlockerFlow = (task: HomelabdTask | undefined): GoalBlockerFlow
     trace.blockers?.find((blocker) => blocker.trim()) ||
     trace.follow_ups?.find((followUp) => followUp.trim()) ||
     'Create the next repair task and rerun the relevant challenge.';
+
+  if (trace.source_type === 'open_questions') {
+    const question = firstGoalQuestion(trace.questions) || trace.reason;
+    return {
+      role: 'goal_question',
+      title: 'Goal is blocked by an open question',
+      decisionLabel: 'Answer the Goal question',
+      decisionDetail:
+        'The source task is closed or only historical context. Record the product decision on the Goal so Autopilot can continue with that answer.',
+      showBlockingTaskLink: false,
+      showResumeGoalAction: false,
+      showCheckGoalAction: Boolean(goalID),
+      decisionChoices: goalQuestionChoices(question).map((choice) => ({
+        id: choice.id,
+        kind: 'answer',
+        title: choice.title,
+        detail: choice.detail,
+        actionLabel: choice.actionLabel,
+        defaultInstruction: choice.defaultAnswer
+      }))
+    };
+  }
 
   if (resolver === 'agent') {
     return {

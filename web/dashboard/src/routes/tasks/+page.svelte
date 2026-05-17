@@ -55,6 +55,7 @@
     type GoalBlockerDecisionChoiceID,
     type GoalBlockerFlow
   } from './blocker-flow';
+  import { firstGoalQuestion } from '../../lib/goal-question';
   import {
     approvalNoticeTitle,
     pendingApprovalForTask,
@@ -78,7 +79,7 @@
 	  type TaskTargetMode = 'auto' | 'local' | 'remote';
   type Notice = {
     id: number;
-    tone: 'success' | 'error' | 'info';
+    tone: 'success' | 'error' | 'info' | 'warning';
     title: string;
     detail: string;
     presentation: 'inline' | 'toast';
@@ -1450,6 +1451,9 @@
   const currentGoalBlockerGoalId = () =>
     currentGoalBlockerTrace?.goal_id || currentTask?.goal_id || '';
 
+  const assistantGoalStillBlocked = (goal: { status?: string; open_questions?: string[]; autopilot?: { status?: string } } | undefined) =>
+    Boolean(goal?.status === 'blocked' || goal?.autopilot?.status === 'blocked' || goal?.open_questions?.length);
+
   const performGoalBlockerAction = async (operation: 'resume' | 'check') => {
     const goalId = currentGoalBlockerGoalId();
     const taskId = currentTask?.id || '';
@@ -1460,14 +1464,24 @@
     goalBlockerActionLoading = operation;
     clearNotice();
     try {
-      const response =
-        operation === 'resume'
-          ? await client.updateAssistantGoalAutopilot(goalId, 'resume')
-          : await client.checkAssistantGoal(goalId);
+      let reply = '';
+      let stillBlocked = false;
+      if (operation === 'resume') {
+        const response = await client.updateAssistantGoalAutopilot(goalId, 'resume');
+        reply = response.reply || '';
+        stillBlocked = assistantGoalStillBlocked(response.timeline.goal);
+      } else {
+        const response = await client.checkAssistantGoal(goalId);
+        reply = response.reply || '';
+      }
       setNotice(
-        'success',
-        operation === 'resume' ? 'Goal resume requested' : 'Goal check started',
-        response.reply || 'Goal updated.'
+        stillBlocked ? 'warning' : 'success',
+        stillBlocked
+          ? 'Goal still blocked'
+          : operation === 'resume'
+            ? 'Goal resumed'
+            : 'Goal check started',
+        reply || 'Goal updated.'
       );
       await refreshState();
       if (taskId) {
@@ -1489,7 +1503,10 @@
 
   const selectGoalBlockerDecisionChoice = (choice: GoalBlockerDecisionChoice) => {
     goalBlockerDecisionChoiceId = choice.id;
-    goalBlockerReopenInstruction = choice.kind === 'reopen' ? choice.defaultInstruction || '' : '';
+    goalBlockerReopenInstruction =
+      choice.kind === 'reopen' || choice.kind === 'custom' || choice.kind === 'answer'
+        ? choice.defaultInstruction || ''
+        : '';
   };
 
   const performGoalBlockerDecisionChoice = async () => {
@@ -1506,7 +1523,45 @@
 
     const reason = goalBlockerReopenInstruction.trim();
     if (!reason) {
-      setNotice('error', 'Answer required', 'Type the decision or missing requirement before reopening the task.');
+      setNotice('error', 'Answer required', 'Type the decision or missing requirement before continuing.');
+      return;
+    }
+
+    if (choice.kind === 'answer') {
+      const goalId = currentGoalBlockerGoalId();
+      const question = firstGoalQuestion(currentGoalBlockerTrace?.questions);
+      if (!goalId || !question) {
+        setNotice('error', 'Goal question unavailable', 'Open the Goal and answer the current question there.');
+        return;
+      }
+      goalBlockerActionLoading = 'answer';
+      try {
+        const response = await client.answerAssistantGoalQuestion(
+          goalId,
+          {
+            question,
+            answer: reason,
+            resume_autopilot: true
+          },
+          { limit: 20 }
+        );
+        setNotice(
+          assistantGoalStillBlocked(response.timeline.goal) ? 'warning' : 'success',
+          assistantGoalStillBlocked(response.timeline.goal) ? 'Goal still blocked' : 'Goal question answered',
+          response.reply || 'The Goal question was answered.'
+        );
+        goalBlockerDecisionChoiceId = '';
+        goalBlockerReopenInstruction = '';
+        await refreshState();
+        await refreshSelectedTaskDetails(taskId, {
+          force: true,
+          task: tasks.find((task) => task.id === taskId)
+        });
+      } catch (err) {
+        setNotice('error', 'Goal answer failed', errorMessage(err, 'Unable to answer the Goal question.'));
+      } finally {
+        goalBlockerActionLoading = '';
+      }
       return;
     }
 
@@ -2154,11 +2209,11 @@
                             </div>
                             {#if currentGoalBlockerDecisionChoice.kind !== 'resume'}
                               <label>
-                                <span>Instruction for the next run</span>
+                                <span>{currentGoalBlockerDecisionChoice.kind === 'answer' ? 'Answer for Autopilot' : 'Instruction for the next run'}</span>
                                 <textarea
                                   rows="4"
                                   bind:value={goalBlockerReopenInstruction}
-                                  placeholder="Describe what is missing before this Goal can continue"
+                                  placeholder={currentGoalBlockerDecisionChoice.kind === 'answer' ? 'Record the product decision that should unblock this Goal question' : 'Describe what is missing before this Goal can continue'}
                                   disabled={goalBlockerActionLoading !== ''}
                                 ></textarea>
                               </label>
@@ -2173,6 +2228,8 @@
                             >
                               {goalBlockerActionLoading === 'resume' && currentGoalBlockerDecisionChoice.kind === 'resume'
                                 ? 'Resuming'
+                                : goalBlockerActionLoading === 'answer' && currentGoalBlockerDecisionChoice.kind === 'answer'
+                                  ? 'Recording answer'
                                 : goalBlockerActionLoading === 'reopen' && currentGoalBlockerDecisionChoice.kind !== 'resume'
                                   ? 'Reopening'
                                   : currentGoalBlockerDecisionChoice.actionLabel}
@@ -3412,6 +3469,12 @@
     background: #eff6ff;
   }
 
+  .notice.warning {
+    border-color: #fde68a;
+    color: #92400e;
+    background: #fffbeb;
+  }
+
   .notice strong,
   .notice p,
   .sync-alert strong,
@@ -3485,7 +3548,13 @@
     background: #172f53;
   }
 
-  :global(html[data-theme='dark'] .notice:not(.success):not(.info)) {
+  :global(html[data-theme='dark'] .notice.warning) {
+    border-color: rgb(251 191 36 / 0.55);
+    color: #fde68a;
+    background: #422006;
+  }
+
+  :global(html[data-theme='dark'] .notice:not(.success):not(.info):not(.warning)) {
     border-color: rgb(248 113 113 / 0.55);
     color: #fecaca;
     background: #451a1a;

@@ -619,6 +619,12 @@ describe('homelabd client', () => {
             timeline
           });
         }
+        if (String(input).includes('/questions/answer')) {
+          return jsonResponse({
+            reply: 'Goal question answered.',
+            timeline
+          });
+        }
         if (String(input).endsWith('/assistant/goals') && !init?.method) {
           return jsonResponse({ goals: [timeline.goal] });
         }
@@ -639,6 +645,11 @@ describe('homelabd client', () => {
     });
     const checked = await client.checkAssistantGoal('goal_1');
     const autopilot = await client.updateAssistantGoalAutopilot('goal_1', 'start', { budget_tasks: 3 });
+    const answer = await client.answerAssistantGoalQuestion('goal_1', {
+      question: 'Which platforms are supported?',
+      answer: 'Support all required platforms.',
+      resume_autopilot: true
+    });
     await client.addAssistantGoalWatch('goal_1', { title: 'Morning readiness' });
     await client.addAssistantGoalNote('goal_1', { body: 'Operator preference.' });
 
@@ -648,6 +659,7 @@ describe('homelabd client', () => {
     expect(updated.goal.id).toBe('goal_1');
     expect(checked.run.goal_id).toBe('goal_1');
     expect(autopilot.timeline.goal.id).toBe('goal_1');
+    expect(answer.timeline.goal.id).toBe('goal_1');
     expect(requests.map((request) => request.url)).toEqual([
       'http://homelabd/assistant/goals',
       'http://homelabd/assistant/goals',
@@ -655,6 +667,7 @@ describe('homelabd client', () => {
       'http://homelabd/assistant/goals/goal_1',
       'http://homelabd/assistant/goals/goal_1/check',
       'http://homelabd/assistant/goals/goal_1/autopilot/start',
+      'http://homelabd/assistant/goals/goal_1/questions/answer',
       'http://homelabd/assistant/goals/goal_1/watches',
       'http://homelabd/assistant/goals/goal_1/notes'
     ]);
@@ -671,6 +684,12 @@ describe('homelabd client', () => {
     });
     expect(requests[5].init?.method).toBe('POST');
     expect(requests[5].body).toEqual({ budget_tasks: 3 });
+    expect(requests[6].init?.method).toBe('POST');
+    expect(requests[6].body).toEqual({
+      question: 'Which platforms are supported?',
+      answer: 'Support all required platforms.',
+      resume_autopilot: true
+    });
   });
 
   test('uses typed task and approval action endpoints', async () => {

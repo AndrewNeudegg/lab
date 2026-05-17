@@ -53,7 +53,12 @@ describe('assistant page composition', () => {
 	    expect(pageSource).toContain('const navigateToGoal = (goalId: string, replaceState = false) =>');
 	    expect(pageSource).toContain('goalBlockerTraceForRun');
 	    expect(pageSource).toContain('aria-label="Goal blocker trace"');
-	    expect(pageSource).toContain('Open blocking task');
+	    expect(pageSource).toContain('aria-label="Goal question answer"');
+	    expect(pageSource).toContain('aria-label="Goal question choices"');
+	    expect(pageSource).toContain('Answer for Autopilot');
+	    expect(pageSource).toContain('View source task');
+	    expect(pageSource).toContain('answerSelectedGoalQuestion');
+	    expect(pageSource).toContain('client.answerAssistantGoalQuestion');
 	    expect(pageSource).toContain('Resume Autopilot');
 	    expect(pageSource).toContain('Newer Goal blocker exists');
 	    expect(pageSource).toContain('newer blocker');

@@ -478,6 +478,44 @@ const blockedAssistantGoal = {
   next_check_at: ''
 };
 
+const questionGoalID = 'goal_one_ui_question';
+const questionGoalBlockerTrace = {
+  source_type: 'open_questions',
+  source_id: questionGoalID,
+  source_url: `/assistant?goal=${questionGoalID}`,
+  source_task_id: 'task_one_ui_audit',
+  source_task_url: '/tasks?task=task_one_ui_audit',
+  goal_id: questionGoalID,
+  phase_id: 'phase_final_audit',
+  phase_title: 'Final whole-goal audit',
+  review_decision: 'blocked_with_progress',
+  reason:
+    'Goal has an unanswered operator question: Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded for unsupported platforms?',
+  operator_action: 'Answer the Goal question, then resume Autopilot.',
+  questions: [
+    'Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded for unsupported platforms?'
+  ],
+  blockers: [
+    'Manual assistive-technology UAT cannot be completed from the autonomous Linux worktree.'
+  ],
+  created_at: now
+};
+
+const questionAssistantGoal = {
+  ...blockedAssistantGoal,
+  id: questionGoalID,
+  title: 'One UI',
+  objective: 'Build a reusable design system with documented accessibility evidence.',
+  progress_summary: 'Final audit is waiting for a product-owner accessibility decision.',
+  linked_tasks: ['task_one_ui_audit'],
+  open_questions: [...questionGoalBlockerTrace.questions],
+  blocker_trace: questionGoalBlockerTrace,
+  autopilot: {
+    ...blockedAssistantGoal.autopilot,
+    current_task_id: ''
+  }
+};
+
 const assistantGoalWatch = {
   id: 'gwatch_daily_mail',
   goal_id: assistantGoal.id,
@@ -569,7 +607,7 @@ const mockShellApis = async (page: Page) => {
 
 const mockAssistantApis = async (
   page: Page,
-  options: { includeFailedRun?: boolean; includeBlockedGoal?: boolean } = {}
+  options: { includeFailedRun?: boolean; includeBlockedGoal?: boolean; includeQuestionGoal?: boolean } = {}
 ) => {
   await mockShellApis(page);
   const archivedRun = {
@@ -621,9 +659,11 @@ const mockAssistantApis = async (
   };
   const runs = options.includeFailedRun ? [failedRun, clone(assistantRun), archivedRun] : [clone(assistantRun), archivedRun];
   const signals: any[] = [clone(assistantSignal)];
-  const goals: any[] = options.includeBlockedGoal
-    ? [clone(assistantGoal), clone(blockedAssistantGoal)]
-    : [clone(assistantGoal)];
+  const goals: any[] = [
+    clone(assistantGoal),
+    ...(options.includeBlockedGoal ? [clone(blockedAssistantGoal)] : []),
+    ...(options.includeQuestionGoal ? [clone(questionAssistantGoal)] : [])
+  ];
   const watches: any[] = [clone(assistantGoalWatch)];
   const notes: any[] = [clone(assistantGoalNote)];
   const assessments: any[] = [clone(assistantGoalAssessment)];
@@ -899,6 +939,44 @@ const mockAssistantApis = async (
       await route.fulfill({
         json: {
           reply: `Autopilot ${action} recorded.`,
+          timeline: timelineForGoal(goal)
+        }
+      });
+      return;
+    }
+
+    if (route.request().method() === 'POST' && suffix === 'questions' && parts[goalIndex + 3] === 'answer') {
+      const body = route.request().postDataJSON() as {
+        question?: string;
+        answer?: string;
+        resume_autopilot?: boolean;
+      };
+      goal.open_questions = (goal.open_questions || []).filter((question: string) => question !== body.question);
+      goal.progress_summary = `Latest operator answer: ${body.answer || ''}`;
+      goal.status = goal.open_questions.length ? 'blocked' : 'active';
+      goal.blocker_trace = goal.open_questions.length ? goal.blocker_trace : undefined;
+      goal.autopilot = {
+        ...(goal.autopilot || { tasks_started: 0 }),
+        status: body.resume_autopilot && !goal.open_questions.length ? 'running' : goal.autopilot?.status || 'blocked',
+        budget_tasks: goal.autopilot?.budget_tasks ?? 4,
+        tasks_started: goal.autopilot?.tasks_started || 0,
+        current_task_id: body.resume_autopilot && !goal.open_questions.length ? 'task_goal_question_followup' : ''
+      };
+      goal.updated_at = now;
+      notes.unshift({
+        ...clone(assistantGoalNote),
+        id: 'gnote_goal_question_answer',
+        goal_id: goal.id,
+        title: 'Goal question answered',
+        body: `Question: ${body.question}\n\nAnswer: ${body.answer}`,
+        kind: 'question_answer',
+        created_at: now
+      });
+      await route.fulfill({
+        json: {
+          reply: goal.open_questions.length
+            ? 'Goal question answered. Autopilot is still blocked by remaining Goal questions.'
+            : 'Goal question answered and Autopilot resumed.',
           timeline: timelineForGoal(goal)
         }
       });
@@ -1530,6 +1608,36 @@ for (const viewport of [
       await expect(planList).toHaveScreenshot(`assistant-goal-plan-${viewport.name}.png`, {
         animations: 'disabled'
       });
+    });
+
+    test('lets operators answer an open Goal question before Autopilot resumes', async ({ page }) => {
+      await initLightTheme(page);
+      await mockAssistantApis(page, { includeQuestionGoal: true });
+      await page.goto(`/assistant?goal=${questionGoalID}`);
+      await expectAssistantReady(page);
+
+      const selectedGoalRegion = page.locator('article[aria-label="Selected Assistant Goal"]');
+      await expect(selectedGoalRegion).toContainText('One UI');
+      const blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(blockerTrace).toContainText('Blocked by Goal question');
+      await expect(blockerTrace).toContainText('Decision needed');
+      await expect(blockerTrace.getByRole('link', { name: 'View source task' })).toHaveAttribute(
+        'href',
+        '/tasks?task=task_one_ui_audit'
+      );
+      await expect(blockerTrace.getByRole('button', { name: 'Resume Autopilot' })).toHaveCount(0);
+
+      await blockerTrace.getByRole('button', { name: /Record a waiver or deferment/ }).click();
+      await expect(blockerTrace.getByLabel('Answer for Autopilot')).toHaveValue(/product-owner waiver/);
+      await blockerTrace.getByRole('button', { name: 'Record waiver and resume' }).click();
+      await expect(
+        page.getByRole('status').filter({ hasText: 'Goal question answered and Autopilot resumed.' })
+      ).toBeVisible();
+      await expect(page.getByLabel('Goal blocker trace')).toHaveCount(0);
+      await expect(selectedGoalRegion).toContainText('Autopilot Running');
+
+      await expectNoVisualArtifacts(page);
+      await expectNoAxeViolations(page);
     });
 
     test('archives active failed runs from the failure notice', async ({ page }) => {

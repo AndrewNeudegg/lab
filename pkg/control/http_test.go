@@ -443,6 +443,49 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 		t.Fatalf("updated timeline = %#v, want edited objective and unlimited Autopilot task limit", updatedTimeline)
 	}
 
+	requestJSON(t, mux, http.MethodPatch, "/assistant/goals/"+timeline.Goal.ID, `{
+		"open_questions":["Should unsupported platforms be waived?"],
+		"status":"blocked"
+	}`, "", http.StatusOK)
+	answered := requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/questions/answer?limit=2", `{
+		"question":"Should unsupported platforms be waived?",
+		"answer":"Record explicit product-owner waivers before claiming support.",
+		"resume_autopilot":false
+	}`, "", http.StatusOK)
+	var answerResponse struct {
+		Timeline struct {
+			Goal struct {
+				Status          string   `json:"status"`
+				OpenQuestions   []string `json:"open_questions"`
+				ProgressSummary string   `json:"progress_summary"`
+			} `json:"goal"`
+			Notes []struct {
+				Kind string `json:"kind"`
+				Body string `json:"body"`
+			} `json:"notes"`
+		} `json:"timeline"`
+		Reply string `json:"reply"`
+	}
+	if err := json.NewDecoder(answered.Body).Decode(&answerResponse); err != nil {
+		t.Fatal(err)
+	}
+	if answerResponse.Timeline.Goal.Status != "active" || len(answerResponse.Timeline.Goal.OpenQuestions) != 0 || !strings.Contains(answerResponse.Timeline.Goal.ProgressSummary, "product-owner waivers") {
+		t.Fatalf("answer response = %#v, want answered active Goal", answerResponse)
+	}
+	if !strings.Contains(answerResponse.Reply, "Goal question answered") {
+		t.Fatalf("answer reply = %q, want answer result", answerResponse.Reply)
+	}
+	foundAnswerNote := false
+	for _, note := range answerResponse.Timeline.Notes {
+		if note.Kind == "question_answer" && strings.Contains(note.Body, "Should unsupported platforms") {
+			foundAnswerNote = true
+			break
+		}
+	}
+	if !foundAnswerNote {
+		t.Fatalf("answer notes = %#v, want question answer note", answerResponse.Timeline.Notes)
+	}
+
 	listed := requestJSON(t, mux, http.MethodGet, "/assistant/goals", "", "", http.StatusOK)
 	var listResponse struct {
 		Goals []struct {

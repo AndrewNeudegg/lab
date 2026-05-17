@@ -884,6 +884,8 @@ export interface AssistantGoalBlockerTrace {
   status: string;
   source_type: string;
   source_id: string;
+  source_task_id?: string;
+  source_task_url?: string;
   decision_id?: string;
   decision?: string;
   goal_id?: string;
@@ -1093,6 +1095,18 @@ export interface AssistantGoalAutopilotRequest {
 }
 
 export interface AssistantGoalAutopilotResponse {
+  timeline: AssistantGoalTimeline;
+  reply?: string;
+}
+
+export interface AssistantGoalQuestionAnswerRequest {
+  question?: string;
+  answer: string;
+  resume_autopilot?: boolean;
+  autopilot?: AssistantGoalAutopilotRequest;
+}
+
+export interface AssistantGoalQuestionAnswerResponse {
   timeline: AssistantGoalTimeline;
   reply?: string;
 }
@@ -1828,6 +1842,11 @@ export interface HomelabdClient {
     request?: AssistantGoalAutopilotRequest,
     options?: AssistantGoalTimelineOptions
   ): Promise<AssistantGoalAutopilotResponse>;
+  answerAssistantGoalQuestion(
+    goalId: string,
+    request: AssistantGoalQuestionAnswerRequest,
+    options?: AssistantGoalTimelineOptions
+  ): Promise<AssistantGoalQuestionAnswerResponse>;
   addAssistantGoalWatch(
     goalId: string,
     request: AssistantGoalWatchRequest,

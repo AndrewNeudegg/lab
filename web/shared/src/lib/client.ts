@@ -5,6 +5,8 @@ import type {
   AssistantGoalAutopilotResponse,
   AssistantGoalCreateRequest,
   AssistantGoalNoteRequest,
+  AssistantGoalQuestionAnswerRequest,
+  AssistantGoalQuestionAnswerResponse,
   AssistantGoalsResponse,
   AssistantGoalTimeline,
   AssistantGoalTimelineOptions,
@@ -333,6 +335,21 @@ export const createHomelabdClient = (
     ) {
       return apiFetch<AssistantGoalAutopilotResponse>(
         `/assistant/goals/${encodeURIComponent(goalId)}/autopilot/${encodeURIComponent(action)}${assistantGoalTimelineQuery(options)}`,
+        {
+          baseUrl,
+          fetcher,
+          method: 'POST',
+          body: JSON.stringify(request)
+        }
+      );
+    },
+    answerAssistantGoalQuestion(
+      goalId: string,
+      request: AssistantGoalQuestionAnswerRequest,
+      options: AssistantGoalTimelineOptions = {}
+    ) {
+      return apiFetch<AssistantGoalQuestionAnswerResponse>(
+        `/assistant/goals/${encodeURIComponent(goalId)}/questions/answer${assistantGoalTimelineQuery(options)}`,
         {
           baseUrl,
           fetcher,

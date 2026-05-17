@@ -8731,22 +8731,54 @@ GOAL_REPORT: {"summary":"Blocked on editing semantics","advanced_goal":true,"pha
 		t.Fatalf("task reports = %#v, want question in structured report", loaded.TaskReports)
 	}
 
-	var update assistantstore.GoalUpdateRequest
-	if err := json.Unmarshal([]byte(`{"open_questions":[],"autopilot":{"status":"running"}}`), &update); err != nil {
-		t.Fatal(err)
-	}
-	resumed, err := orch.UpdateGoal(ctx, timeline.Goal.ID, update)
+	resumed, reply, err := orch.AnswerGoalQuestion(ctx, timeline.Goal.ID, assistantstore.GoalQuestionAnswerRequest{
+		Question:        "Should spreadsheet-style formulas be in scope for v1?",
+		Answer:          "Spreadsheet-style formulas are in scope for v1; create follow-up implementation and validation work before final completion.",
+		ResumeAutopilot: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(reply, "Autopilot") {
+		t.Fatalf("reply = %q, want resume outcome", reply)
+	}
 	if resumed.Goal.Status != assistantstore.GoalStatusActive || resumed.Goal.Autopilot == nil || resumed.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning {
 		t.Fatalf("resumed goal = %#v, want active running Autopilot after questions are cleared", resumed.Goal)
+	}
+	if len(resumed.Goal.OpenQuestions) != 0 {
+		t.Fatalf("open questions = %#v, want answered question cleared", resumed.Goal.OpenQuestions)
+	}
+	if !strings.Contains(resumed.Goal.ProgressSummary, "Spreadsheet-style formulas are in scope") {
+		t.Fatalf("progress summary = %q, want operator answer carried forward", resumed.Goal.ProgressSummary)
 	}
 	if resumed.Goal.Plan == nil || resumed.Goal.Plan.Status != assistantstore.GoalPlanStatusActive {
 		t.Fatalf("resumed plan = %#v, want active plan after questions are cleared", resumed.Goal.Plan)
 	}
 	if resumed.Goal.Autopilot.CurrentTaskID == "" || resumed.Goal.Autopilot.CurrentTaskID == taskID {
 		t.Fatalf("current task = %q, want a new task after clearing questions", resumed.Goal.Autopilot.CurrentTaskID)
+	}
+	foundAnswerNote := false
+	for _, note := range resumed.Notes {
+		if note.Kind == "question_answer" && strings.Contains(note.Body, "Question: Should spreadsheet-style formulas") {
+			foundAnswerNote = true
+			break
+		}
+	}
+	if !foundAnswerNote {
+		t.Fatalf("notes = %#v, want question answer note", resumed.Notes)
+	}
+	if len(resumed.Decisions) == 0 || resumed.Decisions[0].Decision != assistantstore.GoalSupervisorDecisionCreateTask {
+		t.Fatalf("latest decision = %#v, want new create-task decision after resume", resumed.Decisions)
+	}
+	foundAnswerDecision := false
+	for _, decision := range resumed.Decisions {
+		if decision.Decision == assistantstore.GoalSupervisorDecisionAnswer && strings.Contains(decision.Rationale, "Spreadsheet-style formulas") {
+			foundAnswerDecision = true
+			break
+		}
+	}
+	if !foundAnswerDecision {
+		t.Fatalf("decisions = %#v, want persisted operator answer decision", resumed.Decisions)
 	}
 }
 

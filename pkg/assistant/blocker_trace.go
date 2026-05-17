@@ -56,14 +56,20 @@ func DeriveGoalBlockerTrace(goal Goal, decisions []GoalSupervisorDecision, repor
 	}
 
 	switch {
-	case len(goal.OpenQuestions) > 0 && (decision.Decision == GoalSupervisorDecisionAskQuestion || report.TaskID == ""):
+	case len(goal.OpenQuestions) > 0:
 		trace.SourceType = GoalBlockerSourceOpenQuestions
 		trace.SourceID = goal.ID
+		if report.TaskID != "" {
+			trace.SourceTaskID = report.TaskID
+			trace.SourceTaskURL = "/tasks?task=" + report.TaskID
+			trace.BlockingTaskID = ""
+			trace.BlockingTaskURL = ""
+		}
 		trace.Resolver = GoalBlockerResolverHuman
 		trace.HumanAction = true
 		trace.Questions = append([]string(nil), goal.OpenQuestions...)
-		trace.Reason = "Goal has unanswered operator questions: " + goal.OpenQuestions[0]
-		trace.NextAction = "Answer the Goal question so Autopilot can choose the next task."
+		trace.Reason = "Goal has an unanswered operator question: " + goal.OpenQuestions[0]
+		trace.NextAction = "Record an answer on the Goal so Autopilot can choose the next task with that decision in context."
 		trace.OperatorAction = "Answer the Goal question, then resume Autopilot."
 		trace.CreatedAt = latestGoalBlockerTime(decision.CreatedAt, goal.UpdatedAt)
 	case report.TaskID != "" && (len(report.Blockers) > 0 || len(report.Questions) > 0 || report.ReviewDecision != ""):
@@ -134,6 +140,8 @@ func NormalizeGoalBlockerTrace(trace *GoalBlockerTrace) *GoalBlockerTrace {
 	}
 	value.SourceType = strings.TrimSpace(value.SourceType)
 	value.SourceID = strings.TrimSpace(value.SourceID)
+	value.SourceTaskID = strings.TrimSpace(value.SourceTaskID)
+	value.SourceTaskURL = strings.TrimSpace(value.SourceTaskURL)
 	value.DecisionID = strings.TrimSpace(value.DecisionID)
 	value.Decision = strings.TrimSpace(value.Decision)
 	value.GoalID = strings.TrimSpace(value.GoalID)

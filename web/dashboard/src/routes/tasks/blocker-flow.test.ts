@@ -101,6 +101,37 @@ describe('Goal blocker task flow', () => {
     expect(flow?.decisionChoices).toEqual([]);
   });
 
+  test('routes open Goal questions to a Goal answer flow instead of a closed task', () => {
+    const flow = goalBlockerFlow(
+      baseTask({
+        id: 'task_source',
+        status: 'done',
+        goal_blocker_trace: {
+          ...trace,
+          source_type: 'open_questions',
+          blocking_task_id: undefined,
+          blocking_task_url: undefined,
+          source_task_id: 'task_source',
+          source_task_url: '/tasks?task=task_source',
+          questions: ['Should the product owner waive unsupported platforms?']
+        }
+      })
+    );
+
+    expect(flow?.role).toBe('goal_question');
+    expect(flow?.decisionLabel).toBe('Answer the Goal question');
+    expect(flow?.decisionDetail).toContain('Record the product decision');
+    expect(flow?.showBlockingTaskLink).toBe(false);
+    expect(flow?.showResumeGoalAction).toBe(false);
+    expect(flow?.decisionChoices.map((choice) => choice.title)).toEqual([
+      'Require the full requirement',
+      'Record a waiver or deferment',
+      'Answer another way'
+    ]);
+    expect(flow?.decisionChoices[0].kind).toBe('answer');
+    expect(flow?.decisionChoices[0].defaultInstruction).toContain('Should the product owner waive');
+  });
+
   test('returns no flow for ordinary tasks', () => {
     expect(goalBlockerFlow(baseTask())).toBeUndefined();
   });

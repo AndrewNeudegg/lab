@@ -277,7 +277,7 @@ func (c cli) assistant(args []string) error {
 
 func (c cli) goal(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homelabctl goal <create|edit|list|show|check|autopilot|pause|archive|note|watch>")
+		return fmt.Errorf("usage: homelabctl goal <create|edit|list|show|check|answer|autopilot|pause|archive|note|watch>")
 	}
 	action := commandWord(args[0])
 	switch action {
@@ -296,6 +296,8 @@ func (c cli) goal(args []string) error {
 			return fmt.Errorf("usage: homelabctl goal check <goal_id>")
 		}
 		return c.do(http.MethodPost, path("assistant", "goals", args[1], "check"), nil)
+	case "answer":
+		return c.goalAnswer(args[1:])
 	case "autopilot", "auto":
 		return c.goalAutopilot(args[1:])
 	case "pause":
@@ -507,6 +509,42 @@ func (c cli) goalAutopilot(args []string) error {
 		body["max_runtime_minutes"] = *maxMinutes
 	}
 	return c.do(http.MethodPost, path("assistant", "goals", flags.Arg(0), "autopilot", action), body)
+}
+
+func (c cli) goalAnswer(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: homelabctl goal answer [--question TEXT] [--resume=true|false] [--budget-tasks N] [--max-minutes N] <goal_id> <answer>")
+	}
+	flags := flag.NewFlagSet("goal answer", flag.ContinueOnError)
+	flags.SetOutput(c.err)
+	question := flags.String("question", "", "open Goal question to answer; optional when exactly one is open")
+	resume := flags.Bool("resume", true, "resume Autopilot after recording the answer")
+	budgetTasks := flags.Int("budget-tasks", 0, "autopilot task limit to apply when resuming; use -1 for unlimited")
+	maxMinutes := flags.Int("max-minutes", 0, "autopilot runtime budget in minutes when resuming")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() < 2 {
+		return fmt.Errorf("usage: homelabctl goal answer [--question TEXT] [--resume=true|false] [--budget-tasks N] [--max-minutes N] <goal_id> <answer>")
+	}
+	body := map[string]any{
+		"answer":           strings.TrimSpace(strings.Join(flags.Args()[1:], " ")),
+		"resume_autopilot": *resume,
+	}
+	if value := strings.TrimSpace(*question); value != "" {
+		body["question"] = value
+	}
+	autopilot := map[string]any{}
+	if *budgetTasks != 0 {
+		autopilot["budget_tasks"] = *budgetTasks
+	}
+	if *maxMinutes > 0 {
+		autopilot["max_runtime_minutes"] = *maxMinutes
+	}
+	if len(autopilot) > 0 {
+		body["autopilot"] = autopilot
+	}
+	return c.do(http.MethodPost, path("assistant", "goals", flags.Arg(0), "questions", "answer"), body)
 }
 
 func (c cli) chat(args []string) error {

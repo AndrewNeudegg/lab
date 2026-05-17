@@ -552,6 +552,121 @@ func goalUpdateShouldUnblockPlan(req assistantstore.GoalUpdateRequest, goal assi
 	return false
 }
 
+func (o *Orchestrator) AnswerGoalQuestion(ctx context.Context, goalID string, req assistantstore.GoalQuestionAnswerRequest) (assistantstore.GoalTimeline, string, error) {
+	store, err := o.assistantGoalStore()
+	if err != nil {
+		return assistantstore.GoalTimeline{}, "", err
+	}
+	goal, err := store.LoadGoal(goalID)
+	if err != nil {
+		return assistantstore.GoalTimeline{}, "", err
+	}
+	goal = assistantstore.NormalizeGoal(goal)
+	answer := strings.TrimSpace(req.Answer)
+	if answer == "" {
+		return assistantstore.GoalTimeline{}, "", fmt.Errorf("answer is required")
+	}
+	question := strings.TrimSpace(req.Question)
+	if question == "" {
+		if len(goal.OpenQuestions) != 1 {
+			return assistantstore.GoalTimeline{}, "", fmt.Errorf("question is required when the Goal has %d open questions", len(goal.OpenQuestions))
+		}
+		question = goal.OpenQuestions[0]
+	}
+	remaining, removed := removeGoalOpenQuestion(goal.OpenQuestions, question)
+	if !removed {
+		return assistantstore.GoalTimeline{}, "", fmt.Errorf("question is not open on this Goal")
+	}
+
+	now := time.Now().UTC()
+	goal.OpenQuestions = remaining
+	goal.ProgressSummary = appendGoalOperatorAnswerSummary(goal.ProgressSummary, question, answer)
+	goal.UpdatedAt = now
+	if len(goal.OpenQuestions) == 0 {
+		unblockGoalPlan(&goal, now)
+		if goal.Status == assistantstore.GoalStatusBlocked {
+			goal.Status = assistantstore.GoalStatusActive
+		}
+	}
+	if err := store.SaveGoal(goal); err != nil {
+		return assistantstore.GoalTimeline{}, "", err
+	}
+	_ = store.SaveNote(assistantstore.GoalNote{
+		ID:        id.New("gnote"),
+		GoalID:    goal.ID,
+		Kind:      "question_answer",
+		Title:     "Goal question answered",
+		Body:      goalQuestionAnswerNoteBody(question, answer),
+		CreatedBy: "operator",
+		CreatedAt: now,
+	})
+	o.saveGoalSupervisorDecision(ctx, store, &goal, assistantstore.GoalSupervisorDecision{
+		Decision:  assistantstore.GoalSupervisorDecisionAnswer,
+		Summary:   "Operator answered a Goal question.",
+		Rationale: answer,
+		Questions: []string{question},
+		Evidence:  []string{"Answer: " + answer},
+		CreatedAt: now,
+	})
+	o.appendGoalEvent(ctx, "assistant.goal.question.answered", goal, map[string]any{"goal_id": goal.ID, "question": question, "answer": answer})
+
+	if req.ResumeAutopilot {
+		if len(goal.OpenQuestions) > 0 {
+			timeline, loadErr := o.LoadGoal(goal.ID)
+			if loadErr != nil {
+				return assistantstore.GoalTimeline{}, "", loadErr
+			}
+			return timeline, "Goal question answered. Autopilot is still blocked by remaining Goal questions.", nil
+		}
+		if goal.ExecutionMode == assistantstore.GoalExecutionModeAutopilot {
+			timeline, reply, resumeErr := o.ResumeGoalAutopilot(ctx, goal.ID, req.Autopilot)
+			if resumeErr != nil {
+				return assistantstore.GoalTimeline{}, "", resumeErr
+			}
+			return timeline, firstNonEmptyString(reply, "Goal question answered and Autopilot resume requested."), nil
+		}
+	}
+	timeline, err := o.LoadGoal(goal.ID)
+	if err != nil {
+		return assistantstore.GoalTimeline{}, "", err
+	}
+	return timeline, "Goal question answered.", nil
+}
+
+func removeGoalOpenQuestion(questions []string, question string) ([]string, bool) {
+	needle := canonicalGoalQuestion(question)
+	out := make([]string, 0, len(questions))
+	removed := false
+	for _, candidate := range questions {
+		if !removed && canonicalGoalQuestion(candidate) == needle {
+			removed = true
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out, removed
+}
+
+func canonicalGoalQuestion(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
+func goalQuestionAnswerNoteBody(question, answer string) string {
+	return fmt.Sprintf("Question: %s\n\nAnswer: %s", strings.TrimSpace(question), strings.TrimSpace(answer))
+}
+
+func appendGoalOperatorAnswerSummary(summary, question, answer string) string {
+	entry := "Latest operator answer: " + truncateAssistantRunText(canonicalGoalQuestion(question), 180) + " Answer: " + truncateAssistantRunText(strings.TrimSpace(answer), 260)
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return truncateAssistantRunText(entry, 600)
+	}
+	if strings.Contains(summary, entry) {
+		return truncateAssistantRunText(summary, 600)
+	}
+	return truncateAssistantRunText(summary+"\n"+entry, 600)
+}
+
 func unblockGoalPlan(goal *assistantstore.Goal, now time.Time) {
 	if goal == nil || goal.Plan == nil {
 		return

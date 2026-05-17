@@ -102,6 +102,53 @@ func TestDeriveGoalBlockerTraceUsesOpenQuestions(t *testing.T) {
 	}
 }
 
+func TestDeriveGoalBlockerTracePrefersOpenQuestionOverSourceTaskReport(t *testing.T) {
+	now := time.Date(2026, 5, 16, 20, 39, 0, 0, time.UTC)
+	goal := Goal{
+		ID:            "goal_1",
+		Status:        GoalStatusBlocked,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		OpenQuestions: []string{"Will the product owner waive unsupported platforms?"},
+		Autopilot:     &GoalAutopilot{Status: GoalAutopilotStatusBlocked},
+		Plan:          &GoalPlan{Status: GoalPlanStatusBlocked, CurrentPhaseID: "phase_final_audit"},
+		UpdatedAt:     now,
+	}
+
+	trace := DeriveGoalBlockerTrace(goal, []GoalSupervisorDecision{{
+		ID:         "gdec_1",
+		GoalID:     "goal_1",
+		Decision:   GoalSupervisorDecisionPauseBlocked,
+		StopReason: "Task reported a blocker.",
+		TaskID:     "task_source",
+		CreatedAt:  now,
+	}}, []GoalTaskReport{{
+		ID:             "greport_task_source",
+		GoalID:         "goal_1",
+		TaskID:         "task_source",
+		PhaseID:        "phase_final_audit",
+		ReviewDecision: "blocked_with_progress",
+		Blockers:       []string{"Manual assistive-technology UAT is missing."},
+		Questions:      []string{"Will the product owner waive unsupported platforms?"},
+		CreatedAt:      now,
+	}})
+
+	if trace == nil {
+		t.Fatal("trace is nil, want open-question blocker")
+	}
+	if trace.SourceType != GoalBlockerSourceOpenQuestions {
+		t.Fatalf("source type = %q, want open_questions", trace.SourceType)
+	}
+	if trace.BlockingTaskID != "" || trace.BlockingTaskURL != "" {
+		t.Fatalf("blocking task = %q/%q, want no actionable blocking task", trace.BlockingTaskID, trace.BlockingTaskURL)
+	}
+	if trace.SourceTaskID != "task_source" || trace.SourceTaskURL != "/tasks?task=task_source" {
+		t.Fatalf("source task = %q/%q, want source task provenance", trace.SourceTaskID, trace.SourceTaskURL)
+	}
+	if !strings.Contains(trace.Reason, "unanswered operator question") {
+		t.Fatalf("reason = %q, want Goal question framing", trace.Reason)
+	}
+}
+
 func TestDeriveGoalBlockerTraceReturnsNilForUnblockedGoal(t *testing.T) {
 	trace := DeriveGoalBlockerTrace(Goal{
 		ID:            "goal_1",

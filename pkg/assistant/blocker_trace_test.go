@@ -173,6 +173,66 @@ func TestDeriveGoalBlockerTracePrefersOpenQuestionOverSourceTaskReport(t *testin
 	}
 }
 
+func TestDeriveGoalBlockerTracePrefersCurrentAutopilotTaskOverStaleReport(t *testing.T) {
+	now := time.Date(2026, 5, 17, 13, 25, 0, 0, time.UTC)
+	goal := Goal{
+		ID:            "goal_1",
+		Status:        GoalStatusBlocked,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		Autopilot: &GoalAutopilot{
+			Status:        GoalAutopilotStatusBlocked,
+			CurrentTaskID: "task_current",
+			StopReasons:   []string{"Linked task current is blocked."},
+		},
+		Plan: &GoalPlan{
+			Status:         GoalPlanStatusBlocked,
+			CurrentPhaseID: "phase_final_audit",
+			Phases: []GoalPlanPhase{{
+				ID:     "phase_final_audit",
+				Title:  "Final whole-goal audit",
+				Status: GoalPlanPhaseStatusBlocked,
+			}},
+		},
+		UpdatedAt: now,
+	}
+
+	trace := DeriveGoalBlockerTrace(goal, []GoalSupervisorDecision{{
+		ID:        "gdec_old",
+		GoalID:    "goal_1",
+		Decision:  GoalSupervisorDecisionPauseBlocked,
+		TaskID:    "task_old",
+		CreatedAt: now.Add(-24 * time.Hour),
+	}}, []GoalTaskReport{{
+		ID:             "greport_task_old",
+		GoalID:         "goal_1",
+		TaskID:         "task_old",
+		PhaseID:        "phase_final_audit",
+		Blockers:       []string{"Manual screen-reader evidence was missing yesterday."},
+		Questions:      []string{"Should old evidence be waived?"},
+		ReviewDecision: "blocked_with_progress",
+		CreatedAt:      now.Add(-24 * time.Hour),
+	}})
+
+	if trace == nil {
+		t.Fatal("trace is nil, want current task blocker")
+	}
+	if trace.SourceType != GoalBlockerSourceAutopilot {
+		t.Fatalf("source type = %q, want autopilot current-task blocker", trace.SourceType)
+	}
+	if trace.BlockingTaskID != "task_current" {
+		t.Fatalf("blocking task = %q, want current task", trace.BlockingTaskID)
+	}
+	if trace.BlockingTaskURL != "/tasks?task=task_current" {
+		t.Fatalf("blocking task URL = %q", trace.BlockingTaskURL)
+	}
+	if trace.Flow == nil || trace.Flow.Role != GoalBlockerFlowRoleGoalBlocked {
+		t.Fatalf("flow = %#v, want Goal-level current-task blocker", trace.Flow)
+	}
+	if trace.Flow.Question != "" || len(trace.Flow.DecisionChoices) != 0 {
+		t.Fatalf("flow = %#v, want no stale task-report question choices", trace.Flow)
+	}
+}
+
 func TestGoalBlockerTraceWithFlowUsesTaskContextForClosedBlockingTask(t *testing.T) {
 	now := time.Date(2026, 5, 16, 20, 39, 0, 0, time.UTC)
 	trace := GoalBlockerTraceWithFlow(&GoalBlockerTrace{
@@ -201,6 +261,39 @@ func TestGoalBlockerTraceWithFlowUsesTaskContextForClosedBlockingTask(t *testing
 	}
 	if trace.Flow.DecisionChoices[0].Kind != GoalBlockerDecisionKindResume {
 		t.Fatalf("first choice = %#v, want resume choice", trace.Flow.DecisionChoices[0])
+	}
+}
+
+func TestGoalBlockerTraceWithFlowGivesRepairChoicesForBlockedCurrentTask(t *testing.T) {
+	now := time.Date(2026, 5, 18, 20, 0, 0, 0, time.UTC)
+	trace := GoalBlockerTraceWithFlow(&GoalBlockerTrace{
+		Status:         GoalBlockerTraceStatusBlocked,
+		Resolver:       GoalBlockerResolverHuman,
+		SourceType:     GoalBlockerSourceAutopilot,
+		SourceID:       "goal_1",
+		GoalID:         "goal_1",
+		BlockingTaskID: "task_current",
+		Reason:         "Remote diff capture failed: git read-tree HEAD: context canceled.",
+		CreatedAt:      &now,
+	}, GoalBlockerFlowContext{TaskID: "task_current", TaskStatus: "blocked"})
+
+	if trace == nil || trace.Flow == nil {
+		t.Fatalf("trace = %#v, want flow", trace)
+	}
+	if trace.Flow.Role != GoalBlockerFlowRoleBlockingTask {
+		t.Fatalf("flow role = %q, want blocking_task", trace.Flow.Role)
+	}
+	if len(trace.Flow.DecisionChoices) != 3 {
+		t.Fatalf("choices = %#v, want retry/reopen choices", trace.Flow.DecisionChoices)
+	}
+	if trace.Flow.DecisionChoices[0].Kind != GoalBlockerDecisionKindRetry {
+		t.Fatalf("first choice = %#v, want retry choice", trace.Flow.DecisionChoices[0])
+	}
+	if trace.Flow.DecisionChoices[1].DefaultInstruction == "" || !strings.Contains(trace.Flow.DecisionChoices[1].DefaultInstruction, "Remote diff capture failed") {
+		t.Fatalf("retry instruction = %q, want blocker-specific instruction", trace.Flow.DecisionChoices[1].DefaultInstruction)
+	}
+	if trace.Flow.DecisionChoices[2].Kind != GoalBlockerDecisionKindReopen {
+		t.Fatalf("third choice = %#v, want reopen choice", trace.Flow.DecisionChoices[2])
 	}
 }
 

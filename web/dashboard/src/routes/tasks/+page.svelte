@@ -1541,7 +1541,7 @@
   const selectGoalBlockerDecisionChoice = (choice: GoalBlockerDecisionChoice) => {
     goalBlockerDecisionChoiceId = choice.id;
     goalBlockerReopenInstruction =
-      choice.kind === 'reopen' || choice.kind === 'custom' || choice.kind === 'answer'
+      choice.kind === 'reopen' || choice.kind === 'custom' || choice.kind === 'answer' || choice.kind === 'retry'
         ? choice.defaultInstruction || ''
         : '';
   };
@@ -1559,7 +1559,7 @@
     }
 
     const reason = goalBlockerReopenInstruction.trim();
-    if (!reason) {
+    if (!reason && choice.kind !== 'retry') {
       setNotice('error', 'Answer required', 'Type the decision or missing requirement before continuing.');
       return;
     }
@@ -1596,6 +1596,30 @@
         });
       } catch (err) {
         setNotice('error', 'Goal answer failed', errorMessage(err, 'Unable to answer the Goal question.'));
+      } finally {
+        goalBlockerActionLoading = '';
+      }
+      return;
+    }
+
+    if (choice.kind === 'retry') {
+      goalBlockerActionLoading = 'retry';
+      clearNotice();
+      try {
+        const response = await client.retryTask(taskId, {
+          backend: retryBackend,
+          instruction: reason
+        });
+        setNotice('success', 'Task retry submitted', response.reply || 'The blocker task was queued for retry.');
+        goalBlockerDecisionChoiceId = '';
+        goalBlockerReopenInstruction = '';
+        await refreshState();
+        await refreshSelectedTaskDetails(taskId, {
+          force: true,
+          task: tasks.find((task) => task.id === taskId)
+        });
+      } catch (err) {
+        setNotice('error', 'Retry failed', errorMessage(err, 'Unable to retry the blocker task.'));
       } finally {
         goalBlockerActionLoading = '';
       }
@@ -2246,11 +2270,11 @@
                             </div>
                             {#if currentGoalBlockerDecisionChoice.kind !== 'resume'}
                               <label>
-                                <span>{currentGoalBlockerDecisionChoice.kind === 'answer' ? 'Answer for Autopilot' : 'Instruction for the next run'}</span>
+                                <span>{currentGoalBlockerDecisionChoice.kind === 'answer' ? 'Answer for Autopilot' : currentGoalBlockerDecisionChoice.kind === 'retry' ? 'Retry instruction' : 'Instruction for the next run'}</span>
                                 <textarea
                                   rows="4"
                                   bind:value={goalBlockerReopenInstruction}
-                                  placeholder={currentGoalBlockerDecisionChoice.kind === 'answer' ? 'Record the product decision that should unblock this Goal question' : 'Describe what is missing before this Goal can continue'}
+                                  placeholder={currentGoalBlockerDecisionChoice.kind === 'answer' ? 'Record the product decision that should unblock this Goal question' : currentGoalBlockerDecisionChoice.kind === 'retry' ? 'Optional instruction for the retry' : 'Describe what is missing before this Goal can continue'}
                                   disabled={goalBlockerActionLoading !== ''}
                                 ></textarea>
                               </label>
@@ -2260,6 +2284,7 @@
                               class:goal-primary-action={currentGoalBlockerDecisionChoice.kind === 'resume'}
                               disabled={goalBlockerActionLoading !== '' ||
                                 (currentGoalBlockerDecisionChoice.kind !== 'resume' &&
+                                  currentGoalBlockerDecisionChoice.kind !== 'retry' &&
                                   !goalBlockerReopenInstruction.trim())}
                               on:click={() => void performGoalBlockerDecisionChoice()}
                             >
@@ -2267,6 +2292,8 @@
                                 ? 'Resuming'
                                 : goalBlockerActionLoading === 'answer' && currentGoalBlockerDecisionChoice.kind === 'answer'
                                   ? 'Recording answer'
+                                : goalBlockerActionLoading === 'retry' && currentGoalBlockerDecisionChoice.kind === 'retry'
+                                  ? 'Retrying'
                                 : goalBlockerActionLoading === 'reopen' && currentGoalBlockerDecisionChoice.kind !== 'resume'
                                   ? 'Reopening'
                                   : currentGoalBlockerDecisionChoice.actionLabel}

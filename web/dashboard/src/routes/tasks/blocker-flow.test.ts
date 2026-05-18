@@ -117,6 +117,54 @@ describe('Goal blocker task flow', () => {
     expect(flow?.decisionChoices[0].defaultInstruction).toBe('Record the waiver.');
   });
 
+  test('normalises repair choices for the current blocked Goal task', () => {
+    const flow = goalBlockerFlow(
+      baseTask({
+        id: 'task_blocker',
+        status: 'blocked',
+        goal_blocker_trace: {
+          status: 'blocked',
+          source_type: 'autopilot',
+          source_id: 'goal_grid',
+          goal_id: 'goal_grid',
+          blocking_task_id: 'task_blocker',
+          reason: 'Remote diff capture failed.',
+          flow: {
+            role: 'blocking_task',
+            title: 'This task is blocking Goal Autopilot',
+            decision_label: 'Repair the blocker',
+            decision_detail: 'Use Retry or Reopen with context.',
+            show_blocking_task_link: false,
+            show_resume_goal_action: false,
+            show_check_goal_action: true,
+            decision_choices: [
+              {
+                id: 'retry_current',
+                kind: 'retry',
+                title: 'Retry current task',
+                detail: 'Use when the blocker is transient.',
+                action_label: 'Retry task'
+              },
+              {
+                id: 'reopen_with_direction',
+                kind: 'reopen',
+                title: 'Reopen with new direction',
+                detail: 'Use when the task needs new direction.',
+                action_label: 'Reopen task',
+                default_instruction: 'Require a clean diff capture.'
+              }
+            ]
+          }
+        }
+      })
+    );
+
+    expect(flow?.role).toBe('blocking_task');
+    expect(flow?.decisionLabel).toBe('Repair the blocker');
+    expect(flow?.decisionChoices.map((choice) => choice.kind)).toEqual(['retry', 'reopen']);
+    expect(flow?.decisionChoices[1].defaultInstruction).toBe('Require a clean diff capture.');
+  });
+
   test('returns no flow when the API did not provide one', () => {
     expect(goalBlockerFlow(baseTask())).toBeUndefined();
   });

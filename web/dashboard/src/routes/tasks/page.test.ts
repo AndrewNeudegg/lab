@@ -206,7 +206,10 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('goalBlockerDecisionChoiceId');
     expect(pageSource).toContain('Instruction for the next run');
     expect(pageSource).toContain('Answer for Autopilot');
+    expect(pageSource).toContain('Retry instruction');
+    expect(pageSource).toContain("choice.kind === 'retry'");
     expect(pageSource).toContain('client.answerAssistantGoalQuestion');
+    expect(pageSource).toContain('client.retryTask(taskId');
     expect(pageSource).toContain('currentGoalBlockerFlow?.question');
     expect(pageSource).not.toContain('firstGoalQuestion(currentGoalBlockerTrace?.questions)');
     expect(pageSource).toContain('Goal still blocked');

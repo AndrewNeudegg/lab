@@ -940,9 +940,12 @@ export type AssistantGoalBlockerDecisionChoiceID =
   | 'require_more'
   | 'custom'
   | 'require_full'
-  | 'record_waiver';
+  | 'record_waiver'
+  | 'retry_current'
+  | 'retry_with_instruction'
+  | 'reopen_with_direction';
 
-export type AssistantGoalBlockerDecisionKind = 'resume' | 'reopen' | 'custom' | 'answer';
+export type AssistantGoalBlockerDecisionKind = 'resume' | 'reopen' | 'custom' | 'answer' | 'retry';
 
 export interface AssistantGoalBlockerDecisionChoice {
   id: AssistantGoalBlockerDecisionChoiceID | string;

@@ -30,6 +30,7 @@ const (
 	GoalBlockerDecisionKindReopen = "reopen"
 	GoalBlockerDecisionKindCustom = "custom"
 	GoalBlockerDecisionKindAnswer = "answer"
+	GoalBlockerDecisionKindRetry  = "retry"
 )
 
 type GoalBlockerFlowContext struct {
@@ -48,6 +49,7 @@ func DeriveGoalBlockerTrace(goal Goal, decisions []GoalSupervisorDecision, repor
 	decision := latestBlockingGoalDecision(decisions)
 	report := blockingGoalReportForTrace(goal, decision, reports)
 	phaseID, phaseTitle := currentBlockedGoalPhase(goal, report)
+	currentTaskID := currentAutopilotBlockingTaskID(goal)
 
 	trace := GoalBlockerTrace{
 		Status:         GoalBlockerTraceStatusBlocked,
@@ -88,6 +90,21 @@ func DeriveGoalBlockerTrace(goal Goal, decisions []GoalSupervisorDecision, repor
 		trace.NextAction = "Record an answer on the Goal so Autopilot can choose the next task with that decision in context."
 		trace.OperatorAction = "Answer the Goal question, then resume Autopilot."
 		trace.CreatedAt = latestGoalBlockerTime(decision.CreatedAt, goal.UpdatedAt)
+	case currentTaskID != "" && report.TaskID != currentTaskID:
+		trace.SourceType = GoalBlockerSourceAutopilot
+		trace.SourceID = goal.ID
+		trace.BlockingTaskID = currentTaskID
+		trace.BlockingTaskURL = "/tasks?task=" + currentTaskID
+		trace.Resolver = GoalBlockerResolverHuman
+		trace.HumanAction = true
+		trace.Blockers = nil
+		trace.Questions = nil
+		trace.FollowUps = nil
+		trace.ReviewDecision = ""
+		trace.Reason = currentAutopilotBlockerReason(goal)
+		trace.NextAction = "Open task " + shortGoalBlockerID(currentTaskID) + " and resolve its task-level blocked state."
+		trace.OperatorAction = "Open the current blocked task, then retry, reopen, review, or accept it through the normal task flow."
+		trace.CreatedAt = latestGoalBlockerTime(goal.UpdatedAt, decision.CreatedAt)
 	case report.TaskID != "" && (len(report.Blockers) > 0 || len(report.Questions) > 0 || report.ReviewDecision != ""):
 		trace.SourceType = GoalBlockerSourceTaskReport
 		trace.SourceID = report.ID
@@ -322,6 +339,7 @@ func deriveGoalBlockerFlow(trace GoalBlockerTrace, ctx GoalBlockerFlowContext) *
 			ShowBlockingTaskLink: false,
 			ShowResumeGoalAction: false,
 			ShowCheckGoalAction:  goalID != "",
+			DecisionChoices:      repairableGoalBlockerDecisionChoices(trace),
 		}
 	}
 
@@ -390,6 +408,43 @@ func terminalGoalBlockerDecisionChoices(trace GoalBlockerTrace) []GoalBlockerDec
 			ActionLabel: "Reopen with custom answer",
 		},
 	}
+}
+
+func repairableGoalBlockerDecisionChoices(trace GoalBlockerTrace) []GoalBlockerDecisionChoice {
+	return []GoalBlockerDecisionChoice{
+		{
+			ID:          "retry_current",
+			Kind:        GoalBlockerDecisionKindRetry,
+			Title:       "Retry current task",
+			Detail:      "Use when the blocker is likely transient or the same worker can continue from the current state.",
+			ActionLabel: "Retry task",
+		},
+		{
+			ID:                 "retry_with_instruction",
+			Kind:               GoalBlockerDecisionKindRetry,
+			Title:              "Retry with instruction",
+			Detail:             "Use when the worker needs a specific repair instruction before the Goal can continue.",
+			ActionLabel:        "Retry with instruction",
+			DefaultInstruction: retryGoalBlockerInstruction(trace),
+		},
+		{
+			ID:                 "reopen_with_direction",
+			Kind:               GoalBlockerDecisionKindReopen,
+			Title:              "Reopen with new direction",
+			Detail:             "Use when the task needs a changed requirement or product decision, not just another retry.",
+			ActionLabel:        "Reopen task",
+			DefaultInstruction: requireMoreGoalBlockerInstruction(trace),
+		},
+	}
+}
+
+func retryGoalBlockerInstruction(trace GoalBlockerTrace) string {
+	reason := firstNonEmptyString(trace.Reason, trace.NextAction, firstString(trace.Blockers), "the current Goal blocker")
+	return strings.Join([]string{
+		"Retry this task and repair the current blocker:",
+		reason,
+		"Preserve any useful work already produced, capture the diff successfully, and report validation evidence before returning to review.",
+	}, " ")
 }
 
 func requireMoreGoalBlockerInstruction(trace GoalBlockerTrace) string {
@@ -505,6 +560,50 @@ func blockingGoalReportForTrace(goal Goal, decision GoalSupervisorDecision, repo
 		}
 	}
 	return GoalTaskReport{}
+}
+
+func currentAutopilotBlockingTaskID(goal Goal) string {
+	if goal.Autopilot == nil {
+		return ""
+	}
+	taskID := strings.TrimSpace(goal.Autopilot.CurrentTaskID)
+	if taskID == "" {
+		return ""
+	}
+	if goal.Autopilot.Status != GoalAutopilotStatusBlocked && goal.Status != GoalStatusBlocked {
+		return ""
+	}
+	if len(goal.Autopilot.StopReasons) == 0 {
+		return taskID
+	}
+	for _, reason := range goal.Autopilot.StopReasons {
+		reason = strings.TrimSpace(reason)
+		if reason == "" {
+			continue
+		}
+		if strings.Contains(reason, taskID) || strings.Contains(reason, shortGoalBlockerID(taskID)) {
+			return taskID
+		}
+		lower := strings.ToLower(reason)
+		if strings.Contains(lower, "linked task") || strings.Contains(lower, "current task") {
+			return taskID
+		}
+	}
+	return ""
+}
+
+func currentAutopilotBlockerReason(goal Goal) string {
+	if goal.Autopilot != nil {
+		for _, reason := range goal.Autopilot.StopReasons {
+			if reason = strings.TrimSpace(reason); reason != "" {
+				return reason
+			}
+		}
+		if taskID := strings.TrimSpace(goal.Autopilot.CurrentTaskID); taskID != "" {
+			return "Autopilot is blocked by current task " + shortGoalBlockerID(taskID) + "."
+		}
+	}
+	return "Autopilot is blocked by its current task."
 }
 
 func goalPlanBlockedForTrace(goal Goal) bool {

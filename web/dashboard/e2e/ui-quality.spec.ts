@@ -137,6 +137,67 @@ const waitingGoalTask = {
   }
 };
 
+const repairableBlockerTaskID = 'task_20260428_120800_retry11';
+const repairableBlockerTask = {
+  ...blockerTask,
+  id: repairableBlockerTaskID,
+  status: 'blocked',
+  title: 'Repair current Goal blocker',
+  result: 'Remote diff capture failed: git read-tree HEAD: context canceled.',
+  goal_blocker_trace: {
+    ...blockerTask.goal_blocker_trace,
+    source_type: 'autopilot',
+    source_id: 'goal_ui_quality',
+    blocking_task_id: repairableBlockerTaskID,
+    blocking_task_url: `/tasks?task=${repairableBlockerTaskID}`,
+    review_decision: undefined,
+    reason: 'Linked task retry11 is blocked.',
+    next_action: 'Open task retry11 and resolve its task-level blocked state.',
+    operator_action:
+      'Open the current blocked task, then retry, reopen, review, or accept it through the normal task flow.',
+    questions: [],
+    blockers: [],
+    follow_ups: [],
+    flow: {
+      role: 'blocking_task',
+      title: 'This task is blocking Goal Autopilot',
+      decision_label: 'Repair the blocker',
+      decision_detail:
+        'Use Retry or Reopen with the specific evidence, dependency, or operator decision needed before the Goal can continue.',
+      show_blocking_task_link: false,
+      show_resume_goal_action: false,
+      show_check_goal_action: true,
+      decision_choices: [
+        {
+          id: 'retry_current',
+          kind: 'retry',
+          title: 'Retry current task',
+          detail: 'Use when the blocker is likely transient or the same worker can continue from the current state.',
+          action_label: 'Retry task'
+        },
+        {
+          id: 'retry_with_instruction',
+          kind: 'retry',
+          title: 'Retry with instruction',
+          detail: 'Use when the worker needs a specific repair instruction before the Goal can continue.',
+          action_label: 'Retry with instruction',
+          default_instruction:
+            'Retry this task and repair the current blocker: Linked task retry11 is blocked. Preserve any useful work already produced, capture the diff successfully, and report validation evidence before returning to review.'
+        },
+        {
+          id: 'reopen_with_direction',
+          kind: 'reopen',
+          title: 'Reopen with new direction',
+          detail: 'Use when the task needs a changed requirement or product decision, not just another retry.',
+          action_label: 'Reopen task',
+          default_instruction:
+            'Not acceptable. Require the stricter path before resuming Autopilot: Linked task retry11 is blocked.'
+        }
+      ]
+    }
+  }
+};
+
 const openQuestionTaskID = 'task_20260428_121000_goalq111';
 const openQuestionTask = {
   ...blockerTask,
@@ -378,6 +439,14 @@ const mockTaskApis = async (page: Page, taskItems = [task]) => {
     await route.fulfill({
       json: {
         reply: `Reopened with answer: ${body.reason || 'missing reason'}`
+      }
+    });
+  });
+  await page.route(/\/api\/tasks\/[^/]+\/retry$/, async (route) => {
+    const body = route.request().postDataJSON() as { instruction?: string };
+    await route.fulfill({
+      json: {
+        reply: `Retried with instruction: ${body.instruction || 'none'}`
       }
     });
   });
@@ -635,6 +704,25 @@ for (const viewport of [
         .getByLabel('Instruction for the next run')
         .fill('Compare against the licensed AG Grid reference fixture before closing Phase 04.');
       await expect(blockerTrace.getByRole('button', { name: 'Reopen with custom answer' })).toBeEnabled();
+    });
+
+    test('repairable Goal blockers expose retry and reopen choices', async ({ page }) => {
+      await mockTaskApis(page, [repairableBlockerTask]);
+      await page.goto(`/tasks?task=${repairableBlockerTaskID}`);
+      const blockerTrace = page.getByLabel('Goal blocker trace');
+      await expect(page.getByRole('heading', { name: 'Repair current Goal blocker' })).toBeVisible();
+      await expect(blockerTrace).toContainText('Repair the blocker');
+      await expect(blockerTrace.getByRole('button', { name: /Retry current task/ })).toBeVisible();
+      await expect(blockerTrace.getByRole('button', { name: /Retry with instruction/ })).toBeVisible();
+      await expect(blockerTrace.getByRole('button', { name: /Reopen with new direction/ })).toBeVisible();
+
+      await blockerTrace.getByRole('button', { name: /Retry with instruction/ }).click();
+      const answer = blockerTrace.getByLabel('Goal blocker answer');
+      await expect(answer.getByLabel('Retry instruction')).toHaveValue(/capture the diff successfully/);
+      await answer.getByRole('button', { name: 'Retry with instruction' }).click();
+      await expect(
+        page.getByLabel('Selected task record').getByText('Task retry submitted')
+      ).toBeVisible();
     });
 
     test('open Goal questions are answered on the Goal instead of reopening a closed task', async ({ page }) => {

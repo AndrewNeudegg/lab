@@ -62,11 +62,7 @@ export const pendingApprovalForTask = (
       : undefined;
 
 const taskIsClosedGoalBlocker = (task: HomelabdTask) =>
-  Boolean(
-    task.id &&
-      task.goal_blocker_trace?.blocking_task_id === task.id &&
-      (task.status === 'done' || task.status === 'cancelled')
-  );
+  Boolean(task.goal_blocker_trace?.flow?.role === 'blocking_task' && task.goal_blocker_trace.flow.decision_choices?.length);
 
 export const primaryTaskAction = (
   task: HomelabdTask | undefined,

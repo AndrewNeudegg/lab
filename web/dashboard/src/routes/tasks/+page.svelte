@@ -50,12 +50,10 @@
   import { createCoalescedAsync } from './refresh-state';
   import {
     goalBlockerFlow,
-    taskIsGoalBlocker,
     type GoalBlockerDecisionChoice,
     type GoalBlockerDecisionChoiceID,
     type GoalBlockerFlow
   } from './blocker-flow';
-  import { firstGoalQuestion } from '../../lib/goal-question';
   import {
     approvalNoticeTitle,
     pendingApprovalForTask,
@@ -841,12 +839,6 @@
     if (flow) {
       return flow.title;
     }
-    if (taskIsGoalBlocker(task)) {
-      return 'This task is blocking Goal Autopilot';
-    }
-    if (trace.blocking_task_id) {
-      return `Goal is blocked by task ${shortID(trace.blocking_task_id)}`;
-    }
     return 'Goal Autopilot is blocked';
   };
 
@@ -1574,7 +1566,7 @@
 
     if (choice.kind === 'answer') {
       const goalId = currentGoalBlockerGoalId();
-      const question = firstGoalQuestion(currentGoalBlockerTrace?.questions);
+      const question = currentGoalBlockerFlow?.question?.trim() || '';
       if (!goalId || !question) {
         setNotice('error', 'Goal question unavailable', 'Open the Goal and answer the current question there.');
         return;

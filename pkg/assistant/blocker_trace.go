@@ -19,7 +19,23 @@ const (
 	GoalBlockerSourceDecision      = "goal_decision"
 	GoalBlockerSourcePlan          = "goal_plan"
 	GoalBlockerSourceAutopilot     = "autopilot"
+
+	GoalBlockerFlowRoleWaitingOnBlockingTask = "waiting_on_blocking_task"
+	GoalBlockerFlowRoleBlockingTask          = "blocking_task"
+	GoalBlockerFlowRoleAgentRepair           = "agent_repair"
+	GoalBlockerFlowRoleGoalQuestion          = "goal_question"
+	GoalBlockerFlowRoleGoalBlocked           = "goal_blocked"
+
+	GoalBlockerDecisionKindResume = "resume"
+	GoalBlockerDecisionKindReopen = "reopen"
+	GoalBlockerDecisionKindCustom = "custom"
+	GoalBlockerDecisionKindAnswer = "answer"
 )
+
+type GoalBlockerFlowContext struct {
+	TaskID     string
+	TaskStatus string
+}
 
 func DeriveGoalBlockerTrace(goal Goal, decisions []GoalSupervisorDecision, reports []GoalTaskReport) *GoalBlockerTrace {
 	goal = NormalizeGoal(goal)
@@ -122,7 +138,7 @@ func DeriveGoalBlockerTrace(goal Goal, decisions []GoalSupervisorDecision, repor
 	if len(trace.Evidence) == 0 && len(report.ReviewEvidence) > 0 {
 		trace.Evidence = append([]string(nil), report.ReviewEvidence...)
 	}
-	return NormalizeGoalBlockerTrace(&trace)
+	return GoalBlockerTraceWithFlow(NormalizeGoalBlockerTrace(&trace), GoalBlockerFlowContext{})
 }
 
 func NormalizeGoalBlockerTrace(trace *GoalBlockerTrace) *GoalBlockerTrace {
@@ -170,6 +186,246 @@ func NormalizeGoalBlockerTrace(trace *GoalBlockerTrace) *GoalBlockerTrace {
 		return nil
 	}
 	return &value
+}
+
+func GoalBlockerTraceWithFlow(trace *GoalBlockerTrace, ctx GoalBlockerFlowContext) *GoalBlockerTrace {
+	trace = NormalizeGoalBlockerTrace(trace)
+	if trace == nil {
+		return nil
+	}
+	value := *trace
+	value.Flow = deriveGoalBlockerFlow(value, ctx)
+	return &value
+}
+
+func deriveGoalBlockerFlow(trace GoalBlockerTrace, ctx GoalBlockerFlowContext) *GoalBlockerFlow {
+	goalID := strings.TrimSpace(trace.GoalID)
+	taskID := strings.TrimSpace(ctx.TaskID)
+	taskStatus := strings.TrimSpace(ctx.TaskStatus)
+	taskIsBlocker := taskID != "" && strings.TrimSpace(trace.BlockingTaskID) == taskID
+	nextAction := firstNonEmptyString(
+		trace.NextAction,
+		trace.OperatorAction,
+		firstString(trace.Blockers),
+		firstString(trace.FollowUps),
+		"Create the next repair task and rerun the relevant challenge.",
+	)
+
+	if trace.SourceType == GoalBlockerSourceOpenQuestions {
+		question := firstNonEmptyString(firstString(trace.Questions), trace.Reason)
+		return &GoalBlockerFlow{
+			Role:                 GoalBlockerFlowRoleGoalQuestion,
+			Title:                "Goal is blocked by an open question",
+			Question:             question,
+			DecisionLabel:        "Answer the Goal question",
+			DecisionDetail:       "Record the product decision on the Goal so Autopilot can continue with that answer.",
+			ShowBlockingTaskLink: false,
+			ShowResumeGoalAction: false,
+			ShowCheckGoalAction:  goalID != "",
+			DecisionChoices:      goalQuestionDecisionChoices(question),
+		}
+	}
+
+	if trace.Resolver == GoalBlockerResolverAgent {
+		title := "Goal needs autonomous repair"
+		if taskIsBlocker {
+			title = "Autopilot found repair work"
+		}
+		return &GoalBlockerFlow{
+			Role:                 GoalBlockerFlowRoleAgentRepair,
+			Title:                title,
+			DecisionLabel:        "No human decision needed",
+			DecisionDetail:       nextAction,
+			ShowBlockingTaskLink: trace.BlockingTaskID != "" && !taskIsBlocker,
+			ShowResumeGoalAction: true,
+			ShowCheckGoalAction:  goalID != "",
+		}
+	}
+
+	if taskID == "" {
+		if trace.BlockingTaskID != "" {
+			return &GoalBlockerFlow{
+				Role:                 GoalBlockerFlowRoleGoalBlocked,
+				Title:                "Goal is blocked by task " + shortGoalBlockerID(trace.BlockingTaskID),
+				DecisionLabel:        "Open the blocking task",
+				DecisionDetail:       "The decision belongs to the linked task or its review record. This Goal does not have an open question to answer.",
+				ShowBlockingTaskLink: true,
+				ShowResumeGoalAction: false,
+				ShowCheckGoalAction:  goalID != "",
+			}
+		}
+		return &GoalBlockerFlow{
+			Role:                 GoalBlockerFlowRoleGoalBlocked,
+			Title:                "Goal Autopilot is blocked",
+			DecisionLabel:        "Inspect the Goal blocker",
+			DecisionDetail:       "The Goal is blocked without a single blocking task. Resolve the blocker source, revise the plan, or resume Autopilot after the issue is cleared.",
+			ShowBlockingTaskLink: false,
+			ShowResumeGoalAction: false,
+			ShowCheckGoalAction:  goalID != "",
+		}
+	}
+
+	if !taskIsBlocker {
+		if trace.BlockingTaskID != "" {
+			return &GoalBlockerFlow{
+				Role:                 GoalBlockerFlowRoleWaitingOnBlockingTask,
+				Title:                "Goal is blocked by task " + shortGoalBlockerID(trace.BlockingTaskID),
+				DecisionLabel:        "Open the blocking task",
+				DecisionDetail:       "This task belongs to the blocked Goal, but the decision is on the linked blocking task.",
+				ShowBlockingTaskLink: true,
+				ShowResumeGoalAction: false,
+				ShowCheckGoalAction:  false,
+			}
+		}
+		return &GoalBlockerFlow{
+			Role:                 GoalBlockerFlowRoleGoalBlocked,
+			Title:                "Goal Autopilot is blocked",
+			DecisionLabel:        "Inspect the Goal blocker",
+			DecisionDetail:       "The Goal is blocked without a single blocking task. Open the Goal to inspect the current blocker.",
+			ShowBlockingTaskLink: false,
+			ShowResumeGoalAction: false,
+			ShowCheckGoalAction:  goalID != "",
+		}
+	}
+
+	if goalBlockerTaskStatusIsTerminalAccepted(taskStatus) {
+		return &GoalBlockerFlow{
+			Role:                 GoalBlockerFlowRoleBlockingTask,
+			Title:                "This task is blocking Goal Autopilot",
+			DecisionLabel:        "Decide whether to resume the Goal",
+			DecisionDetail:       "This task is already closed, but its report left a Goal-level blocker. Choose whether the current evidence is acceptable, or reopen the task with the missing requirement.",
+			ShowBlockingTaskLink: false,
+			ShowResumeGoalAction: false,
+			ShowCheckGoalAction:  goalID != "",
+			DecisionChoices:      terminalGoalBlockerDecisionChoices(trace),
+		}
+	}
+
+	if goalBlockerTaskStatusIsReviewable(taskStatus) {
+		return &GoalBlockerFlow{
+			Role:                 GoalBlockerFlowRoleBlockingTask,
+			Title:                "This task is blocking Goal Autopilot",
+			DecisionLabel:        "Verify or reject this result",
+			DecisionDetail:       "Review the task output. Accept it if it resolves the blocker, or reopen it with the missing evidence or product decision.",
+			ShowBlockingTaskLink: false,
+			ShowResumeGoalAction: false,
+			ShowCheckGoalAction:  goalID != "",
+		}
+	}
+
+	if goalBlockerTaskStatusIsRepairable(taskStatus) {
+		return &GoalBlockerFlow{
+			Role:                 GoalBlockerFlowRoleBlockingTask,
+			Title:                "This task is blocking Goal Autopilot",
+			DecisionLabel:        "Repair the blocker",
+			DecisionDetail:       "Use Retry or Reopen with the specific evidence, dependency, or operator decision needed before the Goal can continue.",
+			ShowBlockingTaskLink: false,
+			ShowResumeGoalAction: false,
+			ShowCheckGoalAction:  goalID != "",
+		}
+	}
+
+	return &GoalBlockerFlow{
+		Role:                 GoalBlockerFlowRoleBlockingTask,
+		Title:                "This task is blocking Goal Autopilot",
+		DecisionLabel:        "Watch this task complete",
+		DecisionDetail:       "Autopilot is waiting for this task to finish. When it reaches review or a blocked state, the task actions become the decision point.",
+		ShowBlockingTaskLink: false,
+		ShowResumeGoalAction: false,
+		ShowCheckGoalAction:  goalID != "",
+	}
+}
+
+func goalQuestionDecisionChoices(question string) []GoalBlockerDecisionChoice {
+	prompt := firstNonEmptyString(question, "the open Goal question")
+	return []GoalBlockerDecisionChoice{
+		{
+			ID:                 "require_full",
+			Kind:               GoalBlockerDecisionKindAnswer,
+			Title:              "Require the full requirement",
+			Detail:             "Use when the missing evidence or stricter path remains required before completion.",
+			ActionLabel:        "Record answer and resume",
+			DefaultInstruction: "The full requirement remains in scope for this Goal. Do not claim the Goal complete until this is satisfied with evidence: " + prompt,
+		},
+		{
+			ID:                 "record_waiver",
+			Kind:               GoalBlockerDecisionKindAnswer,
+			Title:              "Record a waiver or deferment",
+			Detail:             "Use when the product owner accepts that some requirement is unsupported or deferred for now.",
+			ActionLabel:        "Record waiver and resume",
+			DefaultInstruction: "Record an explicit product-owner waiver or deferment for the unsupported or untested requirement, then continue Autopilot using that decision as acceptance context: " + prompt,
+		},
+		{
+			ID:          "custom",
+			Kind:        GoalBlockerDecisionKindAnswer,
+			Title:       "Answer another way",
+			Detail:      "Write the exact product decision or operator instruction that should guide the next run.",
+			ActionLabel: "Record custom answer",
+		},
+	}
+}
+
+func terminalGoalBlockerDecisionChoices(trace GoalBlockerTrace) []GoalBlockerDecisionChoice {
+	return []GoalBlockerDecisionChoice{
+		{
+			ID:          "accept_current",
+			Kind:        GoalBlockerDecisionKindResume,
+			Title:       "Accept current evidence",
+			Detail:      "Use when the blocker is acceptable and the Goal can continue.",
+			ActionLabel: "Accept and resume",
+		},
+		{
+			ID:                 "require_more",
+			Kind:               GoalBlockerDecisionKindReopen,
+			Title:              "Not acceptable: require more work",
+			Detail:             "Use when the answer is no: reopen the task with a clear missing requirement.",
+			ActionLabel:        "Reopen with this answer",
+			DefaultInstruction: requireMoreGoalBlockerInstruction(trace),
+		},
+		{
+			ID:          "custom",
+			Kind:        GoalBlockerDecisionKindCustom,
+			Title:       "Answer another way",
+			Detail:      "Write the exact instruction or product decision that should guide the next run.",
+			ActionLabel: "Reopen with custom answer",
+		},
+	}
+}
+
+func requireMoreGoalBlockerInstruction(trace GoalBlockerTrace) string {
+	question := firstNonEmptyString(firstString(trace.Questions), trace.Reason, "the Goal blocker")
+	return strings.Join([]string{
+		"Not acceptable.",
+		"Require the stricter path before resuming Autopilot: " + question,
+		"Do not close or resume the Goal until the missing evidence, comparison, implementation, or product decision is completed and reported back with validation.",
+	}, " ")
+}
+
+func goalBlockerTaskStatusIsTerminalAccepted(status string) bool {
+	switch status {
+	case "done", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func goalBlockerTaskStatusIsReviewable(status string) bool {
+	switch status {
+	case "awaiting_verification", "awaiting_approval", "ready_for_review", "no_change_required":
+		return true
+	default:
+		return false
+	}
+}
+
+func goalBlockerTaskStatusIsRepairable(status string) bool {
+	switch status {
+	case "blocked", "timed_out", "failed", "conflict_resolution":
+		return true
+	default:
+		return false
+	}
 }
 
 func goalIsBlockedForTrace(goal Goal) bool {
@@ -490,6 +746,15 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func firstString(values []string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
 			return trimmed

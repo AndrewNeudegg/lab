@@ -9,6 +9,8 @@
     createHomelabdClient,
     Navbar,
     type AssistantGoal,
+    type AssistantGoalBlockerDecisionChoice,
+    type AssistantGoalBlockerFlow,
     type AssistantGoalBlockerTrace,
     type AssistantGoalChallenge,
     type AssistantGoalGap,
@@ -52,12 +54,6 @@
     selectAssistantRun,
     type AssistantRunView
   } from './assistant-model';
-  import {
-    firstGoalQuestion,
-    goalQuestionChoices,
-    type GoalQuestionChoice,
-    type GoalQuestionChoiceID
-  } from '../../lib/goal-question';
 
   const apiBase = import.meta.env.VITE_HOMELABD_API_BASE || '/api';
 	  const client = createHomelabdClient({ baseUrl: apiBase });
@@ -109,12 +105,13 @@
   let goalNoticeTone: 'success' | 'warning' = 'success';
   let goalError = '';
   let goalQuestionAnswering = false;
-  let goalQuestionChoiceId: GoalQuestionChoiceID | '' = '';
+  let goalQuestionChoiceId = '';
   let goalQuestionAnswer = '';
   let goalQuestionContextKey = '';
   let selectedGoalQuestion = '';
-  let selectedGoalQuestionChoices: GoalQuestionChoice[] = [];
-  let selectedGoalQuestionChoice: GoalQuestionChoice | undefined;
+  let selectedGoalBlockerFlow: AssistantGoalBlockerFlow | undefined;
+  let selectedGoalQuestionChoices: AssistantGoalBlockerDecisionChoice[] = [];
+  let selectedGoalQuestionChoice: AssistantGoalBlockerDecisionChoice | undefined;
   let lastSynced = '';
   let detailEl: HTMLElement | undefined;
   let mobilePanel: MobilePanel = 'runs';
@@ -176,16 +173,16 @@
   $: selectedGoalPlanChallenges = selectedGoalPlan?.challenges || [];
   $: selectedGoalBlockerTrace =
     selectedGoalTimeline?.blocker_trace || selectedGoalTimeline?.goal.blocker_trace || selectedGoal?.blocker_trace;
+  $: selectedGoalBlockerFlow = selectedGoalBlockerTrace?.flow;
   $: selectedGoalQuestion =
-    firstGoalQuestion(selectedGoalTimeline?.goal.open_questions) ||
-    firstGoalQuestion(selectedGoal?.open_questions) ||
-    firstGoalQuestion(selectedGoalBlockerTrace?.questions);
+    selectedGoalBlockerFlow?.role === 'goal_question' ? selectedGoalBlockerFlow.question || '' : '';
   $: if (`${selectedGoalId}:${selectedGoalQuestion}` !== goalQuestionContextKey) {
     goalQuestionContextKey = `${selectedGoalId}:${selectedGoalQuestion}`;
     goalQuestionChoiceId = '';
     goalQuestionAnswer = '';
   }
-  $: selectedGoalQuestionChoices = selectedGoalQuestion ? goalQuestionChoices(selectedGoalQuestion) : [];
+  $: selectedGoalQuestionChoices =
+    selectedGoalBlockerFlow?.role === 'goal_question' ? selectedGoalBlockerFlow.decision_choices || [] : [];
   $: selectedGoalQuestionChoice = selectedGoalQuestionChoices.find((choice) => choice.id === goalQuestionChoiceId);
   $: if (goalQuestionChoiceId && !selectedGoalQuestionChoices.some((choice) => choice.id === goalQuestionChoiceId)) {
     goalQuestionChoiceId = '';
@@ -897,6 +894,9 @@
     if (!trace) {
       return 'Goal is not blocked';
     }
+    if (trace.flow?.title) {
+      return trace.flow.title;
+    }
     if (trace.resolver === 'agent' || trace.status === 'needs_agent_repair') {
       return 'Autopilot found repair work';
     }
@@ -940,7 +940,10 @@
     ].filter((item): item is string => Boolean(item?.trim())).slice(0, 3);
 
   const goalBlockerNeedsAgentRepair = (trace: AssistantGoalBlockerTrace | undefined) =>
-    trace?.resolver === 'agent' || trace?.status === 'needs_agent_repair' || trace?.human_action_required === false;
+    trace?.flow?.role === 'agent_repair' ||
+    trace?.resolver === 'agent' ||
+    trace?.status === 'needs_agent_repair' ||
+    trace?.human_action_required === false;
 
   const goalAutopilotRepairLabel = (trace: AssistantGoalBlockerTrace | undefined, loading: boolean) =>
     goalBlockerNeedsAgentRepair(trace)
@@ -1429,9 +1432,9 @@
     }
   };
 
-  const selectGoalQuestionChoice = (choice: GoalQuestionChoice) => {
+  const selectGoalQuestionChoice = (choice: AssistantGoalBlockerDecisionChoice) => {
     goalQuestionChoiceId = choice.id;
-    goalQuestionAnswer = choice.defaultAnswer;
+    goalQuestionAnswer = choice.default_instruction || '';
   };
 
   const answerSelectedGoalQuestion = async () => {
@@ -2368,7 +2371,7 @@
                     >
                       {goalQuestionAnswering
                         ? 'Recording answer'
-                        : selectedGoalQuestionChoice?.actionLabel || 'Record answer and resume'}
+                        : selectedGoalQuestionChoice?.action_label || 'Record answer and resume'}
                     </button>
                   </div>
                 {/if}
@@ -2381,7 +2384,7 @@
                 {/if}
               </div>
               <div class="blocker-actions" role="group" aria-label="Goal blocker actions">
-                {#if selectedGoalBlockerTrace.blocking_task_url}
+                {#if selectedGoalBlockerTrace.blocking_task_url && selectedGoalBlockerFlow?.show_blocking_task_link}
                   <a class="text-action notice-action" href={selectedGoalBlockerTrace.blocking_task_url}>
                     {goalBlockerTaskLinkLabel(selectedGoalBlockerTrace)}
                   </a>
@@ -2391,15 +2394,17 @@
                     View source task
                   </a>
                 {/if}
-                <button
-                  type="button"
-                  class="text-action notice-action"
-                  disabled={goalChecking}
-                  on:click={() => void checkSelectedGoal()}
-                >
-                  {goalChecking ? 'Checking' : 'Check Goal now'}
-                </button>
-                {#if selectedGoal.execution_mode === 'autopilot' && !selectedGoalQuestion}
+                {#if selectedGoalBlockerFlow?.show_check_goal_action}
+                  <button
+                    type="button"
+                    class="text-action notice-action"
+                    disabled={goalChecking}
+                    on:click={() => void checkSelectedGoal()}
+                  >
+                    {goalChecking ? 'Checking' : 'Check Goal now'}
+                  </button>
+                {/if}
+                {#if selectedGoal.execution_mode === 'autopilot' && selectedGoalBlockerFlow?.show_resume_goal_action}
                   <button
                     type="button"
                     class="primary-action notice-action"

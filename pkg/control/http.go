@@ -254,6 +254,10 @@ func (s *Server) handleAssistantGoal(rw http.ResponseWriter, req *http.Request) 
 		}
 		timeline, reply, err := s.Orchestrator.AnswerGoalQuestion(req.Context(), goalID, in)
 		if err != nil {
+			if errors.Is(err, assistant.ErrGoalQuestionNotOpen) || errors.Is(err, assistant.ErrGoalQuestionRequired) {
+				writeError(rw, http.StatusConflict, err.Error())
+				return
+			}
 			writeError(rw, http.StatusInternalServerError, err.Error())
 			return
 		}

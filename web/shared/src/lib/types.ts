@@ -925,6 +925,44 @@ export interface AssistantGoalBlockerTrace {
   evidence?: string[];
   follow_ups?: string[];
   created_at?: string;
+  flow?: AssistantGoalBlockerFlow;
+}
+
+export type AssistantGoalBlockerFlowRole =
+  | 'waiting_on_blocking_task'
+  | 'blocking_task'
+  | 'agent_repair'
+  | 'goal_question'
+  | 'goal_blocked';
+
+export type AssistantGoalBlockerDecisionChoiceID =
+  | 'accept_current'
+  | 'require_more'
+  | 'custom'
+  | 'require_full'
+  | 'record_waiver';
+
+export type AssistantGoalBlockerDecisionKind = 'resume' | 'reopen' | 'custom' | 'answer';
+
+export interface AssistantGoalBlockerDecisionChoice {
+  id: AssistantGoalBlockerDecisionChoiceID | string;
+  kind: AssistantGoalBlockerDecisionKind | string;
+  title: string;
+  detail: string;
+  action_label: string;
+  default_instruction?: string;
+}
+
+export interface AssistantGoalBlockerFlow {
+  role: AssistantGoalBlockerFlowRole | string;
+  title: string;
+  question?: string;
+  decision_label: string;
+  decision_detail: string;
+  show_blocking_task_link: boolean;
+  show_resume_goal_action: boolean;
+  show_check_goal_action: boolean;
+  decision_choices?: AssistantGoalBlockerDecisionChoice[];
 }
 
 export interface AssistantGoalCreateRequest {

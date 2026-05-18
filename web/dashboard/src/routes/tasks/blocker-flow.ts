@@ -1,14 +1,12 @@
-import type { HomelabdTask } from '@homelab/shared';
-import { firstGoalQuestion, goalQuestionChoices } from '../../lib/goal-question';
+import type {
+  AssistantGoalBlockerDecisionChoice,
+  AssistantGoalBlockerFlow,
+  HomelabdTask
+} from '@homelab/shared';
 
-export type GoalBlockerFlowRole =
-  | 'waiting_on_blocking_task'
-  | 'blocking_task'
-  | 'agent_repair'
-  | 'goal_question'
-  | 'goal_blocked';
-export type GoalBlockerDecisionChoiceID = 'accept_current' | 'require_more' | 'custom' | 'require_full' | 'record_waiver';
-export type GoalBlockerDecisionKind = 'resume' | 'reopen' | 'custom' | 'answer';
+export type GoalBlockerFlowRole = NonNullable<AssistantGoalBlockerFlow['role']>;
+export type GoalBlockerDecisionChoiceID = NonNullable<AssistantGoalBlockerDecisionChoice['id']>;
+export type GoalBlockerDecisionKind = NonNullable<AssistantGoalBlockerDecisionChoice['kind']>;
 
 export interface GoalBlockerDecisionChoice {
   id: GoalBlockerDecisionChoiceID;
@@ -22,6 +20,7 @@ export interface GoalBlockerDecisionChoice {
 export interface GoalBlockerFlow {
   role: GoalBlockerFlowRole;
   title: string;
+  question?: string;
   decisionLabel: string;
   decisionDetail: string;
   showBlockingTaskLink: boolean;
@@ -30,194 +29,34 @@ export interface GoalBlockerFlow {
   decisionChoices: GoalBlockerDecisionChoice[];
 }
 
-const shortID = (id: string) =>
-  id.length > 16 ? `${id.slice(0, 10)}...${id.slice(-4)}` : id;
-
-const goalIdForTask = (task: HomelabdTask) => task.goal_blocker_trace?.goal_id || task.goal_id || '';
-
-const isTerminalAcceptedBlocker = (status: string) => status === 'done' || status === 'cancelled';
-
-const isReviewableBlocker = (status: string) =>
-  status === 'awaiting_verification' ||
-  status === 'awaiting_approval' ||
-  status === 'ready_for_review' ||
-  status === 'no_change_required';
-
-const isRepairableBlocker = (status: string) =>
-  status === 'blocked' ||
-  status === 'timed_out' ||
-  status === 'failed' ||
-  status === 'conflict_resolution';
-
-const blockerQuestion = (task: HomelabdTask) =>
-  task.goal_blocker_trace?.questions?.find((question) => question.trim()) ||
-  task.goal_blocker_trace?.reason ||
-  'The Goal blocker needs an operator decision.';
-
-const requireMoreInstruction = (task: HomelabdTask) =>
-  [
-    'Not acceptable.',
-    `Require the stricter path before resuming Autopilot: ${blockerQuestion(task)}`,
-    'Do not close or resume the Goal until the missing evidence, comparison, implementation, or product decision is completed and reported back with validation.'
-  ].join(' ');
-
-const terminalBlockerChoices = (task: HomelabdTask): GoalBlockerDecisionChoice[] => [
-  {
-    id: 'accept_current',
-    kind: 'resume',
-    title: 'Accept current evidence',
-    detail: 'Use when the answer is yes: this blocker is acceptable and the Goal can continue.',
-    actionLabel: 'Accept and resume'
-  },
-  {
-    id: 'require_more',
-    kind: 'reopen',
-    title: 'Not acceptable: require more work',
-    detail: 'Use when the answer is no: reopen the task with a clear missing requirement.',
-    actionLabel: 'Reopen with this answer',
-    defaultInstruction: requireMoreInstruction(task)
-  },
-  {
-    id: 'custom',
-    kind: 'custom',
-    title: 'Answer another way',
-    detail: 'Write the exact instruction or product decision that should guide the next run.',
-    actionLabel: 'Reopen with custom answer'
-  }
-];
-
 export const taskIsGoalBlocker = (task: HomelabdTask | undefined) =>
   Boolean(task?.id && task.goal_blocker_trace?.blocking_task_id === task.id);
 
-export const goalBlockerFlow = (task: HomelabdTask | undefined): GoalBlockerFlow | undefined => {
-  if (!task?.goal_blocker_trace) {
+export const goalBlockerFlow = (task: HomelabdTask | undefined): GoalBlockerFlow | undefined =>
+  normaliseGoalBlockerFlow(task?.goal_blocker_trace?.flow);
+
+export const normaliseGoalBlockerFlow = (
+  flow: AssistantGoalBlockerFlow | undefined
+): GoalBlockerFlow | undefined => {
+  if (!flow) {
     return undefined;
   }
-
-  const trace = task.goal_blocker_trace;
-  const goalID = goalIdForTask(task);
-  const resolver = trace.resolver || (trace.human_action_required === false ? 'agent' : 'human');
-  const nextAction =
-    trace.next_action ||
-    trace.operator_action ||
-    trace.blockers?.find((blocker) => blocker.trim()) ||
-    trace.follow_ups?.find((followUp) => followUp.trim()) ||
-    'Create the next repair task and rerun the relevant challenge.';
-
-  if (trace.source_type === 'open_questions') {
-    const question = firstGoalQuestion(trace.questions) || trace.reason;
-    return {
-      role: 'goal_question',
-      title: 'Goal is blocked by an open question',
-      decisionLabel: 'Answer the Goal question',
-      decisionDetail:
-        'The source task is closed or only historical context. Record the product decision on the Goal so Autopilot can continue with that answer.',
-      showBlockingTaskLink: false,
-      showResumeGoalAction: false,
-      showCheckGoalAction: Boolean(goalID),
-      decisionChoices: goalQuestionChoices(question).map((choice) => ({
-        id: choice.id,
-        kind: 'answer',
-        title: choice.title,
-        detail: choice.detail,
-        actionLabel: choice.actionLabel,
-        defaultInstruction: choice.defaultAnswer
-      }))
-    };
-  }
-
-  if (resolver === 'agent') {
-    return {
-      role: 'agent_repair',
-      title: taskIsGoalBlocker(task) ? 'Autopilot found repair work' : 'Goal needs autonomous repair',
-      decisionLabel: 'No human decision needed',
-      decisionDetail: nextAction,
-      showBlockingTaskLink: Boolean(trace.blocking_task_id && !taskIsGoalBlocker(task)),
-      showResumeGoalAction: true,
-      showCheckGoalAction: Boolean(goalID),
-      decisionChoices: []
-    };
-  }
-
-  if (!taskIsGoalBlocker(task)) {
-    if (trace.blocking_task_id) {
-      return {
-        role: 'waiting_on_blocking_task',
-        title: `Goal is blocked by task ${shortID(trace.blocking_task_id)}`,
-        decisionLabel: 'Open the blocking task',
-        decisionDetail:
-          'This task belongs to the blocked Goal, but the decision is on the linked blocking task.',
-        showBlockingTaskLink: true,
-        showResumeGoalAction: false,
-        showCheckGoalAction: false,
-        decisionChoices: []
-      };
-    }
-
-    return {
-      role: 'goal_blocked',
-      title: 'Goal Autopilot is blocked',
-      decisionLabel: 'Inspect the Goal blocker',
-      decisionDetail:
-        'The Goal is blocked without a single blocking task. Open the Goal to answer the blocker or change Autopilot.',
-      showBlockingTaskLink: false,
-      showResumeGoalAction: false,
-      showCheckGoalAction: Boolean(goalID),
-      decisionChoices: []
-    };
-  }
-
-  if (isTerminalAcceptedBlocker(task.status)) {
-    return {
-      role: 'blocking_task',
-      title: 'This task is blocking Goal Autopilot',
-      decisionLabel: 'Decide whether to resume the Goal',
-      decisionDetail:
-        'This task is already closed, but its report left a Goal-level blocker. Choose whether the current evidence is acceptable, or reopen the task with the missing requirement.',
-      showBlockingTaskLink: false,
-      showResumeGoalAction: false,
-      showCheckGoalAction: Boolean(goalID),
-      decisionChoices: terminalBlockerChoices(task)
-    };
-  }
-
-  if (isReviewableBlocker(task.status)) {
-    return {
-      role: 'blocking_task',
-      title: 'This task is blocking Goal Autopilot',
-      decisionLabel: 'Verify or reject this result',
-      decisionDetail:
-        'Review the task output. Accept it if it resolves the blocker, or reopen it with the missing evidence or product decision.',
-      showBlockingTaskLink: false,
-      showResumeGoalAction: false,
-      showCheckGoalAction: Boolean(goalID),
-      decisionChoices: []
-    };
-  }
-
-  if (isRepairableBlocker(task.status)) {
-    return {
-      role: 'blocking_task',
-      title: 'This task is blocking Goal Autopilot',
-      decisionLabel: 'Repair the blocker',
-      decisionDetail:
-        'Use Retry or Reopen with the specific evidence, dependency, or operator decision needed before the Goal can continue.',
-      showBlockingTaskLink: false,
-      showResumeGoalAction: false,
-      showCheckGoalAction: Boolean(goalID),
-      decisionChoices: []
-    };
-  }
-
   return {
-    role: 'blocking_task',
-    title: 'This task is blocking Goal Autopilot',
-    decisionLabel: 'Watch this task complete',
-    decisionDetail:
-      'Autopilot is waiting for this task to finish. When it reaches review or a blocked state, the task actions above become the decision point.',
-    showBlockingTaskLink: false,
-    showResumeGoalAction: false,
-    showCheckGoalAction: Boolean(goalID),
-    decisionChoices: []
+    role: flow.role,
+    title: flow.title,
+    question: flow.question,
+    decisionLabel: flow.decision_label,
+    decisionDetail: flow.decision_detail,
+    showBlockingTaskLink: flow.show_blocking_task_link,
+    showResumeGoalAction: flow.show_resume_goal_action,
+    showCheckGoalAction: flow.show_check_goal_action,
+    decisionChoices: (flow.decision_choices || []).map((choice) => ({
+      id: choice.id,
+      kind: choice.kind,
+      title: choice.title,
+      detail: choice.detail,
+      actionLabel: choice.action_label,
+      defaultInstruction: choice.default_instruction
+    }))
   };
 };

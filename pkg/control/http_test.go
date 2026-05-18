@@ -485,6 +485,10 @@ func TestAssistantGoalEndpointsCreateListShowAndCheck(t *testing.T) {
 	if !foundAnswerNote {
 		t.Fatalf("answer notes = %#v, want question answer note", answerResponse.Timeline.Notes)
 	}
+	requestJSON(t, mux, http.MethodPost, "/assistant/goals/"+timeline.Goal.ID+"/questions/answer", `{
+		"question":"Should unsupported platforms be waived?",
+		"answer":"Try to answer a stale question."
+	}`, "", http.StatusConflict)
 
 	listed := requestJSON(t, mux, http.MethodGet, "/assistant/goals", "", "", http.StatusOK)
 	var listResponse struct {

@@ -204,14 +204,20 @@ func goalBlockerTraceForTask(task taskstore.Task, trace *assistantstore.GoalBloc
 	if trace == nil {
 		return nil
 	}
+	withFlow := func() *assistantstore.GoalBlockerTrace {
+		return assistantstore.GoalBlockerTraceWithFlow(trace, assistantstore.GoalBlockerFlowContext{
+			TaskID:     task.ID,
+			TaskStatus: task.Status,
+		})
+	}
 	if trace.BlockingTaskID != task.ID {
-		return trace
+		return withFlow()
 	}
 	if trace.CreatedAt == nil || task.UpdatedAt.IsZero() || !task.UpdatedAt.After(trace.CreatedAt.UTC()) {
-		return trace
+		return withFlow()
 	}
 	if goalBlockingTaskStatusStillCurrent(task.Status) {
-		return trace
+		return withFlow()
 	}
 	return nil
 }
@@ -569,13 +575,13 @@ func (o *Orchestrator) AnswerGoalQuestion(ctx context.Context, goalID string, re
 	question := strings.TrimSpace(req.Question)
 	if question == "" {
 		if len(goal.OpenQuestions) != 1 {
-			return assistantstore.GoalTimeline{}, "", fmt.Errorf("question is required when the Goal has %d open questions", len(goal.OpenQuestions))
+			return assistantstore.GoalTimeline{}, "", fmt.Errorf("%w when the Goal has %d open questions", assistantstore.ErrGoalQuestionRequired, len(goal.OpenQuestions))
 		}
 		question = goal.OpenQuestions[0]
 	}
 	remaining, removed := removeGoalOpenQuestion(goal.OpenQuestions, question)
 	if !removed {
-		return assistantstore.GoalTimeline{}, "", fmt.Errorf("question is not open on this Goal")
+		return assistantstore.GoalTimeline{}, "", assistantstore.ErrGoalQuestionNotOpen
 	}
 
 	now := time.Now().UTC()

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { HomelabdTask } from '@homelab/shared';
-import { goalBlockerFlow, taskIsGoalBlocker } from './blocker-flow';
+import { goalBlockerFlow, normaliseGoalBlockerFlow, taskIsGoalBlocker } from './blocker-flow';
 
 const baseTask = (overrides: Partial<HomelabdTask> = {}): HomelabdTask => ({
   id: 'task_waiting',
@@ -15,124 +15,109 @@ const baseTask = (overrides: Partial<HomelabdTask> = {}): HomelabdTask => ({
   ...overrides
 });
 
-const trace = {
-  status: 'blocked',
-  source_type: 'task_report',
-  source_id: 'greport_grid',
-  goal_id: 'goal_grid',
-  phase_title: 'Ship virtual scrolling',
-  blocking_task_id: 'task_blocker',
-  reason: 'The task needs validation evidence before Autopilot can continue.',
-  questions: ['Should the supervisor accept the current evidence or require comparison work?'],
-  source_url: '/assistant?goal=goal_grid',
-  blocking_task_url: '/tasks?task=task_blocker'
-};
-
 describe('Goal blocker task flow', () => {
-  test('points a waiting task at the blocking task instead of offering Goal resume', () => {
-    const flow = goalBlockerFlow(baseTask({ goal_blocker_trace: trace }));
+  test('renders the API-provided flow instead of deriving blocker decisions in the browser', () => {
+    const flow = goalBlockerFlow(
+      baseTask({
+        goal_blocker_trace: {
+          status: 'blocked',
+          source_type: 'task_report',
+          source_id: 'greport_grid',
+          goal_id: 'goal_grid',
+          blocking_task_id: 'task_blocker',
+          reason: 'The task needs validation evidence before Autopilot can continue.',
+          questions: ['Should the supervisor accept the current evidence or require comparison work?'],
+          flow: {
+            role: 'waiting_on_blocking_task',
+            title: 'Goal is blocked by task 5fff954d',
+            decision_label: 'Open the blocking task',
+            decision_detail: 'This task belongs to the blocked Goal, but the decision is on the linked blocking task.',
+            show_blocking_task_link: true,
+            show_resume_goal_action: false,
+            show_check_goal_action: false
+          }
+        }
+      })
+    );
 
     expect(flow?.role).toBe('waiting_on_blocking_task');
     expect(flow?.decisionLabel).toBe('Open the blocking task');
     expect(flow?.showBlockingTaskLink).toBe(true);
     expect(flow?.showResumeGoalAction).toBe(false);
-  });
-
-  test('turns a closed blocking task into an explicit Goal resume decision', () => {
-    const task = baseTask({
-      id: 'task_blocker',
-      status: 'done',
-      goal_blocker_trace: trace
-    });
-    const flow = goalBlockerFlow(task);
-
-    expect(taskIsGoalBlocker(task)).toBe(true);
-    expect(flow?.role).toBe('blocking_task');
-    expect(flow?.decisionLabel).toBe('Decide whether to resume the Goal');
-    expect(flow?.decisionDetail).toContain('already closed');
-    expect(flow?.decisionDetail).toContain('reopen the task');
-    expect(flow?.showBlockingTaskLink).toBe(false);
-    expect(flow?.showResumeGoalAction).toBe(false);
-    expect(flow?.decisionChoices.map((choice) => choice.title)).toEqual([
-      'Accept current evidence',
-      'Not acceptable: require more work',
-      'Answer another way'
-    ]);
-    expect(flow?.decisionChoices[1].defaultInstruction).toContain('Not acceptable.');
-    expect(flow?.decisionChoices[1].defaultInstruction).toContain('comparison work');
-  });
-
-  test('keeps a blocked blocker focused on retry or reopen repair', () => {
-    const flow = goalBlockerFlow(
-      baseTask({
-        id: 'task_blocker',
-        status: 'timed_out',
-        goal_blocker_trace: trace
-      })
-    );
-
-    expect(flow?.decisionLabel).toBe('Repair the blocker');
-    expect(flow?.decisionDetail).toContain('Retry or Reopen');
-    expect(flow?.showResumeGoalAction).toBe(false);
-    expect(flow?.showCheckGoalAction).toBe(true);
-  });
-
-  test('labels agent-resolvable gaps as autonomous repair instead of a human decision', () => {
-    const flow = goalBlockerFlow(
-      baseTask({
-        id: 'task_blocker',
-        status: 'blocked',
-        goal_blocker_trace: {
-          ...trace,
-          status: 'needs_agent_repair',
-          resolver: 'agent',
-          human_action_required: false,
-          next_action: 'Create a gap-fix task for the public parity scope gap.',
-          questions: [],
-          blockers: ['Open high gap ggap_scope prevents credible completion.']
-        }
-      })
-    );
-
-    expect(flow?.role).toBe('agent_repair');
-    expect(flow?.decisionLabel).toBe('No human decision needed');
-    expect(flow?.decisionDetail).toContain('public parity scope');
-    expect(flow?.showResumeGoalAction).toBe(true);
     expect(flow?.decisionChoices).toEqual([]);
   });
 
-  test('routes open Goal questions to a Goal answer flow instead of a closed task', () => {
+  test('keeps stale task-report questions out of the Goal answer flow unless the API marks them open', () => {
     const flow = goalBlockerFlow(
       baseTask({
-        id: 'task_source',
+        id: 'task_blocker',
         status: 'done',
         goal_blocker_trace: {
-          ...trace,
-          source_type: 'open_questions',
-          blocking_task_id: undefined,
-          blocking_task_url: undefined,
-          source_task_id: 'task_source',
-          source_task_url: '/tasks?task=task_source',
-          questions: ['Should the product owner waive unsupported platforms?']
+          status: 'blocked',
+          source_type: 'task_report',
+          source_id: 'greport_grid',
+          goal_id: 'goal_grid',
+          blocking_task_id: 'task_blocker',
+          reason: 'Manual screen-reader UAT is missing.',
+          questions: ['Should unsupported platforms be waived?'],
+          flow: {
+            role: 'blocking_task',
+            title: 'This task is blocking Goal Autopilot',
+            decision_label: 'Decide whether to resume the Goal',
+            decision_detail: 'This task is already closed, but its report left a Goal-level blocker.',
+            show_blocking_task_link: false,
+            show_resume_goal_action: false,
+            show_check_goal_action: true,
+            decision_choices: [
+              {
+                id: 'accept_current',
+                kind: 'resume',
+                title: 'Accept current evidence',
+                detail: 'Use when the blocker is acceptable and the Goal can continue.',
+                action_label: 'Accept and resume'
+              }
+            ]
+          }
         }
       })
     );
 
-    expect(flow?.role).toBe('goal_question');
-    expect(flow?.decisionLabel).toBe('Answer the Goal question');
-    expect(flow?.decisionDetail).toContain('Record the product decision');
-    expect(flow?.showBlockingTaskLink).toBe(false);
-    expect(flow?.showResumeGoalAction).toBe(false);
-    expect(flow?.decisionChoices.map((choice) => choice.title)).toEqual([
-      'Require the full requirement',
-      'Record a waiver or deferment',
-      'Answer another way'
-    ]);
-    expect(flow?.decisionChoices[0].kind).toBe('answer');
-    expect(flow?.decisionChoices[0].defaultInstruction).toContain('Should the product owner waive');
+    expect(taskIsGoalBlocker(baseTask({ id: 'task_blocker', goal_blocker_trace: { blocking_task_id: 'task_blocker', status: 'blocked', source_type: 'task_report', source_id: 'r', reason: 'Blocked.' } }))).toBe(true);
+    expect(flow?.role).toBe('blocking_task');
+    expect(flow?.question).toBeUndefined();
+    expect(flow?.decisionChoices[0].kind).toBe('resume');
   });
 
-  test('returns no flow for ordinary tasks', () => {
+  test('normalises open Goal question choices from the API action model', () => {
+    const flow = normaliseGoalBlockerFlow({
+      role: 'goal_question',
+      title: 'Goal is blocked by an open question',
+      question: 'Should unsupported platforms be waived?',
+      decision_label: 'Answer the Goal question',
+      decision_detail: 'Record the product decision on the Goal.',
+      show_blocking_task_link: false,
+      show_resume_goal_action: false,
+      show_check_goal_action: true,
+      decision_choices: [
+        {
+          id: 'record_waiver',
+          kind: 'answer',
+          title: 'Record a waiver or deferment',
+          detail: 'Use when the product owner accepts a deferment.',
+          action_label: 'Record waiver and resume',
+          default_instruction: 'Record the waiver.'
+        }
+      ]
+    });
+
+    expect(flow?.role).toBe('goal_question');
+    expect(flow?.question).toBe('Should unsupported platforms be waived?');
+    expect(flow?.decisionChoices[0].kind).toBe('answer');
+    expect(flow?.decisionChoices[0].actionLabel).toBe('Record waiver and resume');
+    expect(flow?.decisionChoices[0].defaultInstruction).toBe('Record the waiver.');
+  });
+
+  test('returns no flow when the API did not provide one', () => {
     expect(goalBlockerFlow(baseTask())).toBeUndefined();
   });
 });

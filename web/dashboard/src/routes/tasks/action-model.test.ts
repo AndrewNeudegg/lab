@@ -116,9 +116,29 @@ describe('task action model', () => {
       id: 'task_blocker',
       goal_blocker_trace: {
         status: 'blocked',
+        source_type: 'task_report',
+        source_id: 'greport_grid',
         goal_id: 'goal_grid',
         blocking_task_id: 'task_blocker',
-        reason: 'The Goal needs an operator answer.'
+        reason: 'The Goal needs an operator answer.',
+        flow: {
+          role: 'blocking_task',
+          title: 'This task is blocking Goal Autopilot',
+          decision_label: 'Decide whether to resume the Goal',
+          decision_detail: 'This task is already closed, but its report left a Goal-level blocker.',
+          show_blocking_task_link: false,
+          show_resume_goal_action: false,
+          show_check_goal_action: true,
+          decision_choices: [
+            {
+              id: 'accept_current',
+              kind: 'resume',
+              title: 'Accept current evidence',
+              detail: 'Use when the blocker is acceptable and the Goal can continue.',
+              action_label: 'Accept and resume'
+            }
+          ]
+        }
       }
     };
     const action = primaryTaskAction(blocker, []);

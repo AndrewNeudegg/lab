@@ -47,7 +47,9 @@ describe('assistant page composition', () => {
 
 	  test('surfaces canonical Goal blocker traces in lists, detail, and run history', () => {
 	    expect(pageSource).toContain('type AssistantGoalBlockerTrace');
+	    expect(pageSource).toContain('type AssistantGoalBlockerFlow');
 	    expect(pageSource).toContain('selectedGoalBlockerTrace');
+	    expect(pageSource).toContain('selectedGoalBlockerFlow');
 	    expect(pageSource).toContain('const currentGoalRouteId = () =>');
 	    expect(pageSource).toContain('const assistantGoalURL = (goalId: string)');
 	    expect(pageSource).toContain('const navigateToGoal = (goalId: string, replaceState = false) =>');
@@ -59,6 +61,8 @@ describe('assistant page composition', () => {
 	    expect(pageSource).toContain('View source task');
 	    expect(pageSource).toContain('answerSelectedGoalQuestion');
 	    expect(pageSource).toContain('client.answerAssistantGoalQuestion');
+	    expect(pageSource).toContain("selectedGoalBlockerFlow?.role === 'goal_question'");
+	    expect(pageSource).not.toContain('firstGoalQuestion(selectedGoalBlockerTrace?.questions)');
 	    expect(pageSource).toContain('Resume Autopilot');
 	    expect(pageSource).toContain('Newer Goal blocker exists');
 	    expect(pageSource).toContain('newer blocker');

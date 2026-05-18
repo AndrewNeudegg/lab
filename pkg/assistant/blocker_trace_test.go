@@ -68,6 +68,18 @@ func TestDeriveGoalBlockerTraceUsesBlockingTaskReport(t *testing.T) {
 	if trace.BlockingTaskURL != "/tasks?task=task_20260510_132539_5fff954d" {
 		t.Fatalf("blocking task URL = %q", trace.BlockingTaskURL)
 	}
+	if trace.Flow == nil {
+		t.Fatal("flow is nil, want API-provided blocker action model")
+	}
+	if trace.Flow.Role != GoalBlockerFlowRoleGoalBlocked {
+		t.Fatalf("flow role = %q, want goal_blocked for Goal-level task-report blocker", trace.Flow.Role)
+	}
+	if trace.Flow.Question != "" || len(trace.Flow.DecisionChoices) != 0 {
+		t.Fatalf("flow = %#v, want no Goal question choices for task-report blocker", trace.Flow)
+	}
+	if !trace.Flow.ShowBlockingTaskLink {
+		t.Fatalf("flow = %#v, want blocking task link", trace.Flow)
+	}
 }
 
 func TestDeriveGoalBlockerTraceUsesOpenQuestions(t *testing.T) {
@@ -99,6 +111,18 @@ func TestDeriveGoalBlockerTraceUsesOpenQuestions(t *testing.T) {
 	}
 	if !strings.Contains(trace.OperatorAction, "Answer") {
 		t.Fatalf("operator action = %q, want answer guidance", trace.OperatorAction)
+	}
+	if trace.Flow == nil {
+		t.Fatal("flow is nil, want API-provided open-question action model")
+	}
+	if trace.Flow.Role != GoalBlockerFlowRoleGoalQuestion {
+		t.Fatalf("flow role = %q, want goal_question", trace.Flow.Role)
+	}
+	if trace.Flow.Question != "Which feature slice should be next?" {
+		t.Fatalf("flow question = %q, want open question", trace.Flow.Question)
+	}
+	if len(trace.Flow.DecisionChoices) != 3 || trace.Flow.DecisionChoices[0].Kind != GoalBlockerDecisionKindAnswer {
+		t.Fatalf("flow choices = %#v, want answer choices", trace.Flow.DecisionChoices)
 	}
 }
 
@@ -146,6 +170,37 @@ func TestDeriveGoalBlockerTracePrefersOpenQuestionOverSourceTaskReport(t *testin
 	}
 	if !strings.Contains(trace.Reason, "unanswered operator question") {
 		t.Fatalf("reason = %q, want Goal question framing", trace.Reason)
+	}
+}
+
+func TestGoalBlockerTraceWithFlowUsesTaskContextForClosedBlockingTask(t *testing.T) {
+	now := time.Date(2026, 5, 16, 20, 39, 0, 0, time.UTC)
+	trace := GoalBlockerTraceWithFlow(&GoalBlockerTrace{
+		Status:         GoalBlockerTraceStatusBlocked,
+		Resolver:       GoalBlockerResolverHuman,
+		SourceType:     GoalBlockerSourceTaskReport,
+		SourceID:       "greport_task_blocker",
+		GoalID:         "goal_1",
+		BlockingTaskID: "task_blocker",
+		Reason:         "Task reported a missing manual UAT blocker.",
+		Questions:      []string{"Should unsupported platforms be waived?"},
+		CreatedAt:      &now,
+	}, GoalBlockerFlowContext{TaskID: "task_blocker", TaskStatus: "done"})
+
+	if trace == nil || trace.Flow == nil {
+		t.Fatalf("trace = %#v, want flow", trace)
+	}
+	if trace.Flow.Role != GoalBlockerFlowRoleBlockingTask {
+		t.Fatalf("flow role = %q, want blocking_task", trace.Flow.Role)
+	}
+	if trace.Flow.Question != "" {
+		t.Fatalf("flow question = %q, want no open Goal question for task-report blocker", trace.Flow.Question)
+	}
+	if len(trace.Flow.DecisionChoices) != 3 {
+		t.Fatalf("choices = %#v, want closed-task resume/reopen choices", trace.Flow.DecisionChoices)
+	}
+	if trace.Flow.DecisionChoices[0].Kind != GoalBlockerDecisionKindResume {
+		t.Fatalf("first choice = %#v, want resume choice", trace.Flow.DecisionChoices[0])
 	}
 }
 

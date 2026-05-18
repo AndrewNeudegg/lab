@@ -92,6 +92,11 @@ const (
 	GoalWatchStatusExpired = "expired"
 )
 
+var (
+	ErrGoalQuestionNotOpen  = errors.New("question is not open on this Goal")
+	ErrGoalQuestionRequired = errors.New("question is required")
+)
+
 type Goal struct {
 	ID              string                     `json:"id"`
 	Title           string                     `json:"title"`
@@ -175,30 +180,52 @@ type GoalAutopilot struct {
 }
 
 type GoalBlockerTrace struct {
-	Status          string     `json:"status,omitempty"`
-	Resolver        string     `json:"resolver,omitempty"`
-	SourceType      string     `json:"source_type,omitempty"`
-	SourceID        string     `json:"source_id,omitempty"`
-	SourceTaskID    string     `json:"source_task_id,omitempty"`
-	SourceTaskURL   string     `json:"source_task_url,omitempty"`
-	DecisionID      string     `json:"decision_id,omitempty"`
-	Decision        string     `json:"decision,omitempty"`
-	GoalID          string     `json:"goal_id,omitempty"`
-	PhaseID         string     `json:"phase_id,omitempty"`
-	PhaseTitle      string     `json:"phase_title,omitempty"`
-	BlockingTaskID  string     `json:"blocking_task_id,omitempty"`
-	ReviewDecision  string     `json:"review_decision,omitempty"`
-	Reason          string     `json:"reason,omitempty"`
-	NextAction      string     `json:"next_action,omitempty"`
-	OperatorAction  string     `json:"operator_action,omitempty"`
-	HumanAction     bool       `json:"human_action_required"`
-	SourceURL       string     `json:"source_url,omitempty"`
-	BlockingTaskURL string     `json:"blocking_task_url,omitempty"`
-	Blockers        []string   `json:"blockers,omitempty"`
-	Questions       []string   `json:"questions,omitempty"`
-	Evidence        []string   `json:"evidence,omitempty"`
-	FollowUps       []string   `json:"follow_ups,omitempty"`
-	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	Status          string           `json:"status,omitempty"`
+	Resolver        string           `json:"resolver,omitempty"`
+	SourceType      string           `json:"source_type,omitempty"`
+	SourceID        string           `json:"source_id,omitempty"`
+	SourceTaskID    string           `json:"source_task_id,omitempty"`
+	SourceTaskURL   string           `json:"source_task_url,omitempty"`
+	DecisionID      string           `json:"decision_id,omitempty"`
+	Decision        string           `json:"decision,omitempty"`
+	GoalID          string           `json:"goal_id,omitempty"`
+	PhaseID         string           `json:"phase_id,omitempty"`
+	PhaseTitle      string           `json:"phase_title,omitempty"`
+	BlockingTaskID  string           `json:"blocking_task_id,omitempty"`
+	ReviewDecision  string           `json:"review_decision,omitempty"`
+	Reason          string           `json:"reason,omitempty"`
+	NextAction      string           `json:"next_action,omitempty"`
+	OperatorAction  string           `json:"operator_action,omitempty"`
+	HumanAction     bool             `json:"human_action_required"`
+	SourceURL       string           `json:"source_url,omitempty"`
+	BlockingTaskURL string           `json:"blocking_task_url,omitempty"`
+	Blockers        []string         `json:"blockers,omitempty"`
+	Questions       []string         `json:"questions,omitempty"`
+	Evidence        []string         `json:"evidence,omitempty"`
+	FollowUps       []string         `json:"follow_ups,omitempty"`
+	CreatedAt       *time.Time       `json:"created_at,omitempty"`
+	Flow            *GoalBlockerFlow `json:"flow,omitempty"`
+}
+
+type GoalBlockerFlow struct {
+	Role                 string                      `json:"role"`
+	Title                string                      `json:"title"`
+	Question             string                      `json:"question,omitempty"`
+	DecisionLabel        string                      `json:"decision_label"`
+	DecisionDetail       string                      `json:"decision_detail"`
+	ShowBlockingTaskLink bool                        `json:"show_blocking_task_link"`
+	ShowResumeGoalAction bool                        `json:"show_resume_goal_action"`
+	ShowCheckGoalAction  bool                        `json:"show_check_goal_action"`
+	DecisionChoices      []GoalBlockerDecisionChoice `json:"decision_choices,omitempty"`
+}
+
+type GoalBlockerDecisionChoice struct {
+	ID                 string `json:"id"`
+	Kind               string `json:"kind"`
+	Title              string `json:"title"`
+	Detail             string `json:"detail"`
+	ActionLabel        string `json:"action_label"`
+	DefaultInstruction string `json:"default_instruction,omitempty"`
 }
 
 type GoalPlan struct {

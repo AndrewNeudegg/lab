@@ -201,12 +201,14 @@ describe('tasks page composition', () => {
     expect(pageSource).toContain('aria-label="Required blocker decision"');
     expect(pageSource).toContain('aria-label="Goal blocker decision choices"');
     expect(pageSource).toContain('aria-label="Goal blocker answer"');
-    expect(pageSource).toContain('This task is blocking Goal Autopilot');
+    expect(pageSource).toContain('return flow.title;');
     expect(pageSource).toContain('Open blocking task');
     expect(pageSource).toContain('goalBlockerDecisionChoiceId');
     expect(pageSource).toContain('Instruction for the next run');
     expect(pageSource).toContain('Answer for Autopilot');
     expect(pageSource).toContain('client.answerAssistantGoalQuestion');
+    expect(pageSource).toContain('currentGoalBlockerFlow?.question');
+    expect(pageSource).not.toContain('firstGoalQuestion(currentGoalBlockerTrace?.questions)');
     expect(pageSource).toContain('Goal still blocked');
     expect(pageSource).toContain('Check Goal now');
     expect(pageSource).toContain(

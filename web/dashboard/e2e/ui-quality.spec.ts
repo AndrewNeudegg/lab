@@ -44,6 +44,42 @@ const task = {
 };
 
 const blockerTaskID = 'task_20260428_120500_block111';
+const closedBlockingTaskFlow = {
+  role: 'blocking_task',
+  title: 'This task is blocking Goal Autopilot',
+  decision_label: 'Decide whether to resume the Goal',
+  decision_detail:
+    'This task is already closed, but its report left a Goal-level blocker. Choose whether the current evidence is acceptable, or reopen the task with the missing requirement.',
+  show_blocking_task_link: false,
+  show_resume_goal_action: false,
+  show_check_goal_action: true,
+  decision_choices: [
+    {
+      id: 'accept_current',
+      kind: 'resume',
+      title: 'Accept current evidence',
+      detail: 'Use when the blocker is acceptable and the Goal can continue.',
+      action_label: 'Accept and resume'
+    },
+    {
+      id: 'require_more',
+      kind: 'reopen',
+      title: 'Not acceptable: require more work',
+      detail: 'Use when the answer is no: reopen the task with a clear missing requirement.',
+      action_label: 'Reopen with this answer',
+      default_instruction:
+        'Not acceptable. Require the stricter path before resuming Autopilot: Should the supervisor accept the current evidence or require an independent comparison? Do not close or resume the Goal until the missing evidence, comparison, implementation, or product decision is completed and reported back with validation.'
+    },
+    {
+      id: 'custom',
+      kind: 'custom',
+      title: 'Answer another way',
+      detail: 'Write the exact instruction or product decision that should guide the next run.',
+      action_label: 'Reopen with custom answer'
+    }
+  ]
+};
+
 const blockerTask = {
   ...task,
   id: blockerTaskID,
@@ -72,7 +108,8 @@ const blockerTask = {
     ],
     blockers: ['Browser validation is required before the Goal can resume.'],
     follow_ups: ['Run the task-page browser UAT and attach the result.'],
-    created_at: now
+    created_at: now,
+    flow: closedBlockingTaskFlow
   }
 };
 
@@ -86,7 +123,17 @@ const waitingGoalTask = {
   goal_blocker_trace: {
     ...blockerTask.goal_blocker_trace,
     blocking_task_id: blockerTaskID,
-    blocking_task_url: `/tasks?task=${blockerTaskID}`
+    blocking_task_url: `/tasks?task=${blockerTaskID}`,
+    flow: {
+      role: 'waiting_on_blocking_task',
+      title: 'Goal is blocked by task block111',
+      decision_label: 'Open the blocking task',
+      decision_detail:
+        'This task belongs to the blocked Goal, but the decision is on the linked blocking task.',
+      show_blocking_task_link: true,
+      show_resume_goal_action: false,
+      show_check_goal_action: false
+    }
   }
 };
 
@@ -111,7 +158,47 @@ const openQuestionTask = {
     questions: [
       'Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded?'
     ],
-    blockers: ['Manual assistive-technology UAT is not available from this Linux worktree.']
+    blockers: ['Manual assistive-technology UAT is not available from this Linux worktree.'],
+    flow: {
+      role: 'goal_question',
+      title: 'Goal is blocked by an open question',
+      question:
+        'Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded?',
+      decision_label: 'Answer the Goal question',
+      decision_detail:
+        'Record the product decision on the Goal so Autopilot can continue with that answer.',
+      show_blocking_task_link: false,
+      show_resume_goal_action: false,
+      show_check_goal_action: true,
+      decision_choices: [
+        {
+          id: 'require_full',
+          kind: 'answer',
+          title: 'Require the full requirement',
+          detail: 'Use when the missing evidence or stricter path remains required before completion.',
+          action_label: 'Record answer and resume',
+          default_instruction:
+            'The full requirement remains in scope for this Goal. Do not claim the Goal complete until this is satisfied with evidence: Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded?'
+        },
+        {
+          id: 'record_waiver',
+          kind: 'answer',
+          title: 'Record a waiver or deferment',
+          detail:
+            'Use when the product owner accepts that some requirement is unsupported or deferred for now.',
+          action_label: 'Record waiver and resume',
+          default_instruction:
+            'Record an explicit product-owner waiver or deferment for the unsupported or untested requirement, then continue Autopilot using that decision as acceptance context: Will the product owner support all four AT/platform combinations, or should explicit waivers be recorded?'
+        },
+        {
+          id: 'custom',
+          kind: 'answer',
+          title: 'Answer another way',
+          detail: 'Write the exact product decision or operator instruction that should guide the next run.',
+          action_label: 'Record custom answer'
+        }
+      ]
+    }
   }
 };
 
@@ -137,7 +224,17 @@ const agentRepairTask = {
       'No human decision is required. Autopilot should record this as repair work and create the next gap-fix task.',
     questions: [],
     blockers: ['Open high gap ggap_scope prevents credible completion.'],
-    follow_ups: ['Rerun the public-doc challenge after mapping the feature categories.']
+    follow_ups: ['Rerun the public-doc challenge after mapping the feature categories.'],
+    flow: {
+      role: 'agent_repair',
+      title: 'Autopilot found repair work',
+      decision_label: 'No human decision needed',
+      decision_detail:
+        'Map every current Enterprise feature category to implemented evidence, accepted exclusion, or explicit gap severity.',
+      show_blocking_task_link: false,
+      show_resume_goal_action: true,
+      show_check_goal_action: true
+    }
   }
 };
 

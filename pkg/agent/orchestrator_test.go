@@ -4743,6 +4743,28 @@ func TestTimedOutTaskIsAutomaticRecoveryCandidate(t *testing.T) {
 	}
 }
 
+func TestRemoteDiffCaptureFailureIsAutomaticRecoveryCandidate(t *testing.T) {
+	ok, reason := automaticTaskRecoveryCandidate(taskstore.Task{
+		ID:     "task_remote_diff_failed",
+		Status: taskstore.StatusBlocked,
+		Result: "Remote diff capture failed: git read-tree HEAD: context canceled:",
+	}, time.Now().UTC())
+	if !ok || !strings.Contains(reason, "remote diff capture") {
+		t.Fatalf("candidate = %v, %q; want remote diff capture failures to be retryable by the harness", ok, reason)
+	}
+}
+
+func TestRemoteWorktreePreparationCancellationIsAutomaticRecoveryCandidate(t *testing.T) {
+	ok, reason := automaticTaskRecoveryCandidate(taskstore.Task{
+		ID:     "task_remote_worktree_prepare_cancelled",
+		Status: taskstore.StatusBlocked,
+		Result: "Remote task could not prepare an isolated git worktree for review: git status /home/lab/charting: context canceled:",
+	}, time.Now().UTC())
+	if !ok || !strings.Contains(reason, "worktree preparation") {
+		t.Fatalf("candidate = %v, %q; want transient remote worktree preparation failures to be retryable by the harness", ok, reason)
+	}
+}
+
 func TestMarkRecoveryBlockedPreservesRetryContext(t *testing.T) {
 	orch := newTestOrchestrator(t, nil)
 	task := taskstore.Task{
@@ -8019,6 +8041,118 @@ func TestGoalAutopilotQueuesAutomaticRemoteTimeoutRecovery(t *testing.T) {
 	select {
 	case <-delegate.started:
 		t.Fatal("local worker started for remote timeout recovery")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestTaskSupervisorRemoteDiffRecoveryResumesBlockedGoalAutopilot(t *testing.T) {
+	delegate := &delegateStub{
+		started:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}, 1),
+	}
+	close(delegate.release)
+	orch := newTestOrchestrator(t, delegate)
+	store := remoteagent.NewStore(filepath.Join(t.TempDir(), "agents"))
+	orch.WithRemoteAgents(store)
+	remotePath := setupTestGitRepo(t)
+	if _, err := store.UpsertHeartbeat(remoteagent.Heartbeat{
+		ID:      "remote1-agent",
+		Machine: "vm-remote1",
+		Workdirs: []remoteagent.Workdir{{
+			ID:        "remote1",
+			Path:      remotePath,
+			ProjectID: "remote1",
+			RepoURL:   "git@example.com:remote1.git",
+			Branch:    "main",
+		}},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	timeline, err := orch.CreateGoal(ctx, assistantstore.GoalCreateRequest{
+		Title:         "Build remote diff recovery",
+		Objective:     "Build a remote feature even when diff capture fails.",
+		Kind:          assistantstore.GoalKindBuild,
+		ExecutionMode: assistantstore.GoalExecutionModeAutopilot,
+		Autopilot:     &assistantstore.GoalAutopilot{BudgetTasks: 3},
+		Target: &taskstore.ExecutionTarget{
+			Mode:      "remote",
+			AgentID:   "remote1-agent",
+			WorkdirID: "remote1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := orch.StartGoalAutopilot(ctx, timeline.Goal.ID, assistantstore.GoalAutopilotRequest{BudgetTasks: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := started.Goal.Autopilot.CurrentTaskID
+	task, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = taskstore.StatusBlocked
+	task.AssignedTo = "remote:remote1-agent"
+	task.Workspace = remotePath
+	task.Result = "Remote diff capture failed: git read-tree HEAD: context canceled:"
+	stopped := time.Now().Add(-time.Minute).UTC()
+	task.StoppedAt = &stopped
+	if err := orch.tasks.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	goalStore, err := orch.assistantGoalStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal, err := goalStore.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal.Status = assistantstore.GoalStatusBlocked
+	goal.Autopilot.Status = assistantstore.GoalAutopilotStatusBlocked
+	goal.Autopilot.StopReasons = []string{"Linked task " + taskShortID(taskID) + " is blocked."}
+	if goal.Plan != nil {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		plan.Status = assistantstore.GoalPlanStatusBlocked
+		goal.Plan = &plan
+	}
+	if err := goalStore.SaveGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := orch.ReconcileTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want remote diff recovery queued", changed)
+	}
+	requeued, err := orch.tasks.Load(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requeued.Status != taskstore.StatusQueued || requeued.AssignedTo != "remote:remote1-agent" || requeued.AutoRecoveryAttempts != 1 {
+		t.Fatalf("task = %#v, want queued remote automatic recovery attempt", requeued)
+	}
+	if !strings.Contains(requeued.Result, "automatic remote recovery attempt 1/3") || !strings.Contains(requeued.Result, "remote diff capture") {
+		t.Fatalf("result = %q, want remote diff recovery context", requeued.Result)
+	}
+	latest, err := orch.LoadGoal(timeline.Goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Goal.Autopilot == nil || latest.Goal.Autopilot.Status != assistantstore.GoalAutopilotStatusRunning || latest.Goal.Status == assistantstore.GoalStatusBlocked || len(latest.Goal.Autopilot.StopReasons) != 0 {
+		t.Fatalf("goal = %#v, want Autopilot resumed after task supervisor recovery", latest.Goal)
+	}
+	if latest.Goal.Plan != nil && latest.Goal.Plan.Status == assistantstore.GoalPlanStatusBlocked {
+		t.Fatalf("plan = %#v, want plan unblocked after recovery queue", latest.Goal.Plan)
+	}
+	select {
+	case <-delegate.started:
+		t.Fatal("local worker started for remote diff recovery")
 	case <-time.After(50 * time.Millisecond):
 	}
 }

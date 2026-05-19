@@ -2930,6 +2930,11 @@ func automaticTaskRecoveryCandidate(t taskstore.Task, now time.Time) (bool, stri
 	}
 	result := strings.ToLower(strings.TrimSpace(t.Result))
 	switch {
+	case strings.Contains(result, "remote diff capture failed"):
+		return true, "remote diff capture failed before the task patch could be reviewed"
+	case strings.Contains(result, "remote task could not prepare an isolated git worktree") &&
+		(strings.Contains(result, "context canceled") || strings.Contains(result, "deadline exceeded")):
+		return true, "remote worktree preparation was interrupted before the worker could start"
 	case strings.Contains(result, "revieweragent checks failed"):
 		return true, "review checks failed"
 	case strings.Contains(result, "revieweragent could not commit workspace changes"):
@@ -3004,6 +3009,7 @@ func (o *Orchestrator) queueAutomaticTaskRecovery(ctx context.Context, t tasksto
 	if err := o.tasks.Save(latest); err != nil {
 		return err
 	}
+	o.resumeGoalAutopilotForAutomaticTaskRecovery(ctx, latest, reason, now)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "task.auto_recovery.queued", Actor: "homelabd", TaskID: latest.ID, Payload: eventlog.Payload(map[string]any{
 		"backend":   backend,
 		"reason":    reason,
@@ -3047,6 +3053,7 @@ func (o *Orchestrator) queueAutomaticRemoteTaskRecovery(ctx context.Context, t t
 	if err := o.tasks.Save(latest); err != nil {
 		return err
 	}
+	o.resumeGoalAutopilotForAutomaticTaskRecovery(ctx, latest, reason, now)
 	_ = o.events.Append(ctx, eventlog.Event{ID: id.New("evt"), Type: "remote_agent.task.auto_recovery.queued", Actor: "homelabd", TaskID: latest.ID, Payload: eventlog.Payload(map[string]any{
 		"agent_id":  latest.Target.AgentID,
 		"reason":    reason,

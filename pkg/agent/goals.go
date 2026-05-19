@@ -1760,6 +1760,70 @@ func (o *Orchestrator) blockOrStopGoalAutopilot(ctx context.Context, store *assi
 	return true, reason, nil
 }
 
+func (o *Orchestrator) resumeGoalAutopilotForAutomaticTaskRecovery(ctx context.Context, task taskstore.Task, reason string, now time.Time) {
+	if strings.TrimSpace(task.GoalID) == "" {
+		return
+	}
+	store, err := o.assistantGoalStore()
+	if err != nil {
+		o.log().Warn("goal autopilot recovery resume skipped", "task_id", task.ID, "goal_id", task.GoalID, "error", err)
+		return
+	}
+	goal, err := store.LoadGoal(task.GoalID)
+	if err != nil {
+		o.log().Warn("goal autopilot recovery resume failed to load goal", "task_id", task.ID, "goal_id", task.GoalID, "error", err)
+		return
+	}
+	goal = assistantstore.NormalizeGoal(goal)
+	if goal.ExecutionMode != assistantstore.GoalExecutionModeAutopilot || goal.Autopilot == nil {
+		return
+	}
+	if strings.TrimSpace(goal.Autopilot.CurrentTaskID) != task.ID {
+		return
+	}
+	if len(goal.OpenQuestions) > 0 {
+		return
+	}
+	if goal.Status == assistantstore.GoalStatusArchived || goal.Status == assistantstore.GoalStatusCompleted || goal.Status == assistantstore.GoalStatusPaused {
+		return
+	}
+	if goal.Status != assistantstore.GoalStatusBlocked && goal.Autopilot.Status != assistantstore.GoalAutopilotStatusBlocked {
+		return
+	}
+	goal.Status = assistantstore.GoalStatusActive
+	goal.Autopilot.Status = assistantstore.GoalAutopilotStatusRunning
+	goal.Autopilot.StopReasons = nil
+	goal.Autopilot.LastStepAt = &now
+	if goal.Plan != nil {
+		plan := assistantstore.NormalizeGoalPlan(*goal.Plan)
+		if plan.Status == assistantstore.GoalPlanStatusBlocked {
+			plan.Status = assistantstore.GoalPlanStatusActive
+			plan.UpdatedAt = now
+			goal.Plan = &plan
+		}
+	}
+	goal.UpdatedAt = now
+	if err := store.SaveGoal(goal); err != nil {
+		o.log().Warn("goal autopilot recovery resume failed to save goal", "task_id", task.ID, "goal_id", task.GoalID, "error", err)
+		return
+	}
+	_ = store.SaveNote(assistantstore.GoalNote{
+		ID:        id.New("gnote"),
+		GoalID:    goal.ID,
+		Kind:      "autopilot",
+		Title:     "Autopilot recovery queued",
+		Body:      fmt.Sprintf("Autopilot resumed because task %s was queued for automatic recovery: %s.", taskShortID(task.ID), firstNonEmptyString(reason, "recoverable task failure")),
+		TaskID:    task.ID,
+		CreatedBy: "assistant",
+		CreatedAt: now,
+	})
+	o.appendGoalEvent(ctx, "assistant.goal.autopilot.recovery_queued", goal, map[string]any{
+		"goal_id": goal.ID,
+		"task_id": task.ID,
+		"reason":  reason,
+	})
+}
+
 func appendGoalStopReason(reasons []string, reason string) []string {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {

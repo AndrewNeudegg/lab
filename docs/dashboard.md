@@ -262,7 +262,7 @@ If a component does not answer one of those questions, it should not be in the p
 
 - Queued: the task exists and is waiting in its execution queue. Local tasks have isolated worktrees and wait for the local task supervisor; remote tasks wait for the selected `homelab-agent`.
 - Running: an in-memory local worker or a remote agent is active.
-- Red: failed, timed out, blocked, or conflict resolution. Recovery is needed; timed-out work, retryable local failures, and retryable remote failures are requeued automatically with bounded attempts and the same target, while exhausted, dependency-blocked, or terminal failures need intervention.
+- Red: failed, timed out, blocked, or conflict resolution. Recovery is needed; timed-out work, retryable local failures, remote diff capture failures, and retryable remote failures are requeued automatically with bounded attempts and the same target, while exhausted, dependency-blocked, or terminal failures need intervention.
 - Amber: queued for review, awaiting approval, awaiting restart, awaiting verification, or no change required. The backend `ready_for_review` state is labelled `queued for review` in dashboard status pills so system-owned review gates do not sound like operator work. `no_change_required` means the worker deliberately made no patch and gave a reason; the decision panel offers accept to close without a merge, or reopen when the conclusion is wrong. Some amber states are system-owned gates and some need a human decision; the decision panel text must say which is true.
 - Blue: queued or running. Work is active.
 - Green: done. No action required unless the result is wrong.

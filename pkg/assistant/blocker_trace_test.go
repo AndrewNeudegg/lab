@@ -233,6 +233,59 @@ func TestDeriveGoalBlockerTracePrefersCurrentAutopilotTaskOverStaleReport(t *tes
 	}
 }
 
+func TestDeriveGoalBlockerTraceSuppressesStaleReportDuringActiveCurrentTask(t *testing.T) {
+	now := time.Date(2026, 5, 20, 6, 21, 0, 0, time.UTC)
+	goal := Goal{
+		ID:            "goal_1",
+		Status:        GoalStatusActive,
+		ExecutionMode: GoalExecutionModeAutopilot,
+		Autopilot: &GoalAutopilot{
+			Status:        GoalAutopilotStatusRunning,
+			CurrentTaskID: "task_current",
+		},
+		Plan: &GoalPlan{
+			Status:         GoalPlanStatusBlocked,
+			CurrentPhaseID: "phase_final_audit",
+			Phases: []GoalPlanPhase{{
+				ID:     "phase_final_audit",
+				Title:  "Final whole-goal audit",
+				Status: GoalPlanPhaseStatusBlocked,
+			}},
+		},
+		UpdatedAt: now,
+	}
+
+	trace := DeriveGoalBlockerTrace(goal, []GoalSupervisorDecision{
+		{
+			ID:        "gdec_current",
+			GoalID:    "goal_1",
+			Decision:  GoalSupervisorDecisionCreateTask,
+			TaskID:    "task_current",
+			CreatedAt: now,
+		},
+		{
+			ID:        "gdec_old",
+			GoalID:    "goal_1",
+			Decision:  GoalSupervisorDecisionPauseBlocked,
+			TaskID:    "task_old",
+			CreatedAt: now.Add(-3 * time.Minute),
+		},
+	}, []GoalTaskReport{{
+		ID:             "greport_task_old",
+		GoalID:         "goal_1",
+		TaskID:         "task_old",
+		PhaseID:        "phase_final_audit",
+		Blockers:       []string{"Manual assistive-technology certification cannot be self-certified."},
+		Questions:      []string{"Should the product owner waive the unsupported AT/platform matrix?"},
+		ReviewDecision: "blocked_with_progress",
+		CreatedAt:      now.Add(-3 * time.Minute),
+	}})
+
+	if trace != nil {
+		t.Fatalf("trace = %#v, want nil because current Autopilot work supersedes stale task-report blockers", trace)
+	}
+}
+
 func TestGoalBlockerTraceWithFlowUsesTaskContextForClosedBlockingTask(t *testing.T) {
 	now := time.Date(2026, 5, 16, 20, 39, 0, 0, time.UTC)
 	trace := GoalBlockerTraceWithFlow(&GoalBlockerTrace{

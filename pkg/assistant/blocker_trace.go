@@ -496,8 +496,13 @@ func goalIsBlockedForTrace(goal Goal) bool {
 	if len(goal.OpenQuestions) > 0 || goal.Status == GoalStatusBlocked {
 		return true
 	}
-	if goal.Autopilot != nil && goal.Autopilot.Status == GoalAutopilotStatusBlocked {
-		return true
+	if goal.Autopilot != nil {
+		if goal.Autopilot.Status == GoalAutopilotStatusBlocked {
+			return true
+		}
+		if goal.Autopilot.Status == GoalAutopilotStatusRunning && strings.TrimSpace(goal.Autopilot.CurrentTaskID) != "" {
+			return false
+		}
 	}
 	return goalPlanBlockedForTrace(goal)
 }
